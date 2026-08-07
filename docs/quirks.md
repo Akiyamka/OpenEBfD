@@ -307,6 +307,46 @@ code today, but it *is* real data — set for `DHBigExplosion`, `ATHawk`, and
 `VetLevelFX`, all super-weapon effects that are simply not implemented yet.
 That one stays; it is pending, not dead.
 
+### `DeviateHit` authors two green-tinted banks of the same generic smoke shape; only one is built
+
+**Observed data:** `assets/converted/impact_effects/deviatehit/deviatehit.scn`
+(the `ORDeviator`/`ORGasTurret` impact effect, `Deviate_B`/`Gas_B`) is a
+marker-only FX rig like `ShellHit`/`MissileHit` (see
+`scripts/combat/fx/impact_debris.gd`), but it authors *two* independent FX
+banks of the same generic smoke-puff shape (also seen authored into several
+factory/hangar models, e.g. `AT_Factory_H0.xbf`, as plain vent steam, and into
+the Chemical Trooper's poison spray as `!sm`): one on marker `?#bigbing~~0`
+using texture sequence `!cexp`, bank-tinted dark green
+(`int_parameters_7_11 = [0, 128, 0, ...]`), and one on `?#bigbing2` using
+`!sess`, tinted a brighter green (`[0, 180, 0, ...]`) — the same
+`int_parameters_7_11` field `CombatTurretFx._fx_bank_material()` already reads
+for muzzle particles. Neither texture is inherently "the gas one" or "the
+explosion one": rendering the raw, *untinted* `!cexp*.tga` frames shows a
+bright orange/yellow puff (because it is the identical sprite sheet
+`MongooseLaunchSmoke` uses untinted for its backblast), which is misleading
+read in isolation — the bank's own tint is what actually decides how it
+reads in-game.
+
+**Original-engine quirk:** Both banks are genuinely present in the source XBF
+event table and were presumably both drawn by the original engine — it is not
+a parser gap, both are real data. Reusing one grayscale puff texture across an
+explosion smoke trail, factory steam, and this weapon's gas cloud, recolored
+per bank via `int_parameters_7_11`, is a deliberate original-engine art-economy
+pattern: the same sprite sheet stands in for several unrelated effects instead
+of authoring a dedicated texture for each.
+
+**OpenEBfD compatibility decision:** An initial implementation missed the bank
+tint entirely and rendered `!sess` in its raw (grayscale) colors, then dropped
+`!cexp` because its *untinted* render read as an unrelated orange fireball —
+both mistakes traced back to judging the texture instead of the authored bank
+tint. With `int_parameters_7_11` now wired through as an explicit `tint` field
+on `ImpactDebris`'s burst pieces (read straight from each bank, e.g.
+`DEVIATE_BURST_TINT`, `DEV_IMPACT_TINT`), only the `!cexp`/`?#bigbing~~0` bank
+is built for `DeviateHit`, tinted dark green: confirmed in-game as the correct
+single gas-detonation piece, with `!sess`'s bank left wired in the source
+scene but unused as a duplicate swirl. Revisit if further evidence (e.g.
+original gameplay footage) shows both banks were meant to play together.
+
 ## Audio
 
 ### ImportedSfx.txt shadows several death hooks with unconverted localized names

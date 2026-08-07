@@ -48,7 +48,7 @@ func configure(
 		# An emitter rig's own geometry is the invisible anchors the FX bank
 		# rides on, so nothing of the authored model itself may be drawn.
 		_hide_emitter_geometry(_authored_visual)
-		lifetime = maxf(_play_authored_animation_once(), ImpactDebrisScript.lifetime())
+		lifetime = maxf(_play_authored_animation_once(), ImpactDebrisScript.lifetime(effect_id))
 		_debris.build(effect_id, _authored_visual)
 	else:
 		lifetime = _play_authored_animation_once()

@@ -324,6 +324,14 @@ func _initialize() -> void:
 		"Mongoose composes launch backblast and missile impact FX",
 		_test_mongoose_launch_and_impact_fx
 	)
+	await _run_async_case(
+		"Deviate_B/Gas_B compose the DeviateHit impact FX",
+		_test_deviate_hit_impact_fx
+	)
+	await _run_async_case(
+		"DevPlasma_B composes ShellHit and DevImpact impact FX",
+		_test_dev_impact_fx
+	)
 	_run_case("compound turret binds authored pivots and muzzle", _test_compound_turret)
 	_run_case("single-axis turret turns without changing pitch", _test_single_axis_turret)
 	_run_case("fixed weapon keeps its authored direction", _test_fixed_turret)
@@ -4919,8 +4927,156 @@ func _runtime_bullet(_rules: Object, bullet_id: StringName):
 	return CombatBulletScript.new(config, warhead_config)
 
 
+## Mirrors CombatTurret.configure()'s impact_visual_scenes resolution, which
+## _runtime_bullet() above deliberately skips for callers that never inspect
+## impact FX.
+func _bullet_with_impact_scenes(bullet_id: StringName):
+	var config: Resource = _combat_catalog.bullet(bullet_id)
+	var warhead_id: StringName = config.warhead_id if config != null else &""
+	var warhead_config: Resource = _combat_catalog.warhead(warhead_id) if warhead_id != &"" else null
+	var impact_scenes := {}
+	for value in config.explosion_effect_ids:
+		var effect_id := StringName(String(value))
+		var scene: PackedScene = _combat_catalog.scene(
+			String(config.impact_scene_paths.get(effect_id, ""))
+		)
+		if scene != null:
+			impact_scenes[effect_id] = scene
+	return CombatBulletScript.new(config, warhead_config, null, impact_scenes)
+
+
 func _emission(position: Vector3, direction: Vector3) -> Dictionary:
 	return {
 		"position": position,
 		"direction": direction.normalized(),
 	}
+
+
+## DeviateHit is a marker-only rig (see ImpactDebris) shared by ORDeviator's
+## Deviate_B and ORGasTurret's Gas_B -- both resolve through the same effect
+## id, so this one case covers the ImpactDebris fix for both units.
+func _test_deviate_hit_impact_fx() -> void:
+	_free_impact_effects()
+	var bullet = _bullet_with_impact_scenes(&"Deviate_B")
+	var launch_position := Vector3(0.0, 1.0, 0.0)
+	var ground_position := Vector3(0.0, 0.0, -6.0)
+	var projectile = CombatProjectileScript.new()
+	root.add_child(projectile)
+	_expect(
+		projectile.launch(bullet, _emission(launch_position, Vector3.FORWARD), ground_position),
+		"Deviate_B must accept an in-range attack-ground point"
+	)
+	projectile.advance(2.0)
+	_expect(
+		projectile.finish_reason == &"impact_ground",
+		"Deviate_B must resolve its impact at the sampled ground point"
+	)
+	var deviate_hits := _impact_effects(&"DeviateHit")
+	var deviate_hit: Node3D = deviate_hits.front() if not deviate_hits.is_empty() else null
+	_expect(
+		deviate_hits.size() == 1
+		and deviate_hit != null
+		and deviate_hit.global_position.is_equal_approx(ground_position),
+		"one DeviateHit visual must spawn at the resolved impact position"
+	)
+	await process_frame
+	var particle_counts := {&"!cexp": 0, &"!sess": 0}
+	var particle_nodes := deviate_hit.find_children(
+		"ImpactParticle_*", "Node3D", true, false
+	) if deviate_hit != null else []
+	for child in particle_nodes:
+		var sequence := StringName(String(child.get_meta("combat_impact_particle", "")))
+		if particle_counts.has(sequence):
+			particle_counts[sequence] += 1
+	_expect(
+		particle_counts[&"!cexp"] == 1 and particle_counts[&"!sess"] == 0,
+		"DeviateHit must spawn only its tinted gas burst, not the unused !sess swirl"
+	)
+	var deviate_particle: Node3D = particle_nodes.front() if not particle_nodes.is_empty() else null
+	var deviate_material := (
+		(deviate_particle.get_node_or_null("Visual") as MeshInstance3D).mesh as QuadMesh
+	).material as StandardMaterial3D if deviate_particle != null else null
+	_expect(
+		deviate_material != null
+		and deviate_material.albedo_color.is_equal_approx(Color(0.0, 128.0 / 255.0, 0.0, 1.0)),
+		"DeviateHit's gas burst must render in its authored dark-green bank tint"
+	)
+	_expect(
+		deviate_hit == null or deviate_hit.get_node_or_null("ImpactLight") == null,
+		"DeviateHit has no authored light piece and must not spawn one"
+	)
+	var deviate_visual := deviate_hit.get_node_or_null("Visual") if deviate_hit != null else null
+	var emitter_meshes := deviate_visual.find_children(
+		"*", "MeshInstance3D", true, false
+	) if deviate_visual != null else []
+	_expect(
+		emitter_meshes.all(func(mesh: Node) -> bool: return not (mesh as MeshInstance3D).visible),
+		"DeviateHit's anchor markers must remain invisible"
+	)
+	# Let the follow-particle tween finish before freeing; killing the effect
+	# node mid-tween is what ShellHit/MissileHit's tests avoid the same way.
+	await create_timer(1.1).timeout
+	if is_instance_valid(projectile):
+		projectile.free()
+	_free_impact_effects()
+
+
+## DevPlasma_B carries two effect ids -- ShellHit (already working) and
+## DevImpact (the missing splat rig) -- spawned as independent ImpactDebris
+## instances at the same position. Re-asserts ShellHit stayed byte-identical
+## while covering the newly-added DevImpact piece.
+func _test_dev_impact_fx() -> void:
+	_free_impact_effects()
+	var bullet = _bullet_with_impact_scenes(&"DevPlasma_B")
+	var launch_position := Vector3(0.0, 1.0, 0.0)
+	var ground_position := Vector3(0.0, 0.0, -8.0)
+	var projectile = CombatProjectileScript.new()
+	root.add_child(projectile)
+	_expect(
+		projectile.launch(bullet, _emission(launch_position, Vector3.FORWARD), ground_position),
+		"DevPlasma_B must accept an in-range attack-ground point"
+	)
+	projectile.advance(2.0)
+	_expect(
+		projectile.finish_reason == &"impact_ground",
+		"DevPlasma_B must resolve its impact at the sampled ground point"
+	)
+	var shell_hits := _impact_effects(&"ShellHit")
+	_expect(
+		shell_hits.size() == 1
+		and shell_hits.front().global_position.is_equal_approx(ground_position),
+		"DevPlasma_B must still spawn its unchanged ShellHit visual"
+	)
+	var dev_impacts := _impact_effects(&"DevImpact")
+	var dev_impact: Node3D = dev_impacts.front() if not dev_impacts.is_empty() else null
+	_expect(
+		dev_impacts.size() == 1
+		and dev_impact != null
+		and dev_impact.global_position.is_equal_approx(ground_position),
+		"one DevImpact visual must spawn alongside ShellHit at the resolved impact position"
+	)
+	await process_frame
+	var particle_nodes := dev_impact.find_children(
+		"ImpactParticle_*", "Node3D", true, false
+	) if dev_impact != null else []
+	var splat_count := 0
+	for child in particle_nodes:
+		if child.get_meta("combat_impact_particle", &"") == &"!sm":
+			splat_count += 1
+	_expect(splat_count == 1, "DevImpact must spawn its single authored splat billboard")
+	_expect(
+		dev_impact == null or dev_impact.get_node_or_null("ImpactLight") == null,
+		"DevImpact has no authored light piece and must not spawn one"
+	)
+	var dev_impact_visual := dev_impact.get_node_or_null("Visual") if dev_impact != null else null
+	var emitter_meshes := dev_impact_visual.find_children(
+		"*", "MeshInstance3D", true, false
+	) if dev_impact_visual != null else []
+	_expect(
+		emitter_meshes.all(func(mesh: Node) -> bool: return not (mesh as MeshInstance3D).visible),
+		"DevImpact's anchor marker must remain invisible"
+	)
+	await create_timer(1.1).timeout
+	if is_instance_valid(projectile):
+		projectile.free()
+	_free_impact_effects()

@@ -23,13 +23,6 @@ const SHRAPNEL := &"shrapnel"
 const RING := &"ring"
 const LIGHT := &"light"
 
-## Which pieces each authored emitter effect is made of. An ExplosionType that
-## is not listed renders itself and needs nothing from here.
-const PIECES := {
-	&"ShellHit": [BURST, SHRAPNEL, LIGHT],
-	&"MissileHit": [BURST, SHRAPNEL, RING, LIGHT],
-}
-
 const BURST_SEQUENCE := "!%Bru"
 const BURST_FRAME_COUNT := 21
 const BURST_SIZE := 2.0
@@ -37,6 +30,66 @@ const BURST_DURATION := 1.05
 const BURST_SMOKE_FIRST_FRAME := 2
 const BURST_SMOKE_OPACITY := 0.55
 const BURST_MARKER := "?#bigbing~~1"
+
+## DeviateHit (ORDeviator, ORGasTurret) and DevImpact (HKDevastator's plasma,
+## layered with ShellHit) are marker-only rigs like ShellHit/MissileHit but
+## carry their own marker names and texture sequences, so their burst pieces
+## cannot reuse the BURST_* constants above. Frame timing follows the same
+## ~0.05s/frame cadence as BURST_DURATION/BURST_FRAME_COUNT.
+##
+## DeviateHit authors two banks on ?#bigbing~~0/?#bigbing2: !cexp (the same
+## puff shape MongooseLaunchSmoke uses, here bank-tinted dark green --
+## int_parameters_7_11=[0,128,0,...], the same field
+## CombatTurretFx._fx_bank_material() reads for muzzle particles) and !sess
+## (the same puff shape, tinted a brighter green [0,180,0,...]). Only the
+## !cexp piece is built: confirmed in-game, its burst shape reads as the gas
+## detonation once tinted, while !sess's swirl duplicated it and read as
+## redundant. The ?#bigbing2/!sess bank is left unused.
+const DEVIATE_BURST_SEQUENCE := "!cexp"
+const DEVIATE_BURST_MARKER := "?#bigbing~~0"
+const DEVIATE_BURST_FRAME_COUNT := 16
+const DEVIATE_BURST_SIZE := 10.0
+const DEVIATE_BURST_DURATION := 0.8
+const DEVIATE_BURST_TINT := Color(0.0, 128.0 / 255.0, 0.0)
+
+## DevImpact's #splat bank authors !sm (the same puff shape as the Chemical
+## Trooper's poison spray) tinted a pale blue -- int_parameters_7_11=[200,200,255,...].
+const DEV_IMPACT_SEQUENCE := "!sm"
+const DEV_IMPACT_MARKER := "#splat"
+const DEV_IMPACT_FRAME_COUNT := 11
+const DEV_IMPACT_SIZE := 2.0
+const DEV_IMPACT_DURATION := 0.55
+const DEV_IMPACT_TINT := Color(200.0 / 255.0, 200.0 / 255.0, 1.0)
+
+## Which pieces each authored emitter effect is made of. An ExplosionType that
+## is not listed renders itself and needs nothing from here.
+const PIECES := {
+	&"ShellHit": [
+		{"kind": BURST, "marker": BURST_MARKER, "sequence": BURST_SEQUENCE,
+			"frame_count": BURST_FRAME_COUNT, "size": BURST_SIZE, "duration": BURST_DURATION,
+			"smoke_first_frame": BURST_SMOKE_FIRST_FRAME, "smoke_opacity": BURST_SMOKE_OPACITY},
+		{"kind": SHRAPNEL},
+		{"kind": LIGHT},
+	],
+	&"MissileHit": [
+		{"kind": BURST, "marker": BURST_MARKER, "sequence": BURST_SEQUENCE,
+			"frame_count": BURST_FRAME_COUNT, "size": BURST_SIZE, "duration": BURST_DURATION,
+			"smoke_first_frame": BURST_SMOKE_FIRST_FRAME, "smoke_opacity": BURST_SMOKE_OPACITY},
+		{"kind": SHRAPNEL},
+		{"kind": RING},
+		{"kind": LIGHT},
+	],
+	&"DeviateHit": [
+		{"kind": BURST, "marker": DEVIATE_BURST_MARKER, "sequence": DEVIATE_BURST_SEQUENCE,
+			"frame_count": DEVIATE_BURST_FRAME_COUNT, "size": DEVIATE_BURST_SIZE,
+			"duration": DEVIATE_BURST_DURATION, "tint": DEVIATE_BURST_TINT},
+	],
+	&"DevImpact": [
+		{"kind": BURST, "marker": DEV_IMPACT_MARKER, "sequence": DEV_IMPACT_SEQUENCE,
+			"frame_count": DEV_IMPACT_FRAME_COUNT, "size": DEV_IMPACT_SIZE,
+			"duration": DEV_IMPACT_DURATION, "tint": DEV_IMPACT_TINT},
+	],
+}
 const SHRAPNEL_SEQUENCE := "!@sm"
 const SHRAPNEL_FRAME_COUNT := 11
 const SHRAPNEL_SIZE := 0.16
@@ -76,48 +129,75 @@ static func has_rig(effect_id: StringName) -> bool:
 
 
 ## Spawns the effect's pieces around the owner's position. `authored_visual`
-## supplies the animated marker the burst billboard follows.
+## supplies the animated marker each burst billboard follows.
 func build(effect_id: StringName, authored_visual: Node3D) -> void:
 	if _effect == null or authored_visual == null or not is_instance_valid(authored_visual):
 		return
 	var pieces: Array = PIECES.get(effect_id, [])
-	if pieces.has(BURST):
-		var burst_textures := AuthoredFxBankScript.load_texture_sequence(
-			BURST_SEQUENCE, BURST_FRAME_COUNT
-		)
-		var burst_marker := AuthoredFxBankScript.find_original_node(
-			authored_visual, BURST_MARKER
-		)
-		if burst_marker != null and not burst_textures.is_empty():
-			_spawn_follow_particle(
-				BURST_SEQUENCE, burst_textures, BURST_SIZE, BURST_DURATION, burst_marker
-			)
+	for piece_value: Variant in pieces:
+		var piece := piece_value as Dictionary
+		if piece.get("kind") == BURST:
+			_spawn_burst_piece(piece, authored_visual)
 
-	if not pieces.has(SHRAPNEL) and not pieces.has(RING):
+	if not _has_kind(pieces, SHRAPNEL) and not _has_kind(pieces, RING):
 		return
 	var shrapnel_textures := AuthoredFxBankScript.load_texture_sequence(
 		SHRAPNEL_SEQUENCE, SHRAPNEL_FRAME_COUNT
 	)
 	if not shrapnel_textures.is_empty():
-		if pieces.has(SHRAPNEL):
+		if _has_kind(pieces, SHRAPNEL):
 			_spawn_shrapnel(shrapnel_textures)
-		if pieces.has(RING):
+		if _has_kind(pieces, RING):
 			_spawn_ring(shrapnel_textures)
-	if pieces.has(LIGHT):
+	if _has_kind(pieces, LIGHT):
 		_spawn_light()
 
 
-## How long the owner must stay alive for the rig to finish: the slowest
-## shrapnel piece has to land and fade before the node may be freed.
-static func lifetime() -> float:
-	var maximum_flight_time := _ballistic_landing_time(
-		SHRAPNEL_START_HEIGHT, SHRAPNEL_VERTICAL_SPEED_MAX, SHRAPNEL_GRAVITY
+static func _has_kind(pieces: Array, kind: StringName) -> bool:
+	for piece_value: Variant in pieces:
+		if (piece_value as Dictionary).get("kind") == kind:
+			return true
+	return false
+
+
+func _spawn_burst_piece(piece: Dictionary, authored_visual: Node3D) -> void:
+	var sequence := String(piece.get("sequence", BURST_SEQUENCE))
+	var textures := AuthoredFxBankScript.load_texture_sequence(
+		sequence, int(piece.get("frame_count", BURST_FRAME_COUNT))
 	)
-	return maxf(
-		BURST_DURATION,
-		maxf(SHRAPNEL_ANIMATION_DURATION, maximum_flight_time)
-			+ SHRAPNEL_FADE_DURATION + CLEANUP_MARGIN
+	var marker := AuthoredFxBankScript.find_original_node(
+		authored_visual, String(piece.get("marker", BURST_MARKER))
 	)
+	if marker == null or textures.is_empty():
+		return
+	_spawn_follow_particle(
+		sequence, textures, float(piece.get("size", BURST_SIZE)),
+		float(piece.get("duration", BURST_DURATION)), marker,
+		piece.get("tint", Color.WHITE) as Color,
+		int(piece.get("smoke_first_frame", -1)), float(piece.get("smoke_opacity", 1.0))
+	)
+
+
+## How long the owner must stay alive for the rig to finish: the longest burst
+## piece, plus (only when authored) the slowest shrapnel/ring piece landing
+## and fading before the node may be freed.
+static func lifetime(effect_id: StringName) -> float:
+	var pieces: Array = PIECES.get(effect_id, [])
+	var longest := 0.0
+	for piece_value: Variant in pieces:
+		var piece := piece_value as Dictionary
+		if piece.get("kind") == BURST:
+			longest = maxf(longest, float(piece.get("duration", BURST_DURATION)))
+	if _has_kind(pieces, SHRAPNEL) or _has_kind(pieces, RING):
+		var maximum_flight_time := _ballistic_landing_time(
+			SHRAPNEL_START_HEIGHT, SHRAPNEL_VERTICAL_SPEED_MAX, SHRAPNEL_GRAVITY
+		)
+		longest = maxf(
+			longest,
+			maxf(SHRAPNEL_ANIMATION_DURATION, maximum_flight_time)
+				+ SHRAPNEL_FADE_DURATION + CLEANUP_MARGIN
+		)
+	return longest
 
 
 ## Copies each follower onto the marker it tracks, and reports whether any are
@@ -150,7 +230,7 @@ func _spawn_ring(textures: Array[Texture2D]) -> void:
 		var velocity := direction * RING_SPEED + Vector3.UP * RING_VERTICAL_SPEED
 		var particle := _spawn_world_particle(
 			SHRAPNEL_SEQUENCE, textures, SHRAPNEL_SIZE,
-			SHRAPNEL_ANIMATION_DURATION, start, false
+			SHRAPNEL_ANIMATION_DURATION, start, SHRAPNEL_TINT, false
 		)
 		if particle != null:
 			particle.set_meta("combat_impact_ring", true)
@@ -171,7 +251,7 @@ func _spawn_shrapnel(textures: Array[Texture2D]) -> void:
 			)
 		var particle := _spawn_world_particle(
 			SHRAPNEL_SEQUENCE, textures, SHRAPNEL_SIZE,
-			SHRAPNEL_ANIMATION_DURATION, start, false
+			SHRAPNEL_ANIMATION_DURATION, start, SHRAPNEL_TINT, false
 		)
 		if particle != null:
 			_throw(particle, start, velocity, SHRAPNEL_GRAVITY)
@@ -243,12 +323,16 @@ func _spawn_follow_particle(
 		textures: Array[Texture2D],
 		size: float,
 		duration: float,
-		marker: Node3D
+		marker: Node3D,
+		tint: Color = Color.WHITE,
+		smoke_first_frame: int = -1,
+		smoke_opacity: float = 1.0
 	) -> Node3D:
 	# Marker transforms carry source-model scale for their hidden cubes. Keep
 	# the billboard in world space and copy only the animated marker position.
 	var particle := _spawn_world_particle(
-		sequence, textures, size, duration, marker.global_position
+		sequence, textures, size, duration, marker.global_position,
+		tint, true, smoke_first_frame, smoke_opacity
 	)
 	_follow_particles.append({
 		"particle": weakref(particle),
@@ -264,14 +348,15 @@ func _spawn_world_particle(
 		size: float,
 		duration: float,
 		world_position: Vector3,
-		free_after_animation: bool = true
+		tint: Color = Color.WHITE,
+		free_after_animation: bool = true,
+		smoke_first_frame: int = -1,
+		smoke_opacity: float = 1.0
 	) -> Node3D:
-	var tint := SHRAPNEL_TINT if sequence == SHRAPNEL_SEQUENCE else Color.WHITE
 	var opacities := PackedFloat32Array()
 	for frame_index in textures.size():
 		opacities.append(
-			BURST_SMOKE_OPACITY
-			if sequence == BURST_SEQUENCE and frame_index >= BURST_SMOKE_FIRST_FRAME
+			smoke_opacity if smoke_first_frame >= 0 and frame_index >= smoke_first_frame
 			else 1.0
 		)
 	var spawned := AuthoredFxBankScript.spawn_frame_animated_quad(
