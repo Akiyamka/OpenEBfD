@@ -12,6 +12,7 @@ readonly SUITES=(
 	tests/buildings/controller_run.gd tests/buildings/techtree_multiple_conyards_run.gd
 	tests/buildings/primary_building_run.gd tests/buildings/upgrade_run.gd tests/rules/run.gd
 	tests/combat/run.gd tests/combat/death_category_run.gd
+	tests/combat/multi_turret_run.gd
 	tests/combat/authored_reload_sound_run.gd tests/match/unit_command_run.gd
 	tests/units/deployment_run.gd tests/units/unit_scene_catalog_run.gd
 	tests/units/harvester_run.gd tests/units/flight_run.gd tests/units/death_strategy_run.gd

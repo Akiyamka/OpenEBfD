@@ -21,6 +21,7 @@ const FireRequestScript := preload("res://scripts/combat/fire_request.gd")
 const CombatTargetScript := preload("res://scripts/combat/combat_target.gd")
 const CombatTurretScript := preload("res://scripts/combat/combat_turret.gd")
 const CombatRulesScript := preload("res://scripts/combat/combat_rules.gd")
+const CombatBulletScript := preload("res://scripts/combat/combat_bullet.gd")
 const CombatTargetAcquisitionScript := preload(
 	"res://scripts/combat/combat_target_acquisition.gd"
 )
@@ -50,6 +51,11 @@ const FIRE_ANIMATION_SPEED_SCALE := (
 	RULE_COMBAT_TICKS_PER_SECOND / BAKED_MODEL_FRAMES_PER_SECOND
 )
 const FIRE_ANIMATION_PREFIX := "Fire_"
+## Weapons reaching less than two tiles (Rules.txt MaxRange, converted by
+## CombatBullet.RULE_TILE_WORLD_SPAN) are hand-to-hand: IMADVSardaukar's knife
+## reaches one tile against the same soldier's ten-tile rifle. They never decide
+## how far the unit walks, see _pursuit_attack_turret.
+const MELEE_RANGE_WORLD := 2.0 * CombatBulletScript.RULE_TILE_WORLD_SPAN
 const FIRE_EVENT_EPSILON := 0.0001
 ## Deployed-mode idle clips (Kindjal only) mirror the travel-mode Idle_*
 ## naming so the same random-variant machinery in _idle_animations applies.
@@ -260,6 +266,9 @@ func _advance_attack_order(delta: float) -> void:
 		cancel_attack_order()
 		_owner.stop_at_current_position()
 		return
+	var pursuit_turret = _pursuit_attack_turret(attack_target)
+	if pursuit_turret == null:
+		pursuit_turret = primary_turret
 	var in_range_turrets: Array = []
 	var obstructed_turrets: Array = []
 	for turret in _active_turrets():
@@ -275,63 +284,153 @@ func _advance_attack_order(delta: float) -> void:
 		# until the cliff shoulder or building no longer covers it. Firing from
 		# here would only damage the obstacle standing in front of the order.
 		if not obstructed_turrets.is_empty() \
-		or primary_turret.target_range(attack_target) == CombatTurretScript.TargetRange.TOO_FAR:
-			_attack_order.advance_pursuit(target_world_position, primary_turret, delta)
+		or pursuit_turret.target_range(attack_target) == CombatTurretScript.TargetRange.TOO_FAR:
+			_attack_order.advance_pursuit(target_world_position, pursuit_turret, delta)
 			return
 		# A minimum-range violation is not solved by moving closer. Keep the
 		# explicit order active so a moving target can re-enter weapon range.
 		_attack_order.stop_pursuit()
 		return
-	_attack_order.stop_pursuit()
+	# The long arm reaching first is not the whole unit reaching: keep closing
+	# until the shortest-ranged weapon that the order actually uses can join in,
+	# and let whatever already bears fire during the approach.
+	var pursuing: bool = pursuit_turret.target_range(attack_target) \
+		== CombatTurretScript.TargetRange.TOO_FAR
+	if pursuing:
+		_attack_order.advance_pursuit(target_world_position, pursuit_turret, delta)
+	else:
+		_attack_order.stop_pursuit()
 
+	# A weapon with no yaw of its own aims only by turning the whole unit; one
+	# with a servo is "direct" while the commanded target sits inside its
+	# authored sector.
+	var hull_mounted_turrets: Array = []
 	var direct_turrets: Array = []
 	for turret in in_range_turrets:
-		if not turret.requires_hull_turn_for(target_world_position):
+		if turret.requires_hull_turn():
+			hull_mounted_turrets.append(turret)
+		elif not turret.requires_hull_turn_for(target_world_position):
 			direct_turrets.append(turret)
 
-	# A limited side turret must not drag the hull away from a target already
-	# covered by another weapon. Only a real all-weapon blind zone requests a
-	# hull correction, and the smallest correction brings the nearest sector
-	# boundary onto the commanded target.
 	var hull_turret = null
 	var fixed_hull_aimed := false
-	if direct_turrets.is_empty():
-		var smallest_adjustment := INF
-		for turret in in_range_turrets:
-			var adjustment: float = turret.hull_yaw_adjustment_for(
-				target_world_position
+	if not hull_mounted_turrets.is_empty():
+		# A hull-mounted weapon is the one exception to the rule below: it has no
+		# servo to fall back on, so leaving the hull alone means it never fires at
+		# all. Turning onto the commanded target cannot cost the servo turrets
+		# their aim either, since they are tracking that same target.
+		hull_turret = _smallest_hull_adjustment_turret(
+			hull_mounted_turrets, target_world_position
+		)
+		fixed_hull_aimed = CombatTargetAcquisitionScript.hull_bears_on(
+			_owner, target_world_position
+		) if pursuing else _owner.turn_toward(
+			target_world_position - _owner.global_position, delta
+		)
+	elif direct_turrets.is_empty():
+		# A limited side turret must not drag the hull away from a target already
+		# covered by another weapon. Only a real all-weapon blind zone requests a
+		# hull correction, and the smallest correction brings the nearest sector
+		# boundary onto the commanded target.
+		hull_turret = _smallest_hull_adjustment_turret(
+			in_range_turrets, target_world_position
+		)
+		if hull_turret != null and not pursuing:
+			_turn_hull_by_adjustment(
+				hull_turret.hull_yaw_adjustment_for(target_world_position),
+				delta
 			)
-			if absf(adjustment) < smallest_adjustment:
-				smallest_adjustment = absf(adjustment)
-				hull_turret = turret
-		if hull_turret != null:
-			if hull_turret.requires_hull_turn():
-				fixed_hull_aimed = _owner.turn_toward(
-					target_world_position - _owner.global_position, delta
-				)
-			else:
-				_turn_hull_by_adjustment(
-					hull_turret.hull_yaw_adjustment_for(target_world_position),
-					delta
-				)
 
 	var engaged_turrets: Array = []
 	for turret in in_range_turrets:
+		# A braced weapon halts the unit to perform its Fire clip, which would
+		# stall the approach one shot at a time. Only weapons that shoot on the
+		# move engage until the unit has arrived.
+		if pursuing and not weapon_can_fire_while_moving(turret.weapon_index()):
+			continue
+		var hull_mounted: bool = turret in hull_mounted_turrets
 		var turret_target: Variant = attack_target \
-			if turret in direct_turrets or turret == hull_turret \
+			if hull_mounted or turret in direct_turrets or turret == hull_turret \
 			else _target_acquisition.target_for(turret)
 		var aim_source := AimSource.TURRET
-		if turret == hull_turret and turret.requires_hull_turn():
+		if hull_mounted:
 			aim_source = AimSource.HULL_ON_TARGET if fixed_hull_aimed \
 				else AimSource.HULL_TURNING
 		if _advance_turret_engagement(turret, turret_target, delta, aim_source):
 			engaged_turrets.append(turret)
+	_advance_idle_turrets_during_attack_order(
+		engaged_turrets, in_range_turrets, obstructed_turrets,
+		hull_turret == null, pursuing, delta
+	)
 	_recenter_unengaged_turrets(engaged_turrets, delta)
+
+
+## Weapons the commanded target is simply not for -- an anti-ground gun under an
+## order on an aircraft, or one whose target sits outside its own range -- are
+## not thereby out of the fight: they pick their own target like an idle unit
+## would. They may claim the hull only when nothing about the order needs it.
+func _advance_idle_turrets_during_attack_order(
+		engaged_turrets: Array,
+		in_range_turrets: Array,
+		obstructed_turrets: Array,
+		hull_unclaimed: bool,
+		pursuing: bool,
+		delta: float
+	) -> void:
+	var may_turn_hull := hull_unclaimed and not pursuing
+	var hull_aim := CombatTargetAcquisitionScript.HullAim.TURN if may_turn_hull \
+		else CombatTargetAcquisitionScript.HullAim.ALIGNED_ONLY
+	for turret in _active_turrets():
+		if turret in in_range_turrets or turret in obstructed_turrets:
+			continue
+		if pursuing and not weapon_can_fire_while_moving(turret.weapon_index()):
+			continue
+		var turret_target: Variant = _target_acquisition.target_for(turret, hull_aim)
+		if turret_target == null:
+			continue
+		var aim_source := AimSource.TURRET
+		if turret.requires_hull_turn():
+			aim_source = _hull_aim_source_for(turret_target, may_turn_hull, delta)
+		if _advance_turret_engagement(turret, turret_target, delta, aim_source):
+			engaged_turrets.append(turret)
+
+
+## Turns the hull onto an autonomously picked target when it is free to move,
+## and otherwise reports whether it already happens to bear.
+func _hull_aim_source_for(target: Variant, may_turn: bool, delta: float) -> AimSource:
+	var target_world_position := _combat_target_position(target)
+	if not target_world_position.is_finite():
+		return AimSource.HULL_TURNING
+	var aimed: bool = _owner.turn_toward(
+		target_world_position - _owner.global_position, delta
+	) if may_turn else CombatTargetAcquisitionScript.hull_bears_on(
+		_owner, target_world_position
+	)
+	return AimSource.HULL_ON_TARGET if aimed else AimSource.HULL_TURNING
+
+
+func _smallest_hull_adjustment_turret(turrets: Array, target_world_position: Vector3):
+	var chosen = null
+	var smallest_adjustment := INF
+	for turret in turrets:
+		var adjustment: float = absf(
+			turret.hull_yaw_adjustment_for(target_world_position)
+		)
+		if adjustment < smallest_adjustment:
+			smallest_adjustment = adjustment
+			chosen = turret
+	return chosen
 
 
 func _advance_retained_weapon_targets(delta: float) -> void:
 	if _weapon_targets.is_empty() and _moving_fire_weapons.is_empty():
 		return
+	# A standing unit owns its hull and may swing it onto whatever a yaw-less
+	# weapon picks. One under a move order does not: such a weapon is braced,
+	# and starting its Fire clip would halt the move it was given.
+	var hull_aim := CombatTargetAcquisitionScript.HullAim.NONE \
+		if _owner.has_active_move_order() \
+		else CombatTargetAcquisitionScript.HullAim.TURN
 	for turret in _active_turrets():
 		var weapon_index: int = turret.weapon_index()
 		var autonomous := _moving_fire_weapons.has(weapon_index)
@@ -348,13 +447,22 @@ func _advance_retained_weapon_targets(delta: float) -> void:
 			if (
 				turret.target_range(retained_target)
 					== CombatTurretScript.TargetRange.IN_RANGE
-				and not turret.requires_hull_turn_for(target_world_position)
+				and _target_acquisition.hull_allows(
+					turret, target_world_position, hull_aim
+				)
 				and turret.has_line_of_fire(retained_target, _owner)
 			):
 				turret_target = retained_target
 		if turret_target == null and autonomous:
-			turret_target = _target_acquisition.target_for(turret)
-		if not _advance_turret_engagement(turret, turret_target, delta):
+			turret_target = _target_acquisition.target_for(turret, hull_aim)
+		var aim_source := AimSource.TURRET
+		if turret_target != null and turret.requires_hull_turn():
+			aim_source = _hull_aim_source_for(
+				turret_target,
+				hull_aim == CombatTargetAcquisitionScript.HullAim.TURN,
+				delta
+			)
+		if not _advance_turret_engagement(turret, turret_target, delta, aim_source):
 			_recenter_turret_if_idle(turret, delta)
 
 
@@ -674,6 +782,28 @@ func _primary_attack_turret(attack_target: Variant):
 		if turret.can_target(attack_target):
 			return turret
 	return null
+
+
+## Which weapon decides how close the unit walks. Closing only far enough for
+## the longest arm leaves a Devastator parked at plasma range with its shorter
+## ranged missiles idle, so the shortest range wins -- but only among the
+## weapons that can engage this target at all, so an order on an aircraft is not
+## dragged into the range of a gun that cannot shoot up in the first place.
+func _pursuit_attack_turret(attack_target: Variant):
+	var chosen = null
+	var shortest_range := INF
+	for turret in _active_turrets():
+		if not turret.can_target(attack_target):
+			continue
+		var maximum_range: float = turret.maximum_range_world()
+		# A melee weapon is an opportunity, not a destination: the Sardaukar's
+		# knife must never march him out of rifle range and into stabbing range.
+		if maximum_range < MELEE_RANGE_WORLD:
+			continue
+		if maximum_range < shortest_range:
+			shortest_range = maximum_range
+			chosen = turret
+	return chosen
 
 
 func _combat_target_position(attack_target: Variant) -> Vector3:
