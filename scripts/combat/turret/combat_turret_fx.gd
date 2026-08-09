@@ -24,6 +24,7 @@ const CASING_SEQUENCE := "!%shel"
 const LAUNCH_SMOKE_SEQUENCE := "!cexp"
 const LAUNCH_SMOKE_FRAME_COUNT := 16
 const LAUNCH_SMOKE_SIZE := 1.25
+const LAUNCH_SMOKE_REFERENCE_PARTICLE_SIZE := 32.0
 const JET_DENSITY_MULTIPLIER := 3
 const JET_MIN_PARTICLES_PER_EMISSION := 4
 const JET_MAX_PARTICLES_PER_EMISSION := 8
@@ -49,7 +50,6 @@ var _turret:
 	set(value):
 		_turret_ref = weakref(value) if value != null else null
 var _rear_flash_textures: Array[Texture2D] = []
-var _launch_smoke_textures: Array[Texture2D] = []
 var _model_fx_texture_cache: Dictionary = {}
 var _muzzle_bank_particle_index := 0
 var _casing_particle_index := 0
@@ -956,9 +956,7 @@ func _spawn_auxiliary_muzzle_effects(parent: Node, emission: Dictionary) -> void
 	if parent == null or not parent.is_inside_tree():
 		return
 	if emission.has("smoke_position"):
-		_ensure_launch_smoke_textures()
-		if _launch_smoke_textures.size() == LAUNCH_SMOKE_FRAME_COUNT:
-			_spawn_launch_smoke(parent, emission)
+		_spawn_launch_smoke(parent, emission)
 	if not emission.has("rear_position"):
 		return
 	_ensure_inline_fx_textures()
@@ -966,7 +964,17 @@ func _spawn_auxiliary_muzzle_effects(parent: Node, emission: Dictionary) -> void
 		_spawn_rear_flash(parent, emission)
 
 
+## Replays the launcher's own backblast bank: the Mongoose's 16-frame `!cexp`
+## puff, the Devastator's 20-frame `!exp0` rocket flare. The authored start/stop
+## pair spans a single frame, so the baked billboard cannot show the sequence -
+## the model only marks where and when it goes off.
 func _spawn_launch_smoke(parent: Node, emission: Dictionary) -> void:
+	var bank := _fx_bank_by_id(String(emission.get("smoke_bank_id", "")))
+	var sequence := String(bank.get("texture", LAUNCH_SMOKE_SEQUENCE))
+	var frame_count := int(bank.get("texture_frame_count", LAUNCH_SMOKE_FRAME_COUNT))
+	var textures := _model_fx_bank_textures(sequence, frame_count)
+	if textures.size() != frame_count or textures.is_empty():
+		return
 	var effect := Node3D.new()
 	effect.name = "LaunchSmoke_%d" % int(emission.get("index", 0))
 	effect.set_meta("combat_muzzle_fx", &"launch_smoke")
@@ -974,15 +982,39 @@ func _spawn_launch_smoke(parent: Node, emission: Dictionary) -> void:
 	parent.add_child(effect)
 	effect.top_level = true
 	effect.global_position = Vector3(emission["smoke_position"])
-	var visual := _fx_quad(_launch_smoke_textures.front(), LAUNCH_SMOKE_SIZE)
+	var visual := _fx_quad(textures.front(), _launch_smoke_size(bank))
 	visual.name = "Visual"
 	effect.add_child(visual)
 	var material := (visual.mesh as QuadMesh).material as StandardMaterial3D
 	var animation := effect.create_tween()
-	for texture in _launch_smoke_textures:
+	for texture in textures:
 		animation.tween_callback(_set_fx_texture.bind(material, texture))
 		animation.tween_interval(INLINE_FX_FRAME_SECONDS)
 	animation.finished.connect(effect.queue_free)
+
+
+## LAUNCH_SMOKE_SIZE is the on-screen size hand-picked for the Mongoose's
+## backblast, whose bank authors LAUNCH_SMOKE_REFERENCE_PARTICLE_SIZE. Carry
+## that same tuning to a launcher with a differently sized bank rather than
+## reading the source size as world units, so the Mongoose keeps its look.
+func _launch_smoke_size(bank: Dictionary) -> float:
+	var particle_size := float(
+		bank.get("particle_size", LAUNCH_SMOKE_REFERENCE_PARTICLE_SIZE)
+	)
+	if particle_size <= 0.0:
+		return LAUNCH_SMOKE_SIZE
+	return LAUNCH_SMOKE_SIZE * particle_size / LAUNCH_SMOKE_REFERENCE_PARTICLE_SIZE
+
+
+func _fx_bank_by_id(bank_id: String) -> Dictionary:
+	if bank_id.is_empty() or _turret == null \
+	or _turret._fx_model_root == null or not is_instance_valid(_turret._fx_model_root):
+		return {}
+	for bank_value: Variant in _turret._fx_model_root.get_meta("xbf_fx_banks", []) as Array:
+		var bank := bank_value as Dictionary
+		if String(bank.get("id", "")) == bank_id:
+			return bank
+	return {}
 
 
 func _spawn_shot_light(parent: Node, emission: Dictionary) -> void:
@@ -1051,13 +1083,6 @@ func _fx_quad(texture: Texture2D, size: float) -> MeshInstance3D:
 func _ensure_inline_fx_textures() -> void:
 	if _rear_flash_textures.is_empty():
 		_rear_flash_textures = _load_fx_texture_sequence("!cexp", REAR_FLASH_FRAME_COUNT)
-
-
-func _ensure_launch_smoke_textures() -> void:
-	if _launch_smoke_textures.is_empty():
-		_launch_smoke_textures = _load_fx_texture_sequence(
-			LAUNCH_SMOKE_SEQUENCE, LAUNCH_SMOKE_FRAME_COUNT
-		)
 
 
 func _load_fx_texture_sequence(base_name: String, count: int) -> Array[Texture2D]:

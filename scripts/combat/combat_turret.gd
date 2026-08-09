@@ -21,7 +21,7 @@ const SHOT_LIGHT_REAR_OFFSET := CombatTurretFxScript.SHOT_LIGHT_REAR_OFFSET
 ##   ::N...  pivot of weapon/turret N
 ##   >>N...  projectile emission point
 ##   #muzzleNN  paired rear blast / shell-casing emitter
-##   #smoke  paired launcher backblast emitter
+##   #<name>  paired launcher backblast bank (#smoke, #flare01, ...)
 ## A TurretNextJoint chain maps onto the nested :: pivots between a weapon's
 ## root marker and its muzzle markers.
 
@@ -33,7 +33,7 @@ const TURRET_MARKER := "::"
 const MUZZLE_MARKER := ">>"
 const REAR_MUZZLE_MARKER := "#muzzle"
 const AUTHORED_MUZZLE_FORWARD := Vector3.BACK
-const LAUNCH_SMOKE_MARKER := "#smoke"
+const LAUNCH_SMOKE_MARKER_PREFIX := "#"
 ## Mirrors Unit.DEPLOYED_HOLD_ANIMATION (scripts/units/unit.gd): the authored
 ## held pose at the end of a combat-deploy unit's fold-out clip. Deploy-only
 ## turret pivots must rest here, not at the model's undeployed default pose.
@@ -170,7 +170,6 @@ func bind_model(model_root: Node3D, model_weapon_index: int) -> bool:
 		return false
 	_model_root = model_root
 	_fx_model_root = _find_fx_model_root(model_root)
-	_uses_embedded_muzzle_flash = _has_embedded_muzzle_flash(model_root)
 
 	var pivot_candidates: Array[Node3D] = []
 	_collect_markers(model_root, TURRET_MARKER, model_weapon_index, pivot_candidates)
@@ -186,6 +185,15 @@ func bind_model(model_root: Node3D, model_weapon_index: int) -> bool:
 		_collect_visual_muzzle_fallbacks(_root_pivot if _root_pivot != null else model_root, _muzzles)
 	_muzzles.sort_custom(_muzzle_less)
 	var effect_root := _root_pivot if _root_pivot != null else model_root
+	# Scoped to the gun object this weapon's pivot hangs off, not the whole
+	# model: bigflash geometry is authored as a sibling of the `::` pivot (AT
+	# Infantry's ?~~0?bigflash1 next to ::0gun#), while a second weapon lives
+	# under its own object. Reading the whole model let the Devastator's ::0plas
+	# barrel flashes suppress the muzzle flash, shot light and launch backblast
+	# of its ::1 salvo launcher, which authors none of its own.
+	_uses_embedded_muzzle_flash = _has_embedded_muzzle_flash(
+		_embedded_muzzle_flash_root(model_root)
+	)
 	_bind_rear_muzzles(effect_root)
 	_bind_launch_smokes(effect_root)
 
@@ -638,6 +646,7 @@ func emission_points() -> Array[Dictionary]:
 		if launch_smoke != null and is_instance_valid(launch_smoke):
 			emission["smoke_node"] = launch_smoke
 			emission["smoke_position"] = launch_smoke.global_position
+			emission["smoke_bank_id"] = _baked_billboard_bank_id(launch_smoke)
 		result.append(emission)
 	if result.is_empty() and _reference_pivot != null and is_instance_valid(_reference_pivot):
 		var transform := _reference_pivot.global_transform
@@ -1063,6 +1072,13 @@ func _collect_visual_muzzle_fallbacks(node: Node, result: Array[Node3D]) -> void
 		_collect_visual_muzzle_fallbacks(child, result)
 
 
+func _embedded_muzzle_flash_root(model_root: Node3D) -> Node:
+	if _root_pivot == null or not is_instance_valid(_root_pivot):
+		return model_root
+	var owner_object := _root_pivot.get_parent()
+	return owner_object if owner_object != null else model_root
+
+
 func _has_embedded_muzzle_flash(node: Node) -> bool:
 	if node is Node3D:
 		var lower_name := _original_name(node).to_lower()
@@ -1097,17 +1113,32 @@ func _bind_rear_muzzles(node: Node) -> void:
 				break
 
 
+## Pairs every launch tube with the authored backblast marker behind it. The
+## marker is a `#` FX attachment parented alongside the `>>` tubes and offset
+## along the barrel axis only: the Mongoose's `#smoke` sits opposite its single
+## `>>0#flame`, and the Devastator's `#flare01..03` each share the lateral
+## offset of one `>>Nmissile_salvo#` tube, so the nearest sibling is the right
+## one. Only markers holding a baked non-emitting bank qualify - that billboard
+## is authored with a one-frame start/stop pair, which the model clip can only
+## show for a single frame, so the blast has to be replayed here. A marker whose
+## bank emits (the Missile Tank's `#M0..#M5` particle streams) is already driven
+## by its own Fire clip and must not be doubled.
 func _bind_launch_smokes(node: Node) -> void:
 	var candidates: Array[Node3D] = []
-	_collect_named_markers(node, LAUNCH_SMOKE_MARKER, candidates)
+	_collect_launch_blast_markers(node, candidates)
 	for muzzle in _muzzles:
+		var nearest: Node3D = null
+		var nearest_distance := INF
 		for candidate in candidates:
-			# The Mongoose's >>0#flame and #smoke markers are siblings on the
-			# launcher. Pair by hierarchy so unrelated smoke emitters elsewhere
-			# in a model cannot become weapon backblast.
-			if candidate.get_parent() == muzzle.get_parent():
-				_launch_smokes[muzzle] = candidate
-				break
+			if candidate.get_parent() != muzzle.get_parent() \
+			or _rear_muzzles.values().has(candidate):
+				continue
+			var distance := candidate.position.distance_squared_to(muzzle.position)
+			if distance < nearest_distance:
+				nearest = candidate
+				nearest_distance = distance
+		if nearest != null:
+			_launch_smokes[muzzle] = nearest
 
 
 func _collect_rear_muzzles(node: Node, result: Array[Node3D]) -> void:
@@ -1118,11 +1149,23 @@ func _collect_rear_muzzles(node: Node, result: Array[Node3D]) -> void:
 		_collect_rear_muzzles(child, result)
 
 
-func _collect_named_markers(node: Node, marker: String, result: Array[Node3D]) -> void:
-	if node is Node3D and _original_name(node).nocasecmp_to(marker) == 0:
+func _collect_launch_blast_markers(node: Node, result: Array[Node3D]) -> void:
+	if node is Node3D \
+	and _original_name(node).begins_with(LAUNCH_SMOKE_MARKER_PREFIX) \
+	and _baked_billboard_bank_id(node) != "":
 		result.append(node as Node3D)
 	for child in node.get_children():
-		_collect_named_markers(child, marker, result)
+		_collect_launch_blast_markers(child, result)
+
+
+## The bank id of the marker's baked still billboard, or "" when the marker
+## holds no baked FX at all or holds a particle emitter (see
+## converters/model_bake_builder.gd `_build_attachment_bank_effects`).
+func _baked_billboard_bank_id(marker: Node) -> String:
+	for child in marker.get_children():
+		if child is MeshInstance3D and child.has_meta("xbf_fx_bank_id"):
+			return String(child.get_meta("xbf_fx_bank_id"))
+	return ""
 
 
 func _pivot_with_muzzles(candidates: Array[Node3D]) -> Node3D:
