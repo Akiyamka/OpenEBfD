@@ -4,6 +4,7 @@ extends Node3D
 const TerrainProbeScript := preload("res://scripts/world/terrain_probe.gd")
 const AuthoredModelScript := preload("res://scripts/world/authored_model.gd")
 const EntityQueryScript := preload("res://scripts/world/entity_query.gd")
+const SfxSectionCatalogScript := preload("res://scripts/audio/sfx_section_catalog.gd")
 
 signal building_placed(building: Node3D)
 
@@ -270,9 +271,13 @@ func try_place_at_hover_cell(
 	if owner_player_id != null and building.has_method("set_owner_player_id"):
 		building.call("set_owner_player_id", owner_player_id)
 	_push_units_out_of_footprint(_anchor_cell, excluded_unit)
+	var placement_thud_section: StringName = (
+		&"WallThud" if _is_wall_candidate else &"BuildingThud"
+	)
 	building_placed.emit(building)
 	_play_placed_building_animation(building)
 	_clear()
+	_play_placement_thud(placement_position, placement_thud_section)
 	return PlaceResult.PLACED
 
 
@@ -793,6 +798,15 @@ func _snap_to_ground(point: Vector3) -> Vector3:
 	if not is_inside_tree():
 		return Vector3(point.x, 0.0, point.z)
 	return TerrainProbeScript.snap_to_ground(get_world_3d(), point)
+
+
+## These confirmation sounds belong to placement rather than construction:
+## walls confirm each completed segment with WallThud, while every other
+## successfully placed building uses BuildingThud.
+## The section is passed in because _clear() must remove the placement-preview
+## children before its one-shot audio player is attached.
+func _play_placement_thud(world_position: Vector3, section_id: StringName) -> void:
+	SfxSectionCatalogScript.play_at(self, world_position, section_id)
 
 
 func _play_placed_building_animation(building: Node3D) -> void:
