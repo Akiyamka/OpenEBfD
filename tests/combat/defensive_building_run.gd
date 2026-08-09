@@ -5,14 +5,22 @@ const CombatTurretScript := preload("res://scripts/combat/combat_turret.gd")
 const Doubles := preload("res://tests/combat/support/combat_doubles.gd")
 const Assertions := preload("res://tests/combat/support/combat_assertions.gd")
 const HKGunTurretScene := preload("res://assets/converted/buildings/HKGunTurret/HKGunTurret.scn")
+const HKFlameTurretScene := preload("res://assets/converted/buildings/HKFlameTurret/HKFlameTurret.scn")
 const ATWallScene := preload("res://assets/converted/buildings/ATWall/ATWall.scn")
 
 func _initialize() -> void:
 	LegacyRulesFixture.install(root)
 	await process_frame
 	await physics_frame
-	_run_case("building state replacement rebinds its turret", _test_building_turret_rebind)
+	_run_case(
+		"building state replacement rebinds its turret without losing its aim",
+		_test_building_turret_rebind
+	)
 	_run_case("all seven defensive buildings automatically acquire and fire", _test_defensive_building_auto_fire)
+	await _run_async_case(
+		"HKFlameTurret direct force-fire hits a friendly unit below its muzzle",
+		_test_hkflame_turret_direct_friendly_fire
+	)
 	await _run_async_case(
 		"building StatePlayer leaves visible turret aiming to the combat servo",
 		_test_defensive_building_visible_aim
@@ -52,12 +60,26 @@ func _test_building_turret_rebind() -> void:
 		String((idle_emission.get("node") as Node).get_path()).contains("/Idle/"),
 		"the turret must bind the visible Idle model copy"
 	)
+	var turret = building.combat_turrets[0]
+	var target_position := Vector3(idle_emission["position"]) + Vector3.RIGHT * 50.0
+	turret.aim_at(target_position, 1.0)
+	var yaw_before: float = turret.current_yaw_degrees()
+	var direction_before: Vector3 = turret.peek_emission()["direction"]
+	_expect(absf(yaw_before) > 0.1, "the fixture must aim the turret away from its rest pose")
 	building.play_state(&"damage1")
 	var damage_emission: Dictionary = building.next_turret_emission()
 	_expect(not damage_emission.is_empty(), "the damage state must retain a muzzle")
 	_expect(
 		String((damage_emission.get("node") as Node).get_path()).contains("/Damage1/"),
 		"state changes must rebind the turret to the visible Damage1 copy"
+	)
+	_expect(
+		is_equal_approx(turret.current_yaw_degrees(), yaw_before),
+		"replacing a damage-state model must retain the turret's logical yaw"
+	)
+	_expect(
+		Vector3(damage_emission["direction"]).is_equal_approx(direction_before),
+		"replacing a damage-state model must retain the visible turret direction"
 	)
 	var projectiles: Array = building.fire_weapon_at(
 		Vector3(damage_emission["position"]) + Vector3(damage_emission["direction"]) * 5.0,
@@ -123,6 +145,40 @@ func _test_defensive_building_auto_fire() -> void:
 				projectile.free()
 		target.free()
 		building.free()
+
+
+## A Flame Turret only yaws. Its source muzzle sits above a ground unit, so a
+## direct target must supply the projectile's downward component; otherwise
+## only attack-ground at the same position can cause friendly splash damage.
+func _test_hkflame_turret_direct_friendly_fire() -> void:
+	var building := HKFlameTurretScene.instantiate() as Building
+	building.owner_player_id = 1
+	root.add_child(building)
+	await process_frame
+	var emission: Dictionary = building.combat_turrets[0].peek_emission()
+	var direction := Vector3(emission["direction"])
+	direction.y = 0.0
+	var target := Doubles.PhysicsCombatTarget.new(
+		building.global_position + direction.normalized() * 5.0,
+		0.5
+	)
+	target.owner_player_id = building.owner_player_id
+	target.add_to_group(&"units")
+	root.add_child(target)
+	_expect(
+		building.command_attack(target),
+		"HKFlameTurret must accept a forced attack on a friendly unit"
+	)
+	for frame in 360:
+		await physics_frame
+		if target.damage_taken > 0.0:
+			break
+	_expect(
+		target.damage_taken > 0.0,
+		"HKFlameTurret direct fire must damage a friendly unit below its muzzle"
+	)
+	building.free()
+	target.free()
 
 
 func _test_defensive_building_visible_aim() -> void:
@@ -594,8 +650,6 @@ func _test_building_damage_visual_states() -> void:
 		"a sole Damage2 state must be the damaged band rather than requiring Damage1"
 	)
 	wall.free()
-
-
 
 
 

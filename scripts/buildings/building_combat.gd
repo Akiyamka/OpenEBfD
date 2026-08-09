@@ -162,9 +162,19 @@ func bind_model(model_root: Node3D) -> void:
 	if _owner == null:
 		return
 	_fire_controller.cancel()
-	detach_model()
+	# Damage-state changes bind the same runtime turrets to a different authored
+	# model copy. bind_model() resets its logical angles, which is correct for a
+	# newly configured entity but used to make every defensive building snap its
+	# visible gun straight ahead as soon as it crossed a damage band.
+	var aim_angles: Array[Vector2] = []
 	for turret in _owner.combat_turrets:
+		aim_angles.append(turret.aim_angles())
+	detach_model()
+	for turret_index in _owner.combat_turrets.size():
+		var turret = _owner.combat_turrets[turret_index]
 		turret.bind_model(model_root, turret.weapon_index())
+		if turret_index < aim_angles.size():
+			turret.restore_aim_angles(aim_angles[turret_index])
 		if model_root != null:
 			for node in model_root.find_children("*", "AnimationPlayer", true, false):
 				var player := node as AnimationPlayer

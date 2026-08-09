@@ -383,6 +383,23 @@ func current_pitch_degrees() -> float:
 	return rad_to_deg(current_pitch)
 
 
+## Saves the combat-owned aim independently of the authored model subtree.
+## Building damage states replace that subtree with an equivalent copy, so the
+## caller can carry this pose across the rebind instead of exposing the new
+## copy's straight-ahead authored rest pose.
+func aim_angles() -> Vector2:
+	return Vector2(current_yaw, current_pitch)
+
+
+## Restores angles obtained from aim_angles() after binding an equivalent
+## model.  bind_model() deliberately resets its angles for a genuinely new
+## entity model; this narrower API makes a visual-state replacement explicit.
+func restore_aim_angles(angles: Vector2) -> void:
+	current_yaw = angles.x
+	current_pitch = angles.y
+	_apply_aim_transforms()
+
+
 ## Reapplies the combat-owned yaw and pitch after an AnimationPlayer changes
 ## clips. Converted animations key the authored turret pivots as part of the
 ## full model pose, so stop()/play() can otherwise expose their straight-ahead
@@ -943,6 +960,21 @@ func try_fire_at(request: FireRequest) -> Array:
 		parent.add_child(projectile)
 		var emission: Dictionary = _last_emissions[index] \
 			if index < _last_emissions.size() else preview_emission
+		# A yaw-only mount can turn its visual muzzle toward a unit but cannot
+		# encode the required vertical component in that marker.  Without an
+		# explicit direction, a low unit target is missed while attack-ground at
+		# the same point works (CombatProjectile already derives that direction
+		# for Vector3 targets).  Preserve authored headings for mounts that have
+		# pitch and for trajectory weapons, whose parallel barrel spread is
+		# intentional.
+		if target_or_position is Object and _pitch_pivot == null \
+		and not preview_bullet.has_trajectory():
+			var target_direction := Vector3(emission["position"]).direction_to(
+				target_position + aim_offset
+			)
+			if not target_direction.is_zero_approx():
+				emission = emission.duplicate()
+				emission["target_direction"] = target_direction
 		if not trajectory_launch_direction.is_zero_approx():
 			emission = emission.duplicate()
 			emission["direction"] = trajectory_launch_direction

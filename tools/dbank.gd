@@ -14,7 +14,6 @@ func _init() -> void:
 			var id := String(b["id"])
 			if not used.has(id): continue
 			var w = b["parameter_words"]
-			var t = b["trailing_words"]
 			print("  tex=%s frames=%d life=%d burst=%d spread=%d speed=%.3f grav=%.3f size=%.1f w10=%d w11=%d w12=%.3f w13=%.4f" % [b["texture"], int(w[15]), int(w[2]), int(w[1]), int(w[3]), b["float_parameters_4_6"][0], b["gravity"], b["particle_size"], int(w[10]), int(w[11]), b["float_parameters_12_14"][0], b["float_parameters_12_14"][1]])
 		print("    trail floats:")
 		for b in x.fx_banks:

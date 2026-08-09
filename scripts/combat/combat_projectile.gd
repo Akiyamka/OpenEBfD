@@ -145,6 +145,7 @@ func launch(
 		_excluded_rids.append_array(CombatTargetScript.collision_rids(source))
 
 	var authored_direction := Vector3(emission.get("direction", Vector3.ZERO))
+	var target_direction := Vector3(emission.get("target_direction", Vector3.ZERO))
 	var attack_ground_direction := _launch_position.direction_to(_aim_position) \
 		if target_entity == null and not bullet.has_trajectory() \
 		else Vector3.ZERO
@@ -153,7 +154,9 @@ func launch(
 	# the complete sampled direction or they fly horizontally and merely expire
 	# above/below the requested point. Artillery keeps its authored heading so
 	# parallel barrels retain their geometric spread.
-	_direction = attack_ground_direction \
+	_direction = target_direction \
+		if not target_direction.is_zero_approx() \
+		else attack_ground_direction \
 		if not attack_ground_direction.is_zero_approx() \
 		else authored_direction.normalized() if not authored_direction.is_zero_approx() \
 		else _launch_position.direction_to(_aim_position)
