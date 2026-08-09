@@ -13,6 +13,12 @@ For OpenEBfD, import only the `H*` building variants. The original game is old e
 When implementing building converters, examples such as `ATBarracks` should use files like `at_barracks_H0.xbf`, `at_barracks_h1.xbf`, `at_barracks_h2.xbf`, `at_barracks_h3.xbf`, and `AT_barracks_HC.XbF`, and should ignore matching `*_M*` and `*_L*` files.
 
 ## Code Rules
+
+`tools/check_architecture.sh` machine-checks the `preload` rule below, plus
+module-boundary rules not repeated here (see "Architecture checks" in
+`AGENTS.md` for the full list). It is not part of the test runner, so run it
+yourself after moving logic between a facade and its modules.
+
 - Dont put all logic in single file main.gd
 - Prefer explicit `const XScript := preload("res://...")` over a bare reference
   to another script's `class_name` (e.g. `SomeClass.SOME_CONST`). A bare

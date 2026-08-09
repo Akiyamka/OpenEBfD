@@ -23,6 +23,40 @@ analysis. Cross-check the corresponding entry in `Rules.txt` when units or
 conversion semantics (for example comments describing units per tick/update)
 matter.
 
+## Architecture checks
+
+`tools/check_architecture.sh` statically enforces the structural rules in
+`AGENTS.MD`'s "Code Rules" over every `scripts/**/*.gd`. It needs no container
+and runs in under a second, but it is **not** part of `tools/run_godot_tests.sh`
+— run it separately, in particular after any refactor that moves logic between
+a facade and its modules:
+
+```bash
+./tools/check_architecture.sh   # silence and exit 0 means clean
+```
+
+It reports, with `file:line`:
+
+- **private owner access** — a module reaching into `_unit._x`, `_facade._x`,
+  `_owner._x` or `_source._x`. Modules talk to their owner through its public
+  API; if something is missing there, widen the API deliberately rather than
+  reaching past it.
+- **navigation sibling access through facade** — `_facade.planner`,
+  `_facade.avoidance`, `_facade.registry` and the other navigation subsystems.
+  A module must not use the facade as a directory of its siblings.
+- **bare class_name reference** — using `SomeClass.` without an explicit
+  `preload()` of that script in the same file. See the "Code Rules" entry for
+  why this one has already caused a confusing cross-suite failure.
+- **direct autoload path lookup** — `get_node_or_null("/root/Players")` or
+  `/root/Cursors` anywhere except `scripts/players/autoload_lookup.gd`.
+
+Only `scripts/` is scanned; `tests/` may still reach into internals.
+
+`tools/test_check_architecture.sh` is the checker's own self-test, driven by the
+fixtures in `tests/architecture/*.gd.txt`. Run it if a clean result looks
+suspicious — it verifies the checker still fails on each rule it claims to
+enforce, so a passing self-test is what makes "no output" trustworthy.
+
 ## Godot container
 
 Run commands that use `tools/godot-container` sequentially. Parallel runs share
