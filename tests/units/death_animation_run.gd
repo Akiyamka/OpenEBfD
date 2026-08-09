@@ -263,7 +263,7 @@ func _test_death_mid_own_fire_animation() -> void:
 	var target := Node3D.new()
 	world.add_child(target)
 	unit.combat()._attack_order.begin(target)
-	var fire_player := unit._animation_players[0]
+	var fire_player := unit.animation_players()[0]
 	unit.combat()._weapon_fire_sequences[0] = {
 		"turret": null,
 		"target": {"is_ground": false, "ref": weakref(target)},
@@ -347,7 +347,7 @@ func _test_dying_unit_leaves_no_reference_into_its_corpse() -> void:
 	var target := Node3D.new()
 	world.add_child(target)
 	unit.combat()._attack_order.begin(target)
-	var fire_player := unit._animation_players[0]
+	var fire_player := unit.animation_players()[0]
 	unit.combat()._weapon_fire_sequences[0] = {
 		"turret": null,
 		"target": {"is_ground": false, "ref": weakref(target)},

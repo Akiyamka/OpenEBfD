@@ -4,7 +4,6 @@ class_name Unit
 const AutoloadLookupScript := preload("res://scripts/players/autoload_lookup.gd")
 const EntityQueryScript := preload("res://scripts/world/entity_query.gd")
 const TeamColorScript := preload("res://scripts/world/team_color.gd")
-const AuthoredModelScript := preload("res://scripts/world/authored_model.gd")
 const CombatRulesScript := preload("res://scripts/combat/combat_rules.gd")
 const DamagePolicyScript := preload("res://scripts/combat/damage_policy.gd")
 const SelectionHaloBindingScript := preload("res://scripts/ui/selection_halo_binding.gd")
@@ -22,6 +21,7 @@ const HarvesterControllerScript := preload("res://scripts/units/harvester_contro
 const UnitDeployStateScript := preload("res://scripts/units/unit_deploy_state.gd")
 const UnitCombatScript := preload("res://scripts/units/unit_combat.gd")
 const UnitAuthoredCollisionScript := preload("res://scripts/units/unit_authored_collision.gd")
+const UnitAnimationDirectorScript := preload("res://scripts/units/unit_animation_director.gd")
 static var _definition_catalog := UnitSceneCatalogScript.shared()
 
 signal owner_changed(player_id: int)
@@ -57,10 +57,6 @@ const BAKED_MODEL_FRAMES_PER_SECOND := 20.0
 ## BuildingCombat (see scripts/buildings/building.gd). Also mirrored on
 ## UnitCombat and read by tests/combat/run.gd as UnitScript.<const>.
 const RULE_COMBAT_TICKS_PER_SECOND := CombatRulesScript.TICKS_PER_SECOND
-## Used by _apply_animation_start_transforms() below (not combat) to treat a
-## track's very first key as the animation's starting pose. Also mirrored on
-## UnitCombat for the same purpose in the fire-sequence lifecycle.
-const FIRE_EVENT_EPSILON := 0.0001
 
 enum SlopeAlignmentMode {
 	AUTO,
@@ -110,7 +106,9 @@ var passengers := 0.0
 var combat_turrets: Array = []
 var _shader_fx := UnitShaderFxScript.new()
 var _selection_halo
-var _animation_players: Array[AnimationPlayer] = []
+## Owns the model's AnimationPlayers; every module that needs them gets the
+## array from here rather than each finding its own.
+var _animation_director := UnitAnimationDirectorScript.new()
 var _idle_animations := UnitIdleAnimationsScript.new()
 ## The harvesting loop, present only on a unit whose rules give it a spice
 ## capacity. Null on everything else, which is what "is a harvester" means now.
@@ -193,13 +191,13 @@ func _ready() -> void:
 	collision_mask = 0
 	_authored_collision.add_body_shapes()
 	_shader_fx.attach_model()
-	_animation_players = _collect_animation_players()
-	_locomotion.attach_model(_animation_players)
-	_movement_sounds.attach_model(_animation_players)
+	var players := _animation_director.refresh(visual_root)
+	_locomotion.attach_model(players)
+	_movement_sounds.attach_model(players)
 	_combat.refresh_weapon_runtime()
 	_locomotion.refresh_motion_profile()
 	_movement_sounds.refresh_step_schedule()
-	_prioritize_animations_before_unit_logic()
+	_animation_director.prioritize_before(process_priority)
 	_prepare_idle_animations()
 	_set_movement_animation(false)
 	health = max_health
@@ -381,36 +379,14 @@ func flight_complete_pickup_sequence() -> void:
 		_flight_controller.flight_complete_pickup_sequence()
 
 
-## Ensures `name` is the active animation on the first player that has it,
-## restarting playback only if it isn't already current (mirrors
-## _set_movement_animation's MOVING_ANIMATION idiom, unlike
-## _start_deployment_animation which always restarts) — safe to call every
-## tick. Returns the player it played on, or null if no player has the clip.
+## Narrow clip surface used by UnitFlightController; see
+## UnitAnimationDirector.play_clip()/clip_length() for the lookups these wrap.
 func flight_play_clip(clip_name: StringName, loop: bool, speed_scale: float = 1.0) -> AnimationPlayer:
-	for player in _animation_players:
-		if not player.has_animation(clip_name):
-			continue
-		var animation := player.get_animation(clip_name)
-		if animation != null:
-			animation.loop_mode = Animation.LOOP_LINEAR if loop else Animation.LOOP_NONE
-		if player.current_animation != clip_name:
-			player.stop()
-			player.play(clip_name)
-		player.speed_scale = speed_scale
-		return player
-	return null
+	return _animation_director.play_clip(clip_name, loop, speed_scale)
 
 
-## Same lookup idiom as _mech_move_cycle_duration(): the authored clip length
-## if any player has it, else `fallback`.
 func flight_clip_length(clip_name: StringName, fallback: float) -> float:
-	for player in _animation_players:
-		if not player.has_animation(clip_name):
-			continue
-		var animation := player.get_animation(clip_name)
-		if animation != null and animation.length > 0.0:
-			return animation.length
-	return fallback
+	return _animation_director.clip_length(clip_name, fallback)
 
 
 ## Narrow public surface used by UnitFlightController. Keeping these details
@@ -664,13 +640,13 @@ func replace_visual_scene(model_scene: PackedScene) -> void:
 	visual_root.add_child(model_scene.instantiate())
 	_combat.bind_combat_turrets()
 	_shader_fx.attach_model()
-	_animation_players = _collect_animation_players()
-	_locomotion.attach_model(_animation_players)
-	_movement_sounds.attach_model(_animation_players)
+	var players := _animation_director.refresh(visual_root)
+	_locomotion.attach_model(players)
+	_movement_sounds.attach_model(players)
 	_combat.refresh_weapon_runtime()
 	_locomotion.refresh_motion_profile()
 	_movement_sounds.refresh_step_schedule()
-	_prioritize_animations_before_unit_logic()
+	_animation_director.prioritize_before(process_priority)
 	_prepare_idle_animations()
 	_set_movement_animation(false)
 	# Packed model scenes keep gameplay-controlled effect meshes hidden and
@@ -754,7 +730,7 @@ func prepare_model_for_corpse(model: Node3D) -> void:
 	# connected. This is what closes _prepare_idle_animations()'s
 	# `player.animation_finished.connect(_on_animation_finished.bind(player))`
 	# (the connection lives on the AnimationPlayer node handed to the corpse,
-	# not on this Unit, so clearing _animation_players below never touched
+	# not on this Unit, so clearing the director's players below never touched
 	# it) without needing to know the exact signal/callable shape, and
 	# without needing to be revisited if a future change adds another
 	# connection onto a model node.
@@ -763,11 +739,11 @@ func prepare_model_for_corpse(model: Node3D) -> void:
 	# to the corpse. Direct references into it must be dropped too — a signal
 	# disconnect alone does not help a plain field that some other code path
 	# reads without going through a signal.
-	_animation_players.clear()
+	_animation_director.clear()
 	_locomotion.detach_model()
 	_movement_sounds.detach_model()
 	# UnitDeployState caches the transition AnimationPlayer straight out of
-	# the model. Unlike _animation_players it is a scalar that keeps pointing
+	# the model. Unlike the director's array it is a scalar that keeps pointing
 	# at that player until explicitly cleared — nothing else resets it on
 	# death, so a unit killed while deploying kept a live direct pointer into
 	# the corpse's subtree. This is the newly-found third site in the same
@@ -1009,7 +985,7 @@ func undeploy() -> bool:
 ## candidate-preference order. Used by both deployment transitions and death
 ## animation selection (_begin_death_sequence) so the two don't drift apart.
 func find_animation_clip(candidates: Array[StringName]) -> Dictionary:
-	return AuthoredModelScript.find_clip(_animation_players, candidates)
+	return _animation_director.find_clip(candidates)
 
 
 ## Both transition directions count as "deploying" for every gameplay lock: a
@@ -1191,15 +1167,11 @@ func _apply_unit_definition() -> void:
 		_harvester.apply_definition(unit_definition)
 
 
-func _collect_animation_players() -> Array[AnimationPlayer]:
-	return AuthoredModelScript.animation_players(visual_root)
-
-
 ## Public because UnitFireOverlay/fire_animation_binding() and
 ## _travel_fire_variant_bindings() (both in unit_combat.gd) need every player,
 ## not just the ones _locomotion attaches to.
 func animation_players() -> Array[AnimationPlayer]:
-	return _animation_players
+	return _animation_director.players()
 
 
 ## The harvesting contract UnitCommandController probes for by name. Every
@@ -1226,23 +1198,12 @@ func weapon_can_fire_while_moving(weapon_index: int) -> bool:
 	return _combat.weapon_can_fire_while_moving(weapon_index)
 
 
-func _prioritize_animations_before_unit_logic() -> void:
-	# AnimationPlayer uses internal frame processing. Converted Stationary/Move
-	# tracks may key the same authored pivots that combat rotates; if they run
-	# after Unit._process(), they erase the turret transform while its logical
-	# yaw/pitch continue advancing. Apply authored animation first so combat aim
-	# is the final transform for the frame and remains the feedback state used by
-	# the next frame's muzzle-to-target servo.
-	for player in _animation_players:
-		player.process_priority = mini(player.process_priority, process_priority - 1)
-
-
 ## The animation_finished hookup stays here deliberately: _sever_connections_
 ## into() only recognises connections whose callable belongs to this Unit, so a
 ## module connecting on its own behalf would silently escape the death handoff.
 func _prepare_idle_animations() -> void:
 	_idle_animations.reset()
-	for player in _animation_players:
+	for player in _animation_director.players():
 		_idle_animations.prepare(player)
 		if not player.animation_finished.is_connected(_on_animation_finished.bind(player)):
 			player.animation_finished.connect(_on_animation_finished.bind(player))
@@ -1308,50 +1269,19 @@ func is_movement_animation_active() -> bool:
 ## duration, so a caller can time a state on the authored length. A clip no
 ## model provides has zero duration, which keeps the state machine running at
 ## full speed instead of stalling.
+## Plays a one-shot action clip on every player that has it and returns its
+## authored duration, so a caller can time a state on it. `restore_combat_
+## turret_poses` is threaded through because the director must not know about
+## combat: a restarted clip leaves an inactive turret's pivot at whatever pose
+## the clip's authoring left it in, and only the facade knows to undo that.
 func play_action_animation(animation_name: StringName) -> float:
-	var duration := 0.0
-	for player in _animation_players:
-		if not player.has_animation(animation_name):
-			continue
-		var animation := player.get_animation(animation_name)
-		if animation != null:
-			animation.loop_mode = Animation.LOOP_NONE
-			duration = maxf(duration, animation.length)
-		player.speed_scale = 1.0
-		play_animation_from_start(player, animation_name)
-	return duration
+	return _animation_director.play_action(animation_name, restore_combat_turret_poses)
 
 
 func play_animation_from_start(player: AnimationPlayer, animation_name: StringName) -> void:
-	# Keep the outgoing pose while stopping so its first-frame effects are not
-	# exposed, then apply the incoming transform pose immediately. Waiting for
-	# the next AnimationPlayer tick leaves a one-frame hybrid of the outgoing
-	# pose and incoming playback state (notably Kobra's vertical barrel at both
-	# boundaries of its horizontal travel-mode Fire clips).
-	player.stop(true)
-	player.play(animation_name)
-	_apply_animation_start_transforms(player, animation_name)
-	restore_combat_turret_poses()
-
-
-func _apply_animation_start_transforms(
-	player: AnimationPlayer, animation_name: StringName
-) -> void:
-	var animation := player.get_animation(animation_name)
-	if animation == null:
-		return
-	for track in animation.get_track_count():
-		if animation.track_get_type(track) != Animation.TYPE_VALUE \
-		or not String(animation.track_get_path(track)).ends_with(":transform") \
-		or animation.track_get_key_count(track) == 0 \
-		or animation.track_get_key_time(track, 0) > FIRE_EVENT_EPSILON:
-			continue
-		var target := AuthoredModelScript.track_node(
-			player, String(animation.track_get_path(track))
-		) as Node3D
-		var value: Variant = animation.track_get_key_value(track, 0)
-		if target != null and value is Transform3D:
-			target.transform = value as Transform3D
+	_animation_director.play_from_start(
+		player, animation_name, restore_combat_turret_poses
+	)
 
 
 ## Public: called both internally and by UnitIdleAnimations after playing a
