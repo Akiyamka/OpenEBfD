@@ -91,6 +91,64 @@ func is_stoppable(cell: Vector2i, pass_mask: int, clearance_cells := 0, allowed_
 	return index >= 0 and _no_stop[index] == 0
 
 
+## Exact body fit at a world point, for choosing a place to stand.
+##
+## `clearance_cells` below approximates the unit as a Chebyshev square of whole
+## cells, which is the right shape for the routing grid (it is baked once and
+## queried per cell) but the wrong one for a destination the player picked by
+## eye: the square overshoots a diagonal or stair-stepped boundary by up to
+## sqrt(2) while undershooting a straight one. This instead asks the real
+## question — does the unit's body disc, centred here, clear every solid cell.
+func body_fits(point: Vector3, pass_mask: int, radius: float, allowed_terrain_mask := 0) -> bool:
+	if grid == null:
+		return false
+	if radius <= 0.0:
+		return true
+	var cell_size: Vector2 = grid.cell_size()
+	var origin: Vector2i = grid.world_to_grid(point)
+	var reach := Vector2i(
+		ceili(radius / maxf(cell_size.x, 0.001)) + 1,
+		ceili(radius / maxf(cell_size.y, 0.001)) + 1
+	)
+	# The scanned window is a square but the body is a disc, so most samples are
+	# out of range. Distance is plain arithmetic while solidity costs several
+	# grid lookups, so range is tested first and squared to skip the roots.
+	var origin_corner: Vector3 = grid.grid_to_world(origin, false)
+	var limit := radius * radius
+	for y in range(-reach.y, reach.y + 1):
+		var near_z := clampf(
+			point.z, origin_corner.z + float(y) * cell_size.y,
+			origin_corner.z + float(y + 1) * cell_size.y
+		)
+		var offset_z := point.z - near_z
+		var span_z := offset_z * offset_z
+		if span_z >= limit:
+			continue
+		for x in range(-reach.x, reach.x + 1):
+			var near_x := clampf(
+				point.x, origin_corner.x + float(x) * cell_size.x,
+				origin_corner.x + float(x + 1) * cell_size.x
+			)
+			var offset_x := point.x - near_x
+			if offset_x * offset_x + span_z >= limit:
+				continue
+			if _cell_obstructs(origin + Vector2i(x, y), pass_mask, allowed_terrain_mask):
+				return false
+	return true
+
+
+## Solid for body-fit purposes. Out-of-bounds counts as solid so a body disc
+## never hangs over the map edge.
+func _cell_obstructs(cell: Vector2i, pass_mask: int, allowed_terrain_mask: int) -> bool:
+	if grid == null or not grid.in_bounds(cell):
+		return true
+	if not grid.is_passable(cell, pass_mask):
+		return true
+	if allowed_terrain_mask != 0 and (allowed_terrain_mask & (1 << grid.terrain_at(cell))) == 0:
+		return true
+	return is_blocked(cell)
+
+
 func is_passable(cell: Vector2i, pass_mask: int, clearance_cells := 0, allowed_terrain_mask := 0) -> bool:
 	if grid == null or not grid.is_passable(cell, pass_mask):
 		return false

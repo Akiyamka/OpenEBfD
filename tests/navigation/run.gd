@@ -156,6 +156,7 @@ func _initialize() -> void:
 	_test_large_unit_steers_smoothly_around_corner(grid)
 	_test_jagged_boundary_steering_stays_smooth(grid)
 	_test_slots_and_collision(grid)
+	_test_destination_uses_body_geometry(grid)
 	_test_slide_around_stopped_friend(grid)
 	_test_turning_unit_arcs_around_stopped_friend(grid)
 	_test_turn_in_place_counts_as_blocked_and_triggers_yield(grid)
@@ -1505,6 +1506,71 @@ func _test_slots_and_collision(grid: MapNavigationGrid) -> void:
 		unit.queue_free()
 	left.queue_free()
 	right.queue_free()
+
+
+## A destination is accepted on the unit's real body geometry, not on the
+## routing grid's whole-cell clearance window. The window expanded every
+## footprint cell by the rotation envelope, which kept a player's move order a
+## further sqrt(2) off any diagonal or stair-stepped edge and, for a long
+## chassis, further still off a straight one.
+func _test_destination_uses_body_geometry(grid: MapNavigationGrid) -> void:
+	var navigation := NavigationSystemScript.new()
+	root.add_child(navigation)
+	navigation.set_physics_process(false)
+	_expect(navigation.setup(grid), "navigation system must initialize for destination geometry")
+
+	# A straight wall whose face lies on world x = 100. The block centre for a
+	# span-2 footprint clicked here sits at x = 101, one unit clear of it.
+	var straight := {}
+	for y in MapNavigationGrid.NAV_SIZE:
+		for x in range(0, 100):
+			straight[Vector2i(x, y)] = true
+	navigation.runtime_map.replace_blocked_cells(straight)
+	var target := Vector3(101.0, 0.0, 101.0)
+
+	# Long chassis, narrow body: the rotation envelope is what used to decide
+	# this, though a parked unit never turns on it.
+	var slim := FakeUnit.new(2.0)
+	slim.navigation_radius_override = 0.5
+	slim.navigation_rotation_radius_override = 1.9
+	root.add_child(slim)
+	slim.global_position = Vector3(120.5, 0.0, 120.5)
+	navigation.register_unit(slim)
+	_expect(navigation.can_move_to([slim], target),
+		"a narrow body one unit clear of a straight wall must be a legal destination")
+
+	# Same spot, same envelope, body too wide to actually stand there.
+	var wide := FakeUnit.new(2.0)
+	wide.navigation_radius_override = 1.4
+	wide.navigation_rotation_radius_override = 1.9
+	root.add_child(wide)
+	wide.global_position = Vector3(120.5, 0.0, 120.5)
+	navigation.register_unit(wide)
+	_expect(not navigation.can_move_to([wide], target),
+		"a body wider than the gap must still be refused, or the check is a no-op")
+
+	# A 45-degree staircase: the old square window caught the cell diagonally
+	# behind the edge and refused a spot the body clears.
+	var staircase := {}
+	for y in MapNavigationGrid.NAV_SIZE:
+		for x in MapNavigationGrid.NAV_SIZE:
+			if x + y <= 199:
+				staircase[Vector2i(x, y)] = true
+	navigation.runtime_map.replace_blocked_cells(staircase)
+	var diagonal := FakeUnit.new(2.0)
+	diagonal.navigation_radius_override = 0.9
+	diagonal.navigation_rotation_radius_override = 1.9
+	root.add_child(diagonal)
+	diagonal.global_position = Vector3(120.5, 0.0, 120.5)
+	navigation.register_unit(diagonal)
+	_expect(navigation.can_move_to([diagonal], target),
+		"a body that clears a stair-stepped edge must be a legal destination there")
+
+	navigation.runtime_map.replace_blocked_cells({})
+	navigation.queue_free()
+	slim.queue_free()
+	wide.queue_free()
+	diagonal.queue_free()
 
 
 ## A stationary friend sitting exactly on the route must be flowed around, not
