@@ -159,7 +159,7 @@ static func add_selection_collision(owner: Node3D, sources: Array[Node3D]) -> St
 	if owner.get_node_or_null("CombatCollision") != null:
 		body.set_meta("combat_ignore", true)
 	for source in sources:
-		var shape := _collision_shape(source)
+		var shape := collision_shape(source)
 		if shape == null:
 			push_warning("AuthoredModel: collision source %s has no usable convex shape" % source.get_path())
 			continue
@@ -241,7 +241,12 @@ static func _collect_collision_sources(
 		_collect_collision_sources(child, name, prefix, hide_source_meshes, result)
 
 
-static func _collision_shape(source: Node3D) -> Shape3D:
+## The convex shape a single authored collision volume contributes: its baked
+## `collision_points` when the converter produced enough of them, otherwise a
+## hull generated from the first child mesh. Public because UnitAuthoredCollision
+## builds body shapes from the same sources add_selection_collision() uses, and
+## an independent copy of this had already drifted once.
+static func collision_shape(source: Node3D) -> Shape3D:
 	var points: PackedVector3Array = source.get_meta("collision_points", PackedVector3Array())
 	if points.size() >= 4:
 		var shape := ConvexPolygonShape3D.new()

@@ -204,7 +204,7 @@ func _configure_physics(momentum: Vector3) -> void:
 		# In-place death clips must not be simulated at all: gravity pulling
 		# the body while the animation drives the skeleton is exactly the
 		# terrain-triangle-edge jitter Unit avoids by disabling its own
-		# terrain collision (see unit.gd's COLLISION_OBJECT_NAME comment). A
+		# terrain collision (see the collision_mask comment in Unit._ready()). A
 		# frozen corpse is the "almost logic-free placeholder" this design
 		# wants; the RigidBody3D root is simply carried along unused.
 		freeze = true
