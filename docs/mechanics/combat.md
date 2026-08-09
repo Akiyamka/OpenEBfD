@@ -238,6 +238,19 @@ marker behind the tube: the firing event emits the original sixteen-frame
 that rear marker, so the launch illuminates both the missile mouth and the
 exhaust side of the turret.
 
+Every launcher authors that backblast the same way, so the pairing follows the
+data rather than the `#smoke` name: a tube takes the nearest `#` attachment
+marker parented alongside it that holds a baked still billboard, and replays
+that marker's own bank. The Devastator's `#flare01..03` sit behind
+`>>0..2missile_salvo#` and carry the twenty-frame `!exp0` rocket flare; the
+Missile Tank's `#M0..#M5` are excluded because their banks emit particle
+streams that its own `Fire_0` clip already drives. The authored start/stop pair
+spans a single frame, which is why the baked billboard cannot show the sequence
+and the runtime replays it. Embedded `?bigflash`/`?bflash` geometry suppresses
+the rules-supplied flash only for the weapon that owns it — it is authored as a
+sibling of that weapon's `::` pivot, so the Devastator's `::0plas` barrel
+flashes no longer silence the `::1` salvo launcher, which authors none.
+
 On a resolved impact, the bullet's ordered `ExplosionType` entries select the
 short-lived world-space visuals mapped by `ArtIni`; the effect survives the
 projectile node long enough to play its source animation once. The Minotaurus'

@@ -332,6 +332,10 @@ func _initialize() -> void:
 		"DevPlasma_B composes ShellHit and DevImpact impact FX",
 		_test_dev_impact_fx
 	)
+	_run_case(
+		"Devastator salvo tubes fire their authored rocket flare",
+		_test_devastator_missile_launch_blast
+	)
 	_run_case("compound turret binds authored pivots and muzzle", _test_compound_turret)
 	_run_case("single-axis turret turns without changing pitch", _test_single_axis_turret)
 	_run_case("fixed weapon keeps its authored direction", _test_fixed_turret)
@@ -2377,6 +2381,66 @@ func _test_mongoose_launch_and_impact_fx() -> void:
 
 	if is_instance_valid(projectile):
 		projectile.free()
+	_free_muzzle_effects()
+	_free_impact_effects()
+	_free_ground_decals()
+	model.free()
+
+
+func _test_devastator_missile_launch_blast() -> void:
+	var _rules = root.get_node("Rules")
+	var model := HKDevastatorModelScene.instantiate() as Node3D
+	root.add_child(model)
+	var turret = CombatTurretScript.new()
+	_expect(
+		turret.configure(&"HKDevastatorMissile"),
+		"HKDevastatorMissile must resolve its rules-backed presentation"
+	)
+	_expect(
+		turret.bind_model(model, 1),
+		"the Devastator's ::1 salvo launcher must bind its authored markers"
+	)
+	_expect(turret.muzzle_count() == 3, "the salvo launcher must bind its three tubes")
+
+	var emissions: Array = turret.emission_points()
+	var paired_flares := PackedStringArray()
+	for emission_value: Variant in emissions:
+		var emission: Dictionary = emission_value
+		var smoke_node := emission.get("smoke_node") as Node3D
+		paired_flares.append(
+			String(smoke_node.get_meta("original_name", "")) if smoke_node != null else ""
+		)
+	_expect(
+		paired_flares == PackedStringArray(["#flare01", "#flare02", "#flare03"]),
+		"each >>Nmissile_salvo tube must pair with the flare marker behind it"
+	)
+
+	var emission: Dictionary = turret.peek_emission()
+	var target_position := Vector3(emission["position"]) \
+		+ Vector3(emission["direction"]) * 6.0
+	target_position.y = 0.0
+	turret.aim_at(target_position, 1.0)
+	var projectiles: Array = turret.try_fire_at(
+		FireRequestScript.at(target_position, model, root)
+	)
+	_expect(projectiles.size() == 1, "the salvo launcher must emit one DevRocket_B")
+	var launch_blasts := _muzzle_effects(&"launch_smoke", 0)
+	_expect(
+		launch_blasts.size() == 1
+		and launch_blasts[0].global_position.is_equal_approx(
+			Vector3((turret.last_emissions()[0] as Dictionary)["smoke_position"])
+		),
+		"the authored !exp0 rocket flare must spawn at the tube's #flare marker"
+	)
+	_expect(
+		launch_blasts.size() == 1
+		and launch_blasts[0].get_node_or_null("Visual") is MeshInstance3D,
+		"the rocket flare must render as an animated billboard"
+	)
+
+	for projectile in projectiles:
+		if is_instance_valid(projectile):
+			projectile.free()
 	_free_muzzle_effects()
 	_free_impact_effects()
 	_free_ground_decals()
