@@ -145,7 +145,7 @@ func dispose() -> void:
 
 
 ## Test-only compatibility accessor: unit.gd's _fire_sequence_active property
-## and tests/combat/run.gd, tests/units/death_animation_run.gd and
+## and tests/combat/unit_fire_movement_run.gd, tests/units/death_animation_run.gd and
 ## tests/match/demo_boot_run.gd read this by name.
 func has_fire_sequence_active() -> bool:
 	return not _weapon_fire_sequences.is_empty()
@@ -762,7 +762,7 @@ func _authored_fire_shot_times(
 		turret,
 		animation_name: StringName = &""
 	) -> Array[Dictionary]:
-	## Test-only shim: tests/combat/run.gd calls this by name. Not architecture.
+	## Test-only shim: tests/combat/fire_sequence_run.gd calls this by name. Not architecture.
 	return AuthoredFireControllerScript.authored_fire_shot_times(
 		player, animation, turret, _owner.visual_root, animation_name
 	)
@@ -771,7 +771,7 @@ func _authored_fire_shot_times(
 func _xbf_fire_shot_times(
 	animation_name: StringName, animation: Animation, turret
 	) -> Array[Dictionary]:
-	## Test-only shim: tests/combat/run.gd calls this by name. Not architecture.
+	## Test-only shim: tests/combat/fire_sequence_run.gd calls this by name. Not architecture.
 	return AuthoredFireControllerScript.xbf_fire_shot_times(
 		animation_name, animation, turret, _owner.visual_root
 	)

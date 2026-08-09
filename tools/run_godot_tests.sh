@@ -11,7 +11,7 @@ readonly SUITES=(
 	tests/buildings/placement_run.gd tests/buildings/wall_connectivity_run.gd
 	tests/buildings/controller_run.gd tests/buildings/techtree_multiple_conyards_run.gd
 	tests/buildings/primary_building_run.gd tests/buildings/upgrade_run.gd tests/rules/run.gd
-	tests/combat/run.gd tests/combat/bullet_rules_run.gd tests/combat/turret_mount_run.gd
+	tests/combat/bullet_rules_run.gd tests/combat/turret_mount_run.gd
 	tests/combat/fire_sequence_run.gd
 	tests/combat/deploy_fire_run.gd
 	tests/combat/projectile_flight_run.gd

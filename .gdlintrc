@@ -5,12 +5,13 @@ disable:
 - function-variable-name
 - unused-argument
 max-line-length: 360
-max-file-lines: 5000
+max-file-lines: 2600
 max-public-methods: 200
 function-arguments-number: 16
 max-returns: 20
 
 # Ratchet targets (lower immediately after the named extraction stages):
 # - stage 4: function-arguments-number: 8
-# - stage 7: max-file-lines: 800 and max-public-methods: 80
+# - stage 17: max-file-lines: 2600; 800 remains blocked by tests/navigation/run.gd,
+#   converters/model_bake_builder.gd, and tests/characterization/run.gd
 # - ongoing touched-file cleanup: max-line-length: 120
