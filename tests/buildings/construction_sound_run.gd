@@ -7,6 +7,13 @@ const BuildingConstructionSoundScript := preload(
 )
 const SfxSectionCatalogScript := preload("res://scripts/audio/sfx_section_catalog.gd")
 const ATBarracksScene := preload("res://assets/converted/buildings/ATBarracks/ATBarracks.scn")
+const ATRocketTurretScene := preload(
+	"res://assets/converted/buildings/ATRocketTurret/ATRocketTurret.scn"
+)
+const ATSmWindtrapScene := preload(
+	"res://assets/converted/buildings/ATSmWindtrap/ATSmWindtrap.scn"
+)
+const ATHelipadScene := preload("res://assets/converted/buildings/ATHelipad/ATHelipad.scn")
 const FRCampDefinition := preload("res://resources/buildings/definitions/FRCamp.tres")
 const FRCampScene := preload("res://scenes/buildings/fr_camp.tscn")
 
@@ -17,6 +24,7 @@ var _current_case := ""
 
 func _initialize() -> void:
 	_run_case("Atreides Barracks keeps all three authored construction thuds", _test_at_barracks)
+	_run_case("Atreides small construction events resolve", _test_at_small_construction)
 	_run_case("Ordos construction and spark sections retain their authored frames", _test_ordos)
 	_run_case("Fremen Camp gets its single source-authored fallback", _test_fremen)
 	_run_case("source supplements preserve construction samples and volumes", _test_supplements)
@@ -46,6 +54,22 @@ func _test_at_barracks() -> void:
 	for event in schedule:
 		_expect_section(StringName(event.get("section", &"")), "mcv_g_building_out_1.wav", 60)
 	building.free()
+
+
+func _test_at_small_construction() -> void:
+	_expect_scene_events(
+		ATRocketTurretScene, &"ATRocketTurret",
+		[&"atsmallconstruction", &"atsmallconstruction", &"atsmallconstruction"],
+		[0.15, 1.15, 1.7]
+	)
+	_expect_scene_events(
+		ATSmWindtrapScene, &"ATSmWindtrap",
+		[&"atsmallconstruction", &"atsmallconstruction"], [0.55, 1.25]
+	)
+	_expect_scene_events(
+		ATHelipadScene, &"ATHelipad",
+		[&"atsmallconstruction", &"atsmallconstruction"], [0.2, 1.55]
+	)
 
 
 func _test_ordos() -> void:
@@ -110,6 +134,20 @@ func _expect_events(schedule: Array[Dictionary], sections: Array[StringName], ti
 	for index in mini(schedule.size(), sections.size()):
 		_expect(schedule[index].get("section", &"") == sections[index], "event %d section must be %s" % [index, sections[index]])
 		_expect(is_equal_approx(float(schedule[index].get("time", -1.0)), times[index]), "event %d time must be %s" % [index, times[index]])
+
+
+func _expect_scene_events(
+		scene: PackedScene, building_id: StringName, sections: Array[StringName], times: Array[float]
+	) -> void:
+	var building := scene.instantiate() as Node3D
+	_expect(building != null, "%s scene must instantiate" % building_id)
+	if building == null:
+		return
+	var schedule := BuildingConstructionSoundScript.schedule_for(building_id, building)
+	_expect_events(schedule, sections, times)
+	for event in schedule:
+		_expect_section(StringName(event.get("section", &"")), "mcv_f_scaffold_up_1.wav", 60)
+	building.free()
 
 
 func _expect_section(section_id: StringName, sample: String, volume: int) -> void:

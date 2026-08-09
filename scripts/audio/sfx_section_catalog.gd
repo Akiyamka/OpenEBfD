@@ -34,6 +34,11 @@ const SOURCE_SECTION_SUPPLEMENTS := {
 	# ImportedSfx.txt shadows these original building-construction sections with
 	# untranslated `$` stubs. Their XBF type-9 events still name the originals,
 	# so retain the source samples and per-house volumes here.
+	&"atsmallconstruction": {
+		"id": &"ATSmallConstruction",
+		"paths": ["res://assets/converted/audio/sfx/mcv_f_scaffold_up_1.wav"],
+		"controls": [&"random"], "volume": 60, "limit": 5, "priority": &"normal",
+	},
 	&"atmediumconstruction": {
 		"id": &"ATMediumConstruction",
 		"paths": ["res://assets/converted/audio/sfx/mcv_g_building_out_1.wav"],
