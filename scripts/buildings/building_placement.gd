@@ -5,6 +5,9 @@ const TerrainProbeScript := preload("res://scripts/world/terrain_probe.gd")
 const AuthoredModelScript := preload("res://scripts/world/authored_model.gd")
 const EntityQueryScript := preload("res://scripts/world/entity_query.gd")
 const SfxSectionCatalogScript := preload("res://scripts/audio/sfx_section_catalog.gd")
+const BuildingConstructionSoundScript := preload(
+	"res://scripts/buildings/building_construction_sound.gd"
+)
 
 signal building_placed(building: Node3D)
 
@@ -817,6 +820,7 @@ func _play_placed_building_animation(building: Node3D) -> void:
 		&"construct",
 		_on_placed_building_animation_finished.bind(building)
 	):
+		BuildingConstructionSoundScript.play(building)
 		return
 	# No construct clip means the building pops in instantly - there is no
 	# vulnerable transition window to protect, so invulnerability is skipped.

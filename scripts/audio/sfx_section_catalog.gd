@@ -31,6 +31,51 @@ static var _active_counts: Dictionary = {}
 ## sections use the same `kindjal_infantry_deploy_2` WAV, Volume=50 and the
 ## default Limit=5 (AtreidesSFX.txt).
 const SOURCE_SECTION_SUPPLEMENTS := {
+	# ImportedSfx.txt shadows these original building-construction sections with
+	# untranslated `$` stubs. Their XBF type-9 events still name the originals,
+	# so retain the source samples and per-house volumes here.
+	&"atmediumconstruction": {
+		"id": &"ATMediumConstruction",
+		"paths": ["res://assets/converted/audio/sfx/mcv_g_building_out_1.wav"],
+		"controls": [&"random"], "volume": 60, "limit": 5, "priority": &"normal",
+	},
+	&"atlargeconstruction": {
+		"id": &"ATLargeConstruction",
+		"paths": ["res://assets/converted/audio/sfx/mcv_g_building_out_1.wav"],
+		"controls": [&"random"], "volume": 60, "limit": 5, "priority": &"normal",
+	},
+	&"frementent": {
+		"id": &"FremenTent",
+		"paths": ["res://assets/converted/audio/sfx/fremen_tent_build_1.wav"],
+		"controls": [&"random"], "volume": 80, "limit": 5, "priority": &"normal",
+	},
+	&"hksmallconstruction": {
+		"id": &"HKSmallConstruction",
+		"paths": ["res://assets/converted/audio/sfx/mcv_f_scaffold_up_1.wav"],
+		"controls": [&"random"], "volume": 40, "limit": 5, "priority": &"normal",
+	},
+	&"hkmediumconstruction": {
+		"id": &"HKMediumConstruction",
+		"paths": ["res://assets/converted/audio/sfx/mcv_g_building_out_1.wav"],
+		"controls": [&"random"], "volume": 40, "limit": 5, "priority": &"normal",
+	},
+	&"hklargeconstruction": {
+		"id": &"HKLargeConstruction",
+		"paths": ["res://assets/converted/audio/sfx/mcv_g_building_out_1.wav"],
+		"controls": [&"random"], "volume": 40, "limit": 5, "priority": &"normal",
+	},
+	# The Barracks XBFs spell these without the SFX file's `S` infix. They are
+	# aliases for the same house-specific construction-spark source sections.
+	&"orconstructspark": {
+		"id": &"ORConstructSpark",
+		"paths": ["res://assets/converted/audio/sfx/constructionsparks.wav"],
+		"controls": [&"random"], "volume": 40, "limit": 5, "priority": &"normal",
+	},
+	&"hkconstructspark": {
+		"id": &"HKConstructSpark",
+		"paths": ["res://assets/converted/audio/sfx/constructionsparks.wav"],
+		"controls": [&"random"], "volume": 40, "limit": 5, "priority": &"normal",
+	},
 	&"kindjaldeploy": {
 		"id": &"KindjalDeploy",
 		"paths": ["res://assets/converted/audio/sfx/kindjal_infantry_deploy_2.wav"],
