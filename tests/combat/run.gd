@@ -3475,9 +3475,13 @@ func _test_launcher_fire_sequences() -> void:
 				animation_name, animation, turret
 			)
 			var configured_count := int(turret.firing_config.burst_shot_count)
+			# A launcher's burst is authored, not read off the model: a rig may
+			# carry more tubes than the salvo fires (HKMissile has twelve >>N
+			# muzzles but launches six rockets), so the burst only has to be a
+			# positive count the muzzles can serve, not one shot per tube.
 			_expect(
-				configured_count == turret.muzzle_count(),
-				"%s weapon %d must explicitly configure every launcher projectile" % [
+				configured_count > 0 and configured_count <= turret.muzzle_count(),
+				"%s weapon %d must configure a burst its muzzles can fire" % [
 					definition[0], turret.weapon_index()
 				]
 			)

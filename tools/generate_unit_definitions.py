@@ -54,7 +54,7 @@ MODEL_RE = re.compile(r'path="(res://assets/converted/models/[^"]+\.(?:scn|tscn)
 BURST_CONFIGS = {
     # Model animation tracks do not encode these launcher events. Values are
     # authored in 20 Hz rule ticks.
-    "HKMissileTankBarrage": (12, 3.0),
+    "HKMissileTankBarrage": (6, 6.0),
     "ORAPCBase": (2, 5.0),
     "HKDevastatorGun": (2, 0.0),
     "HKDevastatorMissile": (3, 7.5),
