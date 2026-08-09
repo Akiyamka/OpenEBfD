@@ -1,11 +1,6 @@
-extends SceneTree
+extends "res://tests/support/suite.gd"
 
 const CombatBulletScript := preload("res://scripts/combat/combat_bullet.gd")
-
-var _assertions := 0
-var _failures := 0
-var _current_case := ""
-
 
 func _initialize() -> void:
 	_run_case("null config resolves to no death category", _test_null_config)
@@ -18,27 +13,7 @@ func _initialize() -> void:
 	_run_case("gassed takes precedence over every other flag", _test_gassed_precedence)
 	_run_case("blow_up takes precedence over burn and shot", _test_blow_up_precedence)
 	_run_case("burn takes precedence over shot", _test_burn_precedence)
-	if _failures > 0:
-		printerr("CombatBullet.death_category tests: %d failures after %d assertions" % [_failures, _assertions])
-		quit(1)
-		return
-	print("CombatBullet.death_category tests: %d assertions passed" % _assertions)
-	quit(0)
-
-
-func _run_case(case_name: String, test: Callable) -> void:
-	_current_case = case_name
-	var failures_before := _failures
-	var assertions_before := _assertions
-	test.call()
-	# A runtime error aborts the case function where it stands, which would
-	# otherwise read as a silent pass.
-	if _assertions == assertions_before:
-		_failures += 1
-		printerr("FAIL: %s: the case ended before asserting anything" % case_name)
-		return
-	if _failures == failures_before:
-		print("PASS: %s" % case_name)
+	_finish("CombatBullet.death_category tests")
 
 
 func _make_config(
@@ -101,11 +76,3 @@ func _test_blow_up_precedence() -> void:
 func _test_burn_precedence() -> void:
 	var bullet := CombatBulletScript.new(_make_config(false, false, true, false, true), null)
 	_expect(bullet.death_category() == &"Burn", "burn must take precedence over shot")
-
-
-func _expect(condition: bool, message: String) -> void:
-	_assertions += 1
-	if condition:
-		return
-	_failures += 1
-	printerr("FAIL: %s: %s" % [_current_case, message])
