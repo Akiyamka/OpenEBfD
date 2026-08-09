@@ -185,6 +185,7 @@ func movement_probe_for(agents: Dictionary, unit: Node3D) -> Dictionary:
 	if not registered.is_empty():
 		return {
 			"clearance": registered["rotation_clearance"],
+			"radius": registered["radius"],
 			"pass_mask": registered["pass_mask"],
 			"terrain_mask": registered["terrain_mask"],
 			"footprint": registered["footprint"],
@@ -193,6 +194,7 @@ func movement_probe_for(agents: Dictionary, unit: Node3D) -> Dictionary:
 	var profile := profile_for(unit)
 	return {
 		"clearance": profile["clearance"],
+		"radius": profile["radius"],
 		"pass_mask": profile["pass_mask"],
 		"terrain_mask": profile["terrain_mask"],
 		"footprint": profile["footprint"],

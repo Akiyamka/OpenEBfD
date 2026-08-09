@@ -302,7 +302,15 @@ func tick(delta: float, ordered: Array[Dictionary], buckets: Dictionary) -> void
 			agent["_enemies"], agent["_friends"], nearby, resolved_positions
 		)
 		var start_position: Vector3 = agent["_tick_start_position"]
-		agent["orca_velocity"] = (unit.global_position - start_position) / delta
+		var achieved_velocity: Vector3 = (unit.global_position - start_position) / delta
+		agent["orca_velocity"] = achieved_velocity
+		# Recorded here (end of this agent's phase-2 iteration, after
+		# `orca_velocity` above has already been overwritten with THIS tick's
+		# solver output) so next tick's `_apply_resolved_velocity` reads the
+		# actually-achieved displacement of the tick that just finished, not
+		# the not-yet-clamped solver output `orca.resolve_velocity` wrote
+		# earlier this same tick.
+		agent["_achieved_velocity"] = achieved_velocity
 
 
 ## Shared apply step (phase 2): blocked/enemy reporting, yield expiry, elastic
@@ -319,7 +327,17 @@ func _apply_resolved_velocity(
 		resolved_positions: Dictionary
 	) -> void:
 	var velocity := velocity_in
-	if desired.length_squared() > 0.01 and velocity.length_squared() < 0.01:
+	# A turn-in-place tick reports non-zero solver velocity (`velocity`) but
+	# ~zero actual displacement, since the chassis rate limiter in
+	# `stabilize_velocity` (still ahead of us this tick) clamps the achieved
+	# motion toward zero. `_achieved_velocity` holds the PREVIOUS tick's real
+	# displacement (see where `tick()` writes it below), so it still catches
+	# such a stall this check would otherwise miss — letting friendly-yield
+	# (`FRIENDLY_YIELD_TRIGGER_SECONDS`) and the squeeze gate
+	# (`orca_avoidance.gd`'s `was_stalled`) trigger during it.
+	var achieved: Vector3 = agent.get("_achieved_velocity", Vector3.ZERO)
+	if desired.length_squared() > 0.01 \
+	and (velocity.length_squared() < 0.01 or achieved.length_squared() < 0.01):
 		agent["blocked_time"] = float(agent["blocked_time"]) + delta
 	else:
 		agent["blocked_time"] = 0.0

@@ -440,20 +440,36 @@ func block_passable(anchor: Vector2i, span: int, agent: Dictionary) -> bool:
 	for y in span:
 		for x in span:
 			if not _path_follower_ref.get_ref().agent_cell_passable(
-				agent, anchor + Vector2i(x, y)
+				agent, anchor + Vector2i(x, y), 0
 			):
 				return false
-	return true
+	return body_fits(anchor, span, agent)
 
 
 func block_stoppable(anchor: Vector2i, span: int, agent: Dictionary) -> bool:
 	for y in span:
 		for x in span:
 			if not _path_follower_ref.get_ref().agent_cell_stoppable(
-				agent, anchor + Vector2i(x, y)
+				agent, anchor + Vector2i(x, y), 0
 			):
 				return false
-	return true
+	return body_fits(anchor, span, agent)
+
+
+## Whole-cell clearance is the routing grid's shape, not the unit's: expanding
+## every footprint cell by the rotation envelope keeps a parked body a further
+## sqrt(2) off any diagonal or stair-stepped edge, and a long chassis further
+## still along an axis it never turns on while parked. The footprint cells above
+## are therefore checked bare (clearance 0) and the real spacing comes from the
+## authored body disc at the block centre — the same envelope local steering
+## already keeps clear of terrain while driving.
+func body_fits(anchor: Vector2i, span: int, agent: Dictionary) -> bool:
+	return _runtime_map.body_fits(
+		block_center(anchor, span),
+		int(agent["pass_mask"]),
+		float(agent.get("radius", 0.0)),
+		int(agent["terrain_mask"])
+	)
 
 
 ## Two parking blocks conflict when fewer than PARKING_GAP_CELLS free cells

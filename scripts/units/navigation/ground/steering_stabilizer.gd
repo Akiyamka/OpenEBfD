@@ -307,6 +307,34 @@ func enemy_sweep_fraction(
 	return fraction
 
 
+## Swept-disc clear fraction against every other nearby agent (friend or foe
+## alike), unlike `enemy_sweep_fraction` above which only checks enemies.
+## `radius_factor` shrinks the combined contact radius used for the check: a
+## caller relying on the bounded elastic overlap `separation_velocity` allows
+## between friendlies (rather than demanding fully round, non-overlapping
+## bodies) passes a factor below 1.0 so genuine contact still drives the
+## fraction toward zero without also rejecting that ordinary close-in squeeze.
+func unit_sweep_fraction(
+		agent: Dictionary,
+		displacement: Vector3,
+		nearby: Array,
+		radius_factor := 1.0
+	) -> float:
+	var unit: Node3D = agent["unit"]
+	var fraction := 1.0
+	for other in nearby:
+		var other_unit: Node3D = other["unit"]
+		if other_unit == unit:
+			continue
+		fraction = minf(fraction, sweep_fraction(
+			unit.global_position,
+			displacement,
+			other_unit.global_position,
+			(float(agent["radius"]) + float(other["radius"])) * radius_factor
+		))
+	return fraction
+
+
 ## Elastic penetration field. Friendly squeeze may overlap temporarily; this
 ## bounded force continuously restores the round non-overlapping state.
 func separation_velocity(agent: Dictionary, nearby: Array) -> Vector3:

@@ -15,10 +15,13 @@ const OrcaAvoidanceScript := preload("res://scripts/units/navigation/ground/orca
 var runtime_map = null
 var stabilizer := SteeringStabilizerScript.new()
 var orca := OrcaAvoidanceScript.new()
-## Temporary comparison switch. The authored chassis TurnRate is still
-## enforced by Unit.navigation_step(); false only removes the navigation-side
-## pre-rotation that bends successive steering targets into a driven arc.
-var turn_rate_stabilization_enabled := false
+## Production default. The authored chassis TurnRate is still enforced by
+## Unit.navigation_step() either way; this flag additionally lets the
+## navigation side pre-rotate successive steering targets into a driven arc so
+## a non-omnidirectional unit's course changes smoothly instead of snapping to
+## a target its chassis cannot yet face. It exists only so a white-box test
+## can force it false and isolate the raw ORCA output from that pre-rotation.
+var turn_rate_stabilization_enabled := true
 
 
 func setup(source_runtime_map) -> void:
@@ -35,6 +38,7 @@ func reset_agent(agent: Dictionary) -> void:
 	agent["avoidance_direction"] = Vector3.ZERO
 	agent["steering_turn_in_place"] = false
 	agent["orca_velocity"] = Vector3.ZERO
+	agent["_achieved_velocity"] = Vector3.ZERO
 	agent["_squeeze_cooldown"] = 0
 
 
@@ -88,6 +92,15 @@ func enemy_sweep_fraction(
 		resolved: Dictionary
 	) -> float:
 	return stabilizer.enemy_sweep_fraction(agent, displacement, nearby, resolved)
+
+
+func unit_sweep_fraction(
+		agent: Dictionary,
+		displacement: Vector3,
+		nearby: Array,
+		radius_factor := 1.0
+	) -> float:
+	return stabilizer.unit_sweep_fraction(agent, displacement, nearby, radius_factor)
 
 
 func separation_velocity(agent: Dictionary, nearby: Array) -> Vector3:
