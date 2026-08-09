@@ -11,7 +11,10 @@ const LaserBeamScript := preload("res://scripts/combat/fx/laser_beam.gd")
 const CombatProjectileScript := preload("res://scripts/combat/combat_projectile.gd")
 const CombatTurretScript := preload("res://scripts/combat/combat_turret.gd")
 const ShotPayloadScript := preload("res://scripts/combat/shot_payload.gd")
-const CombatDefinitionCatalogScript := preload("res://scripts/combat/combat_definition_catalog.gd")
+const Doubles := preload("res://tests/combat/support/combat_doubles.gd")
+const Fx := preload("res://tests/combat/support/combat_fx_probe.gd")
+const Bullets := preload("res://tests/combat/support/combat_bullets.gd")
+const Assertions := preload("res://tests/combat/support/combat_assertions.gd")
 const UnitScript := preload("res://scripts/units/unit.gd")
 const UnitScene := preload("res://scenes/units/unit.tscn")
 const ATAPCModelScene := preload("res://assets/converted/models/AT_APC_H0/AT_APC_H0.scn")
@@ -81,96 +84,7 @@ const ATWallScene := preload(
 	"res://assets/converted/buildings/ATWall/ATWall.scn"
 )
 
-var _combat_catalog := CombatDefinitionCatalogScript.new()
-
-
-class FakeCombatTarget extends RefCounted:
-	var armour_type: StringName
-	var airborne := false
-	var damage_taken := 0.0
-	var position := Vector3.ZERO
-	var alive := true
-	var hit_radius := 0.25
-	var owner_player_id := 2
-	var accepted_effects: Array[StringName] = []
-	var received_effects: Array[StringName] = []
-	var received_effect_contexts: Array[Dictionary] = []
-
-	func _init(target_armour: StringName, target_airborne := false) -> void:
-		armour_type = target_armour
-		airborne = target_airborne
-
-	func combat_armour_type() -> StringName:
-		return armour_type
-
-	func combat_is_airborne() -> bool:
-		return airborne
-
-	func combat_aim_position() -> Vector3:
-		return position
-
-	func combat_is_alive() -> bool:
-		return alive
-
-	func combat_hit_radius() -> float:
-		return hit_radius
-
-	func is_enemy_of(player_id: int) -> bool:
-		return owner_player_id != player_id
-
-	func take_damage(amount: float, _death_cause: StringName = &"") -> void:
-		damage_taken += amount
-
-	func combat_owner_player_id() -> int:
-		return owner_player_id
-
-	func combat_apply_bullet_effect(effect: StringName, context: Dictionary) -> bool:
-		received_effects.append(effect)
-		received_effect_contexts.append(context)
-		return effect in accepted_effects
-
-
-class PhysicsCombatTarget extends StaticBody3D:
-	var armour_type: StringName = &"None"
-	var damage_taken := 0.0
-	var owner_player_id := 2
-	var alive := true
-	var hit_radius := 0.5
-
-	func _init(world_position: Vector3, radius := 0.5) -> void:
-		position = world_position
-		hit_radius = radius
-		collision_layer = 2
-		collision_mask = 0
-		var collision := CollisionShape3D.new()
-		var sphere := SphereShape3D.new()
-		sphere.radius = radius
-		collision.shape = sphere
-		add_child(collision)
-
-	func combat_armour_type() -> StringName:
-		return armour_type
-
-	func combat_is_airborne() -> bool:
-		return false
-
-	func combat_aim_position() -> Vector3:
-		return global_position
-
-	func combat_is_alive() -> bool:
-		return alive
-
-	func combat_hit_radius() -> float:
-		return hit_radius
-
-	func is_enemy_of(player_id: int) -> bool:
-		return owner_player_id != player_id
-
-	func combat_owner_player_id() -> int:
-		return owner_player_id
-
-	func take_damage(amount: float, _death_cause: StringName = &"") -> void:
-		damage_taken += amount
+var _bullets := Bullets.new()
 
 
 ## Stands in for a cliff face or rock shoulder: static geometry on the terrain
@@ -187,18 +101,8 @@ class PhysicsCliff extends StaticBody3D:
 		add_child(collision)
 
 
-## Same collider and layer as PhysicsCombatTarget, but exposing the footprint
+## Same collider and layer as Doubles.PhysicsCombatTarget, but exposing the footprint
 ## hull that identifies a building rather than a unit.
-class PhysicsBuildingBlocker extends PhysicsCombatTarget:
-	func combat_hull() -> PackedVector2Array:
-		return PackedVector2Array([
-			Vector2(-hit_radius, -hit_radius),
-			Vector2(hit_radius, -hit_radius),
-			Vector2(hit_radius, hit_radius),
-			Vector2(-hit_radius, hit_radius),
-		])
-
-
 class PhysicsGround extends StaticBody3D:
 	func _init() -> void:
 		collision_layer = 1
@@ -209,13 +113,6 @@ class PhysicsGround extends StaticBody3D:
 		collision.position.y = -0.25
 		collision.shape = box
 		add_child(collision)
-
-
-class CombatSource extends RefCounted:
-	var owner_player_id := 1
-
-	func combat_owner_player_id() -> int:
-		return owner_player_id
 
 
 class RejectingAttackNavigation extends RefCounted:
@@ -442,62 +339,8 @@ func _initialize() -> void:
 	_finish("Combat tests")
 
 
-func _horizontal_angle_between(a: Vector3, b: Vector3) -> float:
-	var a_horizontal := Vector2(a.x, a.z)
-	var b_horizontal := Vector2(b.x, b.z)
-	if a_horizontal.is_zero_approx() or b_horizontal.is_zero_approx():
-		return 0.0
-	return absf(angle_difference(a_horizontal.angle(), b_horizontal.angle()))
-
-
-func _muzzle_effects(kind: StringName, emission_index := -1) -> Array[Node3D]:
-	var result: Array[Node3D] = []
-	for child in root.get_children():
-		if not child is Node3D or child.get_meta("combat_muzzle_fx", &"") != kind:
-			continue
-		if emission_index >= 0 and int(child.get_meta("emission_index", -1)) != emission_index:
-			continue
-		result.append(child as Node3D)
-	return result
-
-
-func _free_muzzle_effects() -> void:
-	for child in root.get_children():
-		if child.has_meta("combat_muzzle_fx"):
-			child.free()
-
-
-func _impact_effects(effect_id: StringName) -> Array[Node3D]:
-	var result: Array[Node3D] = []
-	for child in root.get_children():
-		if child is Node3D \
-		and child.get_meta("combat_impact_fx", &"") == effect_id:
-			result.append(child as Node3D)
-	return result
-
-
-func _free_impact_effects() -> void:
-	for child in root.get_children():
-		if child.has_meta("combat_impact_fx"):
-			child.free()
-
-
-func _ground_decals() -> Array[Node3D]:
-	var result: Array[Node3D] = []
-	for child in root.get_children():
-		if child is Node3D and child.has_meta("combat_ground_decal"):
-			result.append(child as Node3D)
-	return result
-
-
-func _free_ground_decals() -> void:
-	for child in root.get_children():
-		if child.has_meta("combat_ground_decal"):
-			child.free()
-
-
 func _test_ground_decal_overlap_budget() -> void:
-	_free_ground_decals()
+	Fx.free_ground_decals(root)
 	var created_decals: Array[Node3D] = []
 	for index in CombatGroundDecalScript.MAXIMUM_OVERLAPPING_DECALS:
 		var decal = CombatGroundDecalScript.new()
@@ -527,7 +370,7 @@ func _test_ground_decal_overlap_budget() -> void:
 		"eighth overlap-budget fixture decal must configure"
 	)
 	created_decals.append(eighth_decal)
-	var clustered_decals := _ground_decals()
+	var clustered_decals := Fx.ground_decals(root)
 	_expect(
 		clustered_decals.size() \
 			== CombatGroundDecalScript.MAXIMUM_OVERLAPPING_DECALS,
@@ -551,17 +394,17 @@ func _test_ground_decal_overlap_budget() -> void:
 		"distant overlap-budget fixture decal must configure"
 	)
 	_expect(
-		_ground_decals().size() \
+		Fx.ground_decals(root).size() \
 			== CombatGroundDecalScript.MAXIMUM_OVERLAPPING_DECALS + 1
 			and int(created_decals[1].get_meta("overlap_fade_steps", 0))
 				== surviving_oldest_steps,
 		"a distant crater must not fade or remove a separate stack"
 	)
-	_free_ground_decals()
+	Fx.free_ground_decals(root)
 
 
 func _test_armour_matrix() -> void:
-	var bullet = CombatBulletScript.new(_combat_catalog.bullet(&"LMG_B"), _combat_catalog.warhead(&"LMG_W"))
+	var bullet = CombatBulletScript.new(_bullets.bullet_config(&"LMG_B"), _bullets.warhead_config(&"LMG_W"))
 	_expect(bullet.is_hitscan(), "LMG_B's negative conceptual speed must make it hitscan")
 	_expect(is_equal_approx(bullet.base_damage(), 219.0), "LMG_B must retain its rules damage")
 	_expect(
@@ -588,7 +431,7 @@ func _test_armour_matrix() -> void:
 		"the zero matrix pair must deal no damage"
 	)
 
-	var heavy_target := FakeCombatTarget.new(&"Heavy")
+	var heavy_target := Doubles.FakeCombatTarget.new(&"Heavy")
 	var resolver = CombatImpactResolverScript.new()
 	var results: Array[Dictionary] = resolver.resolve(
 		bullet, null, Vector3.ZERO, heavy_target
@@ -602,7 +445,7 @@ func _test_armour_matrix() -> void:
 		"impact must deliver the same resolved damage to the target"
 	)
 
-	var leech = CombatBulletScript.new(_combat_catalog.bullet(&"Leech_B"), null)
+	var leech = CombatBulletScript.new(_bullets.bullet_config(&"Leech_B"), null)
 	_expect(
 		is_equal_approx(leech.damage_against(&"Heavy"), 100.0),
 		"a special-effect bullet without a warhead must retain its direct fallback damage"
@@ -610,8 +453,8 @@ func _test_armour_matrix() -> void:
 
 
 func _test_target_domains() -> void:
-	var lmg = CombatBulletScript.new(_combat_catalog.bullet(&"LMG_B"), _combat_catalog.warhead(&"LMG_W"))
-	var aircraft := FakeCombatTarget.new(&"Aircraft", true)
+	var lmg = CombatBulletScript.new(_bullets.bullet_config(&"LMG_B"), _bullets.warhead_config(&"LMG_W"))
+	var aircraft := Doubles.FakeCombatTarget.new(&"Aircraft", true)
 	_expect(not lmg.can_hit(aircraft), "a bullet without AntiAircraft must reject aircraft")
 	_expect(lmg.can_hit_ground(), "an ordinary ground weapon must accept attack-ground")
 	_expect(
@@ -619,14 +462,14 @@ func _test_target_domains() -> void:
 		"a rejected aircraft impact must resolve no target"
 	)
 
-	var adp_config: Resource = _combat_catalog.bullet(&"ATHEATADP_B")
+	var adp_config: Resource = _bullets.bullet_config(&"ATHEATADP_B")
 	var adp = CombatBulletScript.new(
 		adp_config,
-		_combat_catalog.warhead(adp_config.warhead_id)
+		_bullets.warhead_config(adp_config.warhead_id)
 	)
 	_expect(adp.can_hit(aircraft), "ATHEATADP_B must accept aircraft")
 	_expect(
-		not adp.can_hit(FakeCombatTarget.new(&"Heavy")),
+		not adp.can_hit(Doubles.FakeCombatTarget.new(&"Heavy")),
 		"ATHEATADP_B's explicit AntiGround=false must reject ground targets"
 	)
 	_expect(not adp.can_hit_ground(), "an air-only weapon must reject attack-ground coordinates")
@@ -634,7 +477,7 @@ func _test_target_domains() -> void:
 	root.add_child(rejected_projectile)
 	_expect(
 		not rejected_projectile.launch(
-			lmg, _emission(Vector3.ZERO, Vector3.FORWARD), aircraft
+			lmg, Bullets.emission(Vector3.ZERO, Vector3.FORWARD), aircraft
 		),
 		"a projectile must reject an incompatible target before entering flight"
 	)
@@ -642,8 +485,7 @@ func _test_target_domains() -> void:
 
 
 func _test_bullet_delivery_rules() -> void:
-	var rules = root.get_node("Rules")
-	var lmg = _runtime_bullet(rules, &"LMG_B")
+	var lmg = _bullets.runtime_bullet(&"LMG_B")
 	_expect(is_equal_approx(lmg.maximum_range(), 5.0), "LMG_B must retain its five-tile rule range")
 	_expect(
 		is_equal_approx(lmg.maximum_range_world(), 10.0),
@@ -652,7 +494,7 @@ func _test_bullet_delivery_rules() -> void:
 	_expect(lmg.is_hitscan(), "negative Speed, rather than IsLaser, must define hitscan")
 	_expect(not lmg.is_laser(), "an ordinary conceptual firearm must not become a laser")
 
-	var adp = _runtime_bullet(rules, &"HEATADP_B")
+	var adp = _bullets.runtime_bullet(&"HEATADP_B")
 	_expect(adp.is_homing(), "HEATADP_B must expose its Homing flag")
 	_expect(is_equal_approx(adp.homing_delay_ticks(), 5.0), "HomingDelay must remain in rule ticks")
 	_expect(is_equal_approx(adp.turn_rate(), 0.9), "TurnRate must remain radians per update")
@@ -661,11 +503,11 @@ func _test_bullet_delivery_rules() -> void:
 	_expect(adp.can_reach(Vector3.ZERO, Vector3.FORWARD * 30.0), "the exact maximum range must be accepted")
 	_expect(not adp.can_reach(Vector3.ZERO, Vector3.FORWARD * 30.1), "a target beyond MaxRange must be rejected")
 
-	var sonic = _runtime_bullet(rules, &"Sound_B")
-	var flame = _runtime_bullet(rules, &"Flame_B")
+	var sonic = _bullets.runtime_bullet(&"Sound_B")
+	var flame = _bullets.runtime_bullet(&"Flame_B")
 	_expect(sonic.is_continuous() and sonic.is_piercing(), "the Sonic wave must retain continuous piercing delivery")
 	_expect(flame.is_continuous() and not flame.is_piercing(), "Continuous alone must not make flame pass through walls")
-	var mortar = _runtime_bullet(rules, &"Mortar_B")
+	var mortar = _bullets.runtime_bullet(&"Mortar_B")
 	_expect(is_equal_approx(mortar.blast_radius_world(), 4.0), "BlastRadius=64 must convert from XBF to four world units")
 	_expect(is_equal_approx(mortar.friendly_damage_amount(), 50.0), "friendly splash amount must remain a percentage")
 	_expect(mortar.explosion_type() == &"ShellHit", "the bullet must retain its explosion presentation id")
@@ -674,7 +516,7 @@ func _test_bullet_delivery_rules() -> void:
 		is_equal_approx(mortar.damage_to_tile(), 30.0),
 		"ShellHit must retain its original DamageToTile crater strength"
 	)
-	var kobra_shell = _runtime_bullet(rules, &"KobraHowitzer_B")
+	var kobra_shell = _bullets.runtime_bullet(&"KobraHowitzer_B")
 	_expect(
 		kobra_shell.has_missile_trail()
 		and kobra_shell.missile_trail_style() == 6
@@ -683,9 +525,9 @@ func _test_bullet_delivery_rules() -> void:
 		and is_equal_approx(kobra_shell.missile_trail_delta(), 0.7),
 		"KobraHowitzer_B must expose its complete authored trail dimensions"
 	)
-	_expect(_runtime_bullet(rules, &"Leech_B").effect_flags().has("leech"), "special delivery flags must remain owned by Bullet")
+	_expect(_bullets.runtime_bullet(&"Leech_B").effect_flags().has("leech"), "special delivery flags must remain owned by Bullet")
 	_expect(
-		_runtime_bullet(rules, &"BarrelBomb").reduces_damage_with_distance(),
+		_bullets.runtime_bullet(&"BarrelBomb").reduces_damage_with_distance(),
 		"omitted ReduceDamageWithDistance must keep the source default falloff"
 	)
 	_expect(
@@ -695,13 +537,12 @@ func _test_bullet_delivery_rules() -> void:
 
 
 func _test_impact_effect_contract() -> void:
-	var rules = root.get_node("Rules")
-	var leech = _runtime_bullet(rules, &"Leech_B")
+	var leech = _bullets.runtime_bullet(&"Leech_B")
 	var resolver = CombatImpactResolverScript.new()
-	var vehicle := FakeCombatTarget.new(&"Heavy")
+	var vehicle := Doubles.FakeCombatTarget.new(&"Heavy")
 	vehicle.accepted_effects.append(&"leech")
 	var accepted: Array[Dictionary] = resolver.resolve(
-		leech, null, Vector3.ZERO, vehicle, CombatSource.new()
+		leech, null, Vector3.ZERO, vehicle, Doubles.CombatSource.new()
 	)
 	_expect(accepted.size() == 1, "an effect-capable direct target must resolve")
 	_expect(&"leech" in accepted[0]["effects"], "the target must acknowledge its typed effect")
@@ -716,9 +557,9 @@ func _test_impact_effect_contract() -> void:
 		"the resolver must pass infection parameters to the typed effect receiver"
 	)
 
-	var rejected := FakeCombatTarget.new(&"Heavy")
+	var rejected := Doubles.FakeCombatTarget.new(&"Heavy")
 	var fallback: Array[Dictionary] = resolver.resolve(
-		leech, null, Vector3.ZERO, rejected, CombatSource.new()
+		leech, null, Vector3.ZERO, rejected, Doubles.CombatSource.new()
 	)
 	_expect(fallback.size() == 1 and fallback[0]["effects"].is_empty(), "a rejected effect must be reported")
 	_expect(
@@ -728,9 +569,8 @@ func _test_impact_effect_contract() -> void:
 
 
 func _test_lingering_gas_damage() -> void:
-	var rules = root.get_node("Rules")
-	var gas = _runtime_bullet(rules, &"GasInf_B")
-	var impact_target := FakeCombatTarget.new(&"BPV")
+	var gas = _bullets.runtime_bullet(&"GasInf_B")
+	var impact_target := Doubles.FakeCombatTarget.new(&"BPV")
 	var projectile = CombatProjectileScript.new()
 	root.add_child(projectile)
 	projectile.bullet = gas
@@ -749,7 +589,7 @@ func _test_lingering_gas_damage() -> void:
 		spawned_linger.free()
 	projectile.free()
 
-	var target := FakeCombatTarget.new(&"BPV")
+	var target := Doubles.FakeCombatTarget.new(&"BPV")
 	var effect = CombatLingerEffectScript.new()
 	root.add_child(effect)
 	_expect(
@@ -779,14 +619,13 @@ func _test_lingering_gas_damage() -> void:
 
 
 func _test_hitscan_projectile() -> void:
-	var rules = root.get_node("Rules")
-	var target := FakeCombatTarget.new(&"None")
+	var target := Doubles.FakeCombatTarget.new(&"None")
 	target.position = Vector3(0.0, 0.0, -5.0)
 	var projectile = CombatProjectileScript.new()
 	root.add_child(projectile)
 	var launched: bool = projectile.launch(
-		_runtime_bullet(rules, &"LMG_B"),
-		_emission(Vector3.ZERO, Vector3.FORWARD),
+		_bullets.runtime_bullet(&"LMG_B"),
+		Bullets.emission(Vector3.ZERO, Vector3.FORWARD),
 		target
 	)
 	_expect(launched, "an in-range conceptual bullet must launch")
@@ -798,15 +637,14 @@ func _test_hitscan_projectile() -> void:
 
 
 func _test_laser_hitscan_visual() -> void:
-	var rules = root.get_node("Rules")
 	var launch_position := Vector3(2.0, 5.0, 3.0)
 	var ground_position := Vector3(-4.0, 0.0, -7.0)
 	var projectile = CombatProjectileScript.new()
 	root.add_child(projectile)
 	_expect(
 		projectile.launch(
-			_runtime_bullet(rules, &"Laser_B"),
-			_emission(launch_position, Vector3.FORWARD),
+			_bullets.runtime_bullet(&"Laser_B"),
+			Bullets.emission(launch_position, Vector3.FORWARD),
 			ground_position
 		),
 		"Laser_B must accept an in-range downhill attack-ground shot"
@@ -867,7 +705,7 @@ func _test_laser_hitscan_visual() -> void:
 	)
 	projectile.free()
 
-	_free_muzzle_effects()
+	Fx.free_muzzle_effects(root)
 	var laser_tank_model := ORLaserTankModelScene.instantiate() as Node3D
 	laser_tank_model.position.y = 4.0
 	root.add_child(laser_tank_model)
@@ -952,15 +790,14 @@ func _test_laser_hitscan_visual() -> void:
 
 
 func _test_linear_projectile_no_lead() -> void:
-	var rules = root.get_node("Rules")
-	var target := FakeCombatTarget.new(&"Heavy")
+	var target := Doubles.FakeCombatTarget.new(&"Heavy")
 	target.position = Vector3(0.0, 0.0, -12.0)
 	var projectile = CombatProjectileScript.new()
 	root.add_child(projectile)
 	_expect(
 		projectile.launch(
-			_runtime_bullet(rules, &"StraightBomb"),
-			_emission(Vector3.ZERO, Vector3.FORWARD),
+			_bullets.runtime_bullet(&"StraightBomb"),
+			Bullets.emission(Vector3.ZERO, Vector3.FORWARD),
 			target
 		),
 		"StraightBomb must launch toward an in-range target"
@@ -985,17 +822,17 @@ func _test_undeployed_kobra_shell_leaves_the_muzzle() -> void:
 	# Rules.txt leaves Howitzer_B without a Speed, which made the shell resolve
 	# at its own muzzle: the undeployed Kobra blew a 64-unit blast up against its
 	# own barrel and took the friendly-fire share of it. See docs/quirks.md.
-	var shell_config: Resource = _combat_catalog.bullet(&"Howitzer_B")
+	var shell_config: Resource = _bullets.bullet_config(&"Howitzer_B")
 	var shell = CombatBulletScript.new(
 		shell_config,
-		_combat_catalog.warhead(shell_config.warhead_id),
+		_bullets.warhead_config(shell_config.warhead_id),
 		load(String(shell_config.projectile_scene_path))
 	)
 	_expect(
 		shell.speed() > 0.0 and not shell.has_trajectory() and not shell.is_hitscan(),
 		"the undeployed Kobra's gun must fire a direct shot that actually travels"
 	)
-	var target := FakeCombatTarget.new(&"Heavy")
+	var target := Doubles.FakeCombatTarget.new(&"Heavy")
 	target.position = Vector3(0.0, 0.0, -7.0)
 	var launch_position := Vector3(0.0, 1.0, 0.0)
 	var projectile = CombatProjectileScript.new()
@@ -1003,7 +840,7 @@ func _test_undeployed_kobra_shell_leaves_the_muzzle() -> void:
 	_expect(
 		projectile.launch(
 			shell,
-			_emission(launch_position, launch_position.direction_to(target.position)),
+			Bullets.emission(launch_position, launch_position.direction_to(target.position)),
 			target
 		),
 		"Howitzer_B must launch at a target seven units away, well inside its eight tiles"
@@ -1036,15 +873,14 @@ func _test_undeployed_kobra_shell_leaves_the_muzzle() -> void:
 
 
 func _test_attack_ground_missile() -> void:
-	var rules = root.get_node("Rules")
 	var launch_position := Vector3(0.0, 2.0, 0.0)
 	var ground_position := Vector3(0.0, 0.0, -10.0)
 	var projectile = CombatProjectileScript.new()
 	root.add_child(projectile)
 	_expect(
 		projectile.launch(
-			_runtime_bullet(rules, &"HEAT_B"),
-			_emission(launch_position, Vector3.FORWARD),
+			_bullets.runtime_bullet(&"HEAT_B"),
+			Bullets.emission(launch_position, Vector3.FORWARD),
 			ground_position
 		),
 		"the Mongoose missile must accept an in-range attack-ground point"
@@ -1068,15 +904,14 @@ func _test_attack_ground_missile() -> void:
 
 
 func _test_homing_projectile() -> void:
-	var rules = root.get_node("Rules")
-	var target := FakeCombatTarget.new(&"Aircraft", true)
+	var target := Doubles.FakeCombatTarget.new(&"Aircraft", true)
 	target.position = Vector3(0.0, 0.0, -20.0)
 	var projectile = CombatProjectileScript.new()
 	root.add_child(projectile)
 	_expect(
 		projectile.launch(
-			_runtime_bullet(rules, &"HEATADP_B"),
-			_emission(Vector3.ZERO, Vector3.FORWARD),
+			_bullets.runtime_bullet(&"HEATADP_B"),
+			Bullets.emission(Vector3.ZERO, Vector3.FORWARD),
 			target
 		),
 		"the AA missile must launch at its exact minimum range"
@@ -1100,25 +935,24 @@ func _test_homing_projectile() -> void:
 ## A missile chasing a retreating target flies further than the straight line
 ## that was range-checked at launch; the extra budget keeps it alive to hit.
 func _test_homing_flight_budget() -> void:
-	var rules = root.get_node("Rules")
-	var heat = _runtime_bullet(rules, &"HEAT_B")
+	var heat = _bullets.runtime_bullet(&"HEAT_B")
 	_expect(
 		heat.flight_range_world() > heat.maximum_range_world(),
 		"a homing bullet must fly further than the range it is fired at"
 	)
-	var lmg = _runtime_bullet(rules, &"LMG_B")
+	var lmg = _bullets.runtime_bullet(&"LMG_B")
 	_expect(
 		is_equal_approx(lmg.flight_range_world(), lmg.maximum_range_world()),
 		"a straight shot must keep firing range and flight budget identical"
 	)
 
-	var target := FakeCombatTarget.new(&"Vehicle")
+	var target := Doubles.FakeCombatTarget.new(&"Vehicle")
 	target.position = Vector3(0.0, 0.0, -18.0)
 	var projectile = CombatProjectileScript.new()
 	root.add_child(projectile)
 	_expect(
 		projectile.launch(
-			heat, _emission(Vector3.ZERO, Vector3.FORWARD), target
+			heat, Bullets.emission(Vector3.ZERO, Vector3.FORWARD), target
 		),
 		"the target must start inside HEAT_B's ten-tile firing range"
 	)
@@ -1145,8 +979,8 @@ func _test_trajectory_projectile() -> void:
 	root.add_child(projectile)
 	_expect(
 		projectile.launch(
-			_runtime_bullet(rules, &"Mortar_B"),
-			_emission(Vector3.ZERO, Vector3.FORWARD),
+			_bullets.runtime_bullet(&"Mortar_B"),
+			Bullets.emission(Vector3.ZERO, Vector3.FORWARD),
 			Vector3(0.0, 0.0, -20.0),
 			null,
 			float(rules.general_rules().field(&"bullet_gravity", 1.0))
@@ -1286,7 +1120,7 @@ func _test_trajectory_moving_target_miss() -> void:
 	var rules = root.get_node("Rules")
 	var ground := PhysicsGround.new()
 	root.add_child(ground)
-	var target := FakeCombatTarget.new(&"Heavy")
+	var target := Doubles.FakeCombatTarget.new(&"Heavy")
 	target.position = Vector3(0.0, 3.0, -20.0)
 	var projectile = CombatProjectileScript.new()
 	root.add_child(projectile)
@@ -1297,8 +1131,8 @@ func _test_trajectory_moving_target_miss() -> void:
 	)
 	_expect(
 		projectile.launch(
-			_runtime_bullet(rules, &"InkVine_B"),
-			_emission(Vector3(0.0, 2.0, 0.0), Vector3.FORWARD),
+			_bullets.runtime_bullet(&"InkVine_B"),
+			Bullets.emission(Vector3(0.0, 2.0, 0.0), Vector3.FORWARD),
 			target,
 			null,
 			float(rules.general_rules().field(&"bullet_gravity", 1.0))
@@ -1337,9 +1171,8 @@ func _test_trajectory_moving_target_miss() -> void:
 
 
 func _test_projectile_world_collision() -> void:
-	var rules = root.get_node("Rules")
-	var blocker := PhysicsCombatTarget.new(Vector3(0.0, 0.0, -4.0), 0.75)
-	var target := PhysicsCombatTarget.new(Vector3(0.0, 0.0, -8.0), 0.75)
+	var blocker := Doubles.PhysicsCombatTarget.new(Vector3(0.0, 0.0, -4.0), 0.75)
+	var target := Doubles.PhysicsCombatTarget.new(Vector3(0.0, 0.0, -8.0), 0.75)
 	root.add_child(blocker)
 	root.add_child(target)
 	await physics_frame
@@ -1347,8 +1180,8 @@ func _test_projectile_world_collision() -> void:
 	var shell = CombatProjectileScript.new()
 	root.add_child(shell)
 	shell.launch(
-		_runtime_bullet(rules, &"StraightBomb"),
-		_emission(Vector3.ZERO, Vector3.FORWARD),
+		_bullets.runtime_bullet(&"StraightBomb"),
+		Bullets.emission(Vector3.ZERO, Vector3.FORWARD),
 		target
 	)
 	shell.advance(0.5)
@@ -1362,8 +1195,8 @@ func _test_projectile_world_collision() -> void:
 	var wave = CombatProjectileScript.new()
 	root.add_child(wave)
 	wave.launch(
-		_runtime_bullet(rules, &"Sound_B"),
-		_emission(Vector3.ZERO, Vector3.FORWARD),
+		_bullets.runtime_bullet(&"Sound_B"),
+		Bullets.emission(Vector3.ZERO, Vector3.FORWARD),
 		target
 	)
 	wave.advance(0.5)
@@ -1376,9 +1209,8 @@ func _test_projectile_world_collision() -> void:
 
 
 func _test_continuous_stream_piercing() -> void:
-	var rules = root.get_node("Rules")
-	var blocker := PhysicsCombatTarget.new(Vector3(0.0, 0.0, -4.0), 0.75)
-	var target := PhysicsCombatTarget.new(Vector3(0.0, 0.0, -8.0), 0.75)
+	var blocker := Doubles.PhysicsCombatTarget.new(Vector3(0.0, 0.0, -4.0), 0.75)
+	var target := Doubles.PhysicsCombatTarget.new(Vector3(0.0, 0.0, -8.0), 0.75)
 	root.add_child(blocker)
 	root.add_child(target)
 	await physics_frame
@@ -1386,8 +1218,8 @@ func _test_continuous_stream_piercing() -> void:
 	var flame = CombatProjectileScript.new()
 	root.add_child(flame)
 	flame.launch(
-		_runtime_bullet(rules, &"Flame_B"),
-		_emission(Vector3.ZERO, Vector3.FORWARD),
+		_bullets.runtime_bullet(&"Flame_B"),
+		Bullets.emission(Vector3.ZERO, Vector3.FORWARD),
 		target
 	)
 	flame.advance(0.5)
@@ -1404,8 +1236,8 @@ func _test_continuous_stream_piercing() -> void:
 	var flame_at_wall = CombatProjectileScript.new()
 	root.add_child(flame_at_wall)
 	flame_at_wall.launch(
-		_runtime_bullet(rules, &"Flame_B"),
-		_emission(Vector3.ZERO, Vector3.FORWARD),
+		_bullets.runtime_bullet(&"Flame_B"),
+		Bullets.emission(Vector3.ZERO, Vector3.FORWARD),
 		target
 	)
 	flame_at_wall.advance(0.5)
@@ -1420,13 +1252,12 @@ func _test_continuous_stream_piercing() -> void:
 
 
 func _test_continuous_stream_damage_split() -> void:
-	var rules = root.get_node("Rules")
-	var flame = _runtime_bullet(rules, &"Flame_B")
+	var flame = _bullets.runtime_bullet(&"Flame_B")
 	var full_burst_damage: float = flame.damage_against(&"Building")
 
 	var pulse_count := 17
 	var pulse = ShotPayloadScript.new(
-		_runtime_bullet(rules, &"Flame_B"), 1.0 / pulse_count
+		_bullets.runtime_bullet(&"Flame_B"), 1.0 / pulse_count
 	)
 	_expect(
 		is_equal_approx(pulse.damage_against(&"Building") * pulse_count, full_burst_damage),
@@ -1469,8 +1300,8 @@ func _test_projectile_damage_scale_isolation() -> void:
 		and is_equal_approx(second_payload.damage_scale, 1.75),
 		"each turret shot must receive its own mutable payload"
 	)
-	var first_target := PhysicsCombatTarget.new(Vector3.ZERO)
-	var second_target := PhysicsCombatTarget.new(Vector3.ZERO)
+	var first_target := Doubles.PhysicsCombatTarget.new(Vector3.ZERO)
+	var second_target := Doubles.PhysicsCombatTarget.new(Vector3.ZERO)
 	root.add_child(first_target)
 	root.add_child(second_target)
 	var resolver = CombatImpactResolverScript.new()
@@ -1487,13 +1318,12 @@ func _test_projectile_damage_scale_isolation() -> void:
 
 
 func _test_impact_resolution() -> void:
-	var rules = root.get_node("Rules")
-	var source := CombatSource.new()
-	var direct := PhysicsCombatTarget.new(Vector3.ZERO)
-	var ally := PhysicsCombatTarget.new(Vector3(2.0, 0.0, 0.0))
+	var source := Doubles.CombatSource.new()
+	var direct := Doubles.PhysicsCombatTarget.new(Vector3.ZERO)
+	var ally := Doubles.PhysicsCombatTarget.new(Vector3(2.0, 0.0, 0.0))
 	ally.owner_player_id = source.owner_player_id
-	var enemy := PhysicsCombatTarget.new(Vector3(3.5, 0.0, 0.0))
-	var outside := PhysicsCombatTarget.new(Vector3(5.0, 0.0, 0.0))
+	var enemy := Doubles.PhysicsCombatTarget.new(Vector3(3.5, 0.0, 0.0))
+	var outside := Doubles.PhysicsCombatTarget.new(Vector3(5.0, 0.0, 0.0))
 	root.add_child(direct)
 	root.add_child(ally)
 	root.add_child(enemy)
@@ -1501,7 +1331,7 @@ func _test_impact_resolution() -> void:
 	await physics_frame
 
 	var resolver = CombatImpactResolverScript.new()
-	var mortar = _runtime_bullet(rules, &"Mortar_B")
+	var mortar = _bullets.runtime_bullet(&"Mortar_B")
 	var results: Array[Dictionary] = resolver.resolve(
 		mortar, direct, Vector3.ZERO, direct, source
 	)
@@ -1520,7 +1350,7 @@ func _test_impact_resolution() -> void:
 	)
 	_expect(is_zero_approx(outside.damage_taken), "a collider outside BlastRadius must remain untouched")
 
-	var shooter := PhysicsCombatTarget.new(Vector3(0.01, 0.0, 0.0))
+	var shooter := Doubles.PhysicsCombatTarget.new(Vector3(0.01, 0.0, 0.0))
 	shooter.owner_player_id = source.owner_player_id
 	root.add_child(shooter)
 	await physics_frame
@@ -1532,7 +1362,7 @@ func _test_impact_resolution() -> void:
 	shooter.free()
 
 	ally.damage_taken = 0.0
-	var heat = _runtime_bullet(rules, &"HEAT_B")
+	var heat = _bullets.runtime_bullet(&"HEAT_B")
 	var direct_friendly_results: Array[Dictionary] = resolver.resolve(
 		heat, ally, ally.global_position, ally, source
 	)
@@ -1550,7 +1380,7 @@ func _test_impact_resolution() -> void:
 	ally.damage_taken = 0.0
 	enemy.damage_taken = 0.0
 	outside.damage_taken = 0.0
-	var barrel_bomb = _runtime_bullet(rules, &"BarrelBomb")
+	var barrel_bomb = _bullets.runtime_bullet(&"BarrelBomb")
 	resolver.resolve(barrel_bomb, direct, Vector3.ZERO, null, null)
 	var enemy_surface_distance: float = enemy.global_position.length() - enemy.hit_radius
 	var expected_falloff: float = (
@@ -1674,7 +1504,7 @@ func _test_muzzle_fx_bank_smoke() -> void:
 			"direction": Vector3.FORWARD,
 		})
 		await create_timer(0.28).timeout
-		var smoke_particles := _muzzle_effects(&"barrel_smoke", emission_index)
+		var smoke_particles := Fx.muzzle_effects(root, &"barrel_smoke", emission_index)
 		_expect(
 			smoke_particles.size() == 2,
 			"%s must emit two particles between its authored start/stop frames"
@@ -1703,7 +1533,7 @@ func _test_muzzle_fx_bank_smoke() -> void:
 			"%s smoke must use bank texture, size, and negative-gravity buoyancy"
 				% String(smoke_case[1])
 		)
-		_free_muzzle_effects()
+		Fx.free_muzzle_effects(root)
 
 	var no_smoke_turret = CombatTurretScript.new()
 	_expect(
@@ -1717,10 +1547,10 @@ func _test_muzzle_fx_bank_smoke() -> void:
 	})
 	await create_timer(0.28).timeout
 	_expect(
-		_muzzle_effects(&"barrel_smoke", 20).is_empty(),
+		Fx.muzzle_effects(root, &"barrel_smoke", 20).is_empty(),
 		"Smuzz2 without an !%Bru bank must not acquire barrel smoke"
 	)
-	_free_muzzle_effects()
+	Fx.free_muzzle_effects(root)
 
 
 func _test_model_fx_bank_casings() -> void:
@@ -1738,7 +1568,7 @@ func _test_model_fx_bank_casings() -> void:
 		[ATMongooseModelScene, &"ATMongooseMissile", 0, 0.0, 0.0, 0.0, []],
 	]
 	for casing_case: Array in cases:
-		_free_muzzle_effects()
+		Fx.free_muzzle_effects(root)
 		var model := (casing_case[0] as PackedScene).instantiate() as Node3D
 		root.add_child(model)
 		var turret = CombatTurretScript.new()
@@ -1793,7 +1623,7 @@ func _test_model_fx_bank_casings() -> void:
 				% String(casing_case[1])
 		)
 		turret.cancel_authored_fire_fx()
-		_free_muzzle_effects()
+		Fx.free_muzzle_effects(root)
 		model.free()
 
 	# Kobra's deployed clip is repaired from source "Fire 1" to
@@ -1822,7 +1652,7 @@ func _test_model_fx_bank_casings() -> void:
 		"Deployed_Fire must emit Kobra's authored Fire 1 casing after conversion"
 	)
 	kobra_turret.cancel_authored_fire_fx()
-	_free_muzzle_effects()
+	Fx.free_muzzle_effects(root)
 	kobra_model.free()
 
 
@@ -1863,7 +1693,7 @@ func _test_model_fx_bank_streams() -> void:
 		[HKFlameModelScene, &"HKFlameTankRight", &"!%01fire"],
 	]
 	for stream_case: Array in cases:
-		_free_muzzle_effects()
+		Fx.free_muzzle_effects(root)
 		var model := (stream_case[0] as PackedScene).instantiate() as Node3D
 		root.add_child(model)
 		var turret = CombatTurretScript.new()
@@ -1919,7 +1749,7 @@ func _test_model_fx_bank_streams() -> void:
 		var projectiles: Array = turret.try_fire_at(stream_request)
 		_expect(
 			projectiles.size() == 1
-			and _muzzle_effects(&"shot_light").is_empty(),
+			and Fx.muzzle_effects(root, &"shot_light").is_empty(),
 			"%s continuous stream must not add a generic ballistic shot light"
 				% String(stream_case[1])
 		)
@@ -1932,13 +1762,13 @@ func _test_model_fx_bank_streams() -> void:
 			if is_instance_valid(projectile) and not projectile.is_queued_for_deletion():
 				projectile.free()
 		turret.cancel_authored_fire_fx()
-		_free_muzzle_effects()
+		Fx.free_muzzle_effects(root)
 		model.free()
 
 
 func _test_turret_projectile_launch() -> void:
 	var _rules = root.get_node("Rules")
-	_free_ground_decals()
+	Fx.free_ground_decals(root)
 	var model := ATMinotaurusModelScene.instantiate() as Node3D
 	root.add_child(model)
 	var turret = CombatTurretScript.new()
@@ -1982,10 +1812,10 @@ func _test_turret_projectile_launch() -> void:
 	if not projectiles.is_empty():
 		var projectile = projectiles[0]
 		var muzzle_flash := root.get_node_or_null("MuzzleFlash_Muzzle3") as Node3D
-		var rear_flashes := _muzzle_effects(&"rear_flash", 0)
+		var rear_flashes := Fx.muzzle_effects(root, &"rear_flash", 0)
 		var rear_flash: Node3D = rear_flashes.front() \
 			if not rear_flashes.is_empty() else null
-		var shot_lights := _muzzle_effects(&"shot_light", 0)
+		var shot_lights := Fx.muzzle_effects(root, &"shot_light", 0)
 		var shot_light := shot_lights.front() as OmniLight3D \
 			if not shot_lights.is_empty() else null
 		_expect(
@@ -2069,9 +1899,9 @@ func _test_turret_projectile_launch() -> void:
 		)
 		var expected_impact_position: Vector3 = projectile.trajectory_impact_position()
 		projectile.advance(10.0)
-		var shell_hits := _impact_effects(&"ShellHit")
+		var shell_hits := Fx.impact_effects(root, &"ShellHit")
 		var shell_hit: Node3D = shell_hits.front() if not shell_hits.is_empty() else null
-		var craters := _ground_decals()
+		var craters := Fx.ground_decals(root)
 		var crater: Node3D = craters.front() if not craters.is_empty() else null
 		var crater_mesh := crater.get_node_or_null("Decal") as MeshInstance3D \
 			if crater != null else null
@@ -2175,15 +2005,15 @@ func _test_turret_projectile_launch() -> void:
 			projectile.free()
 		if muzzle_flash != null and is_instance_valid(muzzle_flash):
 			muzzle_flash.free()
-		_free_muzzle_effects()
-		_free_impact_effects()
-		_free_ground_decals()
+		Fx.free_muzzle_effects(root)
+		Fx.free_impact_effects(root)
+		Fx.free_ground_decals(root)
 	model.free()
 
 
 func _test_mongoose_launch_and_impact_fx() -> void:
 	var _rules = root.get_node("Rules")
-	_free_ground_decals()
+	Fx.free_ground_decals(root)
 	var model := ATMongooseModelScene.instantiate() as Node3D
 	root.add_child(model)
 	var turret = CombatTurretScript.new()
@@ -2222,9 +2052,9 @@ func _test_mongoose_launch_and_impact_fx() -> void:
 		return
 	var fired_emission: Dictionary = turret.last_emissions()[0]
 
-	var front_flashes := _muzzle_effects(&"front_flash")
-	var launch_smokes := _muzzle_effects(&"launch_smoke", 0)
-	var shot_lights := _muzzle_effects(&"shot_light", 0)
+	var front_flashes := Fx.muzzle_effects(root, &"front_flash")
+	var launch_smokes := Fx.muzzle_effects(root, &"launch_smoke", 0)
+	var shot_lights := Fx.muzzle_effects(root, &"shot_light", 0)
 	_expect(
 		front_flashes.size() == 1
 		and front_flashes[0].global_position.is_equal_approx(
@@ -2260,9 +2090,9 @@ func _test_mongoose_launch_and_impact_fx() -> void:
 
 	var projectile = projectiles[0]
 	projectile.advance(1.0)
-	var missile_hits := _impact_effects(&"MissileHit")
+	var missile_hits := Fx.impact_effects(root, &"MissileHit")
 	var missile_hit: Node3D = missile_hits.front() if not missile_hits.is_empty() else null
-	var craters := _ground_decals()
+	var craters := Fx.ground_decals(root)
 	_expect(
 		projectile.finish_reason == &"impact_ground"
 		and missile_hits.size() == 1
@@ -2349,9 +2179,9 @@ func _test_mongoose_launch_and_impact_fx() -> void:
 
 	if is_instance_valid(projectile):
 		projectile.free()
-	_free_muzzle_effects()
-	_free_impact_effects()
-	_free_ground_decals()
+	Fx.free_muzzle_effects(root)
+	Fx.free_impact_effects(root)
+	Fx.free_ground_decals(root)
 	model.free()
 
 
@@ -2392,7 +2222,7 @@ func _test_devastator_missile_launch_blast() -> void:
 		FireRequestScript.at(target_position, model, root)
 	)
 	_expect(projectiles.size() == 1, "the salvo launcher must emit one DevRocket_B")
-	var launch_blasts := _muzzle_effects(&"launch_smoke", 0)
+	var launch_blasts := Fx.muzzle_effects(root, &"launch_smoke", 0)
 	_expect(
 		launch_blasts.size() == 1
 		and launch_blasts[0].global_position.is_equal_approx(
@@ -2409,9 +2239,9 @@ func _test_devastator_missile_launch_blast() -> void:
 	for projectile in projectiles:
 		if is_instance_valid(projectile):
 			projectile.free()
-	_free_muzzle_effects()
-	_free_impact_effects()
-	_free_ground_decals()
+	Fx.free_muzzle_effects(root)
+	Fx.free_impact_effects(root)
+	Fx.free_ground_decals(root)
 	model.free()
 
 
@@ -2460,8 +2290,8 @@ func _test_fixed_turret() -> void:
 	var _rules = root.get_node("Rules")
 	var model := ATInfantryModelScene.instantiate() as Node3D
 	root.add_child(model)
-	_free_muzzle_effects()
-	_free_impact_effects()
+	Fx.free_muzzle_effects(root)
+	Fx.free_impact_effects(root)
 	var turret = CombatTurretScript.new()
 	_expect(
 		turret.configure(&"ATInfGun"),
@@ -2490,10 +2320,10 @@ func _test_fixed_turret() -> void:
 	_expect(projectiles.size() == 1, "ATInfGun must emit its conceptual LMG_B shot")
 	_expect(
 		root.get_node_or_null("MuzzleFlash_Smuzz2") == null
-		and _muzzle_effects(&"shot_light").is_empty(),
+		and Fx.muzzle_effects(root, &"shot_light").is_empty(),
 		"AT Infantry Fire_0 must use only its embedded muzzle flash"
 	)
-	var impacts := _impact_effects(&"Mghit")
+	var impacts := Fx.impact_effects(root, &"Mghit")
 	_expect(
 		impacts.size() == 1
 		and impacts[0].global_position.is_equal_approx(target_position),
@@ -2502,8 +2332,8 @@ func _test_fixed_turret() -> void:
 	for projectile in projectiles:
 		if is_instance_valid(projectile) and not projectile.is_queued_for_deletion():
 			projectile.free()
-	_free_muzzle_effects()
-	_free_impact_effects()
+	Fx.free_muzzle_effects(root)
+	Fx.free_impact_effects(root)
 	model.free()
 
 
@@ -2539,7 +2369,7 @@ func _test_single_axis_turret() -> void:
 	for projectile in close_projectiles:
 		if is_instance_valid(projectile):
 			projectile.free()
-	_free_muzzle_effects()
+	Fx.free_muzzle_effects(root)
 	for unused in 30:
 		if turret.recenter(0.05):
 			break
@@ -2651,7 +2481,7 @@ func _test_parallel_trajectory_salvo() -> void:
 		)
 	for projectile in projectiles:
 		projectile.free()
-	_free_muzzle_effects()
+	Fx.free_muzzle_effects(root)
 	model.free()
 
 
@@ -2664,7 +2494,7 @@ func _test_limited_turret_hull_turn() -> void:
 	var emission: Dictionary = turret.peek_emission()
 	var initial_hull_yaw: float = unit.global_rotation.y
 	var initial_forward: Vector3 = unit.facing_direction()
-	var target := FakeCombatTarget.new(&"None")
+	var target := Doubles.FakeCombatTarget.new(&"None")
 	target.position = unit.global_position - initial_forward * 10.0
 	target.position.y = Vector3(emission["position"]).y
 	_expect(
@@ -2730,7 +2560,7 @@ func _test_fire_while_moving_capability() -> void:
 	forward.y = 0.0
 	forward = forward.normalized()
 	var target_direction := forward.rotated(Vector3.UP, deg_to_rad(60.0))
-	var target := PhysicsCombatTarget.new(
+	var target := Doubles.PhysicsCombatTarget.new(
 		Vector3(emission["position"]) + target_direction * 5.0
 	)
 	root.add_child(target)
@@ -2812,12 +2642,12 @@ func _test_fire_while_moving_capability() -> void:
 	)
 	_expect(
 		absf(
-			rad_to_deg(_horizontal_angle_between(forward, returning_direction))
+			rad_to_deg(Assertions.horizontal_angle_between(forward, returning_direction))
 			- returning_yaw
 		) < 0.1,
 		"the visible Mongoose turret must not snap forward when its target leaves range"
 	)
-	var autonomous_target := PhysicsCombatTarget.new(
+	var autonomous_target := Doubles.PhysicsCombatTarget.new(
 		mongoose.global_position
 			+ forward.rotated(Vector3.UP, deg_to_rad(-60.0)) * 5.0
 	)
@@ -2936,10 +2766,10 @@ func _test_independent_side_turrets() -> void:
 	).normalized()
 	forward.y = 0.0
 	forward = forward.normalized()
-	var side_targets: Array[PhysicsCombatTarget] = []
+	var side_targets: Array[Doubles.PhysicsCombatTarget] = []
 	for angle in [-60.0, 60.0]:
 		var direction := forward.rotated(Vector3.UP, deg_to_rad(angle))
-		var target := PhysicsCombatTarget.new(
+		var target := Doubles.PhysicsCombatTarget.new(
 			flame.global_position + direction * 5.0
 		)
 		target.owner_player_id = 2
@@ -2964,8 +2794,8 @@ func _test_independent_side_turrets() -> void:
 		"opposite side targets must exercise both independent HKFlame turrets"
 	)
 
-	var commanded_target: PhysicsCombatTarget = target_for_weapon.get(0) \
-		as PhysicsCombatTarget
+	var commanded_target: Doubles.PhysicsCombatTarget = target_for_weapon.get(0) \
+		as Doubles.PhysicsCombatTarget
 	var fired_targets: Dictionary = {}
 	flame.weapon_fired.connect(func(
 		projectiles: Array, fired_target: Variant, weapon_index: int
@@ -3006,7 +2836,7 @@ func _test_independent_side_turrets() -> void:
 	).normalized()
 	blind_forward.y = 0.0
 	blind_forward = blind_forward.normalized()
-	var blind_target := PhysicsCombatTarget.new(
+	var blind_target := Doubles.PhysicsCombatTarget.new(
 		blind_flame.global_position + blind_forward * 5.0
 	)
 	root.add_child(blind_target)
@@ -3060,7 +2890,7 @@ func _test_turret_recenter_after_move() -> void:
 	var rest_direction: Vector3 = rest_emission["direction"]
 	rest_direction.y = 0.0
 	rest_direction = rest_direction.normalized()
-	var target := FakeCombatTarget.new(&"None")
+	var target := Doubles.FakeCombatTarget.new(&"None")
 	target.position = Vector3(rest_emission["position"]) \
 		+ rest_direction.rotated(Vector3.UP, deg_to_rad(30.0)) * 10.0
 
@@ -3095,7 +2925,7 @@ func _test_turret_recenter_after_move() -> void:
 	var returning_direction: Vector3 = turret.peek_emission()["direction"]
 	_expect(
 		absf(
-			rad_to_deg(_horizontal_angle_between(rest_direction, returning_direction))
+			rad_to_deg(Assertions.horizontal_angle_between(rest_direction, returning_direction))
 			- returning_yaw
 		) < 0.1,
 		"the visible turret pose and its logical servo angle must remain synchronized"
@@ -3105,7 +2935,7 @@ func _test_turret_recenter_after_move() -> void:
 	unit._process(1.0 / 60.0)
 	var reacquired_direction: Vector3 = turret.peek_emission()["direction"]
 	_expect(
-		rad_to_deg(_horizontal_angle_between(returning_direction, reacquired_direction))
+		rad_to_deg(Assertions.horizontal_angle_between(returning_direction, reacquired_direction))
 			<= 5.0 / 3.0 + 0.1,
 		"a repeated attack order must resume from the visible pose without restoring a cached yaw"
 	)
@@ -3145,9 +2975,9 @@ func _test_unit_attack_order() -> void:
 	unit.replace_visual_scene(ATAPCModelScene)
 	var emission: Dictionary = unit.turret_emission_points()[0]
 	var direction: Vector3 = emission["direction"]
-	var target := FakeCombatTarget.new(&"None")
+	var target := Doubles.FakeCombatTarget.new(&"None")
 	target.position = Vector3(emission["position"]) + direction * 5.0
-	var aircraft := FakeCombatTarget.new(&"Aircraft", true)
+	var aircraft := Doubles.FakeCombatTarget.new(&"Aircraft", true)
 	aircraft.position = target.position
 	_expect(unit.can_attack(target), "an armed APC must accept a compatible ground target")
 	_expect(not unit.can_attack(aircraft), "the APC must reject a target its bullet cannot hit")
@@ -3349,7 +3179,7 @@ func _test_unit_attack_order() -> void:
 		not minotaurus_fired.is_empty(),
 		"a compound Minotaurus turret must fire at a real unit after completing its aim"
 	)
-	var minotaurus_visible_yaw := rad_to_deg(_horizontal_angle_between(
+	var minotaurus_visible_yaw := rad_to_deg(Assertions.horizontal_angle_between(
 		minotaurus_forward,
 		Vector3(minotaurus.combat_turrets[0].peek_emission()["direction"])
 	))
@@ -3384,7 +3214,7 @@ func _test_unit_attack_order() -> void:
 		) <= 0.5,
 		"the Minotaurus salvo animation must consume the matching part of ReloadCount"
 	)
-	minotaurus_visible_yaw = rad_to_deg(_horizontal_angle_between(
+	minotaurus_visible_yaw = rad_to_deg(Assertions.horizontal_angle_between(
 		minotaurus_forward,
 		Vector3(minotaurus.combat_turrets[0].peek_emission()["direction"])
 	))
@@ -3746,7 +3576,7 @@ func _test_obstructed_attack_order() -> void:
 	)
 	cliff.free()
 
-	var wall := PhysicsBuildingBlocker.new(midpoint, 2.5)
+	var wall := Doubles.PhysicsBuildingBlocker.new(midpoint, 2.5)
 	root.add_child(wall)
 	await physics_frame
 	_expect(
@@ -3755,7 +3585,7 @@ func _test_obstructed_attack_order() -> void:
 	)
 	wall.free()
 
-	var passer_by := PhysicsCombatTarget.new(midpoint, 2.5)
+	var passer_by := Doubles.PhysicsCombatTarget.new(midpoint, 2.5)
 	root.add_child(passer_by)
 	await physics_frame
 	_expect(
@@ -3878,9 +3708,9 @@ func _test_building_edge_range() -> void:
 	var missile = CombatProjectileScript.new()
 	root.add_child(missile)
 	building.owner_player_id = 1
-	var trooper_source := CombatSource.new()
+	var trooper_source := Doubles.CombatSource.new()
 	trooper_source.owner_player_id = 1
-	var missile_bullet = _runtime_bullet(root.get_node("Rules"), &"HEATInf_B")
+	var missile_bullet = _bullets.runtime_bullet(&"HEATInf_B")
 	var building_durability_before: float = building.health + building.shields
 	var explosion_positions: Array[Vector3] = []
 	var impact_damage: Array[float] = []
@@ -3994,7 +3824,7 @@ func _test_hktrooper_building_damage() -> void:
 
 	var ground_first_missile = CombatProjectileScript.new()
 	root.add_child(ground_first_missile)
-	var ground_first_bullet = _runtime_bullet(root.get_node("Rules"), &"HEATInf_B")
+	var ground_first_bullet = _bullets.runtime_bullet(&"HEATInf_B")
 	var ground_first_origin := building.combat_aim_position_from(
 		trooper.global_position
 	) + forward.normalized() * 2.0
@@ -4044,7 +3874,7 @@ func _test_hkstarport_courtyard_collision() -> void:
 	root.add_child(projectile)
 	_expect(
 		projectile.launch(
-			_runtime_bullet(root.get_node("Rules"), &"HEATInf_B"),
+			_bullets.runtime_bullet(&"HEATInf_B"),
 			{
 				"position": origin,
 				"direction": origin.direction_to(destination),
@@ -4118,7 +3948,7 @@ func _test_defensive_building_auto_fire() -> void:
 		var direction: Vector3 = emission.get("direction", Vector3.BACK)
 		var target_position := Vector3(emission["position"]) \
 			+ direction.normalized() * 5.0
-		var target := PhysicsCombatTarget.new(target_position)
+		var target := Doubles.PhysicsCombatTarget.new(target_position)
 		target.owner_player_id = 2
 		target.add_to_group(&"units")
 		root.add_child(target)
@@ -4176,7 +4006,7 @@ func _test_defensive_building_visible_aim() -> void:
 		"ATRocketTurret must advance its logical yaw toward a lateral target"
 	)
 	_expect(
-		_horizontal_angle_between(initial_direction, visible_direction)
+		Assertions.horizontal_angle_between(initial_direction, visible_direction)
 			>= deg_to_rad(30.0),
 		"ATRocketTurret's visible authored pivot must follow its logical yaw"
 	)
@@ -4230,7 +4060,7 @@ func _test_atrocket_turret_muzzle_matches_authored_animation() -> void:
 	var direction: Vector3 = initial_emission.get("direction", Vector3.BACK)
 	var target_position := Vector3(initial_emission["position"]) \
 		+ direction.normalized() * 5.0
-	var target := PhysicsCombatTarget.new(target_position)
+	var target := Doubles.PhysicsCombatTarget.new(target_position)
 	target.owner_player_id = 2
 	target.add_to_group(&"units")
 	root.add_child(target)
@@ -4307,7 +4137,7 @@ func _test_defensive_turret_stop_clears_muzzle_flash() -> void:
 		var turret = building.combat_turrets[0]
 		var emission: Dictionary = turret.peek_emission()
 		var direction: Vector3 = emission.get("direction", Vector3.BACK)
-		var target := PhysicsCombatTarget.new(
+		var target := Doubles.PhysicsCombatTarget.new(
 			Vector3(emission["position"]) + direction.normalized() * 5.0
 		)
 		target.owner_player_id = 2
@@ -4461,7 +4291,7 @@ func _test_building_attack_order() -> void:
 	var direction: Vector3 = Vector3(
 		emission.get("direction", Vector3.BACK)
 	).normalized()
-	var target := PhysicsCombatTarget.new(
+	var target := Doubles.PhysicsCombatTarget.new(
 		Vector3(emission["position"]) + direction * 100.0
 	)
 	target.owner_player_id = 2
@@ -4520,15 +4350,15 @@ func _test_building_obstructed_targets() -> void:
 	direction = direction.normalized()
 	var side := direction.rotated(Vector3.UP, PI * 0.5)
 
-	var covered := PhysicsCombatTarget.new(muzzle + direction * 8.0)
+	var covered := Doubles.PhysicsCombatTarget.new(muzzle + direction * 8.0)
 	covered.owner_player_id = 2
 	covered.add_to_group(&"units")
 	root.add_child(covered)
-	var exposed := PhysicsCombatTarget.new(muzzle + side * 8.0)
+	var exposed := Doubles.PhysicsCombatTarget.new(muzzle + side * 8.0)
 	exposed.owner_player_id = 2
 	exposed.add_to_group(&"units")
 	root.add_child(exposed)
-	var obstacle := PhysicsBuildingBlocker.new(muzzle + direction * 4.0, 2.5)
+	var obstacle := Doubles.PhysicsBuildingBlocker.new(muzzle + direction * 4.0, 2.5)
 	obstacle.owner_player_id = 1
 	root.add_child(obstacle)
 	await physics_frame
@@ -4679,7 +4509,7 @@ func _test_kindjal_deployed_fire() -> void:
 	var emission: Dictionary = active_turrets[0].peek_emission()
 	var forward: Vector3 = Vector3(emission["direction"])
 	forward.y = 0.0
-	var target := FakeCombatTarget.new(&"Heavy")
+	var target := Doubles.FakeCombatTarget.new(&"Heavy")
 	target.position = kindjal.global_position + forward.normalized() * 20.0
 
 	var fired_bullets: Array[StringName] = []
@@ -4823,7 +4653,7 @@ func _test_kobra_deployed_range_acquisition() -> void:
 	var forward := Vector3(emission["direction"])
 	forward.y = 0.0
 	forward = forward.normalized()
-	var target := FakeCombatTarget.new(&"Heavy")
+	var target := Doubles.FakeCombatTarget.new(&"Heavy")
 	var failed_distances: Array[float] = []
 	for distance_tenths in range(10, 321):
 		var distance := float(distance_tenths) * 0.1
@@ -4956,50 +4786,18 @@ func _test_kobra_travel_fire_pose_boundaries() -> void:
 	kobra.free()
 
 
-func _runtime_bullet(_rules: Object, bullet_id: StringName):
-	var config: Resource = _combat_catalog.bullet(bullet_id)
-	var warhead_id: StringName = config.warhead_id if config != null else &""
-	var warhead_config: Resource = _combat_catalog.warhead(warhead_id) if warhead_id != &"" else null
-	return CombatBulletScript.new(config, warhead_config)
-
-
-## Mirrors CombatTurret.configure()'s impact_visual_scenes resolution, which
-## _runtime_bullet() above deliberately skips for callers that never inspect
-## impact FX.
-func _bullet_with_impact_scenes(bullet_id: StringName):
-	var config: Resource = _combat_catalog.bullet(bullet_id)
-	var warhead_id: StringName = config.warhead_id if config != null else &""
-	var warhead_config: Resource = _combat_catalog.warhead(warhead_id) if warhead_id != &"" else null
-	var impact_scenes := {}
-	for value in config.explosion_effect_ids:
-		var effect_id := StringName(String(value))
-		var scene: PackedScene = _combat_catalog.scene(
-			String(config.impact_scene_paths.get(effect_id, ""))
-		)
-		if scene != null:
-			impact_scenes[effect_id] = scene
-	return CombatBulletScript.new(config, warhead_config, null, impact_scenes)
-
-
-func _emission(position: Vector3, direction: Vector3) -> Dictionary:
-	return {
-		"position": position,
-		"direction": direction.normalized(),
-	}
-
-
 ## DeviateHit is a marker-only rig (see ImpactDebris) shared by ORDeviator's
 ## Deviate_B and ORGasTurret's Gas_B -- both resolve through the same effect
 ## id, so this one case covers the ImpactDebris fix for both units.
 func _test_deviate_hit_impact_fx() -> void:
-	_free_impact_effects()
-	var bullet = _bullet_with_impact_scenes(&"Deviate_B")
+	Fx.free_impact_effects(root)
+	var bullet = _bullets.bullet_with_impact_scenes(&"Deviate_B")
 	var launch_position := Vector3(0.0, 1.0, 0.0)
 	var ground_position := Vector3(0.0, 0.0, -6.0)
 	var projectile = CombatProjectileScript.new()
 	root.add_child(projectile)
 	_expect(
-		projectile.launch(bullet, _emission(launch_position, Vector3.FORWARD), ground_position),
+		projectile.launch(bullet, Bullets.emission(launch_position, Vector3.FORWARD), ground_position),
 		"Deviate_B must accept an in-range attack-ground point"
 	)
 	projectile.advance(2.0)
@@ -5007,7 +4805,7 @@ func _test_deviate_hit_impact_fx() -> void:
 		projectile.finish_reason == &"impact_ground",
 		"Deviate_B must resolve its impact at the sampled ground point"
 	)
-	var deviate_hits := _impact_effects(&"DeviateHit")
+	var deviate_hits := Fx.impact_effects(root, &"DeviateHit")
 	var deviate_hit: Node3D = deviate_hits.front() if not deviate_hits.is_empty() else null
 	_expect(
 		deviate_hits.size() == 1
@@ -5054,7 +4852,7 @@ func _test_deviate_hit_impact_fx() -> void:
 	await create_timer(1.1).timeout
 	if is_instance_valid(projectile):
 		projectile.free()
-	_free_impact_effects()
+	Fx.free_impact_effects(root)
 
 
 ## Rules.txt authors ExplosionType twice on DevPlasma_B and the later DevImpact
@@ -5062,14 +4860,14 @@ func _test_deviate_hit_impact_fx() -> void:
 ## the generic ShellHit burst rockets and shells use. ShellHit's own rig stays
 ## covered by the Minotaurus/KobraHowitzer_B case above.
 func _test_dev_impact_fx() -> void:
-	_free_impact_effects()
-	var bullet = _bullet_with_impact_scenes(&"DevPlasma_B")
+	Fx.free_impact_effects(root)
+	var bullet = _bullets.bullet_with_impact_scenes(&"DevPlasma_B")
 	var launch_position := Vector3(0.0, 1.0, 0.0)
 	var ground_position := Vector3(0.0, 0.0, -8.0)
 	var projectile = CombatProjectileScript.new()
 	root.add_child(projectile)
 	_expect(
-		projectile.launch(bullet, _emission(launch_position, Vector3.FORWARD), ground_position),
+		projectile.launch(bullet, Bullets.emission(launch_position, Vector3.FORWARD), ground_position),
 		"DevPlasma_B must accept an in-range attack-ground point"
 	)
 	projectile.advance(2.0)
@@ -5082,10 +4880,10 @@ func _test_dev_impact_fx() -> void:
 		"the later ExplosionType must override the earlier one, leaving DevImpact alone"
 	)
 	_expect(
-		_impact_effects(&"ShellHit").is_empty(),
+		Fx.impact_effects(root, &"ShellHit").is_empty(),
 		"DevPlasma_B must not spawn the generic ShellHit burst rockets and shells use"
 	)
-	var dev_impacts := _impact_effects(&"DevImpact")
+	var dev_impacts := Fx.impact_effects(root, &"DevImpact")
 	var dev_impact: Node3D = dev_impacts.front() if not dev_impacts.is_empty() else null
 	_expect(
 		dev_impacts.size() == 1
@@ -5193,4 +4991,4 @@ func _test_dev_impact_fx() -> void:
 	await create_timer(1.1).timeout
 	if is_instance_valid(projectile):
 		projectile.free()
-	_free_impact_effects()
+	Fx.free_impact_effects(root)

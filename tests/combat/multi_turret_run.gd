@@ -11,85 +11,15 @@ extends "res://tests/support/suite.gd"
 const LegacyRulesFixture := preload("res://tests/support/legacy_rules_fixture.gd")
 const UnitScene := preload("res://scenes/units/unit.tscn")
 const CombatTurretScript := preload("res://scripts/combat/combat_turret.gd")
+const Doubles := preload("res://tests/combat/support/combat_doubles.gd")
+const Fx := preload("res://tests/combat/support/combat_fx_probe.gd")
+const Assertions := preload("res://tests/combat/support/combat_assertions.gd")
 const HKDevastatorModelScene := preload(
 	"res://assets/converted/models/HK_devastator_H0/HK_devastator_H0.scn"
 )
 const IMAdvSardaukarModelScene := preload(
 	"res://assets/converted/models/IM_ADVSardaukar_H0/IM_ADVSardaukar_H0.scn"
 )
-
-class FakeCombatTarget extends RefCounted:
-	var armour_type: StringName
-	var airborne := false
-	var position := Vector3.ZERO
-	var owner_player_id := 2
-
-	func _init(target_armour: StringName, target_airborne := false) -> void:
-		armour_type = target_armour
-		airborne = target_airborne
-
-	func combat_armour_type() -> StringName:
-		return armour_type
-
-	func combat_is_airborne() -> bool:
-		return airborne
-
-	func combat_aim_position() -> Vector3:
-		return position
-
-	func combat_is_alive() -> bool:
-		return true
-
-	func combat_hit_radius() -> float:
-		return 0.25
-
-	func is_enemy_of(player_id: int) -> bool:
-		return owner_player_id != player_id
-
-	func combat_owner_player_id() -> int:
-		return owner_player_id
-
-	func take_damage(_amount: float, _death_cause: StringName = &"") -> void:
-		pass
-
-
-class PhysicsCombatTarget extends StaticBody3D:
-	var owner_player_id := 2
-
-	func _init(world_position: Vector3, radius := 0.5) -> void:
-		position = world_position
-		collision_layer = 2
-		collision_mask = 0
-		var collision := CollisionShape3D.new()
-		var sphere := SphereShape3D.new()
-		sphere.radius = radius
-		collision.shape = sphere
-		add_child(collision)
-
-	func combat_armour_type() -> StringName:
-		return &"None"
-
-	func combat_is_airborne() -> bool:
-		return false
-
-	func combat_aim_position() -> Vector3:
-		return global_position
-
-	func combat_is_alive() -> bool:
-		return true
-
-	func combat_hit_radius() -> float:
-		return 0.5
-
-	func is_enemy_of(player_id: int) -> bool:
-		return owner_player_id != player_id
-
-	func combat_owner_player_id() -> int:
-		return owner_player_id
-
-	func take_damage(_amount: float, _death_cause: StringName = &"") -> void:
-		pass
-
 
 func _initialize() -> void:
 	LegacyRulesFixture.install(root)
@@ -132,7 +62,7 @@ func _test_devastator_combined_salvo() -> void:
 	var forward: Vector3 = devastator.facing_direction()
 	forward.y = 0.0
 	forward = forward.normalized()
-	var target := FakeCombatTarget.new(&"None")
+	var target := Doubles.FakeCombatTarget.new(&"None")
 	target.position = devastator.global_position \
 		+ forward.rotated(Vector3.UP, deg_to_rad(60.0)) * 12.0
 	target.position.y = Vector3(gun.peek_emission()["position"]).y
@@ -163,7 +93,7 @@ func _test_devastator_combined_salvo() -> void:
 		fired_weapons.has(0),
 		"the hull-mounted plasma gun must engage the same target instead of idling"
 	)
-	var bearing := _horizontal_angle_between(
+	var bearing := Assertions.horizontal_angle_between(
 		devastator.facing_direction(), target.position - devastator.global_position
 	)
 	_expect(
@@ -174,7 +104,7 @@ func _test_devastator_combined_salvo() -> void:
 	for projectile in fired:
 		if is_instance_valid(projectile) and not projectile.is_queued_for_deletion():
 			projectile.free()
-	_free_muzzle_effects()
+	Fx.free_muzzle_effects(root)
 	devastator.free()
 
 
@@ -199,7 +129,7 @@ func _test_pursuit_range_uses_shortest_usable_weapon() -> void:
 	var stand_off: float = (
 		gun.maximum_range_world() + missile.maximum_range_world()
 	) * 0.5
-	var target = PhysicsCombatTarget.new(
+	var target = Doubles.PhysicsCombatTarget.new(
 		devastator.global_position + forward * stand_off
 	)
 	root.add_child(target)
@@ -242,7 +172,7 @@ func _test_pursuit_range_uses_shortest_usable_weapon() -> void:
 	sardaukar.replace_visual_scene(IMAdvSardaukarModelScene)
 	var rifle = sardaukar.combat_turrets[0]
 	var knife = sardaukar.combat_turrets[1]
-	var knife_victim = PhysicsCombatTarget.new(
+	var knife_victim = Doubles.PhysicsCombatTarget.new(
 		sardaukar.global_position + forward * (rifle.maximum_range_world() * 0.9)
 	)
 	root.add_child(knife_victim)
@@ -258,7 +188,7 @@ func _test_pursuit_range_uses_shortest_usable_weapon() -> void:
 	for projectile in fired:
 		if is_instance_valid(projectile) and not projectile.is_queued_for_deletion():
 			projectile.free()
-	_free_muzzle_effects()
+	Fx.free_muzzle_effects(root)
 	knife_victim.free()
 	sardaukar.free()
 	target.free()
@@ -279,7 +209,7 @@ func _test_idle_turret_engages_during_attack_order() -> void:
 	var forward: Vector3 = devastator.facing_direction()
 	forward.y = 0.0
 	forward = forward.normalized()
-	var aircraft := FakeCombatTarget.new(&"None", true)
+	var aircraft := Doubles.FakeCombatTarget.new(&"None", true)
 	aircraft.position = devastator.global_position \
 		+ forward.rotated(Vector3.UP, deg_to_rad(90.0)) * 10.0
 	aircraft.position.y = devastator.global_position.y + 8.0
@@ -289,7 +219,7 @@ func _test_idle_turret_engages_during_attack_order() -> void:
 	)
 	_expect(missile.can_target(aircraft), "DevRocket_B must accept an aircraft")
 
-	var ground_enemy = PhysicsCombatTarget.new(
+	var ground_enemy = Doubles.PhysicsCombatTarget.new(
 		devastator.global_position + forward.rotated(Vector3.UP, deg_to_rad(-30.0)) * 10.0
 	)
 	root.add_child(ground_enemy)
@@ -321,21 +251,6 @@ func _test_idle_turret_engages_during_attack_order() -> void:
 	for projectile in fired:
 		if is_instance_valid(projectile) and not projectile.is_queued_for_deletion():
 			projectile.free()
-	_free_muzzle_effects()
+	Fx.free_muzzle_effects(root)
 	ground_enemy.free()
 	devastator.free()
-
-
-
-func _horizontal_angle_between(a: Vector3, b: Vector3) -> float:
-	var a_horizontal := Vector2(a.x, a.z)
-	var b_horizontal := Vector2(b.x, b.z)
-	if a_horizontal.is_zero_approx() or b_horizontal.is_zero_approx():
-		return 0.0
-	return absf(angle_difference(a_horizontal.angle(), b_horizontal.angle()))
-
-
-func _free_muzzle_effects() -> void:
-	for child in root.get_children():
-		if child.has_meta("combat_muzzle_fx"):
-			child.free()
