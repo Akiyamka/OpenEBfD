@@ -26,6 +26,12 @@ const RESPONSIBILITY_HARD := 1.0
 const COURSE_DAMPING_SHARE := 0.35
 const SQUEEZE_RESULT_FACTOR := 1.0
 const SQUEEZE_COOLDOWN_TICKS := 6
+## Combined-radius scale for the direct full-speed squeeze branch's clear-path
+## check against other agents. Below 1.0 so the bounded elastic overlap
+## `separation_velocity` already relies on for an ordinary crowd squeeze still
+## reads as clear, while a friendly genuinely at contact still drives the
+## fraction toward zero instead of being rammed at full speed.
+const SQUEEZE_CONTACT_RADIUS_FACTOR := 0.8
 
 var runtime_map = null
 var stabilizer = null
@@ -183,7 +189,13 @@ func resolve_velocity(
 	# forever without ever compounding into real progress. A short cooldown
 	# keeps the fallback available for a few ticks after the last blocked one,
 	# so a genuine squeeze-through gets more than a single attempt.
-	var was_stalled := float(agent.get("blocked_time", 0.0)) > 0.0 \
+	# A single tick above `delta` is required (not `> 0.0`) because
+	# `_apply_resolved_velocity`'s displacement check (`ground_navigation.gd`)
+	# reports exactly one blocked tick on an agent's very first move after a
+	# fresh order or reset, before any achieved-velocity history exists — a
+	# one-tick blip, not a real stall, and it must not itself open six ticks
+	# of squeeze fallback for an otherwise freely-moving agent.
+	var was_stalled := float(agent.get("blocked_time", 0.0)) > delta \
 		or int(agent.get("_squeeze_cooldown", 0)) > 0
 	if was_stalled:
 		# The ORCA cone itself is what throttles speed this deep into a tight
@@ -202,7 +214,35 @@ func resolve_velocity(
 		var direct_displacement := Vector3(route_direction.x, 0.0, route_direction.y) * max_speed * delta
 		var squeeze_velocity: Vector2
 		if not route_direction.is_zero_approx() and stabilizer.motion_is_passable(agent, direct_displacement):
-			squeeze_velocity = route_direction * max_speed
+			# `motion_is_passable` only clears static terrain; a stationary
+			# (idle/held) neighbour must also block this branch, or it rams
+			# straight through at full speed instead of yielding to the
+			# reciprocal solution. A MOVING neighbour is deliberately exempt:
+			# this direct branch is what lets two reciprocally moving agents
+			# actually squeeze past each other at cruise speed in a tight
+			# corridor, relying on the bounded elastic `separation_velocity`
+			# (tick's apply phase) to keep that temporary overlap non-
+			# penetrating -- restricting it here too would throttle every
+			# ordinary moving-crowd squeeze back down to the same deadlock
+			# this fallback exists to escape.
+			var stationary_nearby: Array = []
+			for other in nearby:
+				if other["unit"] == unit:
+					continue
+				var other_moving := true
+				if other.has("_v_pref"):
+					other_moving = not (other["_v_pref"] as Vector3).is_zero_approx()
+				if not other_moving:
+					stationary_nearby.append(other)
+			# Scale by how much of the direct sweep is clear of every
+			# stationary neighbour at SQUEEZE_CONTACT_RADIUS_FACTOR, so one
+			# sitting at genuine contact drives this toward zero. The
+			# strictly-greater dot-product comparison below then keeps the
+			# safer reciprocal solution instead of ramming through it.
+			var unit_fraction: float = stabilizer.unit_sweep_fraction(
+				agent, direct_displacement, stationary_nearby, SQUEEZE_CONTACT_RADIUS_FACTOR
+			)
+			squeeze_velocity = route_direction * max_speed * unit_fraction
 		else:
 			var hard_only = _linear_program_2(hard_lines, max_speed, v_pref, false)
 			squeeze_velocity = (hard_only["velocity"] as Vector2) * SQUEEZE_RESULT_FACTOR \

@@ -157,6 +157,9 @@ func _initialize() -> void:
 	_test_jagged_boundary_steering_stays_smooth(grid)
 	_test_slots_and_collision(grid)
 	_test_slide_around_stopped_friend(grid)
+	_test_turning_unit_arcs_around_stopped_friend(grid)
+	_test_turn_in_place_counts_as_blocked_and_triggers_yield(grid)
+	_test_squeeze_does_not_ram_adjacent_friend(grid)
 	_test_group_convergence(grid)
 	_test_group_rounds_sharp_corner(grid)
 	_test_bunched_group_reverses_at_corner(grid)
@@ -1138,12 +1141,6 @@ func _test_long_steering_arc_does_not_periodically_stop(grid: MapNavigationGrid)
 	root.add_child(navigation)
 	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize for sustained steering arcs")
-	_expect(
-		not navigation.avoidance.turn_rate_stabilization_enabled,
-		"navigation-side turn-rate stabilization must stay disabled for the runtime comparison"
-	)
-	# This white-box scenario still exercises the dormant implementation so it
-	# remains safe to switch back on after the gameplay comparison.
 	navigation.avoidance.turn_rate_stabilization_enabled = true
 	var unit := FakeTurningUnit.new(3.0)
 	unit.move_speed = 4.0
@@ -1531,6 +1528,138 @@ func _test_slide_around_stopped_friend(grid: MapNavigationGrid) -> void:
 	for _iteration in 100:
 		navigation.call("_navigation_tick", 0.05)
 	_expect(runner.global_position.distance_to(destination) < 1.0, "a unit must slide around a stopped friend on its route")
+
+	navigation.queue_free()
+	blocker.queue_free()
+	runner.queue_free()
+
+
+## Regression for the reported jitter: a non-omnidirectional unit ordered to a
+## point behind an adjacent friendly used to ram/stop/turn-a-few-degrees in a
+## loop at the 20 Hz nav tick (turn-rate stabilization disabled, blocked-time
+## measured off solver output instead of displacement, and the squeeze
+## fallback's terrain-only passability check ramming the friendly at full
+## speed). It must instead arc around on a bounded number of driven turns.
+func _test_turning_unit_arcs_around_stopped_friend(grid: MapNavigationGrid) -> void:
+	var navigation := NavigationSystemScript.new()
+	root.add_child(navigation)
+	navigation.set_physics_process(false)
+	_expect(navigation.setup(grid), "navigation system must initialize")
+
+	var blocker := FakeUnit.new(3.0)
+	var runner := FakeTurningUnit.new(3.0)
+	runner.turn_rate = 0.175
+	runner.move_speed = 4.0
+	runner.facing = Vector3.RIGHT
+	root.add_child(blocker)
+	root.add_child(runner)
+	blocker.global_position = Vector3(105.5, 0.0, 100.5)
+	# Near contact: combined radius for two size-3 agents is ~2.52; starting
+	# the runner 2.5 units short of the blocker puts it right at the edge of
+	# contact, exactly the adjacency the field report started from.
+	runner.global_position = Vector3(103.0, 0.0, 100.5)
+	navigation.register_unit(blocker)
+	var destination := Vector3(114.5, 0.0, 100.5)
+	navigation.command_move([runner], destination)
+	for _iteration in 200:
+		navigation.call("_navigation_tick", 0.05)
+	_expect(runner.global_position.distance_to(destination) < 1.5,
+		"a turning unit must reach a destination behind an adjacent friend instead of jittering forever")
+	_expect(runner.turn_starts <= 3,
+		"arcing around an adjacent friend must stay on a handful of driven turns, not repeatedly stop-turn-step (%d turn starts)" \
+			% runner.turn_starts)
+
+	navigation.queue_free()
+	blocker.queue_free()
+	runner.queue_free()
+
+
+## White-box: a turn-in-place tick reports non-zero solver velocity but near-
+## zero actual displacement. `blocked_time` must still accrue from that (via
+## the previous tick's `_achieved_velocity`), so the friendly-yield path
+## fires and a friendly sitting on the route steps aside.
+func _test_turn_in_place_counts_as_blocked_and_triggers_yield(grid: MapNavigationGrid) -> void:
+	var navigation := NavigationSystemScript.new()
+	root.add_child(navigation)
+	navigation.set_physics_process(false)
+	_expect(navigation.setup(grid), "navigation system must initialize")
+
+	var blocker := FakeUnit.new(3.0)
+	var runner := FakeTurningUnit.new(3.0)
+	runner.turn_rate = 0.175
+	runner.move_speed = 4.0
+	# Facing squarely away from the route forces sustained turn-in-place
+	# (bearing far beyond the driven-arc capture window) instead of a
+	# gradually steered arc, so displacement stays ~zero tick after tick.
+	runner.facing = Vector3.LEFT
+	root.add_child(blocker)
+	root.add_child(runner)
+	blocker.global_position = Vector3(102.5, 0.0, 100.5)
+	runner.global_position = Vector3(100.5, 0.0, 100.5)
+	navigation.register_unit(blocker)
+	navigation.command_move([runner], Vector3(114.5, 0.0, 100.5))
+	navigation.call("_navigation_tick", 0.05)
+	for _iteration in 4:
+		navigation.call("_navigation_tick", 0.05)
+	var runner_agent: Dictionary = navigation._agents[runner.get_instance_id()]
+	_expect(float(runner_agent["blocked_time"]) > 0.0,
+		"a turn-in-place tick must accrue blocked_time from displacement, not just solver velocity")
+
+	var blocker_start := blocker.global_position
+	var yield_ticks := ceili(
+		(NavConstantsScript.FRIENDLY_YIELD_TRIGGER_SECONDS + NavConstantsScript.FRIENDLY_YIELD_SECONDS) / 0.05
+	) + 5
+	for _iteration in yield_ticks:
+		navigation.call("_navigation_tick", 0.05)
+	_expect(blocker.global_position.distance_to(blocker_start) > 0.2,
+		"a friendly on a stalled turning unit's route must be asked to yield")
+
+	navigation.queue_free()
+	blocker.queue_free()
+	runner.queue_free()
+
+
+## White-box: once `blocked_time` is nonzero, the squeeze fallback's direct
+## full-speed branch must not ignore a friendly at contact on the route — it
+## used to (a terrain-only passability check), ramming straight through it.
+func _test_squeeze_does_not_ram_adjacent_friend(grid: MapNavigationGrid) -> void:
+	var navigation := NavigationSystemScript.new()
+	root.add_child(navigation)
+	navigation.set_physics_process(false)
+	_expect(navigation.setup(grid), "navigation system must initialize")
+
+	var blocker := FakeUnit.new(3.0)
+	var runner := FakeUnit.new(3.0)
+	root.add_child(blocker)
+	root.add_child(runner)
+	blocker.global_position = Vector3(102.6, 0.0, 100.5)
+	runner.global_position = Vector3(100.5, 0.0, 100.5)
+	navigation.register_unit(blocker)
+	navigation.register_unit(runner)
+	var runner_agent: Dictionary = navigation._agents[runner.get_instance_id()]
+	# Force the squeeze gate open exactly as a real stall would over time.
+	runner_agent["blocked_time"] = NavConstantsScript.FRIENDLY_YIELD_TRIGGER_SECONDS
+	navigation._agents[runner.get_instance_id()] = runner_agent
+	var blocker_agent: Dictionary = navigation._agents[blocker.get_instance_id()]
+	# A real navigation tick's phase 1 stamps `_v_pref` on every agent
+	# (idle ones included, as ZERO) before phase 2 ever runs; this direct
+	# white-box call bypasses that, so set it explicitly to mark the blocker
+	# idle — the squeeze branch only restricts speed against a stationary
+	# neighbour, by design, so a reciprocal moving-crowd squeeze keeps its
+	# full-speed pass-through.
+	blocker_agent["_v_pref"] = Vector3.ZERO
+	navigation._agents[blocker.get_instance_id()] = blocker_agent
+
+	var direction_to_blocker := runner.global_position.direction_to(blocker.global_position)
+	var nearby: Array = [runner_agent, blocker_agent]
+	var result: Dictionary = navigation.avoidance.resolve_velocity(
+		runner_agent, direction_to_blocker * runner.move_speed, 0.05, nearby, {}
+	)
+	var resolved: Vector3 = result["velocity"]
+	var toward_blocker := resolved.dot(direction_to_blocker)
+	_expect(toward_blocker < runner.move_speed * 0.5,
+		"a stalled squeeze must not resolve to near-full speed straight into an adjacent friend (got %.2f of %.2f)" \
+			% [toward_blocker, runner.move_speed])
 
 	navigation.queue_free()
 	blocker.queue_free()
