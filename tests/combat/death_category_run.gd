@@ -29,7 +29,14 @@ func _initialize() -> void:
 func _run_case(case_name: String, test: Callable) -> void:
 	_current_case = case_name
 	var failures_before := _failures
+	var assertions_before := _assertions
 	test.call()
+	# A runtime error aborts the case function where it stands, which would
+	# otherwise read as a silent pass.
+	if _assertions == assertions_before:
+		_failures += 1
+		printerr("FAIL: %s: the case ended before asserting anything" % case_name)
+		return
 	if _failures == failures_before:
 		print("PASS: %s" % case_name)
 
