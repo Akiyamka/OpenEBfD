@@ -403,7 +403,7 @@ func _spawn_shrapnel(textures: Array[Texture2D]) -> void:
 
 
 ## Puts one piece on a ballistic arc and fades it where it lands. The metadata
-## is what tests/combat/run.gd reads to check the spray.
+## is what tests/combat/impact_fx_run.gd reads to check the spray.
 func _throw(particle: Node3D, start: Vector3, velocity: Vector3, gravity: float) -> void:
 	var landing_time := _ballistic_landing_time(SHRAPNEL_START_HEIGHT, velocity.y, gravity)
 	particle.set_meta("combat_impact_velocity", velocity)

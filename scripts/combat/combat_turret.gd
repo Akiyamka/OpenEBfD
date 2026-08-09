@@ -103,7 +103,7 @@ var _uses_embedded_muzzle_flash := false
 var _next_muzzle_index := 0
 var _last_emissions: Array[Dictionary] = []
 var _fx = CombatTurretFxScript.new()
-## Test-only shim: tests/combat/run.gd observes scheduled FX timelines.
+## Test-only shim: tests/combat/shot_fx_composition_run.gd observes scheduled FX timelines.
 @warning_ignore("unused_private_class_variable")
 var _particle_timeline_tweens: Array[Tween]:
 	get:
@@ -1460,7 +1460,7 @@ func cancel_authored_fire_fx() -> void:
 	_fx.cancel_authored_fire_fx()
 
 
-## Test-only shim: tests/combat/run.gd calls this by name.
+## Test-only shim: tests/combat/muzzle_fx_run.gd calls this by name.
 func _spawn_muzzle_flash(parent: Node, emission: Dictionary) -> void:
 	_fx.spawn_muzzle_flash(parent, emission)
 ## True for a stream weapon (the Harkonnen Flamer/Flame Tank's Flame_B and

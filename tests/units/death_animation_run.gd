@@ -185,7 +185,7 @@ func _test_vehicle_death_no_clip() -> void:
 ## AnimationPlayer that _weapon_fire_sequences still references: the killing
 ## blow must not try to cast that freed player when _exit_tree() cancels
 ## in-flight fire sequences. Reproduces the real crash by injecting a fake
-## fire-while-moving sequence the same way tests/combat/run.gd pokes
+## fire-while-moving sequence the same way tests/combat/unit_fire_movement_run.gd pokes
 ## _weapon_fire_sequences directly, since driving a real Mongoose to a
 ## mid-overlay-fire frame needs a full attack simulation this file otherwise
 ## has no use for.

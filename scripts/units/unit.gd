@@ -50,12 +50,12 @@ const RULE_MOVEMENT_UPDATES_PER_SECOND := UnitTerrainAlignmentScript.MOVEMENT_UP
 ## Fire clips therefore traverse the baked timeline at 25/20 speed.
 ##
 ## Mirrors UnitCombat.BAKED_MODEL_FRAMES_PER_SECOND; kept here too because
-## tests/combat/run.gd reads it as UnitScript.<const>.
+## tests/combat/fire_sequence_run.gd reads it as UnitScript.<const>.
 const BAKED_MODEL_FRAMES_PER_SECOND := 20.0
 ## Drives the per-turret reload/cooldown ticks in _process() below, which stay
 ## on the facade the same way Building._process() keeps its own copy next to
 ## BuildingCombat (see scripts/buildings/building.gd). Also mirrored on
-## UnitCombat and read by tests/combat/run.gd as UnitScript.<const>.
+## UnitCombat and read by tests/combat/fire_sequence_run.gd as UnitScript.<const>.
 const RULE_COMBAT_TICKS_PER_SECOND := CombatRulesScript.TICKS_PER_SECOND
 
 enum SlopeAlignmentMode {
@@ -156,7 +156,7 @@ var _combat := UnitCombatScript.new()
 ## Physics shapes, navigation extents and selection bounds read off the
 ## converted model's authored collision volumes.
 var _authored_collision := UnitAuthoredCollisionScript.new()
-## Test-only compatibility property: tests/combat/run.gd reads this by name.
+## Test-only compatibility property: tests/combat/unit_fire_movement_run.gd reads this by name.
 @warning_ignore("unused_private_class_variable")
 var _fire_sequence_active: bool:
 	get:
@@ -808,7 +808,7 @@ func combat_owner_player_id() -> int:
 	return owner_player_id
 
 
-## Test-only accessor into the combat module: tests/combat/run.gd,
+## Test-only accessor into the combat module: tests/combat/unit_fire_movement_run.gd,
 ## tests/units/death_animation_run.gd and tests/units/deployment_run.gd reach
 ## fire-sequence/turret-engagement internals through this rather than Unit
 ## re-exposing them itself. Not architecture.
