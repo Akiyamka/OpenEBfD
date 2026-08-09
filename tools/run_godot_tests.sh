@@ -18,6 +18,7 @@ readonly SUITES=(
 	tests/combat/building_geometry_run.gd
 	tests/combat/unit_fire_movement_run.gd
 	tests/combat/unit_attack_order_run.gd
+	tests/combat/defensive_building_run.gd
 	tests/combat/death_category_run.gd
 	tests/combat/multi_turret_run.gd
 	tests/combat/authored_reload_sound_run.gd tests/match/unit_command_run.gd
