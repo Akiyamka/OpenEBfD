@@ -6,6 +6,7 @@ const BuildingConstructionSoundScript := preload(
 	"res://scripts/buildings/building_construction_sound.gd"
 )
 const SfxSectionCatalogScript := preload("res://scripts/audio/sfx_section_catalog.gd")
+const ModelXbfScript := preload("res://converters/xbf/model_xbf.gd")
 const ATBarracksScene := preload("res://assets/converted/buildings/ATBarracks/ATBarracks.scn")
 const ATRocketTurretScene := preload(
 	"res://assets/converted/buildings/ATRocketTurret/ATRocketTurret.scn"
@@ -28,6 +29,7 @@ func _initialize() -> void:
 	_run_case("Ordos construction and spark sections retain their authored frames", _test_ordos)
 	_run_case("Fremen Camp gets its single source-authored fallback", _test_fremen)
 	_run_case("source supplements preserve construction samples and volumes", _test_supplements)
+	_run_case("every authored building construction SFX section resolves", _test_all_construction_sections_resolve)
 	if _failures > 0:
 		printerr("BuildingConstructionSound tests: %d failures after %d assertions" % [_failures, _assertions])
 		quit(1)
@@ -104,11 +106,45 @@ func _test_fremen() -> void:
 
 func _test_supplements() -> void:
 	_expect_section(&"atmediumconstruction", "mcv_g_building_out_1.wav", 60)
+	_expect_section(&"atmcvdeploy", "mcv_b_open_1.wav", 60)
+	_expect_section(&"atcyconstructingabuilding", "mcv_d_drill_dig_1.wav", 60)
+	_expect_section(&"atconstructspark", "constructionsparks.wav", 60)
+	_expect_section(&"atmcvundeploy", "mcv_e_flatten_1.wav", 80)
 	_expect_section(&"frementent", "fremen_tent_build_1.wav", 80)
 	_expect_section(&"hksmallconstruction", "mcv_f_scaffold_up_1.wav", 40)
 	_expect_section(&"hkmediumconstruction", "mcv_g_building_out_1.wav", 40)
+	_expect_section(&"hkmcvdeploy", "mcv_b_open_1.wav", 40)
+	_expect_section(&"hkcyconstructingabuilding", "mcv_d_drill_dig_1.wav", 40)
+	_expect_section(&"hkmcvundeploy", "mcv_e_flatten_1.wav", 80)
+	_expect_section(&"ormcvundeploy", "mcv_e_flatten_1.wav", 80)
+	_expect_section(&"fleshvatbirth", "tx_flesh_born_2.wav", 50)
 	_expect_section(&"orconstructspark", "constructionsparks.wav", 40)
 	_expect(SfxSectionCatalogScript.has_section(&"constructspark"), "ConstructSpark must resolve its original mixed sample pool")
+
+
+func _test_all_construction_sections_resolve() -> void:
+	var directory := DirAccess.open("res://assets/raw_original_content/3DDATA/Buildings")
+	_expect(directory != null, "the original building XBF directory must be available")
+	if directory == null:
+		return
+	var event_count := 0
+	directory.list_dir_begin()
+	var filename := directory.get_next()
+	while not filename.is_empty():
+		if not directory.current_is_dir() and filename.to_lower().ends_with("_hc.xbf"):
+			var xbf = ModelXbfScript.load_file("res://assets/raw_original_content/3DDATA/Buildings/%s" % filename)
+			for event: Dictionary in xbf.fx_events:
+				if int(event.get("type", -1)) != 9:
+					continue
+				var strings := event.get("strings", []) as Array
+				if strings.is_empty():
+					continue
+				event_count += 1
+				var section := StringName(String(strings[0]).strip_edges().to_lower())
+				_expect(SfxSectionCatalogScript.has_section(section), "%s must resolve %s" % [filename, section])
+		filename = directory.get_next()
+	directory.list_dir_end()
+	_expect(event_count > 0, "the construction XBF audit must inspect authored SFX events")
 
 
 func _model(entries: Array, events: Array) -> Node3D:

@@ -39,6 +39,26 @@ const SOURCE_SECTION_SUPPLEMENTS := {
 		"paths": ["res://assets/converted/audio/sfx/mcv_f_scaffold_up_1.wav"],
 		"controls": [&"random"], "volume": 60, "limit": 5, "priority": &"normal",
 	},
+	&"atmcvdeploy": {
+		"id": &"ATMCVDeploy",
+		"paths": ["res://assets/converted/audio/sfx/mcv_b_open_1.wav"],
+		"controls": [&"random"], "volume": 60, "limit": 5, "priority": &"normal",
+	},
+	&"atcyconstructingabuilding": {
+		"id": &"ATCYConstructingABuilding",
+		"paths": ["res://assets/converted/audio/sfx/mcv_d_drill_dig_1.wav"],
+		"controls": [&"random"], "volume": 60, "limit": 5, "priority": &"normal",
+	},
+	&"atconstructspark": {
+		"id": &"ATConstructSpark",
+		"paths": ["res://assets/converted/audio/sfx/constructionsparks.wav"],
+		"controls": [&"random"], "volume": 60, "limit": 5, "priority": &"normal",
+	},
+	&"atmcvundeploy": {
+		"id": &"ATMCVUndeploy",
+		"paths": ["res://assets/converted/audio/sfx/mcv_e_flatten_1.wav"],
+		"controls": [&"random"], "volume": 80, "limit": 5, "priority": &"normal",
+	},
 	&"atmediumconstruction": {
 		"id": &"ATMediumConstruction",
 		"paths": ["res://assets/converted/audio/sfx/mcv_g_building_out_1.wav"],
@@ -68,6 +88,34 @@ const SOURCE_SECTION_SUPPLEMENTS := {
 		"id": &"HKLargeConstruction",
 		"paths": ["res://assets/converted/audio/sfx/mcv_g_building_out_1.wav"],
 		"controls": [&"random"], "volume": 40, "limit": 5, "priority": &"normal",
+	},
+	&"hkmcvdeploy": {
+		"id": &"HKMCVDeploy",
+		"paths": ["res://assets/converted/audio/sfx/mcv_b_open_1.wav"],
+		"controls": [&"random"], "volume": 40, "limit": 5, "priority": &"normal",
+	},
+	&"hkcyconstructingabuilding": {
+		"id": &"HKCYConstructingABuilding",
+		"paths": ["res://assets/converted/audio/sfx/mcv_d_drill_dig_1.wav"],
+		"controls": [&"random"], "volume": 40, "limit": 5, "priority": &"normal",
+	},
+	&"hkmcvundeploy": {
+		"id": &"HKMCVUndeploy",
+		"paths": ["res://assets/converted/audio/sfx/mcv_e_flatten_1.wav"],
+		"controls": [&"random"], "volume": 80, "limit": 5, "priority": &"normal",
+	},
+	&"ormcvundeploy": {
+		"id": &"ORMCVUndeploy",
+		"paths": ["res://assets/converted/audio/sfx/mcv_e_flatten_1.wav"],
+		"controls": [&"random"], "volume": 80, "limit": 5, "priority": &"normal",
+	},
+	&"fleshvatbirth": {
+		"id": &"FleshVatBirth",
+		"paths": [
+			"res://assets/converted/audio/sfx/tx_flesh_born_2.wav",
+			"res://assets/converted/audio/sfx/tx_flesh_born_3.wav",
+		],
+		"controls": [&"random"], "volume": 50, "limit": 1, "priority": &"low",
 	},
 	# The Barracks XBFs spell these without the SFX file's `S` infix. They are
 	# aliases for the same house-specific construction-spark source sections.
