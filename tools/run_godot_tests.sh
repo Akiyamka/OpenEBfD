@@ -17,6 +17,7 @@ readonly SUITES=(
 	tests/combat/projectile_flight_run.gd
 	tests/combat/muzzle_fx_run.gd
 	tests/combat/impact_fx_run.gd
+	tests/combat/shot_fx_composition_run.gd
 	tests/combat/building_geometry_run.gd
 	tests/combat/unit_fire_movement_run.gd
 	tests/combat/unit_attack_order_run.gd
