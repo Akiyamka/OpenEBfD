@@ -732,17 +732,38 @@ def parse_occupy_rows(body, used_line_indices):
     return rows
 
 
-def parse_explosion_types_multi(body, used_line_indices):
-    """Returns the ordered list of ExplosionType names (there may be more
-    than one, with DIFFERENT values — confirmed on DevPlasma_B)."""
+def parse_explosion_types_multi(body, used_line_indices, reg=None):
+    """Returns the section's ExplosionType names, still a list because the
+    schema allows several, but a REPEATED key is an override, not an extra
+    entry: the last assignment wins.
+
+    Three sections declare ExplosionType twice — DevPlasma_B
+    (ShellHit -> DevImpact), IXInfiltrator (Explosion -> InfiltratorDeath) and
+    HKFactory (BigExplosion twice, inert). Reading those as a list was wrong:
+    it made DevPlasma_B the only bullet of 72 with two impact effects, and the
+    stale first value rendered on top of the real one in game. Rules.txt
+    repeats plenty of other scalar keys the same way and every one of them is
+    an override (ATAPC Speed 8.0 -> 12.0, ATOutpost Health 100 -> 2500,
+    GUWormhead Armour Heavy -> Light). See docs/quirks.md.
+
+    The winner is the last name that actually names an explosion type.
+    IXInfiltrator's second value is `InfiltratorDeath`, which is a *bullet*,
+    not an explosion type — a plain lexical last-wins would resolve to nothing
+    and strip that unit's death explosion, so an unresolvable later value
+    leaves the last resolvable one standing.
+    """
     names = []
     for i, (line_no, text) in enumerate(body):
         if i in used_line_indices:
             continue
         k, _, v = text.partition('=')
         if k.strip().lower() == 'explosiontype':
-            names.append(v.strip())
+            name = v.strip()
             used_line_indices.add(i)
+            if names and reg is not None \
+                    and reg.resolve('explosion_types', name) is None:
+                continue
+            names = [name]
     return names
 
 
@@ -1135,7 +1156,7 @@ def main(rules_path, schema_path, db_path, art_ini_path=None):
                     row['friendly_damage_amount'] = 100.0 if b == 1 else 0.0
                 used.add(i)
 
-        explosion_names = parse_explosion_types_multi(body, used)
+        explosion_names = parse_explosion_types_multi(body, used, reg)
         if explosion_names:
             row['explosion_type_id'] = ('__RESOLVE__', 'explosion_types', explosion_names[0])
             for seq, ename in enumerate(explosion_names):
@@ -1221,7 +1242,7 @@ def main(rules_path, schema_path, db_path, art_ini_path=None):
         if occupy_rows:
             building_occupy[bid] = occupy_rows
 
-        explosion_names = parse_explosion_types_multi(body, used)
+        explosion_names = parse_explosion_types_multi(body, used, reg)
         if explosion_names:
             row['explosion_type_id'] = ('__RESOLVE__', 'explosion_types', explosion_names[0])
             for seq, ename in enumerate(explosion_names):
@@ -1369,7 +1390,7 @@ def main(rules_path, schema_path, db_path, art_ini_path=None):
         if vet_blocks:
             unit_veterancy[uid] = vet_blocks
 
-        explosion_names = parse_explosion_types_multi(body, used)
+        explosion_names = parse_explosion_types_multi(body, used, reg)
         if explosion_names:
             row['explosion_type_id'] = ('__RESOLVE__', 'explosion_types', explosion_names[0])
             for seq, ename in enumerate(explosion_names):
@@ -1525,7 +1546,7 @@ def main(rules_path, schema_path, db_path, art_ini_path=None):
         start, body = occs[0]
         used = set()
         row = {}
-        explosion_names = parse_explosion_types_multi(body, used)
+        explosion_names = parse_explosion_types_multi(body, used, reg)
         if explosion_names:
             row['explosion_type_id'] = ('__RESOLVE__', 'explosion_types', explosion_names[0])
         apply_fields(body, used, SPLAT_SCALAR, {}, reg, 'splat_type', row, overflow)
@@ -1548,7 +1569,7 @@ def main(rules_path, schema_path, db_path, art_ini_path=None):
         start, body = occs[0]
         used = set()
         row = {}
-        explosion_names = parse_explosion_types_multi(body, used)
+        explosion_names = parse_explosion_types_multi(body, used, reg)
         if explosion_names:
             row['explosion_type_id'] = ('__RESOLVE__', 'explosion_types', explosion_names[0])
         apply_fields(body, used, SPICE_MOUND_SCALAR, {}, reg, 'spice_mound_type', row, overflow)

@@ -347,6 +347,51 @@ single gas-detonation piece, with `!sess`'s bank left wired in the source
 scene but unused as a duplicate swirl. Revisit if further evidence (e.g.
 original gameplay footage) shows both banks were meant to play together.
 
+### Duplicate `ExplosionType` keys are overrides, not a list of effects
+
+**Observed data:** Three `Rules.txt` sections declare `ExplosionType` twice:
+`[DevPlasma_B]` (`ShellHit`, then `DevImpact` eleven lines later),
+`[IXInfiltrator]` (`Explosion` at 9826, `InfiltratorDeath` at 9839) and
+`[HKFactory]` (`BigExplosion` twice, identical so inert).
+`tools/rules_editor/parse_rules.py::parse_explosion_types_multi` read the
+repeats as an ordered *list* of effects and kept them all, which made
+`DevPlasma_B` the only bullet out of 72 with two impact effects.
+
+**Original-engine quirk:** Repeating a scalar key in this INI-style file is an
+override, and the rest of `Rules.txt` is full of the same pattern — `ATAPC
+Speed 8.0 -> 12.0`, `ATOutpost Health 100 -> 2500`, `GUWormhead Armour Heavy ->
+Light`, `General DeviateDuration 400 -> 500` — none of which anyone reads as a
+list. These look like edits where a new value was appended without deleting the
+old line.
+
+Reading them as a list was not a harmless extra: in game, `DevPlasma_B` spawned
+`ShellHit` (the generic rocket/shell burst, with its shrapnel spray and orange
+flash) *on top of* its real `DevImpact` cloud, and the stale effect visually
+swallowed the intended one — reported from play as "the Devastator's special
+impact is missing, it plays the ordinary rocket effect instead."
+
+One wrinkle rules out a purely lexical last-wins: `IXInfiltrator`'s later value
+`InfiltratorDeath` is a **bullet**, not an explosion type (there is no
+`[InfiltratorDeath]` explosion section), so it resolves to nothing. Taking it
+literally would strip that unit's death explosion entirely.
+
+**OpenEBfD compatibility decision:** `parse_explosion_types_multi` now keeps a
+single name — the last one that actually resolves to a known explosion type, so
+an unresolvable later value leaves the previous one standing. Results:
+`DevPlasma_B` -> `DevImpact` alone, `IXInfiltrator` -> `Explosion` (unchanged),
+`HKFactory` -> one `BigExplosion` link instead of two. The function still
+returns a list and `entity_explosion_effects` keeps its `seq` column, so a
+genuine multi-effect entity stays expressible; the shipped data simply has
+none. `assets/converted/rules.db` was patched in place to match rather than
+reparsed, preserving the manual convert-stage fixes it carries (the per-house
+`HKMCV`/`ORMCV` split, which a fresh parse drops).
+
+Knock-on worth knowing: `DamageToTile` lives on the *explosion* section, and
+there is no `[DevImpact]` section at all, so honoring the override also means
+the Devastator's plasma no longer paints a ground crater (`ShellHit` authors
+`DamageToTile = 30`). That follows from the source data rather than being a
+separate choice.
+
 ## Audio
 
 ### ImportedSfx.txt shadows several death hooks with unconverted localized names
@@ -709,7 +754,8 @@ shouldn't have this") and asked for the real rule: tie playback to whether an
 explosion effect actually exists at the point of impact, not to a hand-sorted
 weapon category.
 
-`EXPLOSIVE_IMPACT_EFFECT_IDS = {"ShellHit", "MissileHit"}` implements that:
+`EXPLOSIVE_IMPACT_EFFECT_IDS = {"ShellHit", "MissileHit", "DevImpact"}`
+implements that:
 `assets/converted/impact_effects/{shellhit,missilehit}/*.scn` both contain a
 "_bigbing_"-named mesh (a real explosion burst with "_bing1..4" debris
 pieces), while `mghit.scn` (`_flashtest_0`) and `sniperhit.scn` (whose
@@ -719,11 +765,20 @@ plays the sound whenever any of a bullet's own `explosion_effect_ids` is in
 that set, excluding only lasers (`is_laser`), continuous streams (no discrete
 impact moment), and the Inkvine catapult (keeps its own `InkvineSplat`
 override). This is deliberately effect-driven rather than a per-bullet list:
-`DevPlasma_B` (Devastator's plasma bolt) and the two Mega Turret plasma bolts
-turned out to carry a real `ShellHit` explosion effect despite reading as
-"energy, not kinetic" by name, and now correctly get the sound too — the
-previous hand-picked list had excluded them on a guess that the effect data
-contradicts.
+the two Mega Turret plasma bolts turned out to carry a real `ShellHit`
+explosion effect despite reading as "energy, not kinetic" by name, and now
+correctly get the sound too — the previous hand-picked list had excluded them
+on a guess that the effect data contradicts.
+
+`DevPlasma_B` (the Devastator's plasma bolt) used to be cited here as a third
+example of the same thing. It was not: its `ShellHit` was the stale first half
+of a duplicated `ExplosionType` key (see "Duplicate `ExplosionType` keys are
+overrides" above), and the bullet's real effect is `DevImpact`. `DevImpact` is
+in the set on its own merits instead — it is a marker-only rig with no burst
+mesh to inspect, so the "is it a real explosion" question is answered from the
+bullet it belongs to: 813 damage, `BlastRadius = 32`, `BlowUp = TRUE`. Without
+that entry, fixing the duplicate-key bug would have silently muted the
+Devastator's impact.
 
 ### Sound fixes belong in the generator's tables, never in the generated `.tres`
 

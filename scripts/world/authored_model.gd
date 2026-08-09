@@ -35,6 +35,19 @@ static func scroll_fx_meshes(root: Node) -> Array[MeshInstance3D]:
 	return result
 
 
+## Meshes the converter tagged as scrolling only while the owner drives: the
+## vehicle track belts. Same fx_time channel as scroll_fx_meshes(), but the
+## phase comes from distance travelled, so the belt stands still on idle and on
+## a turn in place. Buildings never drive these, so a static model that happens
+## to carry the same track texture stays static.
+static func move_scroll_fx_meshes(root: Node) -> Array[MeshInstance3D]:
+	var result: Array[MeshInstance3D] = []
+	for mesh_instance in mesh_instances(root):
+		if mesh_instance.has_meta("scroll_fx_move"):
+			result.append(mesh_instance)
+	return result
+
+
 ## The node an animation track drives, resolved through the player's own
 ## animation root — the track path is relative to it, not to the player.
 static func track_node(player: AnimationPlayer, track_path: String) -> Node:

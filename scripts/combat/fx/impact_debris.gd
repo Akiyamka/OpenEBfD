@@ -19,6 +19,7 @@ extends RefCounted
 const AuthoredFxBankScript := preload("res://scripts/combat/fx/authored_fx_bank.gd")
 
 const BURST := &"burst"
+const SPRAY := &"spray"
 const SHRAPNEL := &"shrapnel"
 const RING := &"ring"
 const LIGHT := &"light"
@@ -54,12 +55,24 @@ const DEVIATE_BURST_TINT := Color(0.0, 128.0 / 255.0, 0.0)
 
 ## DevImpact's #splat bank authors !sm (the same puff shape as the Chemical
 ## Trooper's poison spray) tinted a pale blue -- int_parameters_7_11=[200,200,255,...].
+## Unlike the burst rigs it authors motion rather than one billboard riding a
+## marker: float_parameters_4_6=[5.0, 0.0, 32.0] is speed 5.0 with NO gravity,
+## float_parameters_12_14[0]=-3.0 is the speed variation, and the #splat events
+## emit across frames 0-10 -- an expanding cloud. Source speed converts to world
+## the way CombatTurretFx does, `speed * world_scale * 20`, and world_scale here
+## is 2.0/32 = 1/16, so 2.0..8.0 source becomes 2.5..10.0 world units/second.
 const DEV_IMPACT_SEQUENCE := "!sm"
 const DEV_IMPACT_MARKER := "#splat"
 const DEV_IMPACT_FRAME_COUNT := 11
 const DEV_IMPACT_SIZE := 2.0
 const DEV_IMPACT_DURATION := 0.55
 const DEV_IMPACT_TINT := Color(200.0 / 255.0, 200.0 / 255.0, 1.0)
+const DEV_IMPACT_COUNT := 16
+const DEV_IMPACT_SPEED_MIN := 2.5
+const DEV_IMPACT_SPEED_MAX := 10.0
+## The authored cloud is radial; this keeps it from being a flat disc without
+## turning it into a fountain the zero-gravity bank would never pull back down.
+const DEV_IMPACT_RISE_FRACTION := 0.35
 
 ## Which pieces each authored emitter effect is made of. An ExplosionType that
 ## is not listed renders itself and needs nothing from here.
@@ -85,9 +98,11 @@ const PIECES := {
 			"duration": DEVIATE_BURST_DURATION, "tint": DEVIATE_BURST_TINT},
 	],
 	&"DevImpact": [
-		{"kind": BURST, "marker": DEV_IMPACT_MARKER, "sequence": DEV_IMPACT_SEQUENCE,
+		{"kind": SPRAY, "sequence": DEV_IMPACT_SEQUENCE,
 			"frame_count": DEV_IMPACT_FRAME_COUNT, "size": DEV_IMPACT_SIZE,
-			"duration": DEV_IMPACT_DURATION, "tint": DEV_IMPACT_TINT},
+			"duration": DEV_IMPACT_DURATION, "tint": DEV_IMPACT_TINT,
+			"count": DEV_IMPACT_COUNT, "speed_min": DEV_IMPACT_SPEED_MIN,
+			"speed_max": DEV_IMPACT_SPEED_MAX},
 	],
 }
 const SHRAPNEL_SEQUENCE := "!@sm"
@@ -136,8 +151,11 @@ func build(effect_id: StringName, authored_visual: Node3D) -> void:
 	var pieces: Array = PIECES.get(effect_id, [])
 	for piece_value: Variant in pieces:
 		var piece := piece_value as Dictionary
-		if piece.get("kind") == BURST:
-			_spawn_burst_piece(piece, authored_visual)
+		match piece.get("kind"):
+			BURST:
+				_spawn_burst_piece(piece, authored_visual)
+			SPRAY:
+				_spawn_spray_piece(piece)
 
 	if not _has_kind(pieces, SHRAPNEL) and not _has_kind(pieces, RING):
 		return
@@ -178,15 +196,47 @@ func _spawn_burst_piece(piece: Dictionary, authored_visual: Node3D) -> void:
 	)
 
 
-## How long the owner must stay alive for the rig to finish: the longest burst
-## piece, plus (only when authored) the slowest shrapnel/ring piece landing
-## and fading before the node may be freed.
+## An authored cloud that expands from the impact point instead of one
+## billboard riding a marker. The bank carries no gravity, so the particles
+## coast outward and simply finish their sprite sheet where they are.
+func _spawn_spray_piece(piece: Dictionary) -> void:
+	var sequence := String(piece.get("sequence", ""))
+	var textures := AuthoredFxBankScript.load_texture_sequence(
+		sequence, int(piece.get("frame_count", 0))
+	)
+	if textures.is_empty():
+		return
+	var size := float(piece.get("size", BURST_SIZE))
+	var duration := float(piece.get("duration", BURST_DURATION))
+	var tint := piece.get("tint", Color.WHITE) as Color
+	var speed_min := float(piece.get("speed_min", 0.0))
+	var speed_max := float(piece.get("speed_max", 0.0))
+	var start := _effect.global_position
+	for particle_number in int(piece.get("count", 1)):
+		var angle := _random.randf_range(0.0, TAU)
+		var direction := Vector3(sin(angle), 0.0, cos(angle))
+		# Tilting each particle up by its own fraction turns the flat ring the
+		# horizontal angle alone would draw into a dome.
+		direction = (
+			direction + Vector3.UP * _random.randf_range(0.0, DEV_IMPACT_RISE_FRACTION)
+		).normalized()
+		var velocity := direction * _random.randf_range(speed_min, speed_max)
+		var particle := _spawn_world_particle(
+			sequence, textures, size, duration, start, tint, true, -1, 1.0, velocity
+		)
+		if particle != null:
+			particle.set_meta("combat_impact_velocity", velocity)
+
+
+## How long the owner must stay alive for the rig to finish: the longest
+## billboard piece, plus (only when authored) the slowest shrapnel/ring piece
+## landing and fading before the node may be freed.
 static func lifetime(effect_id: StringName) -> float:
 	var pieces: Array = PIECES.get(effect_id, [])
 	var longest := 0.0
 	for piece_value: Variant in pieces:
 		var piece := piece_value as Dictionary
-		if piece.get("kind") == BURST:
+		if piece.get("kind") in [BURST, SPRAY]:
 			longest = maxf(longest, float(piece.get("duration", BURST_DURATION)))
 	if _has_kind(pieces, SHRAPNEL) or _has_kind(pieces, RING):
 		var maximum_flight_time := _ballistic_landing_time(
@@ -351,7 +401,8 @@ func _spawn_world_particle(
 		tint: Color = Color.WHITE,
 		free_after_animation: bool = true,
 		smoke_first_frame: int = -1,
-		smoke_opacity: float = 1.0
+		smoke_opacity: float = 1.0,
+		velocity: Vector3 = Vector3.ZERO
 	) -> Node3D:
 	var opacities := PackedFloat32Array()
 	for frame_index in textures.size():
@@ -368,6 +419,7 @@ func _spawn_world_particle(
 			"frame_seconds": duration / float(maxi(textures.size(), 1)),
 			"opacities": opacities,
 			"free_after_animation": free_after_animation,
+			"velocity": velocity,
 			"metadata": {
 				"combat_impact_particle": StringName(sequence),
 			},

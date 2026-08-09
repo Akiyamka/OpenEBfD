@@ -278,7 +278,13 @@ BULLET_HIT_SOUND_SECTION_OVERRIDES: dict[str, str] = {
 # nor sniper fire ever produces a real explosion at impact, only a flash.
 # EXPLOSIVE_IMPACT_EFFECT_IDS records that finding as data instead of
 # re-deriving it from scene contents at generate time. See docs/quirks.md.
-EXPLOSIVE_IMPACT_EFFECT_IDS = frozenset({"ShellHit", "MissileHit"})
+# DevImpact is here on the same "is it a real explosion" test rather than by
+# scene shape: it is a marker-only FX rig with no burst mesh to inspect, but
+# the bullet carrying it (DevPlasma_B, the Devastator's plasma cannon) is 813
+# damage with BlastRadius=32 and BlowUp=TRUE. It used to inherit the sound via
+# a stale duplicate ExplosionType=ShellHit line that the parser mistook for a
+# second effect; dropping that artifact must not silently mute the impact.
+EXPLOSIVE_IMPACT_EFFECT_IDS = frozenset({"ShellHit", "MissileHit", "DevImpact"})
 BUILDING_ID_PREFIXES = sorted([
     "GPSFX", "AKIN", "ATIN", "CNIN", "GPIN", "HKIN", "HLIN", "INFR",
     "INGU", "INIM", "INIX", "INTL", "ORIN", "TLIN",

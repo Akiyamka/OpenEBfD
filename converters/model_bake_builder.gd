@@ -61,6 +61,24 @@ const TEXTURE_PREFIX_MARKERS := "=@!%&"
 const SUPPRESSED_MISSING_TEXTURES := {
 	"at_wt_front64.tga": true,
 }
+## Per-texture pan direction/rate for _scrolling_texture_shader(), keyed by
+## _texture_sequence_key(). Only needed where the shader's default
+## (vec2(0.18, 0.0), i.e. along U) does not match how the source UVs are laid
+## out on the geometry.
+##
+## The track belts are authored with U across the belt width and V along its
+## travel direction (and with V already flipped on the rear plate, so one
+## shared sign runs the whole belt the right way), hence the pan has to be on
+## V, negative so the belt runs with the vehicle rather than against it. Its
+## rate is per metre driven, not per second (see UnitShaderFx): the belt's V
+## range of 2.0 covers ~1.37 world metres, so ~1.46 V per metre keeps the belt
+## gripping the ground instead of slipping.
+##
+## HK_flame's fuel drum needs no entry: its U already wraps the drum's
+## circumference, so the default pans it around the barrel axis.
+const SCROLL_SPEED_OVERRIDES := {
+	"at_st_tracks64.tga": Vector2(0.0, -1.46),
+}
 const HIDDEN_SOURCE_MESH_COMPONENTS := {
 	"at_refinery_h0.xbf": {
 		"at_refinery": {3: "broken_geometry", 10: "broken_geometry"},
@@ -118,6 +136,7 @@ var _animated_texture_sequences := {}
 var _animated_material_frames := {}
 var _animated_material_frame_names := {}
 var _scrolling_materials := {}
+var _move_scrolling_materials := {}
 var _pending_frame_tracks: Array[Dictionary] = []
 var _texture_events_by_object := {}
 var _animated_frame_shader_add: Shader
@@ -145,6 +164,7 @@ func build(xbf_path: String) -> PackedScene:
 	_animated_material_frames.clear()
 	_animated_material_frame_names.clear()
 	_scrolling_materials.clear()
+	_move_scrolling_materials.clear()
 	_pending_frame_tracks.clear()
 	_texture_events_by_object.clear()
 	_model_texture_shaders.clear()
@@ -399,6 +419,13 @@ func _build_object_node(
 			# images of each other, so one shared, uniform scroll direction
 			# converges/diverges on its own from that geometry.
 			mesh_instance.set_meta("scroll_fx", true)
+		if _mesh_has_move_scrolling_texture(mesh):
+			# Same runtime-driven fx_time as scroll_fx above, but the phase
+			# comes from how far the vehicle has driven rather than from
+			# elapsed time, so the track belt stops with the vehicle. Only
+			# Unit drives this channel: buildings carrying the same track
+			# texture (ATConYard, INMedicalWreck) stay static as before.
+			mesh_instance.set_meta("scroll_fx_move", true)
 
 	var child_names := _existing_child_names(content_root)
 	for child_object: Dictionary in object.children:
@@ -737,7 +764,15 @@ func _model_material(texture_name: String) -> Material:
 		scrolling_material.shader = _scrolling_texture_shader(additive)
 		scrolling_material.set_shader_parameter("albedo_tex", texture)
 		scrolling_material.set_shader_parameter("use_team_color", team_colored)
-		_scrolling_materials[scrolling_material] = true
+		var scroll_speed: Variant = SCROLL_SPEED_OVERRIDES.get(
+			_texture_sequence_key(texture_name)
+		)
+		if scroll_speed != null:
+			scrolling_material.set_shader_parameter("scroll_speed", scroll_speed)
+		if _is_move_scrolling_texture(texture_name):
+			_move_scrolling_materials[scrolling_material] = true
+		else:
+			_scrolling_materials[scrolling_material] = true
 		_material_cache[texture_name] = scrolling_material
 		return scrolling_material
 	if team_colored and texture != null:
@@ -1203,9 +1238,17 @@ func _is_animated_texture(texture_name: String) -> bool:
 
 func _is_scrolling_texture(texture_name: String) -> bool:
 	var file_name := texture_name.get_file().to_lower()
-	# The Buzzsaw's tread texture has no "%" marker, but its UVs need to
-	# scroll continuously to show the vehicle moving.
+	# The construction yards' tread-belt texture has no "%" marker, but its
+	# UVs need to scroll continuously to show the belt running. (Despite the
+	# name it is not used by the Buzzsaw unit at all - only by the AT/HK/OR
+	# ConYards.)
 	if file_name == "hk_buzzsawtread_64.tga":
+		return true
+	# HK_flame's fuel drum ("cyl01"): the reference game pans this texture to
+	# make the drum look like it is spinning. No "%" marker in the source data.
+	if file_name == "hk_flametank_64.tga":
+		return true
+	if _is_move_scrolling_texture(texture_name):
 		return true
 	# The windtrap's "front2" texture ("AT_WT_Front2_64.tga",
 	# "%HK_WT_Front2_128.tga", "or_wt_front2_128.tga", ...) is what the
@@ -1239,6 +1282,16 @@ func _is_scrolling_texture(texture_name: String) -> bool:
 	if file_name.contains("flash"):
 		return false
 	return true
+
+
+## Vehicle track belts ("AT_ST_tracks64.tga" and its 32/underscored variants).
+## Also unmarked in the source data, but unlike every other panning texture
+## their phase must only advance while the vehicle is actually driving, so they
+## get their own runtime driver (see Unit's UnitShaderFx) instead of the
+## time-based one. Buildings that carry the same texture (ATConYard,
+## INMedicalWreck) have no such driver, so their belts stay static as before.
+func _is_move_scrolling_texture(texture_name: String) -> bool:
+	return texture_name.get_file().to_lower().begins_with("at_st_tracks")
 
 
 func _is_suppressed_missing_texture(texture_name: String) -> bool:
@@ -1978,6 +2031,13 @@ func _mesh_animated_frame_names(mesh: ArrayMesh) -> PackedStringArray:
 func _mesh_has_scrolling_texture(mesh: ArrayMesh) -> bool:
 	for surface_index in mesh.get_surface_count():
 		if _scrolling_materials.has(mesh.surface_get_material(surface_index)):
+			return true
+	return false
+
+
+func _mesh_has_move_scrolling_texture(mesh: ArrayMesh) -> bool:
+	for surface_index in mesh.get_surface_count():
+		if _move_scrolling_materials.has(mesh.surface_get_material(surface_index)):
 			return true
 	return false
 

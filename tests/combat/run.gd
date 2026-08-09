@@ -5021,10 +5021,10 @@ func _test_deviate_hit_impact_fx() -> void:
 	_free_impact_effects()
 
 
-## DevPlasma_B carries two effect ids -- ShellHit (already working) and
-## DevImpact (the missing splat rig) -- spawned as independent ImpactDebris
-## instances at the same position. Re-asserts ShellHit stayed byte-identical
-## while covering the newly-added DevImpact piece.
+## Rules.txt authors ExplosionType twice on DevPlasma_B and the later DevImpact
+## wins, so the Devastator's plasma must show its own expanding cloud and NOT
+## the generic ShellHit burst rockets and shells use. ShellHit's own rig stays
+## covered by the Minotaurus/KobraHowitzer_B case above.
 func _test_dev_impact_fx() -> void:
 	_free_impact_effects()
 	var bullet = _bullet_with_impact_scenes(&"DevPlasma_B")
@@ -5041,11 +5041,13 @@ func _test_dev_impact_fx() -> void:
 		projectile.finish_reason == &"impact_ground",
 		"DevPlasma_B must resolve its impact at the sampled ground point"
 	)
-	var shell_hits := _impact_effects(&"ShellHit")
 	_expect(
-		shell_hits.size() == 1
-		and shell_hits.front().global_position.is_equal_approx(ground_position),
-		"DevPlasma_B must still spawn its unchanged ShellHit visual"
+		bullet.explosion_effect_ids() == [&"DevImpact"],
+		"the later ExplosionType must override the earlier one, leaving DevImpact alone"
+	)
+	_expect(
+		_impact_effects(&"ShellHit").is_empty(),
+		"DevPlasma_B must not spawn the generic ShellHit burst rockets and shells use"
 	)
 	var dev_impacts := _impact_effects(&"DevImpact")
 	var dev_impact: Node3D = dev_impacts.front() if not dev_impacts.is_empty() else null
@@ -5053,17 +5055,42 @@ func _test_dev_impact_fx() -> void:
 		dev_impacts.size() == 1
 		and dev_impact != null
 		and dev_impact.global_position.is_equal_approx(ground_position),
-		"one DevImpact visual must spawn alongside ShellHit at the resolved impact position"
+		"one DevImpact visual must spawn at the resolved impact position"
 	)
 	await process_frame
 	var particle_nodes := dev_impact.find_children(
 		"ImpactParticle_*", "Node3D", true, false
 	) if dev_impact != null else []
-	var splat_count := 0
+	var splat_velocities: Array[Vector3] = []
 	for child in particle_nodes:
 		if child.get_meta("combat_impact_particle", &"") == &"!sm":
-			splat_count += 1
-	_expect(splat_count == 1, "DevImpact must spawn its single authored splat billboard")
+			splat_velocities.append(Vector3(
+				child.get_meta("combat_impact_velocity", Vector3.ZERO)
+			))
+	_expect(
+		splat_velocities.size() == ImpactDebris.DEV_IMPACT_COUNT,
+		"DevImpact must spawn its whole authored cloud, not one billboard"
+	)
+	var cloud_expands := not splat_velocities.is_empty()
+	for velocity_index in range(1, splat_velocities.size()):
+		cloud_expands = cloud_expands \
+			and not splat_velocities[velocity_index].is_equal_approx(
+				splat_velocities[velocity_index - 1]
+			)
+	_expect(
+		cloud_expands,
+		"each DevImpact particle must coast outward on its own randomized velocity"
+	)
+	var splat_material := (
+		(particle_nodes.front().get_node_or_null("Visual") as MeshInstance3D).mesh as QuadMesh
+	).material as StandardMaterial3D if not particle_nodes.is_empty() else null
+	_expect(
+		splat_material != null
+		and splat_material.albedo_color.is_equal_approx(
+			Color(200.0 / 255.0, 200.0 / 255.0, 1.0, 1.0)
+		),
+		"DevImpact's cloud must render in its authored pale-blue bank tint"
+	)
 	_expect(
 		dev_impact == null or dev_impact.get_node_or_null("ImpactLight") == null,
 		"DevImpact has no authored light piece and must not spawn one"

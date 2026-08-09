@@ -71,6 +71,10 @@ func _initialize() -> void:
 		_test_event_driven_texture_flipbooks
 	)
 	_run_case(
+		"unmarked drum and track textures pan on their own channels",
+		_test_unmarked_vehicle_scrolling_textures
+	)
+	_run_case(
 		"combat-deploy clip rename normalizes Fire_1 to Deployed_Fire",
 		_test_combat_deploy_clip_rename
 	)
@@ -1813,6 +1817,90 @@ func _frame_track_values(animation: Animation) -> Array:
 			continue
 		for key in animation.track_get_key_count(track):
 			result.append(int(animation.track_get_key_value(track, key)))
+	return result
+
+
+## Regression test for a reported bug: HK_flame's fuel drum ("cyl01") stood
+## still, while the reference game pans its texture to sell a spinning drum,
+## and the vehicle track belts never moved at all. Neither texture carries the
+## "%" marker, so both fell through to a plain StandardMaterial3D. The drum
+## pans on the always-on fx_time channel; the belts pan on the movement-driven
+## one, so they stop when the vehicle does. A building carrying the same track
+## texture has no such driver and must keep its belts static.
+func _test_unmarked_vehicle_scrolling_textures() -> bool:
+	var builder = ModelBakeBuilderScript.new()
+	var scene: PackedScene = builder.build(
+		"res://assets/raw_original_content/3DDATA/Units/HK_flame_H0.xbf"
+	)
+	_expect(scene != null, "HK_flame_H0.xbf must build")
+	if scene == null:
+		return true
+	var root: Node = scene.instantiate()
+
+	var scrolling := _scrolling_surface_textures(root)
+	var move_scrolling := _move_scrolling_surface_textures(root)
+	_expect(
+		_textures_containing(scrolling, "flametank") > 0,
+		"HK_flame's fuel drum must pan continuously"
+	)
+	_expect(
+		_textures_containing(scrolling, "patch_high") == 0
+			and _textures_containing(scrolling, "spotlight") == 0,
+		"HK_flame's hull and spotlight must stay static"
+	)
+	_expect(
+		_surface_textures_containing(root, "tracks") > 0,
+		"HK_flame must carry track surfaces at all"
+	)
+	_expect(
+		_textures_containing(move_scrolling, "tracks")
+			== _surface_textures_containing(root, "tracks"),
+		"every HK_flame track belt must pan on the movement-driven channel"
+	)
+	_expect(
+		_textures_containing(scrolling, "tracks") == 0,
+		"HK_flame's track belts must not pan on the always-on channel"
+	)
+	root.free()
+
+	var yard_builder = ModelBakeBuilderScript.new()
+	var yard_scene: PackedScene = yard_builder.build(
+		"res://assets/raw_original_content/3DDATA/Buildings/AT_conyard_H0.XbF"
+	)
+	_expect(yard_scene != null, "AT_conyard_H0.XbF must build")
+	if yard_scene != null:
+		var yard_root: Node = yard_scene.instantiate()
+		_expect(
+			_textures_containing(_scrolling_surface_textures(yard_root), "buzzsawtread") > 0,
+			"the construction yard's tread belt must keep panning continuously"
+		)
+		_expect(
+			_textures_containing(_scrolling_surface_textures(yard_root), "tracks") == 0,
+			"the construction yard's track texture must stay off the always-on channel"
+		)
+		yard_root.free()
+	return true
+
+
+func _textures_containing(textures: Array[String], needle: String) -> int:
+	var count := 0
+	for texture_name in textures:
+		if texture_name.to_lower().contains(needle):
+			count += 1
+	return count
+
+
+func _move_scrolling_surface_textures(root: Node) -> Array[String]:
+	var result: Array[String] = []
+	for node in root.find_children("*", "MeshInstance3D", true, false):
+		var mesh_instance := node as MeshInstance3D
+		if not mesh_instance.has_meta("scroll_fx_move"):
+			continue
+		var mesh := mesh_instance.mesh as ArrayMesh
+		if mesh == null:
+			continue
+		for surface in mesh.get_surface_count():
+			result.append(mesh.surface_get_name(surface))
 	return result
 
 
