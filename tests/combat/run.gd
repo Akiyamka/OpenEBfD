@@ -329,7 +329,7 @@ func _initialize() -> void:
 		_test_deviate_hit_impact_fx
 	)
 	await _run_async_case(
-		"DevPlasma_B composes ShellHit and DevImpact impact FX",
+		"DevPlasma_B impacts as its own DevImpact cloud, never the generic ShellHit",
 		_test_dev_impact_fx
 	)
 	_run_case("compound turret binds authored pivots and muzzle", _test_compound_turret)
@@ -5061,35 +5061,86 @@ func _test_dev_impact_fx() -> void:
 	var particle_nodes := dev_impact.find_children(
 		"ImpactParticle_*", "Node3D", true, false
 	) if dev_impact != null else []
-	var splat_velocities: Array[Vector3] = []
+	var splat_offsets: Array[Vector3] = []
 	for child in particle_nodes:
 		if child.get_meta("combat_impact_particle", &"") == &"!sm":
-			splat_velocities.append(Vector3(
-				child.get_meta("combat_impact_velocity", Vector3.ZERO)
+			splat_offsets.append(Vector3(
+				child.get_meta("combat_impact_offset", Vector3.ZERO)
 			))
 	_expect(
-		splat_velocities.size() == ImpactDebris.DEV_IMPACT_COUNT,
+		splat_offsets.size() == ImpactDebris.DEV_IMPACT_COUNT,
 		"DevImpact must spawn its whole authored cloud, not one billboard"
 	)
-	var cloud_expands := not splat_velocities.is_empty()
-	for velocity_index in range(1, splat_velocities.size()):
-		cloud_expands = cloud_expands \
-			and not splat_velocities[velocity_index].is_equal_approx(
-				splat_velocities[velocity_index - 1]
-			)
+	# The cloud must cover the circle without being a regular polygon: every
+	# puff sits in its own angular slot, jittered inside it, at a radius that
+	# varies by no more than the authored fraction.
+	var angular_step := TAU / float(ImpactDebris.DEV_IMPACT_COUNT)
+	var covers_circle := not splat_offsets.is_empty()
+	var any_uneven := false
+	for offset_index in splat_offsets.size():
+		var offset := splat_offsets[offset_index]
+		var neighbour := splat_offsets[(offset_index + 1) % splat_offsets.size()]
+		var radius_ratio := offset.length() / ImpactDebris.DEV_IMPACT_RADIUS
+		var gap := angle_difference(
+			atan2(offset.x, offset.z), atan2(neighbour.x, neighbour.z)
+		)
+		covers_circle = covers_circle \
+			and is_zero_approx(offset.y) \
+			and absf(radius_ratio - 1.0) <= ImpactDebris.DEV_IMPACT_RADIUS_JITTER \
+			and gap > 0.0 \
+			and gap <= angular_step * (1.0 + 2.0 * ImpactDebris.DEV_IMPACT_ANGLE_JITTER)
+		any_uneven = any_uneven or not is_equal_approx(gap, angular_step)
 	_expect(
-		cloud_expands,
-		"each DevImpact particle must coast outward on its own randomized velocity"
+		covers_circle and any_uneven,
+		"DevImpact's puffs must fill the circle unevenly, not as a regular polygon"
+	)
+	# Fast out of the impact, then a visible coast to a stop.
+	_expect(
+		ImpactDebris._eased_spray_progress(0.25) > 0.6
+		and ImpactDebris._eased_spray_progress(0.5) > 0.9
+		and ImpactDebris._eased_spray_progress(1.0) >= 1.0,
+		"DevImpact's throw must front-load its travel and decelerate to a halt"
+	)
+	var first_puff := particle_nodes.front() as Node3D if not particle_nodes.is_empty() else null
+	var puff_scale_early := first_puff.scale.x if first_puff != null else 0.0
+	await create_timer(ImpactDebris.DEV_IMPACT_DURATION * 0.5).timeout
+	var puff_scale_late := first_puff.scale.x \
+		if first_puff != null and is_instance_valid(first_puff) else 0.0
+	_expect(
+		ImpactDebris.DEV_IMPACT_SCALE_START < ImpactDebris.DEV_IMPACT_SCALE_END
+		and puff_scale_early >= ImpactDebris.DEV_IMPACT_SCALE_START
+		and puff_scale_late > puff_scale_early
+		and puff_scale_late <= ImpactDebris.DEV_IMPACT_SCALE_END,
+		"DevImpact's puffs must start small and swell across the flight"
 	)
 	var splat_material := (
 		(particle_nodes.front().get_node_or_null("Visual") as MeshInstance3D).mesh as QuadMesh
 	).material as StandardMaterial3D if not particle_nodes.is_empty() else null
 	_expect(
 		splat_material != null
-		and splat_material.albedo_color.is_equal_approx(
-			Color(200.0 / 255.0, 200.0 / 255.0, 1.0, 1.0)
-		),
-		"DevImpact's cloud must render in its authored pale-blue bank tint"
+		and Color(
+			splat_material.albedo_color, 1.0
+		).is_equal_approx(Color(ImpactDebris.DEV_IMPACT_TINT, 1.0)),
+		"DevImpact's cloud must render in its bank tint, whatever the blend mode"
+	)
+	_expect(
+		splat_material != null
+		and splat_material.albedo_color.r < splat_material.albedo_color.b * 0.5
+		and splat_material.albedo_color.g < splat_material.albedo_color.b * 0.5,
+		"DevImpact's tint must stay saturated enough to read as blue, not white"
+	)
+	# Opaque until two thirds of the sheet, then a ramp to nothing on the last
+	# frame, so the cloud dissolves instead of vanishing mid-flight.
+	var opacity_ramp := ImpactDebris._fade_tail_opacities(
+		ImpactDebris.DEV_IMPACT_FRAME_COUNT, ImpactDebris.DEV_IMPACT_FADE_FROM
+	)
+	_expect(
+		opacity_ramp.size() == ImpactDebris.DEV_IMPACT_FRAME_COUNT
+		and is_equal_approx(opacity_ramp[0], 1.0)
+		and is_equal_approx(opacity_ramp[5], 1.0)
+		and opacity_ramp[ImpactDebris.DEV_IMPACT_FRAME_COUNT - 2] < 1.0
+		and is_zero_approx(opacity_ramp[ImpactDebris.DEV_IMPACT_FRAME_COUNT - 1]),
+		"DevImpact must hold full opacity, then fade out across its last third"
 	)
 	_expect(
 		dev_impact == null or dev_impact.get_node_or_null("ImpactLight") == null,

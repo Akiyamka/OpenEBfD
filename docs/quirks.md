@@ -347,6 +347,61 @@ single gas-detonation piece, with `!sess`'s bank left wired in the source
 scene but unused as a duplicate swirl. Revisit if further evidence (e.g.
 original gameplay footage) shows both banks were meant to play together.
 
+### `DevImpact`'s authored tint is too pale to survive additive stacking
+
+**Observed data:** `devimpact.scn`'s single bank tints its cloud
+`int_parameters_7_11 = [200, 200, 255]` — pale blue, a blue-over-red bias of
+only 1.28:1. The sprite it tints, `!sm`, contributes no colour of its own: all
+eleven frames are flat grey (mean RGB 49/49/49, peak channel 136).
+
+**Original-engine quirk:** whatever the original renderer did with that tint,
+Godot's additive billboards cannot reproduce it. `AuthoredFxBank`'s material is
+`BLEND_MODE_ADD`, so the sixteen overlapping particles of one cloud sum their
+channels; red and green clip at 1.0 just as quickly as blue does, and the
+1.28:1 bias burns out to white well before the cloud is fully formed. Playtest
+confirmed the impact reading as a white puff rather than plasma.
+
+**OpenEBfD compatibility decision:** `ImpactDebris.DEV_IMPACT_TINT` keeps the
+authored *hue* (240°, straight blue) but raises its saturation to 0.75,
+i.e. `Color(0.25, 0.25, 1.0)`. This is a deliberate departure from the literal
+bank values, made because reproducing them literally produces the wrong colour
+on this renderer. Contrast `DeviateHit`'s `[0, 128, 0]`, used verbatim: with
+red and blue at zero there is nothing for additive stacking to saturate, so its
+green survives untouched. Any future tint read from a bank should be checked
+the same way — a tint whose channels are all high is a candidate for the same
+washout.
+
+`DevImpact`'s motion is likewise reconstructed rather than copied: the bank
+gives speed 5.0 with no gravity and emission across frames 0–10, which fixes
+the extent (≈3.4 world units) but says nothing about the profile. The cloud is
+built as a ring — one nominal radius, one angular slot per puff, each jittered
+inside its slot so the circle fills unevenly rather than as a regular polygon —
+expanding on a quartic ease-out and fading over the last third of its sprite
+sheet. The ease matters: a smoothstep was tried first and its slow start ate
+the deceleration, so at playtest speed the motion read as constant. Each puff
+also swells from
+0.5x to 2.0x of the authored `world_particle_size` as it travels, which the
+bank does not describe at all but which the smoke shape needs to read as a
+detonation rather than a dot. Sampling each particle's angle and speed
+independently, the obvious first reading of a "spread" parameter, playtested as
+an unreadable scatter.
+
+**Blending was investigated and ruled out.** The obvious suspicion was that the
+original alpha-blended its smoke rather than adding it — `!sm` is a smoke
+shape, smoke is conventionally alpha-blended, and `(200,200,255)` reads as
+"colour this grey puff", which only misbehaves under addition. That was built
+and playtested: the sequence was loaded with alpha derived from luminance (the
+source TGAs have no alpha channel at all) and drawn with `BLEND_MODE_MIX`. It
+did not help, because the paleness never came from the blend mode — under alpha
+blending the literal authored `(200,200,255)` is simply drawn as-is, and it is
+a pale colour. Photoshop-style modes such as hard light are not an option
+either: `StandardMaterial3D` offers only mix/add/sub/mul, a spatial shader's
+`render_mode` no more, and anything else needs a screen-reading shader — which
+would also lighten, not saturate, against sand. The experiment was reverted;
+`opaque_additive_texture` and `BLEND_MODE_ADD` stand for every rig. **The tint
+value is the only lever on colour here; the blend mode is the lever on whether
+the cloud glows or reads as dense.** Keep the two apart when tuning by eye.
+
 ### Duplicate `ExplosionType` keys are overrides, not a list of effects
 
 **Observed data:** Three `Rules.txt` sections declare `ExplosionType` twice:

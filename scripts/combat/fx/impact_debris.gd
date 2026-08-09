@@ -60,19 +60,41 @@ const DEVIATE_BURST_TINT := Color(0.0, 128.0 / 255.0, 0.0)
 ## float_parameters_12_14[0]=-3.0 is the speed variation, and the #splat events
 ## emit across frames 0-10 -- an expanding cloud. Source speed converts to world
 ## the way CombatTurretFx does, `speed * world_scale * 20`, and world_scale here
-## is 2.0/32 = 1/16, so 2.0..8.0 source becomes 2.5..10.0 world units/second.
+## is 2.0/32 = 1/16, so speed 5.0 becomes 6.25 world units/second -- about 3.4
+## units of travel over the cloud's life.
 const DEV_IMPACT_SEQUENCE := "!sm"
 const DEV_IMPACT_MARKER := "#splat"
 const DEV_IMPACT_FRAME_COUNT := 11
 const DEV_IMPACT_SIZE := 2.0
 const DEV_IMPACT_DURATION := 0.55
-const DEV_IMPACT_TINT := Color(200.0 / 255.0, 200.0 / 255.0, 1.0)
+## The authored tint is pale blue (200,200,255), but `!sm` carries no pigment of
+## its own -- it is flat grey -- and sixteen additive billboards overlap, so red
+## and green saturate to 1.0 just as fast as blue and the 1.28:1 bias burns out
+## to white -- and alpha blending it instead only shows how pale the authored
+## value is to begin with. Pushing its saturation toward blue-violet renders the
+## plasma colour the source data means rather than the one either blend mode
+## leaves behind. Contrast DeviateHit, whose [0,128,0] has nothing in red or
+## blue to saturate, so it needed no such help.
+const DEV_IMPACT_TINT := Color(0.35, 0.18, 1.0)
 const DEV_IMPACT_COUNT := 16
-const DEV_IMPACT_SPEED_MIN := 2.5
-const DEV_IMPACT_SPEED_MAX := 10.0
-## The authored cloud is radial; this keeps it from being a flat disc without
-## turning it into a fountain the zero-gravity bank would never pull back down.
-const DEV_IMPACT_RISE_FRACTION := 0.35
+## One shared radius, reached on a smoothstep, so the cloud stays a clean ring
+## that accelerates out of the impact and coasts to a stop instead of a scatter
+## of particles each drifting at its own speed forever.
+const DEV_IMPACT_RADIUS := 3.4
+## Fraction of the sprite sheet the cloud stays opaque for before fading out.
+const DEV_IMPACT_FADE_FROM := 2.0 / 3.0
+## Puffs swell as they travel, the way the smoke shape `!sm` draws is meant to
+## read. The blue tint costs the sprite most of its luminance, which dims its
+## faint outer halo below visibility and makes the puff look smaller than the
+## authored size alone suggests, so the range ends above 1.0 rather than at it.
+const DEV_IMPACT_SCALE_START := 0.5
+const DEV_IMPACT_SCALE_END := 2.0
+## Fraction of one angular step each puff may wander from its slot, and of the
+## radius it may fall short of or overshoot. The cloud reads as a circle that
+## happens to be uneven -- clumped here, gapped there -- rather than as the
+## polygon perfectly even spacing draws.
+const DEV_IMPACT_ANGLE_JITTER := 0.45
+const DEV_IMPACT_RADIUS_JITTER := 0.18
 
 ## Which pieces each authored emitter effect is made of. An ExplosionType that
 ## is not listed renders itself and needs nothing from here.
@@ -101,8 +123,10 @@ const PIECES := {
 		{"kind": SPRAY, "sequence": DEV_IMPACT_SEQUENCE,
 			"frame_count": DEV_IMPACT_FRAME_COUNT, "size": DEV_IMPACT_SIZE,
 			"duration": DEV_IMPACT_DURATION, "tint": DEV_IMPACT_TINT,
-			"count": DEV_IMPACT_COUNT, "speed_min": DEV_IMPACT_SPEED_MIN,
-			"speed_max": DEV_IMPACT_SPEED_MAX},
+			"count": DEV_IMPACT_COUNT, "radius": DEV_IMPACT_RADIUS,
+			"fade_from": DEV_IMPACT_FADE_FROM,
+			"scale_start": DEV_IMPACT_SCALE_START,
+			"scale_end": DEV_IMPACT_SCALE_END},
 	],
 }
 const SHRAPNEL_SEQUENCE := "!@sm"
@@ -197,8 +221,12 @@ func _spawn_burst_piece(piece: Dictionary, authored_visual: Node3D) -> void:
 
 
 ## An authored cloud that expands from the impact point instead of one
-## billboard riding a marker. The bank carries no gravity, so the particles
-## coast outward and simply finish their sprite sheet where they are.
+## billboard riding a marker. The bank carries no gravity, so nothing pulls the
+## particles back down: they all reach one shared radius on a smoothstep --
+## quick out of the impact, coasting to a stop -- and fade over the tail of
+## their sprite sheet. Angles are spaced evenly rather than sampled, so the
+## cloud reads as a ring; only the ring's phase is random, which keeps repeated
+## impacts from landing on identical sprites without ragging its outline.
 func _spawn_spray_piece(piece: Dictionary) -> void:
 	var sequence := String(piece.get("sequence", ""))
 	var textures := AuthoredFxBankScript.load_texture_sequence(
@@ -209,23 +237,90 @@ func _spawn_spray_piece(piece: Dictionary) -> void:
 	var size := float(piece.get("size", BURST_SIZE))
 	var duration := float(piece.get("duration", BURST_DURATION))
 	var tint := piece.get("tint", Color.WHITE) as Color
-	var speed_min := float(piece.get("speed_min", 0.0))
-	var speed_max := float(piece.get("speed_max", 0.0))
+	var radius := float(piece.get("radius", 0.0))
+	var count := maxi(int(piece.get("count", 1)), 1)
+	var opacities := _fade_tail_opacities(
+		textures.size(), float(piece.get("fade_from", 1.0))
+	)
+	var scale_start := float(piece.get("scale_start", 1.0))
+	var scale_end := float(piece.get("scale_end", 1.0))
 	var start := _effect.global_position
-	for particle_number in int(piece.get("count", 1)):
-		var angle := _random.randf_range(0.0, TAU)
-		var direction := Vector3(sin(angle), 0.0, cos(angle))
-		# Tilting each particle up by its own fraction turns the flat ring the
-		# horizontal angle alone would draw into a dome.
-		direction = (
-			direction + Vector3.UP * _random.randf_range(0.0, DEV_IMPACT_RISE_FRACTION)
-		).normalized()
-		var velocity := direction * _random.randf_range(speed_min, speed_max)
-		var particle := _spawn_world_particle(
-			sequence, textures, size, duration, start, tint, true, -1, 1.0, velocity
+	var phase := _random.randf_range(0.0, TAU)
+	var angular_step := TAU / float(count)
+	for particle_number in count:
+		# Each puff owns a slot and wanders inside it: the circle stays covered,
+		# but its density does not come out uniform.
+		var angle := phase + angular_step * (
+			float(particle_number)
+				+ _random.randf_range(-DEV_IMPACT_ANGLE_JITTER, DEV_IMPACT_ANGLE_JITTER)
 		)
-		if particle != null:
-			particle.set_meta("combat_impact_velocity", velocity)
+		var throw_distance := radius * (
+			1.0 + _random.randf_range(-DEV_IMPACT_RADIUS_JITTER, DEV_IMPACT_RADIUS_JITTER)
+		)
+		var offset := Vector3(sin(angle), 0.0, cos(angle)) * throw_distance
+		var particle := _spawn_world_particle(
+			sequence, textures, size, duration, start, tint, true, -1, 1.0, opacities
+		)
+		if particle == null:
+			continue
+		particle.set_meta("combat_impact_offset", offset)
+		particle.scale = Vector3.ONE * scale_start
+		var motion := particle.create_tween().set_process_mode(
+			Tween.TWEEN_PROCESS_PHYSICS
+		)
+		motion.tween_method(
+			_advance_spray_particle.bind(
+				particle, start, offset, scale_start, scale_end
+			),
+			0.0, 1.0, duration
+		)
+
+
+## Opacity per sprite frame: fully lit until `fade_from` of the way through the
+## sheet, then a linear ramp to nothing by the last frame.
+static func _fade_tail_opacities(
+		frame_count: int, fade_from: float
+	) -> PackedFloat32Array:
+	var opacities := PackedFloat32Array()
+	var first_faded := int(floor(float(frame_count) * fade_from))
+	for frame_index in frame_count:
+		if frame_index < first_faded:
+			opacities.append(1.0)
+			continue
+		var faded_frames := float(maxi(frame_count - first_faded, 1))
+		opacities.append(
+			1.0 - float(frame_index - first_faded + 1) / faded_frames
+		)
+	return opacities
+
+
+## Fraction of the throw already covered at a given fraction of the flight.
+## A quartic ease-out: the blast is over almost at once and the puffs spend the
+## rest of their life visibly coasting to a stop. Smoothstep was tried first
+## and its slow start swallowed the deceleration -- at playtest speed neither
+## end read as anything but constant motion.
+static func _eased_spray_progress(progress: float) -> float:
+	var remaining := 1.0 - clampf(progress, 0.0, 1.0)
+	return 1.0 - remaining * remaining * remaining * remaining
+
+
+## Eases along a fixed offset while swelling. A constant velocity plus
+## acceleration -- all the shared spawner offers -- cannot brake to a stop, and
+## it cannot grow the billboard at all.
+static func _advance_spray_particle(
+		progress: float,
+		particle: Node3D,
+		start: Vector3,
+		offset: Vector3,
+		scale_start: float,
+		scale_end: float
+	) -> void:
+	if particle == null or not is_instance_valid(particle):
+		return
+	particle.global_position = start + offset * _eased_spray_progress(progress)
+	# Growth reads better spread evenly across the flight than front-loaded
+	# with the travel, so it tracks raw progress rather than the eased curve.
+	particle.scale = Vector3.ONE * lerpf(scale_start, scale_end, progress)
 
 
 ## How long the owner must stay alive for the rig to finish: the longest
@@ -402,14 +497,15 @@ func _spawn_world_particle(
 		free_after_animation: bool = true,
 		smoke_first_frame: int = -1,
 		smoke_opacity: float = 1.0,
-		velocity: Vector3 = Vector3.ZERO
+		authored_opacities: PackedFloat32Array = PackedFloat32Array()
 	) -> Node3D:
-	var opacities := PackedFloat32Array()
-	for frame_index in textures.size():
-		opacities.append(
-			smoke_opacity if smoke_first_frame >= 0 and frame_index >= smoke_first_frame
-			else 1.0
-		)
+	var opacities := authored_opacities
+	if opacities.is_empty():
+		for frame_index in textures.size():
+			opacities.append(
+				smoke_opacity if smoke_first_frame >= 0 and frame_index >= smoke_first_frame
+				else 1.0
+			)
 	var spawned := AuthoredFxBankScript.spawn_frame_animated_quad(
 		_effect, textures, {
 			"name": "ImpactParticle_%d" % _particle_index,
@@ -419,7 +515,6 @@ func _spawn_world_particle(
 			"frame_seconds": duration / float(maxi(textures.size(), 1)),
 			"opacities": opacities,
 			"free_after_animation": free_after_animation,
-			"velocity": velocity,
 			"metadata": {
 				"combat_impact_particle": StringName(sequence),
 			},
