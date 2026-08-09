@@ -21,6 +21,7 @@ const UnitMovementSoundsScript := preload("res://scripts/units/unit_movement_sou
 const HarvesterControllerScript := preload("res://scripts/units/harvester_controller.gd")
 const UnitDeployStateScript := preload("res://scripts/units/unit_deploy_state.gd")
 const UnitCombatScript := preload("res://scripts/units/unit_combat.gd")
+const UnitAuthoredCollisionScript := preload("res://scripts/units/unit_authored_collision.gd")
 static var _definition_catalog := UnitSceneCatalogScript.shared()
 
 signal owner_changed(player_id: int)
@@ -32,7 +33,6 @@ signal weapon_fired(projectiles: Array, target: Variant, weapon_index: int)
 const PlayerDataScript := preload("res://scripts/players/player_data.gd")
 const SelectionHaloScript := preload("res://scripts/ui/selection_halo.gd")
 
-const COLLISION_OBJECT_NAME := "#~~0"
 ## The incidental Tleilaxu walker predates the Mech rule used by the three
 ## playable House walkers, but its converted model has the same articulated
 ## leg hierarchy and must retain a level gameplay root as well.
@@ -155,6 +155,9 @@ var _deploy := UnitDeployStateScript.new()
 ## Unit's combat engine (attack orders, turret engagement, fire sequences).
 ## See scripts/units/unit_combat.gd; modeled on Building/BuildingCombat.
 var _combat := UnitCombatScript.new()
+## Physics shapes, navigation extents and selection bounds read off the
+## converted model's authored collision volumes.
+var _authored_collision := UnitAuthoredCollisionScript.new()
 ## Test-only compatibility property: tests/combat/run.gd reads this by name.
 @warning_ignore("unused_private_class_variable")
 var _fire_sequence_active: bool:
@@ -174,6 +177,7 @@ func _init() -> void:
 	_movement_sounds.configure(self)
 	_deploy.configure(self)
 	_combat.configure(self)
+	_authored_collision.configure(self)
 
 
 func _ready() -> void:
@@ -187,7 +191,7 @@ func _ready() -> void:
 	# which prevents units from climbing otherwise traversable slopes. The
 	# collision layer remains enabled, so mouse rays can still select this unit.
 	collision_mask = 0
-	_add_authored_collision()
+	_authored_collision.add_body_shapes()
 	_shader_fx.attach_model()
 	_animation_players = _collect_animation_players()
 	_locomotion.attach_model(_animation_players)
@@ -469,42 +473,12 @@ func set_navigation_destination(world_position: Vector3) -> void:
 	target_position = Vector3(world_position.x, global_position.y, world_position.z)
 
 
-## Local avoidance uses discs, while authored unit volumes may be long boxes.
-## The smaller horizontal half-extent is the stable body width: using the long
-## axis would leave vehicle-sized gaps beside every tank, while the rules-only
-## radius is small enough for infantry to run visibly through their hulls.
 func navigation_collision_radius(fallback: float) -> float:
-	var half_extents := _navigation_collision_half_extents()
-	var authored_width_radius := minf(half_extents.x, half_extents.y)
-	return maxf(fallback, authored_width_radius)
+	return _authored_collision.collision_radius(fallback)
 
 
-## Long vehicles are represented as rounded capsules for navigation. `radius`
-## above is their cross-section and remains the right unit/unit spacing. Around
-## static terrain, however, a freely turning capsule needs its complete rotation
-## envelope: otherwise the centre path clears a building while the harvester's
-## nose and tail still sweep through its cells.
 func navigation_rotation_radius(fallback: float) -> float:
-	var half_extents := _navigation_collision_half_extents()
-	return maxf(fallback, maxf(half_extents.x, half_extents.y))
-
-
-func _navigation_collision_half_extents() -> Vector2:
-	# Lightweight gameplay test doubles intentionally omit the converted visual
-	# hierarchy; in that case the rules-derived fallback remains authoritative.
-	if visual_root == null:
-		return Vector2.ZERO
-	var maximum_x := 0.0
-	var maximum_z := 0.0
-	var to_unit := global_transform.affine_inverse()
-	for source in _collision_sources():
-		var points: PackedVector3Array = source.get_meta("collision_points", PackedVector3Array())
-		var source_to_unit: Transform3D = to_unit * source.global_transform
-		for point in points:
-			var local_point: Vector3 = source_to_unit * point
-			maximum_x = maxf(maximum_x, absf(local_point.x))
-			maximum_z = maxf(maximum_z, absf(local_point.z))
-	return Vector2(maximum_x, maximum_z)
+	return _authored_collision.rotation_radius(fallback)
 
 
 func navigation_step(horizontal_velocity: Vector3, delta: float) -> void:
@@ -1420,39 +1394,10 @@ func _clear_invulnerability() -> void:
 	invulnerable = false
 
 
-func _add_authored_collision() -> void:
-	for source in _collision_sources():
-		var shape := _collision_shape(source)
-		if shape == null:
-			push_warning("Unit: collision mesh %s has no usable convex shape" % source.get_path())
-			continue
-
-		var collision := CollisionShape3D.new()
-		collision.name = "AuthoredCollision"
-		collision.shape = shape
-		add_child(collision)
-		# The source mesh is nested beneath VisualRoot and model-space nodes;
-		# copying its global transform preserves its authored position and scale.
-		collision.global_transform = source.global_transform
-
-
+## Test-only shim: tests/match/demo_boot_run.gd calls this by name. Not
+## architecture — the lookup lives in UnitAuthoredCollision.
 func _collision_sources() -> Array[Node3D]:
-	return AuthoredModelScript.collision_sources(visual_root, [
-		{"name": COLLISION_OBJECT_NAME, "prefix": false},
-		{"name": "slct", "prefix": true},
-	])
-
-
-func _collision_shape(source: Node3D) -> Shape3D:
-	var points: PackedVector3Array = source.get_meta("collision_points", PackedVector3Array())
-	if points.size() >= 4:
-		var shape := ConvexPolygonShape3D.new()
-		shape.points = points
-		return shape
-	for child in source.get_children():
-		if child is MeshInstance3D and child.mesh != null:
-			return child.mesh.create_convex_shape(true, false)
-	return null
+	return _authored_collision.sources()
 
 
 func _add_selection_halo() -> void:
@@ -1486,4 +1431,4 @@ func _selection_position() -> Vector3:
 
 
 func _selection_bounds() -> AABB:
-	return AuthoredModelScript.selection_bounds(visual_root, self)
+	return _authored_collision.selection_bounds()
