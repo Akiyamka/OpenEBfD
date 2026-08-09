@@ -1,4 +1,4 @@
-extends SceneTree
+extends "res://tests/support/suite.gd"
 
 ## A unit that carries more than one weapon has to use all of them. The cases
 ## here cover the three ways that used to fail on the Devastator, which pairs a
@@ -17,11 +17,6 @@ const HKDevastatorModelScene := preload(
 const IMAdvSardaukarModelScene := preload(
 	"res://assets/converted/models/IM_ADVSardaukar_H0/IM_ADVSardaukar_H0.scn"
 )
-
-var _assertions := 0
-var _failures := 0
-var _current_case := ""
-
 
 class FakeCombatTarget extends RefCounted:
 	var armour_type: StringName
@@ -111,30 +106,7 @@ func _initialize() -> void:
 		"a weapon the order is not for keeps hunting on its own",
 		_test_idle_turret_engages_during_attack_order
 	)
-	if _failures > 0:
-		printerr(
-			"Multi-turret tests: %d failures after %d assertions"
-				% [_failures, _assertions]
-		)
-		quit(1)
-		return
-	print("Multi-turret tests: %d assertions passed" % _assertions)
-	quit(0)
-
-
-func _run_case(case_name: String, test: Callable) -> void:
-	_current_case = case_name
-	var failures_before := _failures
-	var assertions_before := _assertions
-	test.call()
-	# A runtime error aborts the case function where it stands, which would
-	# otherwise read as a silent pass.
-	if _assertions == assertions_before:
-		_failures += 1
-		printerr("FAIL: %s: the case ended before asserting anything" % case_name)
-		return
-	if _failures == failures_before:
-		print("PASS: %s" % case_name)
+	_finish("Multi-turret tests")
 
 
 ## The Devastator carries one weapon of each kind: a plasma gun bolted to the
@@ -367,11 +339,3 @@ func _free_muzzle_effects() -> void:
 	for child in root.get_children():
 		if child.has_meta("combat_muzzle_fx"):
 			child.free()
-
-
-func _expect(condition: bool, message: String) -> void:
-	_assertions += 1
-	if condition:
-		return
-	_failures += 1
-	printerr("FAIL: %s: %s" % [_current_case, message])

@@ -1,4 +1,4 @@
-extends SceneTree
+extends "res://tests/support/suite.gd"
 ## Tests for AuthoredReloadSound: picking the weapon-reload sound out of the FX
 ## event table baked into a model, without also picking up the shot sound the
 ## turret already plays.
@@ -13,11 +13,6 @@ const AuthoredReloadSoundScript := preload(
 )
 const SfxSectionCatalogScript := preload("res://scripts/audio/sfx_section_catalog.gd")
 
-var _assertions := 0
-var _failures := 0
-var _current_case := ""
-
-
 func _initialize() -> void:
 	_run_case("AT_Sniper: the rifle reload, not the rifle shot", _test_sniper)
 	_run_case("HK_Trooper Fire_0: the bazooka reload at its authored frame", _test_trooper)
@@ -28,27 +23,7 @@ func _initialize() -> void:
 	_run_case("ATPillbox: the repaired Idle_0 range must not steal Fire_0's reload", _test_pillbox)
 	_run_case("every allowlisted section a model names resolves to real samples", _test_sections_resolve)
 	_run_case("an unknown clip, missing meta or incomplete table yields no sound", _test_degenerate_inputs)
-	if _failures > 0:
-		printerr("AuthoredReloadSound tests: %d failures after %d assertions" % [_failures, _assertions])
-		quit(1)
-		return
-	print("AuthoredReloadSound tests: %d assertions passed" % _assertions)
-	quit(0)
-
-
-func _run_case(case_name: String, test: Callable) -> void:
-	_current_case = case_name
-	var failures_before := _failures
-	var assertions_before := _assertions
-	test.call()
-	# A runtime error aborts the case function where it stands, which would
-	# otherwise read as a silent pass.
-	if _assertions == assertions_before:
-		_failures += 1
-		printerr("FAIL: %s: the case ended before asserting anything" % case_name)
-		return
-	if _failures == failures_before:
-		print("PASS: %s" % case_name)
+	_finish("AuthoredReloadSound tests")
 
 
 ## Stands in for a baked model root: the three metas
@@ -375,11 +350,3 @@ func _kindjal_events() -> Array:
 		_sound(374, "Atsniperreload"), _sound(391, "ATMortarLaunch1"),
 		_sound(429, "FRwarriorreload"),
 	]
-
-
-func _expect(condition: bool, message: String) -> void:
-	_assertions += 1
-	if condition:
-		return
-	_failures += 1
-	printerr("FAIL: %s: %s" % [_current_case, message])

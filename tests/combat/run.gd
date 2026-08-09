@@ -1,4 +1,4 @@
-extends SceneTree
+extends "res://tests/support/suite.gd"
 
 const LegacyRulesFixture := preload("res://tests/support/legacy_rules_fixture.gd")
 
@@ -81,9 +81,6 @@ const ATWallScene := preload(
 	"res://assets/converted/buildings/ATWall/ATWall.scn"
 )
 
-var _assertions := 0
-var _failures := 0
-var _current_case := ""
 var _combat_catalog := CombatDefinitionCatalogScript.new()
 
 
@@ -442,42 +439,7 @@ func _initialize() -> void:
 		_test_kobra_travel_fire_pose_boundaries
 	)
 
-	if _failures > 0:
-		printerr("Combat tests: %d failures after %d assertions" % [_failures, _assertions])
-		quit(1)
-		return
-	print("Combat tests: %d assertions passed" % _assertions)
-	quit(0)
-
-
-func _run_case(case_name: String, test: Callable) -> void:
-	_current_case = case_name
-	var failures_before := _failures
-	var assertions_before := _assertions
-	test.call()
-	# A runtime error aborts the case function where it stands, which would
-	# otherwise read as a silent pass.
-	if _assertions == assertions_before:
-		_failures += 1
-		printerr("FAIL: %s: the case ended before asserting anything" % case_name)
-		return
-	if _failures == failures_before:
-		print("PASS: %s" % case_name)
-
-
-func _run_async_case(case_name: String, test: Callable) -> void:
-	_current_case = case_name
-	var failures_before := _failures
-	var assertions_before := _assertions
-	await test.call()
-	# A runtime error aborts the case function where it stands, which would
-	# otherwise read as a silent pass.
-	if _assertions == assertions_before:
-		_failures += 1
-		printerr("FAIL: %s: the case ended before asserting anything" % case_name)
-		return
-	if _failures == failures_before:
-		print("PASS: %s" % case_name)
+	_finish("Combat tests")
 
 
 func _horizontal_angle_between(a: Vector3, b: Vector3) -> float:
@@ -486,14 +448,6 @@ func _horizontal_angle_between(a: Vector3, b: Vector3) -> float:
 	if a_horizontal.is_zero_approx() or b_horizontal.is_zero_approx():
 		return 0.0
 	return absf(angle_difference(a_horizontal.angle(), b_horizontal.angle()))
-
-
-func _expect(condition: bool, message: String) -> void:
-	_assertions += 1
-	if condition:
-		return
-	_failures += 1
-	printerr("FAIL: %s: %s" % [_current_case, message])
 
 
 func _muzzle_effects(kind: StringName, emission_index := -1) -> Array[Node3D]:
