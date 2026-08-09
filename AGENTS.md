@@ -23,13 +23,48 @@ analysis. Cross-check the corresponding entry in `Rules.txt` when units or
 conversion semantics (for example comments describing units per tick/update)
 matter.
 
+## Building XBF imports
+
+Emperor: Battle for Dune ships building model variants with suffix families:
+
+- `H*`: high-detail building meshes and construction/damage states.
+- `M*`: medium-detail LOD meshes.
+- `L*`: low-detail LOD meshes.
+
+For OpenEBfD, import only the `H*` building variants. The original game is old
+enough that even `H*` meshes are low-poly by modern standards, so `M*` and `L*`
+variants add asset and runtime complexity without meaningful value.
+
+When implementing building converters, examples such as `ATBarracks` should use
+files like `at_barracks_H0.xbf`, `at_barracks_h1.xbf`, `at_barracks_h2.xbf`,
+`at_barracks_h3.xbf`, and `AT_barracks_HC.XbF`, and should ignore matching
+`*_M*` and `*_L*` files.
+
+## Code rules
+
+- Don't put all logic in a single file `main.gd`.
+- Prefer explicit `const XScript := preload("res://...")` over a bare reference
+  to another script's `class_name` (e.g. `SomeClass.SOME_CONST`). A bare
+  global-name reference hides the dependency — it won't show up when grepping
+  a file for its `preload`s — and if the referenced script fails to compile
+  (a deleted constant, a typo), the failure can surface as an unrelated error
+  somewhere else in the project instead of a clear error at the actual
+  dependency site. This bit us once: removing a constant from
+  `unit_local_avoidance.gd` broke unrelated combat tests, because `unit.gd`
+  referenced `UnitNavigationSystem.MoveMode.FREE` by bare global name with no
+  preload, and Godot's global `class_name` table doesn't recover cleanly when
+  one script in the chain fails to parse.
+
+The `preload` rule, along with the module boundaries described below, is
+machine-checked — see "Architecture checks".
+
 ## Architecture checks
 
-`tools/check_architecture.sh` statically enforces the structural rules in
-`AGENTS.MD`'s "Code Rules" over every `scripts/**/*.gd`. It needs no container
-and runs in under a second, but it is **not** part of `tools/run_godot_tests.sh`
-— run it separately, in particular after any refactor that moves logic between
-a facade and its modules:
+`tools/check_architecture.sh` statically enforces the structural rules above
+over every `scripts/**/*.gd`. It needs no container and runs in under a second,
+but it is **not** part of `tools/run_godot_tests.sh` — run it separately, in
+particular after any refactor that moves logic between a facade and its
+modules:
 
 ```bash
 ./tools/check_architecture.sh   # silence and exit 0 means clean
@@ -45,8 +80,8 @@ It reports, with `file:line`:
   `_facade.avoidance`, `_facade.registry` and the other navigation subsystems.
   A module must not use the facade as a directory of its siblings.
 - **bare class_name reference** — using `SomeClass.` without an explicit
-  `preload()` of that script in the same file. See the "Code Rules" entry for
-  why this one has already caused a confusing cross-suite failure.
+  `preload()` of that script in the same file. See "Code rules" above for why
+  this one has already caused a confusing cross-suite failure.
 - **direct autoload path lookup** — `get_node_or_null("/root/Players")` or
   `/root/Cursors` anywhere except `scripts/players/autoload_lookup.gd`.
 
