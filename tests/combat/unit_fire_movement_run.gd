@@ -36,6 +36,7 @@ func _initialize() -> void:
 		_test_independent_side_turrets
 	)
 	_run_case("turret recenters smoothly after attack is replaced by move", _test_turret_recenter_after_move)
+	_run_case("idle unit turrets scan their forward sector", _test_idle_unit_turret_scan)
 	_run_case("unit model replacement rebinds its turret", _test_unit_turret_rebind)
 	_finish("Unit fire movement tests")
 
@@ -450,6 +451,32 @@ func _test_turret_recenter_after_move() -> void:
 		rad_to_deg(Assertions.horizontal_angle_between(returning_direction, reacquired_direction))
 			<= 5.0 / 3.0 + 0.1,
 		"a repeated attack order must resume from the visible pose without restoring a cached yaw"
+	)
+
+
+func _test_idle_unit_turret_scan() -> void:
+	var unit = UnitScene.instantiate()
+	unit.config_id = &"ATMinotaurus"
+	root.add_child(unit)
+	unit.replace_visual_scene(ATMinotaurusModelScene)
+	var turret = unit.combat_turrets[0]
+	turret._idle_scan_rng.seed = 1
+	turret._idle_scan_active = false
+	unit._process(2.0)
+	_expect(
+		is_zero_approx(turret.current_yaw_degrees()),
+		"an idle turret must wait at least three seconds before its first scan turn"
+	)
+	unit._process(4.0)
+	var yaw: float = turret.current_yaw_degrees()
+	_expect(
+		absf(yaw) > 0.01 and absf(yaw) <= 70.01,
+		"an idle unit turret must choose a point within 70 degrees of its forward direction"
+	)
+	_expect(
+		turret._idle_scan_seconds_until_target >= 3.0
+			and turret._idle_scan_seconds_until_target <= 5.0,
+		"each idle unit scan target must remain in place for three to five seconds"
 	)
 	unit.free()
 
