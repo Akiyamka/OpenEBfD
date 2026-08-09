@@ -24,9 +24,29 @@ const DeathSoundPlayerScript := preload("res://scripts/audio/death_sound_player.
 ## footstep sample; no separate throttle is needed on top of it.
 static var _active_counts: Dictionary = {}
 
+## ImportedSfx.txt shadows these two original Atreides definitions with `$`
+## localization stubs, so the generated manifest deliberately cannot resolve
+## them even though their converted sample is shipped. Keep this tiny source
+## supplement here rather than editing generated audio data: both original
+## sections use the same `kindjal_infantry_deploy_2` WAV, Volume=50 and the
+## default Limit=5 (AtreidesSFX.txt).
+const SOURCE_SECTION_SUPPLEMENTS := {
+	&"kindjaldeploy": {
+		"id": &"KindjalDeploy",
+		"paths": ["res://assets/converted/audio/sfx/kindjal_infantry_deploy_2.wav"],
+		"controls": [], "volume": 50, "limit": 5, "priority": &"normal",
+	},
+	&"kindjalundeploy": {
+		"id": &"KindjalUnDeploy",
+		"paths": ["res://assets/converted/audio/sfx/kindjal_infantry_deploy_2.wav"],
+		"controls": [], "volume": 50, "limit": 5, "priority": &"normal",
+	},
+}
+
 
 static func has_section(section_id: StringName) -> bool:
-	return GeneratedSfxManifest.SECTIONS.has(_key(section_id))
+	var key := _key(section_id)
+	return GeneratedSfxManifest.SECTIONS.has(key) or SOURCE_SECTION_SUPPLEMENTS.has(key)
 
 
 ## The generated section record, or an empty dictionary when the name is
@@ -34,7 +54,8 @@ static func has_section(section_id: StringName) -> bool:
 ## manifest entirely rather than present-but-empty, so "unknown" and "silent"
 ## are the same answer here on purpose.
 static func section(section_id: StringName) -> Dictionary:
-	return GeneratedSfxManifest.SECTIONS.get(_key(section_id), {})
+	var key := _key(section_id)
+	return GeneratedSfxManifest.SECTIONS.get(key, SOURCE_SECTION_SUPPLEMENTS.get(key, {}))
 
 
 ## Plays one sample of `section_id` positionally at `world_position`, honouring

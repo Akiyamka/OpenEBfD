@@ -18,6 +18,7 @@ const SpatialOrientationScript := preload("res://scripts/world/spatial_orientati
 const AuthoredReloadSoundScript := preload(
 	"res://scripts/combat/authored_reload_sound.gd"
 )
+const AuthoredDeploySoundScript := preload("res://scripts/units/authored_deploy_sound.gd")
 const SfxSectionCatalogScript := preload("res://scripts/audio/sfx_section_catalog.gd")
 
 ## The original MCV model has no clip literally named Deploy. Move_Stop is its
@@ -231,13 +232,16 @@ func start_transition(candidates: Array[StringName]) -> void:
 func _schedule_authored_sounds() -> void:
 	if _unit == null or not _unit.is_inside_tree():
 		return
-	var schedule := AuthoredReloadSoundScript.schedule(
+	var reload_schedule := AuthoredReloadSoundScript.schedule(
 		_unit.visual_root, _transition_animation
 	)
-	if schedule.is_empty():
+	var transition_schedule := AuthoredDeploySoundScript.schedule(
+		_unit.config_id, _unit.visual_root, _transition_animation
+	)
+	if reload_schedule.is_empty() and transition_schedule.is_empty():
 		return
 	var speed_scale := maxf(absf(_transition_player.speed_scale), 0.01)
-	for entry in schedule:
+	for entry in reload_schedule + transition_schedule:
 		var section := StringName(entry.get("section", &""))
 		var delay := float(entry.get("time", 0.0)) / speed_scale
 		if delay <= 0.0:
