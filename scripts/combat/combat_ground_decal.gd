@@ -6,6 +6,7 @@ const GameSettingsCatalogScript := preload(
 	"res://scripts/rules/game_settings_catalog.gd"
 )
 const GameSettingsScript := preload("res://scripts/rules/game_settings.gd")
+const CraterShader := preload("res://scripts/combat/combat_ground_decal.gdshader")
 
 ## Persistent crater decal placed on terrain after an ExplosionType with a
 ## positive DamageToTile value. The original @craters texture is a 2x2 atlas.
@@ -14,7 +15,6 @@ const GameSettingsScript := preload("res://scripts/rules/game_settings.gd")
 
 const CRATER_ATLAS_PATH := \
 	"res://assets/raw_original_content/3DDATA/Textures/@craters.tga"
-const ATLAS_CELL_SIZE := Vector2(32.0, 32.0)
 const RULE_TILE_WORLD_SPAN := 2.0
 const BASE_DAMAGE_TO_TILE := 30.0
 const MIN_DIAMETER := 1.0
@@ -27,6 +27,7 @@ const RAY_DEPTH := 32.0
 
 static var _next_sequence := 0
 static var _game_settings_catalog := GameSettingsCatalogScript.new()
+static var _crater_material: ShaderMaterial
 
 
 func configure(tile_damage: float, impact_position: Vector3) -> bool:
@@ -42,14 +43,6 @@ func configure(tile_damage: float, impact_position: Vector3) -> bool:
 	var sequence := _next_sequence
 	_next_sequence += 1
 	var variant := sequence % 4
-	var texture := AtlasTexture.new()
-	texture.atlas = atlas
-	texture.filter_clip = true
-	texture.region = Rect2(
-		Vector2(float(variant % 2), float(variant >> 1)) * ATLAS_CELL_SIZE,
-		ATLAS_CELL_SIZE
-	)
-
 	name = "GroundCrater_%d" % sequence
 	set_meta("combat_ground_decal", true)
 	set_meta("damage_to_tile", tile_damage)
@@ -73,25 +66,32 @@ func configure(tile_damage: float, impact_position: Vector3) -> bool:
 		MAX_DIAMETER
 	)
 	set_meta("decal_radius", diameter * 0.5)
-	var material := StandardMaterial3D.new()
-	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	material.albedo_texture = texture
-	material.cull_mode = BaseMaterial3D.CULL_DISABLED
-
 	var plane := PlaneMesh.new()
 	plane.size = Vector2(diameter, diameter)
-	plane.material = material
+	plane.material = _material_for_atlas(atlas)
 
 	var decal := MeshInstance3D.new()
 	decal.name = "Decal"
 	decal.mesh = plane
 	decal.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	decal.set_instance_shader_parameter(
+		&"crater_uv_offset",
+		Vector2(float(variant % 2), float(variant >> 1)) * 0.5
+	)
+	decal.set_instance_shader_parameter(&"decal_opacity", 1.0)
 	add_child(decal)
 
 	_fade_older_overlapping_decals()
 	_enforce_parent_budget(maximum_decal_count)
 	return true
+
+
+func _material_for_atlas(atlas: Texture2D) -> ShaderMaterial:
+	if _crater_material == null:
+		_crater_material = ShaderMaterial.new()
+		_crater_material.shader = CraterShader
+		_crater_material.set_shader_parameter(&"crater_atlas", atlas)
+	return _crater_material
 
 
 func _terrain_placement(impact_position: Vector3) -> Dictionary:
@@ -161,13 +161,9 @@ func _set_decal_opacity(decal: Node3D, opacity: float) -> void:
 	var mesh_instance := decal.get_node_or_null("Decal") as MeshInstance3D
 	if mesh_instance == null or not mesh_instance.mesh is PlaneMesh:
 		return
-	var material := (mesh_instance.mesh as PlaneMesh).material \
-		as StandardMaterial3D
-	if material == null:
-		return
-	var color := material.albedo_color
-	color.a = clampf(opacity, 0.0, 1.0)
-	material.albedo_color = color
+	mesh_instance.set_instance_shader_parameter(
+		&"decal_opacity", clampf(opacity, 0.0, 1.0)
+	)
 
 
 func _enforce_parent_budget(maximum_decal_count: int) -> void:

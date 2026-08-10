@@ -42,13 +42,11 @@ func _test_ground_decal_overlap_budget() -> void:
 		)
 		created_decals.append(decal)
 	var oldest_mesh := created_decals.front().get_node("Decal") as MeshInstance3D
-	var oldest_material := (oldest_mesh.mesh as PlaneMesh).material \
-		as StandardMaterial3D
 	_expect(
 		int(created_decals.front().get_meta("overlap_fade_steps", 0))
 			== CombatGroundDecalScript.MAXIMUM_OVERLAPPING_DECALS - 1
 			and is_equal_approx(
-				oldest_material.albedo_color.a,
+				float(oldest_mesh.get_instance_shader_parameter(&"decal_opacity")),
 				1.0 / float(CombatGroundDecalScript.MAXIMUM_OVERLAPPING_DECALS)
 			),
 		"each newer overlap must progressively fade the oldest crater"
