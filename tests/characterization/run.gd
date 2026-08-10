@@ -75,6 +75,10 @@ func _initialize() -> void:
 		_test_unmarked_vehicle_scrolling_textures
 	)
 	_run_case(
+		"ATSonicTank beam01 pans its authored sonic texture",
+		_test_at_sonic_tank_beam_texture_scroll
+	)
+	_run_case(
 		"combat-deploy clip rename normalizes Fire_1 to Deployed_Fire",
 		_test_combat_deploy_clip_rename
 	)
@@ -1879,6 +1883,30 @@ func _test_unmarked_vehicle_scrolling_textures() -> bool:
 			"the construction yard's track texture must stay off the always-on channel"
 		)
 		yard_root.free()
+	return true
+
+
+## ATSonicTank's beam01 uses unmarked !bhalo0.TGA as a continuously panning
+## sonic beam while visibility remains controlled by authored clips.
+func _test_at_sonic_tank_beam_texture_scroll() -> bool:
+	var builder = ModelBakeBuilderScript.new()
+	var scene: PackedScene = builder.build(
+		"res://assets/raw_original_content/3DDATA/Units/AT_SonicTank_H0.xbf"
+	)
+	_expect(scene != null, "AT_SonicTank_H0.xbf must build")
+	if scene == null:
+		return true
+	var root: Node = scene.instantiate()
+	var beam_root := root.find_child("beam01", true, false) as Node3D
+	var beam := beam_root.get_child(0) as MeshInstance3D if beam_root != null else null
+	_expect(beam != null, "AT_SonicTank beam01 must retain its mesh")
+	_expect(
+		beam != null and beam.has_meta("scroll_fx"),
+		"ATSonikTank beam01 must drive %s continuously" % (
+			beam.mesh.surface_get_name(0) if beam != null else "its texture"
+		)
+	)
+	root.free()
 	return true
 
 

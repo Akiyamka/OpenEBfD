@@ -711,7 +711,10 @@ func _build_object_mesh(
 		var surface_index := mesh.get_surface_count() - 1
 		var texture_name := texture_names[texture_index] if texture_index < texture_names.size() else ""
 		mesh.surface_set_name(surface_index, texture_name)
-		mesh.surface_set_material(surface_index, _model_material(texture_name))
+		mesh.surface_set_material(
+			surface_index,
+			_model_material(texture_name, _object_requires_scrolling_texture(object, texture_name))
+		)
 	return mesh
 
 
@@ -726,9 +729,13 @@ func _flip_surface_orientation(surface: Dictionary) -> void:
 		normals[i] = -normals[i]
 
 
-func _model_material(texture_name: String) -> Material:
-	if _material_cache.has(texture_name):
-		return _material_cache[texture_name]
+func _model_material(texture_name: String, force_scrolling := false) -> Material:
+	# Most material variants can be shared by texture name. ATSonicTank's
+	# beam01 is the exception: its !bhalo0.TGA energy material is authored as a
+	# panning effect despite carrying no general animation marker.
+	var cache_key := texture_name + "#scroll" if force_scrolling else texture_name
+	if _material_cache.has(cache_key):
+		return _material_cache[cache_key]
 
 	var texture_path := _ensure_model_texture(texture_name)
 	var texture: Texture2D = null
@@ -745,7 +752,7 @@ func _model_material(texture_name: String) -> Material:
 			animated_material.set_shader_parameter("use_team_color", team_colored)
 			_animated_material_frames[animated_material] = animated_frames.size()
 			_animated_material_frame_names[animated_material] = animated_frames
-			_material_cache[texture_name] = animated_material
+			_material_cache[cache_key] = animated_material
 			return animated_material
 	if not texture_path.is_empty():
 		texture = _load_png_texture(texture_path)
@@ -757,9 +764,9 @@ func _model_material(texture_name: String) -> Material:
 		# Not added to _scrolling_materials: Unit already drives the
 		# shield's fx_time by name match (and only while shields are up), so
 		# tagging it here too would double-write the same parameter.
-		_material_cache[texture_name] = shield_material
+		_material_cache[cache_key] = shield_material
 		return shield_material
-	if _is_scrolling_texture(texture_name) and texture != null:
+	if _is_scrolling_texture(texture_name, force_scrolling) and texture != null:
 		var scrolling_material := ShaderMaterial.new()
 		scrolling_material.shader = _scrolling_texture_shader(additive)
 		scrolling_material.set_shader_parameter("albedo_tex", texture)
@@ -773,14 +780,14 @@ func _model_material(texture_name: String) -> Material:
 			_move_scrolling_materials[scrolling_material] = true
 		else:
 			_scrolling_materials[scrolling_material] = true
-		_material_cache[texture_name] = scrolling_material
+		_material_cache[cache_key] = scrolling_material
 		return scrolling_material
 	if team_colored and texture != null:
 		var team_material := ShaderMaterial.new()
 		team_material.shader = _model_texture_shader(additive, _uses_alpha_channel(texture_name), _texture_has_alpha(texture))
 		team_material.set_shader_parameter("albedo_tex", texture)
 		team_material.set_shader_parameter("use_team_color", true)
-		_material_cache[texture_name] = team_material
+		_material_cache[cache_key] = team_material
 		return team_material
 
 	var material := StandardMaterial3D.new()
@@ -805,7 +812,7 @@ func _model_material(texture_name: String) -> Material:
 		material.albedo_texture = texture
 	else:
 		material.albedo_color = Color.from_hsv(float(texture_name.hash() % 360) / 360.0, 0.45, 0.85)
-	_material_cache[texture_name] = material
+	_material_cache[cache_key] = material
 	return material
 
 
@@ -1236,7 +1243,9 @@ func _is_animated_texture(texture_name: String) -> bool:
 	return _texture_has_prefix(texture_name, "%")
 
 
-func _is_scrolling_texture(texture_name: String) -> bool:
+func _is_scrolling_texture(texture_name: String, force_scrolling := false) -> bool:
+	if force_scrolling:
+		return true
 	var file_name := texture_name.get_file().to_lower()
 	# The construction yards' tread-belt texture has no "%" marker, but its
 	# UVs need to scroll continuously to show the belt running. (Despite the
@@ -1282,6 +1291,15 @@ func _is_scrolling_texture(texture_name: String) -> bool:
 	if file_name.contains("flash"):
 		return false
 	return true
+
+
+## ATSonicTank's beam01 uses !bhalo0.TGA as a sonic-energy ribbon. Its source
+## animation only changes visibility, so the texture phase must be driven
+## continuously at runtime even though the texture has no "%" marker.
+func _object_requires_scrolling_texture(object: Dictionary, texture_name: String) -> bool:
+	return _source_file_name == "at_sonictank_h0.xbf" \
+		and String(object.name).to_lower() == "beam01" \
+		and _texture_sequence_key(texture_name) == "bhalo0.tga"
 
 
 ## Vehicle track belts ("AT_ST_tracks64.tga" and its 32/underscored variants).
