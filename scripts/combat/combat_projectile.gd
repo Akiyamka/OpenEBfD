@@ -146,18 +146,12 @@ func launch(
 
 	var authored_direction := Vector3(emission.get("direction", Vector3.ZERO))
 	var target_direction := Vector3(emission.get("target_direction", Vector3.ZERO))
-	var attack_ground_direction := _launch_position.direction_to(_aim_position) \
-		if target_entity == null and not bullet.has_trajectory() \
-		else Vector3.ZERO
-	# A yaw-only launcher cannot encode the vertical component of an
-	# attack-ground shot in its muzzle marker. Direct coordinate shots must use
-	# the complete sampled direction or they fly horizontally and merely expire
-	# above/below the requested point. Artillery keeps its authored heading so
-	# parallel barrels retain their geometric spread.
+	# Every physical shot leaves along its authored muzzle heading, whether the
+	# request names an entity or a ground coordinate. A turret that cannot encode
+	# pitch in that marker supplies target_direction explicitly; keeping that
+	# exception in CombatTurret also preserves parallel multi-barrel fire here.
 	_direction = target_direction \
 		if not target_direction.is_zero_approx() \
-		else attack_ground_direction \
-		if not attack_ground_direction.is_zero_approx() \
 		else authored_direction.normalized() if not authored_direction.is_zero_approx() \
 		else _launch_position.direction_to(_aim_position)
 	if _direction.is_zero_approx():

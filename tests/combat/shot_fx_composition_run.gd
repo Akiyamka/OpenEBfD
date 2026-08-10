@@ -315,6 +315,12 @@ func _test_mongoose_launch_and_impact_fx() -> void:
 		model.free()
 		return
 	var fired_emission: Dictionary = turret.last_emissions()[0]
+	_expect(
+		projectiles[0].direction().is_equal_approx(
+			Vector3(fired_emission["position"]).direction_to(target_position)
+		),
+		"a yaw-only launcher must add the missing pitch to an attack-ground shot"
+	)
 
 	var front_flashes := Fx.muzzle_effects(root, &"front_flash")
 	var launch_smokes := Fx.muzzle_effects(root, &"launch_smoke", 0)

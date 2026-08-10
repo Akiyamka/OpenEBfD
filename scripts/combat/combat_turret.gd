@@ -1019,15 +1019,12 @@ func try_fire_at(request: FireRequest) -> Array:
 		parent.add_child(projectile)
 		var emission: Dictionary = _last_emissions[index] \
 			if index < _last_emissions.size() else preview_emission
-		# A yaw-only mount can turn its visual muzzle toward a unit but cannot
+		# A yaw-only mount can turn its visual muzzle toward a target but cannot
 		# encode the required vertical component in that marker.  Without an
-		# explicit direction, a low unit target is missed while attack-ground at
-		# the same point works (CombatProjectile already derives that direction
-		# for Vector3 targets).  Preserve authored headings for mounts that have
-		# pitch and for trajectory weapons, whose parallel barrel spread is
-		# intentional.
-		if target_or_position is Object and _pitch_pivot == null \
-		and not preview_bullet.has_trajectory():
+		# explicit direction, a low entity or ground coordinate is missed.
+		# Preserve authored headings for mounts that have pitch and for trajectory
+		# weapons, whose parallel barrel spread is intentional.
+		if _pitch_pivot == null and not preview_bullet.has_trajectory():
 			var target_direction := Vector3(emission["position"]).direction_to(
 				target_position + aim_offset
 			)

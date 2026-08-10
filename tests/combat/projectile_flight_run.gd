@@ -29,6 +29,7 @@ func _initialize() -> void:
 	await process_frame
 	_run_case("hitscan resolves at launch without travel", _test_hitscan_projectile)
 	_run_case("non-homing bullets keep the sampled aim point", _test_linear_projectile_no_lead)
+	_run_case("coordinate shots preserve parallel muzzle headings", _test_parallel_coordinate_shots)
 	_run_case("attack-ground missiles descend to the sampled point", _test_attack_ground_missile)
 	_run_case("homing respects delay, turn rate and target lifetime", _test_homing_projectile)
 	_run_case("homing missiles may outfly their firing range while chasing", _test_homing_flight_budget)
@@ -92,11 +93,11 @@ func _test_attack_ground_missile() -> void:
 	var ground_position := Vector3(0.0, 0.0, -10.0)
 	var projectile = CombatProjectileScript.new()
 	root.add_child(projectile)
+	var emission := Bullets.emission(launch_position, Vector3.FORWARD)
+	emission["target_direction"] = launch_position.direction_to(ground_position)
 	_expect(
 		projectile.launch(
-			_bullets.runtime_bullet(&"HEAT_B"),
-			Bullets.emission(launch_position, Vector3.FORWARD),
-			ground_position
+			_bullets.runtime_bullet(&"HEAT_B"), emission, ground_position
 		),
 		"the Mongoose missile must accept an in-range attack-ground point"
 	)
@@ -116,6 +117,30 @@ func _test_attack_ground_missile() -> void:
 		"a large simulation step must not carry the missile past its sampled point"
 	)
 	projectile.free()
+
+
+func _test_parallel_coordinate_shots() -> void:
+	var target_position := Vector3(0.0, 0.0, -10.0)
+	var projectiles: Array = []
+	for launch_position in [Vector3(-1.0, 0.0, 0.0), Vector3(1.0, 0.0, 0.0)]:
+		var projectile = CombatProjectileScript.new()
+		root.add_child(projectile)
+		_expect(
+			projectile.launch(
+				_bullets.runtime_bullet(&"HEAT_B"),
+				Bullets.emission(launch_position, Vector3.FORWARD),
+				target_position
+			),
+			"each offset muzzle must accept the same attack-ground coordinate"
+		)
+		projectiles.append(projectile)
+	_expect(
+		projectiles.size() == 2
+		and projectiles[0].direction().dot(projectiles[1].direction()) > 0.99999,
+		"coordinate shots must leave parallel barrels in parallel instead of converging"
+	)
+	for projectile in projectiles:
+		projectile.free()
 
 
 func _test_homing_projectile() -> void:
@@ -410,7 +435,6 @@ func _test_continuous_stream_damage_split() -> void:
 		pulse.damage_against(&"Building") < full_burst_damage,
 		"an individual pulse must deal less than the whole stream's total damage"
 	)
-
 
 
 
