@@ -296,5 +296,7 @@ func finish(consumed: bool) -> bool:
 	else:
 		_state = State.TRAVEL if was_deploying else State.DEPLOYED
 	_unit.sync_active_turret_weapons()
+	if consumed:
+		_unit.retarget_after_deployment_state_change()
 	_unit.set_navigation_hold(is_deployed())
 	return true

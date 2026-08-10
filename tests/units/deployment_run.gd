@@ -14,6 +14,7 @@ const ORConYardScene := preload("res://assets/converted/buildings/ORConYard/ORCo
 const ORFactoryScene := preload("res://assets/converted/buildings/ORFactory/ORFactory.scn")
 const AtKindjalModelScene := preload("res://assets/converted/models/AT_Kindjal_H0/AT_Kindjal_H0.scn")
 const CombatDeployStrategyScript := preload("res://scripts/units/combat_deploy_strategy.gd")
+const Doubles := preload("res://tests/combat/support/combat_doubles.gd")
 
 var _assertions := 0
 var _failures := 0
@@ -515,6 +516,8 @@ func _test_combat_deploy_toggle() -> void:
 	)
 	_expect(not nav.is_held(unit), "an undeployed unit must not hold its nav position")
 
+	var previous_target := unit.global_position + Vector3(0.0, 0.0, -5.0)
+	_expect(unit.command_attack(previous_target), "the travel gun must accept an attack target")
 	_expect(unit.deploy(), "a travel-mode Kindjal must accept the deploy command")
 	_expect(unit.is_deploying() and not unit.is_deployed(), "deploy must enter the DEPLOYING transition")
 	_expect(_active_turret_ids(unit).is_empty(), "no turret may be active mid-transition")
@@ -527,10 +530,33 @@ func _test_combat_deploy_toggle() -> void:
 	unit.finish_deployment(true)
 	_expect(unit.is_deployed() and not unit.is_deploying(), "a consumed DEPLOYING finish must land in DEPLOYED")
 	_expect(
+		not unit.has_attack_order(),
+		"deploying must discard the previous weapon set's attack target"
+	)
+	_expect(
 		_active_turret_ids(unit) == [&"ATKindjalBigGun"],
 		"deployed mode must expose only the deployed turret"
 	)
 	_expect(nav.is_held(unit), "DEPLOYED must keep holding the unit in place")
+	var deployed_turret = unit.combat()._active_turrets()[0]
+	var near_enemy := Doubles.PhysicsCombatTarget.new(
+		deployed_turret.muzzle_origin() + Vector3(0.0, 0.0, -3.0)
+	)
+	var far_enemy := Doubles.PhysicsCombatTarget.new(
+		deployed_turret.muzzle_origin() + Vector3(0.0, 0.0, -6.0)
+	)
+	world.add_child(near_enemy)
+	world.add_child(far_enemy)
+	near_enemy.add_to_group(&"units")
+	far_enemy.add_to_group(&"units")
+	unit.combat().advance(0.1)
+	var selected_target: WeakRef = unit.combat()._target_acquisition._targets.get(
+		deployed_turret.weapon_index()
+	) as WeakRef
+	_expect(
+		selected_target != null and selected_target.get_ref() == near_enemy,
+		"the deployed gun must acquire the nearest target anew"
+	)
 	_expect(
 		not unit.prepare_navigation_order(Vector3(20.0, 0.0, 20.0)),
 		"a deployed unit must reject new movement orders"

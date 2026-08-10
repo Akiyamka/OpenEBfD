@@ -1017,6 +1017,12 @@ func finish_deployment(consumed: bool) -> void:
 	_set_movement_animation(false)
 
 
+## The completed transition has activated a different weapon set, whose target
+## must be selected using its own range and priority.
+func retarget_after_deployment_state_change() -> void:
+	_combat.retarget_after_deployment_state_change()
+
+
 ## Cancels any in-flight fire sequence and clears retained targets for every
 ## weapon whose turret just became inactive under the current deploy state,
 ## then zeroes its servo angle for next time it's reactivated. Public because

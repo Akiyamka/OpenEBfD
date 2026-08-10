@@ -77,6 +77,9 @@ var _owner: CharacterBody3D
 var _weapon_targets: Dictionary = {}
 var _target_acquisition := CombatTargetAcquisitionScript.new()
 var _moving_fire_weapons: Dictionary = {}
+## A completed combat-deploy transition swaps weapon ranges and priorities.
+## These weapons therefore acquire a new nearby target for the new mode.
+var _deployment_retargeting_weapons: Dictionary = {}
 var _fire_overlay := UnitFireOverlayScript.new()
 var _attack_order := UnitAttackOrderScript.new()
 var _issuing_attack_move := false
@@ -103,6 +106,7 @@ func advance(delta: float) -> void:
 		not _attack_order.is_active()
 		and _weapon_targets.is_empty()
 		and _moving_fire_weapons.is_empty()
+		and _deployment_retargeting_weapons.is_empty()
 	):
 		# Movement/idle animations key some of the same model pivots as combat.
 		# Keep the combat angle authoritative after an order ends: first return
@@ -138,6 +142,7 @@ func dispose() -> void:
 	detach_model()
 	_weapon_targets.clear()
 	_moving_fire_weapons.clear()
+	_deployment_retargeting_weapons.clear()
 	_issuing_attack_move = false
 	_target_acquisition.dispose()
 	_attack_order.dispose()
@@ -187,6 +192,7 @@ func command_attack(target_or_position: Variant) -> bool:
 	_weapon_targets.clear()
 	_target_acquisition.clear()
 	_moving_fire_weapons.clear()
+	_deployment_retargeting_weapons.clear()
 	for turret in _active_turrets():
 		if turret.can_target(target_or_position):
 			_set_weapon_target(turret.weapon_index(), target_or_position)
@@ -199,6 +205,7 @@ func cancel_attack_order() -> void:
 	_weapon_targets.clear()
 	_target_acquisition.clear()
 	_moving_fire_weapons.clear()
+	_deployment_retargeting_weapons.clear()
 	if _attack_order.clear():
 		_owner.call("_emit_attack_order_changed", false, null)
 
@@ -219,6 +226,7 @@ func _replace_attack_with_move() -> void:
 	var had_attack_order := _attack_order.clear()
 	_weapon_targets = retained_targets
 	_target_acquisition.clear()
+	_deployment_retargeting_weapons.clear()
 	if had_attack_order:
 		_owner.call("_emit_attack_order_changed", false, null)
 
@@ -424,7 +432,8 @@ func _smallest_hull_adjustment_turret(turrets: Array, target_world_position: Vec
 
 
 func _advance_retained_weapon_targets(delta: float) -> void:
-	if _weapon_targets.is_empty() and _moving_fire_weapons.is_empty():
+	if _weapon_targets.is_empty() and _moving_fire_weapons.is_empty() \
+	and _deployment_retargeting_weapons.is_empty():
 		return
 	# A standing unit owns its hull and may swing it onto whatever a yaw-less
 	# weapon picks. One under a move order does not: such a weapon is braced,
@@ -434,7 +443,8 @@ func _advance_retained_weapon_targets(delta: float) -> void:
 		else CombatTargetAcquisitionScript.HullAim.TURN
 	for turret in _active_turrets():
 		var weapon_index: int = turret.weapon_index()
-		var autonomous := _moving_fire_weapons.has(weapon_index)
+		var autonomous := _moving_fire_weapons.has(weapon_index) \
+			or _deployment_retargeting_weapons.has(weapon_index)
 		if not autonomous and not _weapon_targets.has(weapon_index):
 			continue
 		var retained_target: Variant = _weapon_target(weapon_index)
@@ -896,7 +906,22 @@ func sync_active_turret_weapons() -> void:
 		_weapon_targets.erase(weapon_index)
 		_target_acquisition.forget(weapon_index)
 		_moving_fire_weapons.erase(weapon_index)
+		_deployment_retargeting_weapons.erase(weapon_index)
 		turret.reset_aim()
+
+
+## The newly active deploy-state weapons must not inherit a target from the
+## prior set: their range can differ, and the nearest valid enemy can change.
+func retarget_after_deployment_state_change() -> void:
+	_cancel_all_fire_sequences()
+	_weapon_targets.clear()
+	_target_acquisition.clear()
+	_moving_fire_weapons.clear()
+	_deployment_retargeting_weapons.clear()
+	if _attack_order.clear():
+		_owner.call("_emit_attack_order_changed", false, null)
+	for turret in _active_turrets():
+		_deployment_retargeting_weapons[turret.weapon_index()] = true
 
 
 func weapon_can_fire_while_moving(weapon_index: int) -> bool:
@@ -907,6 +932,7 @@ func refresh_weapon_runtime() -> void:
 	_weapon_targets.clear()
 	_target_acquisition.clear()
 	_moving_fire_weapons.clear()
+	_deployment_retargeting_weapons.clear()
 	_fire_overlay.rebuild(_active_turrets())
 
 
