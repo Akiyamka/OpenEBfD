@@ -2,6 +2,7 @@ extends "res://tests/support/suite.gd"
 
 const LegacyRulesFixture := preload("res://tests/support/legacy_rules_fixture.gd")
 const CombatProjectileScript := preload("res://scripts/combat/combat_projectile.gd")
+const BallisticsScript := preload("res://scripts/combat/ballistics.gd")
 const CombatTurretScript := preload("res://scripts/combat/combat_turret.gd")
 const FireRequestScript := preload("res://scripts/combat/fire_request.gd")
 const Fx := preload("res://tests/combat/support/combat_fx_probe.gd")
@@ -315,11 +316,16 @@ func _test_mongoose_launch_and_impact_fx() -> void:
 		model.free()
 		return
 	var fired_emission: Dictionary = turret.last_emissions()[0]
+	var expected_impact := BallisticsScript.parallel_impact_position(
+		Vector3(fired_emission["position"]),
+		target_position,
+		Vector3(fired_emission["direction"])
+	)
 	_expect(
 		projectiles[0].direction().is_equal_approx(
-			Vector3(fired_emission["position"]).direction_to(target_position)
+			Vector3(fired_emission["position"]).direction_to(expected_impact)
 		),
-		"a yaw-only launcher must add the missing pitch to an attack-ground shot"
+		"a yaw-only launcher must add pitch without changing its horizontal heading"
 	)
 
 	var front_flashes := Fx.muzzle_effects(root, &"front_flash")
@@ -366,12 +372,12 @@ func _test_mongoose_launch_and_impact_fx() -> void:
 	_expect(
 		projectile.finish_reason == &"impact_ground"
 		and missile_hits.size() == 1
-		and missile_hit.global_position.is_equal_approx(target_position),
+		and missile_hit.global_position.is_equal_approx(expected_impact),
 		"one MissileHit composition must spawn at the resolved ground impact"
 	)
 	_expect(
 		craters.size() == 1
-		and craters.front().global_position.distance_to(target_position) < 0.05
+		and craters.front().global_position.distance_to(expected_impact) < 0.05
 		and int(craters.front().get_meta("crater_variant", -1)) in range(4),
 		"MissileHit must leave one randomized original crater variant"
 	)

@@ -1019,18 +1019,23 @@ func try_fire_at(request: FireRequest) -> Array:
 		parent.add_child(projectile)
 		var emission: Dictionary = _last_emissions[index] \
 			if index < _last_emissions.size() else preview_emission
-		# A yaw-only mount can turn its visual muzzle toward a target but cannot
-		# encode the required vertical component in that marker.  Without an
-		# explicit direction, a low entity or ground coordinate is missed.
-		# Preserve authored headings for mounts that have pitch and for trajectory
-		# weapons, whose parallel barrel spread is intentional.
+		# A mount without a pitch joint cannot encode the required vertical
+		# component in its muzzle marker. Supply only that missing elevation: the
+		# authored horizontal heading must remain intact, because a yaw joint or
+		# the owner hull is responsible for bearing and parallel barrels must not
+		# converge. This is identical for entities and ground coordinates.
 		if _pitch_pivot == null and not preview_bullet.has_trajectory():
-			var target_direction := Vector3(emission["position"]).direction_to(
-				target_position + aim_offset
+			var emission_position := Vector3(emission["position"])
+			var parallel_aim_position := BallisticsScript.parallel_impact_position(
+				emission_position,
+				target_position + aim_offset,
+				Vector3(emission["direction"])
 			)
+			var target_direction := emission_position.direction_to(parallel_aim_position)
 			if not target_direction.is_zero_approx():
 				emission = emission.duplicate()
 				emission["target_direction"] = target_direction
+				emission["flight_aim_position"] = parallel_aim_position
 		if not trajectory_launch_direction.is_zero_approx():
 			emission = emission.duplicate()
 			emission["direction"] = trajectory_launch_direction

@@ -11,6 +11,7 @@ extends "res://tests/support/suite.gd"
 const LegacyRulesFixture := preload("res://tests/support/legacy_rules_fixture.gd")
 const UnitScene := preload("res://scenes/units/unit.tscn")
 const CombatTurretScript := preload("res://scripts/combat/combat_turret.gd")
+const FireRequestScript := preload("res://scripts/combat/fire_request.gd")
 const Doubles := preload("res://tests/combat/support/combat_doubles.gd")
 const Fx := preload("res://tests/combat/support/combat_fx_probe.gd")
 const Assertions := preload("res://tests/combat/support/combat_assertions.gd")
@@ -29,6 +30,10 @@ func _initialize() -> void:
 		_test_devastator_combined_salvo
 	)
 	_run_case(
+		"fixed Devastator barrels preserve horizontal headings",
+		_test_devastator_fixed_barrel_headings
+	)
+	_run_case(
 		"attack pursuit closes to the shortest-ranged weapon that can engage",
 		_test_pursuit_range_uses_shortest_usable_weapon
 	)
@@ -37,6 +42,52 @@ func _initialize() -> void:
 		_test_idle_turret_engages_during_attack_order
 	)
 	_finish("Multi-turret tests")
+
+
+func _test_devastator_fixed_barrel_headings() -> void:
+	var devastator = UnitScene.instantiate()
+	devastator.config_id = &"HKDevastator"
+	root.add_child(devastator)
+	devastator.replace_visual_scene(HKDevastatorModelScene)
+	var gun = devastator.combat_turrets[0]
+	var emissions: Array[Dictionary] = gun.emission_points()
+	_expect(emissions.size() > 1, "the fixed plasma gun must expose multiple barrels")
+	if emissions.size() <= 1:
+		devastator.free()
+		return
+
+	var forward: Vector3 = Vector3(emissions[0]["direction"])
+	forward.y = 0.0
+	forward = forward.normalized()
+	var ground_target: Vector3 = devastator.global_position + forward * 8.0
+	ground_target.y = 0.0
+	var projectiles: Array = []
+	for muzzle_index in emissions.size():
+		var request := FireRequestScript.authored(
+			ground_target, devastator, 1.0, muzzle_index
+		)
+		var fired: Array = gun.try_fire_at(request)
+		_expect(not fired.is_empty(), "each fixed plasma barrel must fire at ground")
+		if fired.is_empty():
+			continue
+		var projectile = fired.front()
+		projectiles.append(projectile)
+		var shot_horizontal := Vector3(projectile.direction())
+		shot_horizontal.y = 0.0
+		shot_horizontal = shot_horizontal.normalized()
+		var barrel_horizontal := Vector3(emissions[muzzle_index]["direction"])
+		barrel_horizontal.y = 0.0
+		barrel_horizontal = barrel_horizontal.normalized()
+		_expect(
+			shot_horizontal.dot(barrel_horizontal) > 0.99999,
+			"an attack-ground shot must retain its barrel's horizontal heading"
+		)
+
+	for projectile in projectiles:
+		if is_instance_valid(projectile):
+			projectile.free()
+	Fx.free_muzzle_effects(root)
+	devastator.free()
 
 
 ## The Devastator carries one weapon of each kind: a plasma gun bolted to the

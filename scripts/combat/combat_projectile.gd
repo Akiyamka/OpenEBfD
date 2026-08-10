@@ -156,7 +156,12 @@ func launch(
 		else _launch_position.direction_to(_aim_position)
 	if _direction.is_zero_approx():
 		_direction = Vector3.FORWARD
-	_aim_travel_distance = _launch_position.distance_to(_aim_position)
+	var flight_aim_position := Vector3(
+		emission.get("flight_aim_position", _aim_position)
+	)
+	_aim_travel_distance = _launch_position.distance_to(
+		flight_aim_position if flight_aim_position.is_finite() else _aim_position
+	)
 	_gravity_world = BallisticsScript.gravity_world(bullet_gravity)
 
 	state = State.FLYING
