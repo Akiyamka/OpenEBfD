@@ -33,7 +33,7 @@ func death_animation_candidates(_cause: StringName, _deployed: bool) -> Array[St
 ## firing, not corpse/clip-start. One random pick from the returned pool
 ## plays once per death; an empty array means no such layer for this unit.
 ## Base default is empty: only `VehicleDeathStrategy` overrides this today.
-func death_vfx_sound_paths(_config_id: StringName) -> Array[String]:
+func death_vfx_sound_paths(_config_id: StringName, _can_fly: bool = false) -> Array[String]:
 	return []
 
 

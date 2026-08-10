@@ -155,7 +155,7 @@ func spawn_explosion_effects(parent: Node, world_position: Vector3) -> void:
 	if unit_definition == null or parent == null or not parent.is_inside_tree():
 		return
 	var vfx_sound_paths: Array[String] = (
-		_strategy.death_vfx_sound_paths(_unit.config_id) if _strategy != null else []
+		_strategy.death_vfx_sound_paths(_unit.config_id, unit_definition.can_fly) if _strategy != null else []
 	)
 	DeathSoundPlayerScript.play_pool(parent, world_position, vfx_sound_paths)
 	for effect_id in explosion_effect_ids():

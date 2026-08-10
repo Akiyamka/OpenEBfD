@@ -16,9 +16,9 @@ func _initialize() -> void:
 	_run_case("vehicle candidates are always Explode", _test_vehicle_candidates)
 	_run_case("infantry Crush proposes the authored Run_Over_1 clip", _test_infantry_candidates_crush)
 	_run_case("infantry death_start_sound_paths: only HKFlamer gets the small pool", _test_infantry_start_sound_paths)
-	_run_case("vehicle death_vfx_sound_paths: named units resolve their tier pool", _test_vehicle_vfx_sound_paths_named)
-	_run_case("vehicle death_vfx_sound_paths: unnamed unit defaults to medium", _test_vehicle_vfx_sound_paths_default)
-	_run_case("vehicle death_vfx_sound_paths depends only on config_id", _test_vehicle_vfx_sound_paths_unit_only)
+	_run_case("vehicle death_vfx_sound_paths: explicit small units stay small", _test_vehicle_vfx_sound_paths_small)
+	_run_case("vehicle death_vfx_sound_paths: aircraft use medium", _test_vehicle_vfx_sound_paths_aircraft)
+	_run_case("vehicle death_vfx_sound_paths: ground units use large", _test_vehicle_vfx_sound_paths_ground)
 	_run_case("vehicle death_start_sound_paths: Harkonnen gets the vehicle_* layer", _test_vehicle_start_sound_paths_harkonnen)
 	_run_case("vehicle death_start_sound_paths: Ordos gets the ordos* layer", _test_vehicle_start_sound_paths_ordos)
 	_run_case("vehicle death_start_sound_paths: Atreides/other factions get no extra layer", _test_vehicle_start_sound_paths_none)
@@ -136,48 +136,39 @@ func _test_infantry_start_sound_paths() -> void:
 	)
 
 
-## Every explicitly named unit from the user's tier table resolves its
-## correct pool via death_vfx_sound_paths — the VFX-timed size-tier boom.
-func _test_vehicle_vfx_sound_paths_named() -> void:
+func _test_vehicle_vfx_sound_paths_small() -> void:
 	var strategy := VehicleDeathStrategyScript.new()
 	var cases := {
-		&"HKDevastator": ExplosionTierPools.LARGE,
 		&"ATTrike": ExplosionTierPools.SMALL,
 		&"ATAPC": ExplosionTierPools.SMALL,
-		&"ATMinotaurus": ExplosionTierPools.LARGE,
 		&"ORDustScout": ExplosionTierPools.SMALL,
-		&"ORKobra": ExplosionTierPools.LARGE,
-		&"Harvester": ExplosionTierPools.LARGE,
-		&"FakeHarvester": ExplosionTierPools.LARGE,
-		&"GUNIABTank": ExplosionTierPools.LARGE,
 	}
 	for config_id: StringName in cases:
 		var paths := strategy.death_vfx_sound_paths(config_id)
 		_expect(
 			paths == cases[config_id],
-			"%s must resolve to its named tier pool, got %s" % [config_id, paths]
+			"%s must keep its explicit small-tier pool, got %s" % [config_id, paths]
 		)
 
 
-## Any vehicle not explicitly named defaults to the medium pool, including a
-## Harkonnen vehicle other than HKDevastator (HKAssault) and an Atreides
-## vehicle with no override (ATMongoose, ORAPC).
-func _test_vehicle_vfx_sound_paths_default() -> void:
+func _test_vehicle_vfx_sound_paths_aircraft() -> void:
 	var strategy := VehicleDeathStrategyScript.new()
-	for config_id in [&"HKAssault", &"ATMongoose", &"ORAPC", &"ORLaserTank"]:
-		var paths := strategy.death_vfx_sound_paths(config_id)
+	for config_id in [&"ATOrni", &"HKGunship", &"Carryall", &"Frigate"]:
+		var paths := strategy.death_vfx_sound_paths(config_id, true)
 		_expect(
 			paths == ExplosionTierPools.MEDIUM,
-			"%s must default to the medium pool, got %s" % [config_id, paths]
+			"%s must use the medium-tier pool when flying, got %s" % [config_id, paths]
 		)
 
 
-func _test_vehicle_vfx_sound_paths_unit_only() -> void:
+func _test_vehicle_vfx_sound_paths_ground() -> void:
 	var strategy := VehicleDeathStrategyScript.new()
-	_expect(
-		strategy.death_vfx_sound_paths(&"ORAPC") == strategy.death_vfx_sound_paths(&"ORAPC"),
-		"the vfx sound pool must depend only on config_id"
-	)
+	for config_id in [&"HKAssault", &"ATMongoose", &"ORAPC", &"Harvester", &"GUNIABTank"]:
+		var paths := strategy.death_vfx_sound_paths(config_id, false)
+		_expect(
+			paths == ExplosionTierPools.LARGE,
+			"%s must use the large-tier pool when grounded, got %s" % [config_id, paths]
+		)
 
 
 ## Every Harkonnen vehicle gets the explosion_vehicle_* pool, unconditionally

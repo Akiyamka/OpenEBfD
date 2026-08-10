@@ -9,33 +9,15 @@ const ExplosionTierPools := preload("res://scripts/audio/explosion_tier_pools.gd
 
 const CANDIDATES: Array[StringName] = [&"Explode"]
 
-## Size-tier overrides, user-specified from listening tests against the
-## reference build (see docs/quirks.md for the falsified "personal death
-## hook" design this replaced). Everything not listed here defaults to
-## `medium` (DEFAULT_TIER) — an approximation, not sourced data: the
-## per-unit tier was hardcoded in the original engine's binary and left no
-## trace in any available asset (in particular `explosion_type_id`, the
-## visual VFX bank, does not correlate with it at all — `HKDevastator` and
-## `ATMongoose` share the same generic `Explosion` bank).
-const TIER_OVERRIDES := {
-	# Harkonnen: every vehicle is medium except HKDevastator.
-	&"HKDevastator": &"large",
-	# Atreides: ATTrike/ATAPC are small, ATMinotaurus is large, everything
-	# else Atreides defaults to medium.
+## Every aircraft uses the medium pool. Ground units use the large pool unless
+## they already have an explicit small explosion assignment. The original
+## binary's per-unit tier has no source-data equivalent, so keep the small
+## exceptions explicit and derive all other tiers from UnitDefinition.can_fly.
+const SMALL_TIER_UNITS := {
 	&"ATTrike": &"small",
 	&"ATAPC": &"small",
-	&"ATMinotaurus": &"large",
-	# Ordos: ORDustScout is small, ORKobra is large, everything else Ordos
-	# defaults to medium.
 	&"ORDustScout": &"small",
-	&"ORKobra": &"large",
-	# Shared/cross-faction units (not owned by AT/HK/OR at all — house_id is
-	# NULL for the harvesters, 7/Guild for GUNIABTank):
-	&"Harvester": &"large",
-	&"FakeHarvester": &"large",
-	&"GUNIABTank": &"large",
 }
-const DEFAULT_TIER := &"medium"
 
 
 func death_animation_candidates(_cause: StringName, _deployed: bool) -> Array[StringName]:
@@ -44,8 +26,10 @@ func death_animation_candidates(_cause: StringName, _deployed: bool) -> Array[St
 
 ## The size-tier boom, timed by the caller to `_spawn_death_explosion_effects`
 ## firing rather than corpse/clip start.
-func death_vfx_sound_paths(config_id: StringName) -> Array[String]:
-	var tier: StringName = TIER_OVERRIDES.get(config_id, DEFAULT_TIER)
+func death_vfx_sound_paths(config_id: StringName, can_fly: bool = false) -> Array[String]:
+	var tier: StringName = SMALL_TIER_UNITS.get(
+		config_id, &"medium" if can_fly else &"large"
+	)
 	return ExplosionTierPools.pool_for_tier(tier)
 
 
