@@ -10,6 +10,7 @@ const ATADVCarryallScene := preload("res://scenes/units/atadv_carryall.tscn")
 const UnitNavigationMapScript := preload("res://scripts/units/navigation/unit_navigation_map.gd")
 const UnitNavigationPlannerScript := preload("res://scripts/units/navigation/unit_navigation_planner.gd")
 const UnitLocalAvoidanceScript := preload("res://scripts/units/navigation/unit_local_avoidance.gd")
+const UnitNavigationSystemScript := preload("res://scripts/units/navigation/unit_navigation_system.gd")
 const AirNavigationScript := preload("res://scripts/units/navigation/air/air_navigation.gd")
 const UnitFlightControllerScript := preload("res://scripts/units/navigation/unit_flight_controller.gd")
 
@@ -36,6 +37,28 @@ class FakeFlyingUnit extends Node3D:
 		return move_speed
 
 
+class FakeLockedFlyingUnit extends FakeFlyingUnit:
+	var last_navigation_velocity := Vector3.INF
+
+	func flight_navigation_is_locked() -> bool:
+		return true
+
+	func navigation_step(value: Vector3, _delta: float) -> void:
+		last_navigation_velocity = value
+
+
+class FakeSpatialHash extends RefCounted:
+	func nearby(_position: Vector3, _buckets: Dictionary, _radius: float) -> Array:
+		return []
+
+
+class FakeLateralAvoidance extends RefCounted:
+	var calls := 0
+
+	func separation_velocity(_agent: Dictionary, _nearby: Array) -> Vector3:
+		calls += 1
+		return Vector3(99.0, 0.0, 0.0)
+
 func _initialize() -> void:
 	await process_frame
 	_run_case("generated UnitDefinitions carry the correct flight flags", _test_definition_flags)
@@ -43,6 +66,10 @@ func _initialize() -> void:
 	_run_case("hangar spawn moves outside before climbing to height_offset", _test_hangar_takeoff_sequence)
 	_run_case("every flying scene exposes the airborne animation state machine", _test_flight_clip_catalog)
 	_run_case("flyers transition between Fly and Hover", _test_flyer_cruise_animation)
+	_run_case("Circles flyers cruise continuously with banked turns", _test_circles_fixed_wing_cruise)
+	_run_case("Circles Stop enters idle cruise", _test_circles_stop_enters_idle_cruise)
+	_run_case("air orders share their clamped destination with Circles flight", _test_circles_order_uses_bounded_destination)
+	_run_case("locked flight rejects lateral separation", _test_locked_flight_rejects_lateral_separation)
 	_run_case("a non-Ornithopter, non-carrier flyer can never land", _test_non_ornithopter_never_lands)
 	_run_case("an Ornithopter can land, then take off again on its next order", _test_ornithopter_land_takeoff_round_trip)
 	_run_case("converging air agents separate vertically, then decay back to level", _test_vertical_avoidance)
@@ -78,8 +105,10 @@ func _test_definition_flags() -> void:
 	_expect(bool(hk_gunship.ornithoptor), "HKGunship must be an Ornithopter")
 	_expect(bool(carryall.carryall) and not bool(carryall.ornithoptor),
 		"Carryall must be a plain carryall, not an Ornithopter")
+	_expect(bool(carryall.circles), "Carryall must preserve Rules.txt Circles = TRUE")
 	_expect(bool(atadv_carryall.advanced_carryall) and not bool(atadv_carryall.carryall),
 		"ATADVCarryall must be an advanced carryall, not a plain one")
+	_expect(not bool(atadv_carryall.circles), "ATADVCarryall must preserve Rules.txt Circles = FALSE")
 	_expect(not bool(stunt.can_fly),
 		"StuntATADVCarryall is a cosmetic ground-locked variant and must not fly")
 
@@ -216,6 +245,12 @@ func _test_flyer_cruise_animation() -> void:
 				player.get_animation(&"Fly").loop_mode == Animation.LOOP_LINEAR,
 				"the %s Fly clip must loop for the whole cruise" % model_case["name"]
 			)
+			if bool(flyer.unit_definition.circles):
+				flyer.flight_set_movement_animation(false)
+				_expect(player.current_animation == &"Fly",
+					"a stopping Circles flyer must remain in Fly")
+				flyer.free()
+				continue
 			flyer.flight_set_movement_animation(false)
 			_expect(
 				player.current_animation == &"FlyToHover",
@@ -238,6 +273,171 @@ func _test_flyer_cruise_animation() -> void:
 				"a moving %s must return to Fly" % model_case["name"]
 			)
 		flyer.free()
+
+
+func _test_circles_fixed_wing_cruise() -> void:
+	var circling: Unit = CarryallScene.instantiate()
+	root.add_child(circling)
+	circling.begin_hangar_takeoff(circling.global_position, Vector3.INF)
+	_fast_forward_takeoff(circling)
+	var player := _first_player_with(circling, &"Fly")
+	circling.flight_set_circles_order(circling.global_position)
+	var start := circling.global_position
+	var yaw_before := circling.global_rotation.y
+	circling._physics_process(0.05)
+	var offset := circling.global_position - start
+	offset.y = 0.0
+	_expect(offset.length() > 0.1,
+		"an idle Circles flyer must keep moving")
+	_expect(is_equal_approx(offset.length(), circling.navigation_move_speed() / 3.0 * 0.05),
+		"idle Circles speed must be exactly one third of its maximum speed")
+	_expect(player != null and player.current_animation == &"Fly",
+		"idle Circles flight must use Fly rather than Hover")
+	var idle_yaw_step := absf(angle_difference(yaw_before, circling.global_rotation.y))
+	var expected_idle_yaw_step := circling.turn_rate \
+		* UnitFlightControllerScript.MOVEMENT_UPDATES_PER_SECOND \
+		* UnitFlightControllerScript.IDLE_CRUISE_TURN_RATE_SCALE * 0.05
+	_expect(is_equal_approx(idle_yaw_step, expected_idle_yaw_step),
+		"idle cruising must use the broad one-sixth-turn-rate orbit")
+	var idle_radius := circling.navigation_move_speed() \
+		* UnitFlightControllerScript.IDLE_CRUISE_SPEED_SCALE \
+		/ (circling.turn_rate * UnitFlightControllerScript.MOVEMENT_UPDATES_PER_SECOND \
+		* UnitFlightControllerScript.IDLE_CRUISE_TURN_RATE_SCALE)
+	_expect(idle_radius >= 20.0,
+		"Carryall idle cruise radius must be broadly expanded (got %.2f)" % idle_radius)
+
+	var forward := circling.facing_direction()
+	var behind := circling.global_position - forward * 60.0
+	start = circling.global_position
+	circling.flight_set_circles_order(behind)
+	circling._physics_process(0.05)
+	offset = circling.global_position - start
+	offset.y = 0.0
+	_expect(offset.length() > 0.1,
+		"a Circles flyer must continue forward while turning toward a rear order")
+	_expect(absf(circling._flight_controller._visual_bank) > 0.01,
+		"a non-zero yaw rate must produce a visible bank")
+	var reached_behind := false
+	for _frame in 500:
+		circling._physics_process(0.05)
+		if not circling._flight_controller.circles_order_is_active():
+			reached_behind = true
+			break
+	_expect(reached_behind,
+		"a rear order must complete through forward curved flight rather than a turn in place")
+	var ordered_bank_sign := -signf(circling._flight_controller._circles_idle_turn_sign)
+	circling._physics_process(0.05)
+	_expect(signf(circling._flight_controller._visual_bank) == ordered_bank_sign,
+		"idle cruising must preserve the final non-zero ordered-turn bank direction")
+
+	var close_target := circling.global_position - circling.facing_direction()
+	circling.flight_set_circles_order(close_target)
+	circling._physics_process(0.05)
+	_expect(circling._flight_controller._circles_departure.is_finite(),
+		"a close target must first receive a forward departure manoeuvre")
+	var reached_close := false
+	for _frame in 500:
+		circling._physics_process(0.05)
+		if not circling._flight_controller.circles_order_is_active():
+			reached_close = true
+			break
+	_expect(reached_close,
+		"a close rear target must complete after its one planned departure manoeuvre")
+	start = circling.global_position
+	circling._physics_process(0.05)
+	offset = circling.global_position - start
+	offset.y = 0.0
+	_expect(is_equal_approx(offset.length(), circling.navigation_move_speed() / 3.0 * 0.05),
+		"completing a close order must resume one-third-speed idle cruising")
+	circling.free()
+
+	var stationary: Unit = ATADVCarryallScene.instantiate()
+	root.add_child(stationary)
+	stationary.begin_hangar_takeoff(stationary.global_position, Vector3.INF)
+	_fast_forward_takeoff(stationary)
+	player = _first_player_with(stationary, &"FlyToHover")
+	stationary.flight_set_movement_animation(false)
+	if player != null and player.current_animation == &"FlyToHover":
+		player.animation_finished.emit(&"FlyToHover")
+	start = stationary.global_position
+	stationary._physics_process(1.0)
+	offset = stationary.global_position - start
+	offset.y = 0.0
+	_expect(offset.length() < 0.001,
+		"a Circles = FALSE flyer must stay at its hover point")
+	stationary.free()
+
+
+func _test_circles_stop_enters_idle_cruise() -> void:
+	var navigation := UnitNavigationSystemScript.new()
+	root.add_child(navigation)
+	_expect(navigation.setup(_make_grid()), "test navigation system must initialize")
+	var circling: Unit = CarryallScene.instantiate()
+	root.add_child(circling)
+	navigation.register_unit(circling)
+	circling.begin_hangar_takeoff(circling.global_position + Vector3(80.0, 0.0, 0.0), Vector3.INF)
+	_fast_forward_takeoff(circling)
+	circling.flight_set_circles_order(circling.global_position + circling.facing_direction() * 80.0)
+	_expect(circling.has_active_move_order(), "a Circles move must be active before Stop")
+	navigation.stop(circling)
+	_expect(not circling.has_active_move_order(), "Stop must clear the Circles active-order state")
+	var start := circling.global_position
+	circling.navigation_step(Vector3.ZERO, 0.05)
+	var offset := circling.global_position - start
+	offset.y = 0.0
+	_expect(is_equal_approx(offset.length(), circling.navigation_move_speed() / 3.0 * 0.05),
+		"Stop must retain one-third-speed idle cruising rather than stop the aircraft")
+	circling.free()
+	navigation.free()
+
+
+func _test_circles_order_uses_bounded_destination() -> void:
+	var grid := _make_grid()
+	var runtime_map := UnitNavigationMapScript.new()
+	_expect(runtime_map.setup(grid), "test runtime map must initialize")
+	var air := AirNavigationScript.new()
+	air.setup(FakeAirFacade.new(), runtime_map)
+	var circling: Unit = CarryallScene.instantiate()
+	root.add_child(circling)
+	circling.begin_hangar_takeoff(circling.global_position, Vector3.INF)
+	_fast_forward_takeoff(circling)
+	var agent := {
+		"unit": circling,
+		"id": 1,
+		"hold": false,
+		"destination": circling.global_position,
+	}
+	var outside := Vector3(-100.0, 0.0, 10000.0)
+	air.route_agent(agent, circling.global_position, outside)
+	_expect((agent["destination"] as Vector3).is_equal_approx(air.clamp_to_bounds(outside)),
+		"air agent destination must be clamped")
+	_expect(circling._flight_controller._circles_destination.is_equal_approx(agent["destination"] as Vector3),
+		"Circles controller must receive the same clamped destination as its agent")
+	circling.free()
+
+
+func _test_locked_flight_rejects_lateral_separation() -> void:
+	var air := AirNavigationScript.new()
+	var avoidance := FakeLateralAvoidance.new()
+	var spatial_hash := FakeSpatialHash.new()
+	var locked := FakeLockedFlyingUnit.new()
+	root.add_child(locked)
+	var agent := {
+		"unit": locked,
+		"id": 1,
+		"radius": 1.0,
+		"pass_mask": MapNavigationGrid.PASS_AIR,
+		"hold": false,
+		"destination": Vector3(20.0, 0.0, 0.0),
+	}
+	var agents := {locked.get_instance_id(): agent}
+	air.setup(FakeAirFacade.new(), null, avoidance, agents, spatial_hash)
+	air.tick(0.05, [agent], {})
+	_expect(locked.last_navigation_velocity.is_zero_approx(),
+		"landing/pickup lock must receive zero horizontal navigation velocity")
+	_expect(avoidance.calls == 0,
+		"landing/pickup lock must not receive a lateral-separation velocity")
+	locked.free()
 
 
 func _test_non_ornithopter_never_lands() -> void:

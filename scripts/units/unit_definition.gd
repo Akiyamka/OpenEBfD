@@ -46,6 +46,9 @@ extends Resource
 @export var turn_rate: float
 @export var infantry: bool
 @export var can_fly: bool
+## While hovering, this aircraft follows a slow circular patrol instead of
+## remaining at its arrival point. Mirrors Rules.txt `Circles`.
+@export var circles: bool
 @export var ornithoptor: bool
 @export var carryall: bool
 @export var advanced_carryall: bool

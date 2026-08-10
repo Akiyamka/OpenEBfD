@@ -148,6 +148,9 @@ func set_hold_position(unit: Node3D, active: bool) -> void:
 		return
 	agent["hold"] = active
 	if active:
+		agent["active_order"] = false
+		if unit.has_method("flight_clear_circles_order"):
+			unit.call("flight_clear_circles_order")
 		avoidance.reset_agent(agent)
 		agent["path"] = [] as Array[Vector2i]
 		agent["destination"] = unit.global_position
@@ -392,6 +395,9 @@ func stop(unit: Node3D) -> void:
 		return
 	agent["path"] = [] as Array[Vector2i]
 	agent["path_index"] = 0
+	agent["active_order"] = false
+	if unit.has_method("flight_clear_circles_order"):
+		unit.call("flight_clear_circles_order")
 	agent["destination"] = unit.global_position
 	agent["direct_path"] = false
 	agent["exit_point"] = Vector3.INF

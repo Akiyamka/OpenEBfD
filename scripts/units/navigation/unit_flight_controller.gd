@@ -49,6 +49,16 @@ const BASE_FLIGHT_ALTITUDE := 24.0
 ## HeightOffset uses the same source-coordinate space as converted models and
 ## terrain: sixteen source units correspond to one Godot world unit.
 const HEIGHT_OFFSET_WORLD_SCALE := 0.0625
+## `Circles` craft are fixed-wing aircraft. Rules.txt TurnRate is radians per
+## 20 Hz movement update, so this is also the angular speed used to derive a
+## physical minimum turn radius rather than an arbitrary hover-circle radius.
+const MOVEMENT_UPDATES_PER_SECOND := 20.0
+const IDLE_CRUISE_SPEED_SCALE := 1.0 / 3.0
+## Idle loiter uses a broad, gentle orbit. Ordered manoeuvres retain the full
+## Rules.txt TurnRate. Scaling angular speed by the same 2/3 factor as the
+## revised idle speed preserves the expanded radius while slowing the circuit.
+const IDLE_CRUISE_TURN_RATE_SCALE := 1.0 / 6.0
+const MAX_BANK_ANGLE := deg_to_rad(35.0)
 
 var phase: Phase = Phase.GROUNDED
 ## Current world-space target altitude. During flight it is recomputed from
@@ -60,6 +70,7 @@ var height_offset := 0.0
 var ornithoptor := false
 var carryall := false
 var advanced_carryall := false
+var circles := false
 
 var _unit  # Unit — untyped to avoid a cyclic preload with unit.gd
 var _phase_elapsed := 0.0
@@ -74,6 +85,19 @@ var _cruise_moving := false
 var _cruise_state_initialized := false
 var _transition_player: AnimationPlayer = null
 var _transition_clip: StringName = &""
+var _circles_order_active := false
+var _circles_order_completed := false
+var _circles_destination := Vector3.INF
+## A short forward departure is the deterministic close-target manoeuvre.
+## It prevents a minimum-radius aircraft from trying to orbit forever around
+## an order that lies inside its initial turning circle.
+var _circles_departure := Vector3.INF
+## True after the one optional close-target departure has been planned. It
+## must survive reaching that waypoint, otherwise a close order would keep
+## creating fresh departure legs forever.
+var _circles_departure_planned := false
+var _circles_idle_turn_sign := 1.0
+var _visual_bank := 0.0
 
 
 func configure(unit, unit_definition) -> void:
@@ -83,6 +107,13 @@ func configure(unit, unit_definition) -> void:
 	ornithoptor = bool(unit_definition.ornithoptor)
 	carryall = bool(unit_definition.carryall)
 	advanced_carryall = bool(unit_definition.advanced_carryall)
+	circles = bool(unit_definition.circles)
+	_circles_order_active = false
+	_circles_order_completed = false
+	_circles_destination = Vector3.INF
+	_circles_departure = Vector3.INF
+	_circles_departure_planned = false
+	_visual_bank = 0.0
 	_helipad_resource_id = &""
 	for value in unit_definition.resource_ids:
 		_helipad_resource_id = StringName(String(value))
@@ -103,6 +134,15 @@ func flight_is_taking_off() -> bool:
 
 func flight_controls_transition() -> bool:
 	return phase == Phase.HANGAR_EXIT or phase == Phase.TAKING_OFF
+
+
+func flight_navigation_is_locked() -> bool:
+	return phase == Phase.LANDING \
+		or phase == Phase.PICKUP_LAND \
+		or phase == Phase.PICKUP_START \
+		or phase == Phase.PICKUP_LIFT \
+		or phase == Phase.PICKUP_END \
+		or phase == Phase.PICKUP_TAKEOFF
 
 
 func can_enter_ornithopter_land_cycle() -> bool:
@@ -160,6 +200,9 @@ func flight_request_land(target_position: Vector3, allowed_cells: Dictionary) ->
 	_phase_elapsed = 0.0
 	_landing_target = target_position
 	_landing_allowed_cells = allowed_cells
+	clear_circles_order()
+	_visual_bank = 0.0
+	_unit.flight_set_visual_bank(0.0)
 	ground_altitude = _sample_ground_altitude(target_position)
 	_unit.flight_play_clip(LAND_ANIMATION, false, 1.0)
 	return true
@@ -167,6 +210,197 @@ func flight_request_land(target_position: Vector3, allowed_cells: Dictionary) ->
 
 func flight_set_vertical_offset(value: float) -> void:
 	_vertical_avoidance_target = value
+
+
+func circles_flight_enabled() -> bool:
+	return circles and (phase == Phase.CRUISING or phase == Phase.HOVERING)
+
+
+func set_circles_order(destination: Vector3) -> void:
+	if not circles:
+		return
+	# Preserve the exact (already map-bounded) navigation destination. The
+	# horizontal integrator ignores Y, but keeping the same value makes the
+	# controller and navigation agent auditable and prevents target drift.
+	_circles_destination = destination
+	_circles_departure = Vector3.INF
+	_circles_departure_planned = false
+	_circles_order_active = true
+	_circles_order_completed = false
+	_plan_close_target_departure()
+
+
+func clear_circles_order() -> void:
+	if not circles:
+		return
+	_circles_order_active = false
+	_circles_departure = Vector3.INF
+	_circles_departure_planned = false
+
+
+func consume_circles_order_completed() -> bool:
+	var completed := _circles_order_completed
+	_circles_order_completed = false
+	return completed
+
+
+func circles_order_is_active() -> bool:
+	return circles and _circles_order_active
+
+
+## The nominal velocity supplied to AirNavigation. Its direction is the next
+## constrained-curvature steering target; AirNavigation may add its existing
+## lateral separation velocity before calling `advance_circles_flight`.
+func circles_desired_velocity() -> Vector3:
+	if not circles_flight_enabled():
+		return Vector3.ZERO
+	var speed := _circles_speed()
+	var target := _circles_steering_target()
+	var offset: Vector3 = target - _unit.global_position
+	offset.y = 0.0
+	if offset.length_squared() <= 0.000001:
+		return _unit.facing_direction() * speed
+	return offset.normalized() * speed
+
+
+## Fixed-wing horizontal integrator. Unlike Unit.navigation_step's ordinary
+## locomotion, it never converts a pending turn into zero translation.
+func advance_circles_flight(steering_velocity: Vector3, delta: float) -> Vector3:
+	if not circles_flight_enabled() or delta <= 0.0:
+		return Vector3.ZERO
+	_ensure_circles_cruising()
+	if _circles_order_active and _reached(_circles_destination, float(_unit.arrival_radius)):
+		_finish_circles_order()
+
+	var desired_direction := Vector3(steering_velocity.x, 0.0, steering_velocity.z)
+	if desired_direction.length_squared() <= 0.000001:
+		var target := _circles_steering_target()
+		desired_direction = target - _unit.global_position
+		desired_direction.y = 0.0
+	if desired_direction.length_squared() <= 0.000001:
+		desired_direction = _unit.facing_direction()
+	if not _circles_order_active:
+		# An idle orbit is a sustained maximum-rate turn, hence it retains its
+		# corresponding bank instead of becoming a Hover animation.
+		# `_rotated_horizontal` uses the XZ mathematical convention while
+		# Godot yaw has the opposite sign for a local -Z forward model.
+		desired_direction = _rotated_horizontal(_unit.facing_direction(), -_circles_idle_turn_sign * PI * 0.5)
+
+	var yaw_before: float = _unit.global_rotation.y
+	var turn_delta := delta if _circles_order_active else delta * IDLE_CRUISE_TURN_RATE_SCALE
+	_unit.turn_toward(desired_direction, turn_delta)
+	var yaw_after: float = _unit.global_rotation.y
+	var yaw_delta := angle_difference(yaw_before, yaw_after)
+	_update_visual_bank(yaw_delta, delta)
+
+	var speed := _circles_speed()
+	var forward: Vector3 = _unit.facing_direction()
+	forward.y = 0.0
+	if forward.length_squared() <= 0.000001:
+		return Vector3.ZERO
+	forward = forward.normalized()
+	var start: Vector3 = _unit.global_position
+	var end: Vector3 = start + forward * speed * delta
+	if _circles_order_active:
+		var segment_target := _circles_steering_target()
+		if _segment_reaches(start, end, segment_target, float(_unit.arrival_radius)):
+			_unit.global_position = Vector3(segment_target.x, start.y, segment_target.z)
+			if _circles_departure.is_finite():
+				_circles_departure = Vector3.INF
+			else:
+				_finish_circles_order()
+			return forward * speed
+	_unit.global_position = end
+	return forward * speed
+
+
+func _circles_steering_target() -> Vector3:
+	if not _circles_order_active:
+		return _unit.global_position + _unit.facing_direction()
+	if _circles_departure.is_finite():
+		return _circles_departure
+	return _circles_destination
+
+
+func _plan_close_target_departure() -> void:
+	if _circles_departure_planned:
+		return
+	_circles_departure_planned = true
+	var offset: Vector3 = _circles_destination - _unit.global_position
+	offset.y = 0.0
+	if offset.length() >= _minimum_turn_radius() * 2.0:
+		return
+	# A target inside two radii cannot be joined reliably by the first turn.
+	# Plan one forward departure when the order arrives, then fly the actual
+	# target after this waypoint; do not create another leg when it is crossed.
+	var forward: Vector3 = _unit.facing_direction()
+	forward.y = 0.0
+	if forward.length_squared() > 0.000001:
+		_circles_departure = _unit.global_position + forward.normalized() * _minimum_turn_radius() * 2.0
+
+
+func _circles_speed() -> float:
+	var scale := 1.0 if _circles_order_active else IDLE_CRUISE_SPEED_SCALE
+	return maxf(float(_unit.navigation_move_speed()) * scale, 0.0)
+
+
+func _minimum_turn_radius() -> float:
+	var angular_speed := maxf(float(_unit.turn_rate) * MOVEMENT_UPDATES_PER_SECOND, 0.0001)
+	return maxf(float(_unit.navigation_move_speed()) / angular_speed, float(_unit.arrival_radius))
+
+
+func _ensure_circles_cruising() -> void:
+	if phase == Phase.HOVERING:
+		phase = Phase.CRUISING
+	_transition_player = null
+	_transition_clip = &""
+	_cruise_state_initialized = true
+	_cruise_moving = true
+	_unit.flight_play_clip(FLY_ANIMATION, true, 1.0)
+
+
+func _finish_circles_order() -> void:
+	_circles_order_active = false
+	_circles_order_completed = true
+	_circles_departure = Vector3.INF
+	_circles_departure_planned = false
+
+
+func _update_visual_bank(yaw_delta: float, delta: float) -> void:
+	var maximum_yaw_speed := maxf(float(_unit.turn_rate) * MOVEMENT_UPDATES_PER_SECOND, 0.0001)
+	var normalized_rate := clampf(yaw_delta / maxf(maximum_yaw_speed * delta, 0.0001), -1.0, 1.0)
+	# Positive yaw is a left turn in Godot's Y-up coordinates. Rolling the
+	# model the opposite way puts the wing down on the inside of the turn.
+	_visual_bank = -normalized_rate * MAX_BANK_ANGLE
+	if not is_zero_approx(yaw_delta):
+		_circles_idle_turn_sign = signf(yaw_delta)
+	_unit.flight_set_visual_bank(_visual_bank)
+
+
+static func _rotated_horizontal(direction: Vector3, angle: float) -> Vector3:
+	return Vector3(
+		direction.x * cos(angle) - direction.z * sin(angle),
+		0.0,
+		direction.x * sin(angle) + direction.z * cos(angle)
+	)
+
+
+func _reached(target: Vector3, radius: float) -> bool:
+	var offset: Vector3 = target - _unit.global_position
+	offset.y = 0.0
+	return offset.length() <= radius
+
+
+static func _segment_reaches(start: Vector3, end: Vector3, target: Vector3, radius: float) -> bool:
+	var segment := end - start
+	segment.y = 0.0
+	var to_target := target - start
+	to_target.y = 0.0
+	var length_squared := segment.length_squared()
+	if length_squared <= 0.000001:
+		return to_target.length() <= radius
+	var t := clampf(to_target.dot(segment) / length_squared, 0.0, 1.0)
+	return (to_target - segment * t).length() <= radius
 
 
 ## Pickup sequence — stub only, per scope. Phase/clip constants exist and are
@@ -177,6 +411,9 @@ func flight_begin_pickup_sequence() -> void:
 		return
 	phase = Phase.PICKUP_LAND
 	_phase_elapsed = 0.0
+	clear_circles_order()
+	_visual_bank = 0.0
+	_unit.flight_set_visual_bank(0.0)
 	_unit.flight_play_clip(LAND_ANIMATION, false, 1.0)
 
 
@@ -283,6 +520,12 @@ func _advance_cruise_altitude(delta: float) -> void:
 ## tick from Unit._set_movement_animation() while airborne.
 func set_cruise_moving(is_moving: bool, speed_scale: float) -> void:
 	if phase != Phase.CRUISING and phase != Phase.HOVERING:
+		return
+	if circles:
+		# Fixed-wing `Circles` units never enter Hover just because their last
+		# order completed. The horizontal controller keeps them in Fly at one
+		# third of their physical speed while idle.
+		_ensure_circles_cruising()
 		return
 	if not _cruise_state_initialized:
 		_cruise_state_initialized = true

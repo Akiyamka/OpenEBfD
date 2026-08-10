@@ -32,6 +32,7 @@ mech = false
 turn_rate = 0.1
 infantry = false
 can_fly = true
+circles = false
 ornithoptor = false
 carryall = false
 advanced_carryall = false

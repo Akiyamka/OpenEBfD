@@ -27,6 +27,9 @@ var _unit: CharacterBody3D
 var _visual_root_rest_basis := Basis.IDENTITY
 var _visual_slope_target_basis := Basis.IDENTITY
 var _last_terrain_normal := Vector3.UP
+## Presentation-only roll used by circling aircraft. The gameplay body stays
+## upright, so this cannot affect collision, selection, or navigation.
+var _visual_flight_bank := 0.0
 
 
 func configure(unit: CharacterBody3D) -> void:
@@ -53,6 +56,13 @@ func capture_rest_pose() -> void:
 
 func last_terrain_normal() -> Vector3:
 	return _last_terrain_normal
+
+
+func set_flight_bank(angle: float) -> void:
+	_visual_flight_bank = angle
+	# Rebuild from the captured rest basis; direct visual-root rotation would
+	# otherwise be overwritten by the normal slope-alignment pass.
+	set_slope_target(_last_terrain_normal)
 
 
 func terrain_hit_at(position: Vector3) -> Dictionary:
@@ -94,7 +104,7 @@ func set_slope_target(terrain_normal: Vector3) -> void:
 		_last_terrain_normal = -_last_terrain_normal
 	var visual_root: Node3D = _unit.visual_root
 	if visual_root == null or not _unit.aligns_visual_to_terrain_slope():
-		_visual_slope_target_basis = _visual_root_rest_basis
+		_visual_slope_target_basis = _visual_root_rest_basis * _flight_bank_basis()
 		return
 
 	var unit_basis := _unit.global_transform.basis.orthonormalized()
@@ -102,15 +112,21 @@ func set_slope_target(terrain_normal: Vector3) -> void:
 	if slope_forward.length_squared() <= 0.000001:
 		slope_forward = unit_basis.x.cross(_last_terrain_normal)
 	if slope_forward.length_squared() <= 0.000001:
-		_visual_slope_target_basis = _visual_root_rest_basis
+		_visual_slope_target_basis = _visual_root_rest_basis * _flight_bank_basis()
 		return
 	slope_forward = slope_forward.normalized()
 	var slope_z := -slope_forward
 	var slope_x := _last_terrain_normal.cross(slope_z).normalized()
 	var slope_basis := Basis(slope_x, _last_terrain_normal, slope_z).orthonormalized()
 	_visual_slope_target_basis = (
-		unit_basis.inverse() * slope_basis * _visual_root_rest_basis
+		unit_basis.inverse() * slope_basis * _visual_root_rest_basis * _flight_bank_basis()
 	).orthonormalized()
+
+
+func _flight_bank_basis() -> Basis:
+	# Converted models face local -Z, so roll around that visual forward axis.
+	# The flight controller supplies the signed angle.
+	return Basis(Vector3.FORWARD, _visual_flight_bank)
 
 
 ## Re-derives the slope target from the last sampled normal. Yaw changes move

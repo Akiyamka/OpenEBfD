@@ -58,6 +58,9 @@ func register_unit(agents: Dictionary, unit: Node3D, debug_enabled: bool) -> int
 		"corridor": PackedInt32Array(),
 		"path_points": [] as Array[Vector3],
 		"destination": unit.global_position,
+		# Distinct from destination: Circles aircraft continue along an idle
+		# orbit after this becomes false.
+		"active_order": false,
 		"command_id": 0,
 		"mode": NavConstantsScript.MoveMode.FREE,
 		"group_speed": INF,

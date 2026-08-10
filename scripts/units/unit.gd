@@ -261,6 +261,15 @@ func _physics_process(delta: float) -> void:
 		return
 	if _navigation_managed:
 		return
+	if _flight_controller != null and _flight_controller.circles_flight_enabled():
+		var circles_velocity := _flight_controller.advance_circles_flight(
+			_flight_controller.circles_desired_velocity(), delta
+		)
+		velocity = circles_velocity
+		_set_navigation_debug_direction(circles_velocity)
+		_set_movement_animation(true)
+		_snap_to_terrain(delta)
+		return
 	_locomotion.advance_start_transition(delta)
 	var offset := target_position - global_position
 	offset.y = 0.0
@@ -303,6 +312,8 @@ func move_to(world_position: Vector3, exit_point := Vector3.INF) -> void:
 	if _flight_controller != null and _flight_controller.flight_is_landed():
 		_flight_controller.begin_takeoff_toward(world_position, exit_point)
 		return
+	if _flight_controller != null:
+		_flight_controller.set_circles_order(world_position)
 	if _navigation_managed and _navigation_system != null:
 		_navigation_system.command_move([self], world_position, NavConstantsScript.MoveMode.FREE, exit_point)
 		return
@@ -346,6 +357,10 @@ func flight_is_landed() -> bool:
 	return _flight_controller == null or _flight_controller.flight_is_landed()
 
 
+func flight_navigation_is_locked() -> bool:
+	return _flight_controller != null and _flight_controller.flight_navigation_is_locked()
+
+
 ## Only Ornithopters (ammo-replenish docking) or carriers (pickup sequence) may
 ## ever leave cruise/hover to land; every other CanFly unit rejects this and
 ## only ever takes off once, at spawn. No AI calls this yet in this pass —
@@ -360,6 +375,28 @@ func flight_request_land(landing_position: Vector3, allowed_cells: Dictionary = 
 func flight_set_vertical_offset(value: float) -> void:
 	if _flight_controller != null:
 		_flight_controller.flight_set_vertical_offset(value)
+
+
+func flight_circles_enabled() -> bool:
+	return _flight_controller != null and _flight_controller.circles_flight_enabled()
+
+
+func flight_set_circles_order(destination: Vector3) -> void:
+	if _flight_controller != null:
+		_flight_controller.set_circles_order(destination)
+
+
+func flight_clear_circles_order() -> void:
+	if _flight_controller != null:
+		_flight_controller.clear_circles_order()
+
+
+func flight_circles_desired_velocity() -> Vector3:
+	return _flight_controller.circles_desired_velocity() if _flight_controller != null else Vector3.ZERO
+
+
+func flight_consume_circles_order_completed() -> bool:
+	return _flight_controller.consume_circles_order_completed() if _flight_controller != null else false
 
 
 ## Pickup sequence stubs — phases/clips exist and are individually triggerable;
@@ -402,6 +439,10 @@ func flight_snap_to_terrain() -> void:
 
 func flight_set_visual_slope_target(terrain_normal: Vector3) -> void:
 	_set_visual_slope_target(terrain_normal)
+
+
+func flight_set_visual_bank(angle: float) -> void:
+	_terrain_alignment.set_flight_bank(angle)
 
 
 func flight_terrain_hit_at(position: Vector3) -> Dictionary:
@@ -461,6 +502,13 @@ func navigation_step(horizontal_velocity: Vector3, delta: float) -> void:
 	if _flight_controller != null and _flight_controller.flight_controls_transition():
 		_flight_controller.advance(delta)
 		return
+	if _flight_controller != null and _flight_controller.circles_flight_enabled():
+		var circles_velocity := _flight_controller.advance_circles_flight(horizontal_velocity, delta)
+		velocity = circles_velocity
+		_set_navigation_debug_direction(horizontal_velocity)
+		_set_movement_animation(true)
+		_snap_to_terrain(delta)
+		return
 	if is_deploying() or is_deployed():
 		velocity = Vector3.ZERO
 		_set_navigation_debug_direction(Vector3.ZERO)
@@ -515,6 +563,8 @@ func navigation_move_speed() -> float:
 ## facade (target_position plus the navigation system's arrival tolerance),
 ## the gait only reacts to it.
 func has_active_move_order() -> bool:
+	if _flight_controller != null and _flight_controller.circles_flight_enabled():
+		return _flight_controller.circles_order_is_active()
 	var tolerance := arrival_radius
 	if (
 		_navigation_managed

@@ -52,11 +52,19 @@ func setup(
 ## the destination has exactly one place to live. No path state to compute —
 ## an air agent always flies the straight line to `agent["destination"]`.
 func route_agent(agent: Dictionary, _from: Vector3, destination: Vector3) -> void:
+	var unit: Node3D = agent["unit"]
+	var bounded_destination := clamp_to_bounds(destination)
+	# This is an explicit order state, not an inference from velocity. A
+	# fixed-wing Circles unit keeps moving while idle, so its position alone
+	# cannot distinguish a completed order from a still-active one.
+	agent["active_order"] = true
+	if unit.has_method("flight_set_circles_order"):
+		unit.call("flight_set_circles_order", bounded_destination)
 	agent["path"] = [] as Array[Vector2i]
 	agent["path_index"] = 0
 	agent["corridor"] = PackedInt32Array()
 	agent["direct_path"] = true
-	agent["destination"] = clamp_to_bounds(destination)
+	agent["destination"] = bounded_destination
 
 
 func clamp_to_bounds(world_position: Vector3) -> Vector3:
@@ -109,8 +117,12 @@ func target_assignments(agents: Dictionary, units: Array[Node3D], world_target: 
 func desired_velocity(agent: Dictionary) -> Vector3:
 	var unit: Node3D = agent["unit"]
 	agent["steering_target"] = agent["destination"]
+	if unit.has_method("flight_navigation_is_locked") and bool(unit.call("flight_navigation_is_locked")):
+		return Vector3.ZERO
 	if bool(agent["hold"]):
 		return Vector3.ZERO
+	if unit.has_method("flight_circles_enabled") and bool(unit.call("flight_circles_enabled")):
+		return unit.call("flight_circles_desired_velocity") as Vector3
 	var destination: Vector3 = agent["destination"]
 	var offset := destination - unit.global_position
 	offset.y = 0.0
@@ -139,17 +151,32 @@ func tick(delta: float, ordered: Array[Dictionary], buckets: Dictionary) -> void
 		for other in nearby:
 			if other["unit"] != unit:
 				blockers.append(other)
-		if not desired.is_zero_approx():
+		var flight_locked := unit.has_method("flight_navigation_is_locked") \
+			and bool(unit.call("flight_navigation_is_locked"))
+		if flight_locked:
+			# Landing/pickup owns the horizontal body transform. In particular,
+			# lateral separation must not slide an aircraft that has requested a
+			# zero navigation velocity for a vertical authored sequence.
+			_decay_vertical_offset(agent)
+		elif not desired.is_zero_approx():
 			_resolve_vertical_conflict(agent, blockers)
 		else:
 			_decay_vertical_offset(agent)
 		var velocity := desired
-		var separation: Vector3 = _avoidance.separation_velocity(agent, nearby)
-		if not separation.is_zero_approx():
-			velocity = (velocity + separation).limit_length(_unit_speed(unit))
+		if flight_locked:
+			velocity = Vector3.ZERO
+		else:
+			var separation: Vector3 = _avoidance.separation_velocity(agent, nearby)
+			if not separation.is_zero_approx():
+				velocity = (velocity + separation).limit_length(_unit_speed(unit))
 		_agents[unit.get_instance_id()] = agent
 		if unit.has_method("navigation_step"):
 			unit.call("navigation_step", velocity, delta)
+		if unit.has_method("flight_consume_circles_order_completed") \
+		and bool(unit.call("flight_consume_circles_order_completed")):
+			agent["active_order"] = false
+			agent["destination"] = unit.global_position
+		_agents[unit.get_instance_id()] = agent
 
 
 ## Deterministic 2-way split: each conflicting air-air pair independently
