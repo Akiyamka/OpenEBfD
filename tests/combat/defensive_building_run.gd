@@ -17,6 +17,7 @@ func _initialize() -> void:
 		_test_building_turret_rebind
 	)
 	_run_case("all seven defensive buildings automatically acquire and fire", _test_defensive_building_auto_fire)
+	_run_case("idle building turrets scan their forward sector", _test_idle_building_turret_scan)
 	await _run_async_case(
 		"HKFlameTurret direct force-fire hits a friendly unit below its muzzle",
 		_test_hkflame_turret_direct_friendly_fire
@@ -145,6 +146,31 @@ func _test_defensive_building_auto_fire() -> void:
 				projectile.free()
 		target.free()
 		building.free()
+
+
+func _test_idle_building_turret_scan() -> void:
+	var building = HKGunTurretScene.instantiate()
+	root.add_child(building)
+	var turret = building.combat_turrets[0]
+	turret._idle_scan_rng.seed = 2
+	turret._idle_scan_active = false
+	building._process(2.0)
+	_expect(
+		is_zero_approx(turret.current_yaw_degrees()),
+		"an idle building turret must wait at least three seconds before its first scan turn"
+	)
+	building._process(4.0)
+	var yaw: float = turret.current_yaw_degrees()
+	_expect(
+		absf(yaw) > 0.01 and absf(yaw) <= 70.01,
+		"an idle building turret must choose a point within 70 degrees of its forward direction"
+	)
+	_expect(
+		turret._idle_scan_seconds_until_target >= 3.0
+			and turret._idle_scan_seconds_until_target <= 5.0,
+		"each idle building scan target must remain in place for three to five seconds"
+	)
+	building.free()
 
 
 ## A Flame Turret only yaws. Its source muzzle sits above a ground unit, so a
@@ -650,7 +676,5 @@ func _test_building_damage_visual_states() -> void:
 		"a sole Damage2 state must be the damaged band rather than requiring Damage1"
 	)
 	wall.free()
-
-
 
 

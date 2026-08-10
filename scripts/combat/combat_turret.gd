@@ -29,6 +29,9 @@ const SHOT_LIGHT_REAR_OFFSET := CombatTurretFxScript.SHOT_LIGHT_REAR_OFFSET
 ## rules cadence as unit movement while keeping interpolation frame-rate safe.
 const AIM_UPDATES_PER_SECOND := 20.0
 const DEFAULT_ACCEPTABLE_AIM_DEGREES := 1.0
+const IDLE_SCAN_MIN_SECONDS := 3.0
+const IDLE_SCAN_MAX_SECONDS := 5.0
+const IDLE_SCAN_MAX_YAW := deg_to_rad(70.0)
 const TURRET_MARKER := "::"
 const MUZZLE_MARKER := ">>"
 const REAR_MUZZLE_MARKER := "#muzzle"
@@ -81,6 +84,10 @@ var _definition_bullet
 
 var current_yaw := 0.0
 var current_pitch := 0.0
+var _idle_scan_rng := RandomNumberGenerator.new()
+var _idle_scan_active := false
+var _idle_scan_seconds_until_target := 0.0
+var _idle_scan_target_yaw := 0.0
 
 var _model_root: Node3D
 var _fx_model_root: Node3D
@@ -112,6 +119,8 @@ static var _definition_catalog := CombatDefinitionCatalogScript.new()
 
 func configure(turret_id: StringName) -> bool:
 	unbind_model()
+	_idle_scan_rng.randomize()
+	_reset_idle_scan()
 	_definition_bullet = null
 	_fx.configure(self)
 	_weapon_index = -1
@@ -226,6 +235,7 @@ func bind_model(model_root: Node3D, model_weapon_index: int) -> bool:
 		_store_rest_transform(pivot)
 	current_yaw = 0.0
 	current_pitch = 0.0
+	_reset_idle_scan()
 	_next_muzzle_index = 0
 	_apply_aim_transforms()
 	var neutral_muzzle_origin := _muzzle_group_origin()
@@ -253,6 +263,7 @@ func unbind_model() -> void:
 	_last_emissions.clear()
 	current_yaw = 0.0
 	current_pitch = 0.0
+	_reset_idle_scan()
 
 
 func is_configured() -> bool:
@@ -428,6 +439,7 @@ func capture_current_rest_pose() -> void:
 func aim_at(world_position: Vector3, delta: float, pivot_relative_yaw := false) -> bool:
 	if not is_bound():
 		return false
+	_idle_scan_active = false
 	# Authored Stationary/Move tracks can key a turret ancestor back to its
 	# animation pose before Unit combat runs. Restore the combat-owned angles
 	# first, otherwise the muzzle servo observes the rest direction every frame
@@ -576,10 +588,47 @@ func _angular_errors(
 
 
 func recenter(delta: float) -> bool:
+	_idle_scan_active = false
 	current_yaw = _turn_axis(current_yaw, 0.0, _axis_speed(_yaw_config(), &"yaw_speed"), delta)
 	current_pitch = _turn_axis(current_pitch, 0.0, _axis_speed(_pitch_config(), &"pitch_speed"), delta)
 	_apply_aim_transforms()
 	return is_zero_approx(current_yaw) and is_zero_approx(current_pitch)
+
+
+## Lets a yaw-capable idle weapon look around its authored forward direction.
+## The first 3–5 seconds retain the old recentering behaviour, then each
+## interval chooses a fresh point within a 140-degree forward-facing sector.
+## Rules-defined yaw stops still win when a particular mount is narrower.
+func idle_scan(delta: float) -> void:
+	if not is_bound() or not has_independent_yaw():
+		return
+	if not _idle_scan_active:
+		_idle_scan_active = true
+		_idle_scan_target_yaw = 0.0
+		_idle_scan_seconds_until_target = _next_idle_scan_interval()
+	_idle_scan_seconds_until_target -= maxf(delta, 0.0)
+	if _idle_scan_seconds_until_target <= 0.0:
+		var yaw_config := _yaw_config()
+		_idle_scan_target_yaw = _clamp_rule_angle(
+			_idle_scan_rng.randf_range(-IDLE_SCAN_MAX_YAW, IDLE_SCAN_MAX_YAW),
+			yaw_config, &"minimum_yaw", &"maximum_yaw"
+		)
+		_idle_scan_seconds_until_target = _next_idle_scan_interval()
+	current_yaw = _turn_axis(
+		current_yaw, _idle_scan_target_yaw,
+		_axis_speed(_yaw_config(), &"yaw_speed"), delta
+	)
+	_apply_aim_transforms()
+
+
+func _reset_idle_scan() -> void:
+	_idle_scan_active = false
+	_idle_scan_seconds_until_target = 0.0
+	_idle_scan_target_yaw = 0.0
+
+
+func _next_idle_scan_interval() -> float:
+	return _idle_scan_rng.randf_range(IDLE_SCAN_MIN_SECONDS, IDLE_SCAN_MAX_SECONDS)
 
 
 ## Zeroes the servo bookkeeping without touching the pivot transform. Used

@@ -105,14 +105,15 @@ func advance(delta: float) -> void:
 		and _moving_fire_weapons.is_empty()
 	):
 		# Movement/idle animations key some of the same model pivots as combat.
-		# Keep the combat angle authoritative after an order ends and return it
-		# to the authored forward pose through the normal turret servo. Without
-		# this, the animation snaps the visible pivot to rest while current_yaw
-		# stays cached, and the stale angle reappears on the next attack order.
+		# Keep the combat angle authoritative after an order ends: first return
+		# to the authored forward pose, then periodically scan its forward arc.
+		# Without this, the animation snaps the visible pivot to rest while
+		# current_yaw stays cached, and the stale angle reappears on the next
+		# attack order.
 		# Only turrets live in the current deploy state: an inactive turret's
 		# pivot is owned by its own deploy/undeploy/idle animation, not combat.
 		for turret in _active_turrets():
-			turret.recenter(delta)
+			_scan_turret_if_idle(turret, delta)
 
 
 ## Lifecycle protocol, required of every module that caches a reference into
@@ -463,7 +464,7 @@ func _advance_retained_weapon_targets(delta: float) -> void:
 				delta
 			)
 		if not _advance_turret_engagement(turret, turret_target, delta, aim_source):
-			_recenter_turret_if_idle(turret, delta)
+			_scan_turret_if_idle(turret, delta)
 
 
 func _advance_turret_engagement(
@@ -516,13 +517,13 @@ func _recenter_unengaged_turrets(engaged_turrets: Array, delta: float) -> void:
 	# state, not to the combat servo.
 	for turret in _active_turrets():
 		if turret not in engaged_turrets:
-			_recenter_turret_if_idle(turret, delta)
+			_scan_turret_if_idle(turret, delta)
 
 
-func _recenter_turret_if_idle(turret, delta: float) -> void:
+func _scan_turret_if_idle(turret, delta: float) -> void:
 	if turret == null or _weapon_fire_sequences.has(turret.weapon_index()):
 		return
-	turret.recenter(delta)
+	turret.idle_scan(delta)
 
 
 func _turn_hull_by_adjustment(adjustment: float, delta: float) -> bool:
