@@ -43,6 +43,34 @@ const TEXTURE_EVENT_TYPE := 6
 # burst-times-lifetime product stays far below it for every original bank; the
 # clamp only guards against a mis-parsed record allocating an absurd buffer.
 const MAX_ATTACHMENT_FX_PARTICLES := 256
+# The original carryall and Atreides ornithopter smoke banks are technically
+# continuous but author only one or two particles per source update. At the
+# converted world scale that reads as sparse snow rather than a plume. Give
+# those banks enough overlapping, expanding particles to form an actual trail.
+# This intentionally excludes AT Orni's separate sand bank.
+const DENSE_SMOKE_SOURCE_FILES := {
+	"g_carryall_h0.xbf": true,
+	"at_carryall_h0.xbf": true,
+	"hk_carryall_h0.xbf": true,
+	"or_carryall_h0.xbf": true,
+	"at_ornithopter_h0.xbf": true,
+}
+const DENSE_SMOKE_PARTICLE_AMOUNT := 60
+const DENSE_SMOKE_LIFETIME_MULTIPLIER := 1.6
+const DENSE_SMOKE_START_SIZE_MULTIPLIER := 5.56
+const DENSE_SMOKE_END_SIZE_MULTIPLIER := 12.0
+const DENSE_SMOKE_END_SCALE := (
+	DENSE_SMOKE_END_SIZE_MULTIPLIER / DENSE_SMOKE_START_SIZE_MULTIPLIER
+)
+const DENSE_SMOKE_CARRYALL_MAX_SOURCE_SIZE := 8.0
+const CONTINUOUS_SMOKE_CLIPS: PackedStringArray = [
+	"Move", "Fly", "FlyToHover", "Hover", "HoverToFly",
+]
+const STATIC_FLIGHT_SOURCE_FILES := {
+	"im_dropship_h0.xbf": true,
+}
+const STATIC_FLIGHT_LOOP_SECONDS := 1.0
+const STATIC_FLIGHT_TRANSITION_SECONDS := 0.1
 # How far a fully-influenced particle wanders sideways over its lifetime, as a
 # fraction of how far it travels along the plume. Raise for a looser, more
 # dissipated plume.
@@ -147,6 +175,7 @@ var _shield_shader: Shader
 var _has_shield_fx_marker := false
 var _muzzle_flash_mesh_paths := PackedStringArray()
 var _attachment_fx_paths := PackedStringArray()
+var _continuous_smoke_fx_paths := PackedStringArray()
 var _attachment_fx_names := {}
 var _source_file_name := ""
 var _object_transform_frame_limit := 0
@@ -172,6 +201,7 @@ func build(xbf_path: String) -> PackedScene:
 	_has_shield_fx_marker = false
 	_muzzle_flash_mesh_paths = PackedStringArray()
 	_attachment_fx_paths = PackedStringArray()
+	_continuous_smoke_fx_paths = PackedStringArray()
 	_attachment_fx_names.clear()
 
 	var xbf = ModelXbfScript.load_file(xbf_path)
@@ -253,7 +283,8 @@ func build(xbf_path: String) -> PackedScene:
 	# AnimationPlayer here would silently throw that duration away, collapsing
 	# the state to ~1 frame downstream in BuildingBakeBuilder.
 	if anim.get_track_count() > 0 or not _pending_frame_tracks.is_empty() \
-	or not animation_entries.is_empty() or not attachment_fx.is_empty():
+	or not animation_entries.is_empty() or not attachment_fx.is_empty() \
+	or STATIC_FLIGHT_SOURCE_FILES.has(_source_file_name):
 		anim.length = maxf(max_frame / fps, 1.0 / fps)
 		_add_attachment_fx_tracks(anim, attachment_fx)
 		_add_shader_fx_tracks(anim)
@@ -271,6 +302,7 @@ func build(xbf_path: String) -> PackedScene:
 				if library.has_animation(clip_name):
 					library.remove_animation(clip_name)
 				library.add_animation(clip_name, clip)
+		_add_static_flight_clips(library)
 		_add_timeline_muzzle_flash_visibility(anim, animation_entries)
 		library.add_animation("timeline", anim)
 		var player := AnimationPlayer.new()
@@ -1429,6 +1461,8 @@ func _build_attachment_bank_effects(root: Node3D, xbf) -> Array[Dictionary]:
 		marker.add_child(visual)
 		var path := String(root.get_path_to(visual))
 		_attachment_fx_paths.append(path)
+		if emitter != null and _uses_dense_smoke(bank):
+			_continuous_smoke_fx_paths.append(path)
 		result.append({
 			"path": path,
 			# An emitter drives its own flipbook through the particle material,
@@ -1481,11 +1515,19 @@ func _build_attachment_fx_emitter(bank: Dictionary) -> GPUParticles3D:
 	var world_size := maxf(
 		float(bank.get("particle_size", 0.0)) * world_scale, 0.01 * world_scale
 	)
+	var dense_smoke := _uses_dense_smoke(bank)
+	if dense_smoke:
+		world_size *= DENSE_SMOKE_START_SIZE_MULTIPLIER
 
 	var particles := GPUParticles3D.new()
 	particles.lifetime = lifetime_frames / fps
+	if dense_smoke:
+		particles.lifetime *= DENSE_SMOKE_LIFETIME_MULTIPLIER
+	var particle_amount := float(burst) * float(lifetime_frames) / float(interval)
+	if dense_smoke:
+		particle_amount = DENSE_SMOKE_PARTICLE_AMOUNT
 	particles.amount = clampi(
-		int(ceil(float(burst) * float(lifetime_frames) / float(interval))),
+		int(ceil(particle_amount)),
 		1, MAX_ATTACHMENT_FX_PARTICLES
 	)
 	particles.local_coords = false
@@ -1516,11 +1558,19 @@ func _build_attachment_fx_emitter(bank: Dictionary) -> GPUParticles3D:
 		float(bank.get("gravity", 0.0)) * world_scale * fps * fps
 	)
 	process.color = _fx_bank_tint(bank)
-	process.alpha_curve = _fx_bank_alpha_curve()
+	process.alpha_curve = _fx_bank_alpha_curve(dense_smoke)
+	if dense_smoke:
+		process.scale_min = 1.0
+		process.scale_max = 1.0
+		process.scale_curve = _dense_smoke_scale_curve()
 	particles.process_material = process
 	_apply_attachment_fx_drift(process, particles.lifetime, world_speed)
 
-	var alpha_keyed := _uses_alpha_channel(String(bank.get("texture", "")))
+	# The aircraft !sm banks lack the source `@` alpha marker, but additive
+	# rendering makes their overlapping cards look like luminous white peas.
+	# Luminance-key and alpha-blend these selected banks as actual smoke.
+	var alpha_keyed := _uses_alpha_channel(String(bank.get("texture", ""))) \
+		or dense_smoke
 	if alpha_keyed:
 		atlas = _luminance_keyed_texture(atlas)
 	var material := StandardMaterial3D.new()
@@ -1559,11 +1609,26 @@ func _build_attachment_fx_emitter(bank: Dictionary) -> GPUParticles3D:
 	# Default visibility bounds are a fixed 8-unit box, which for these streams
 	# is both too large to cull well and, for a long-lived plume, too small.
 	# Size it from the authored ballistic reach instead.
+	var particle_extent := quad.size.x * (
+		DENSE_SMOKE_END_SCALE if dense_smoke else 1.0
+	)
 	var reach := world_speed * particles.lifetime \
 		+ 0.5 * process.gravity.length() * particles.lifetime * particles.lifetime \
-		+ quad.size.x
+		+ particle_extent
 	particles.visibility_aabb = AABB(Vector3.ONE * -reach, Vector3.ONE * 2.0 * reach)
 	return particles
+
+
+func _uses_dense_smoke(bank: Dictionary) -> bool:
+	if not DENSE_SMOKE_SOURCE_FILES.has(_source_file_name) \
+	or String(bank.get("texture", "")).to_lower() != "!sm":
+		return false
+	# Carryalls also use larger !sm banks for short landing/takeoff clouds. The
+	# compact 8-source-unit bank is their engine exhaust; only that one should
+	# be made continuous. AtOrni has one 16-unit !sm engine bank.
+	return _source_file_name == "at_ornithopter_h0.xbf" \
+		or float(bank.get("particle_size", 0.0)) \
+			<= DENSE_SMOKE_CARRYALL_MAX_SOURCE_SIZE
 
 
 ## Lets a rising plume wander instead of climbing as a rigid column. Each
@@ -1627,10 +1692,34 @@ func _luminance_keyed_texture(source: Texture2D) -> Texture2D:
 ## plume is dense at the mouth and dissipated by the top. The banks themselves
 ## author no alpha ramp (their per-update colour deltas are all zero), so this
 ## is engine behaviour rather than decoded data - see docs/open_questions.md.
-func _fx_bank_alpha_curve() -> CurveTexture:
+func _fx_bank_alpha_curve(dense_smoke: bool = false) -> CurveTexture:
 	var curve := Curve.new()
-	curve.add_point(Vector2(0.0, 1.0))
+	if dense_smoke:
+		# Ease in quickly so a card does not pop at the nozzle, then retain enough
+		# body while it grows. The last 15% is reserved for the final dissolve,
+		# after the particle has already reached its maximum visible size.
+		curve.add_point(Vector2(0.0, 0.0))
+		curve.add_point(Vector2(0.08, 1.0))
+		curve.add_point(Vector2(0.4, 0.88))
+		curve.add_point(Vector2(0.75, 0.55))
+		curve.add_point(Vector2(0.9, 0.22))
+	else:
+		curve.add_point(Vector2(0.0, 1.0))
 	curve.add_point(Vector2(1.0, 0.0))
+	var curve_texture := CurveTexture.new()
+	curve_texture.curve = curve
+	return curve_texture
+
+
+func _dense_smoke_scale_curve() -> CurveTexture:
+	var curve := Curve.new()
+	curve.min_value = 0.0
+	curve.max_value = DENSE_SMOKE_END_SCALE
+	curve.add_point(Vector2(0.0, 1.0))
+	curve.add_point(Vector2(0.25, lerpf(1.0, DENSE_SMOKE_END_SCALE, 0.18)))
+	curve.add_point(Vector2(0.6, lerpf(1.0, DENSE_SMOKE_END_SCALE, 0.58)))
+	curve.add_point(Vector2(0.85, DENSE_SMOKE_END_SCALE))
+	curve.add_point(Vector2(1.0, DENSE_SMOKE_END_SCALE))
 	var curve_texture := CurveTexture.new()
 	curve_texture.curve = curve
 	return curve_texture
@@ -2227,6 +2316,7 @@ func _slice_animation(source: Animation, entry: Dictionary, target_paths := {}) 
 			if held_transform is Transform3D:
 				clip.track_insert_key(track, 0.0, held_transform)
 	_seed_clip_attachment_fx_tracks(clip, source, start_time)
+	_force_continuous_smoke_tracks(clip, String(entry.get("name", "")))
 	_add_clip_muzzle_flash_visibility(clip, String(entry.get("name", "")), source, start_time, end_time)
 	return clip
 
@@ -2235,7 +2325,11 @@ func _seed_clip_attachment_fx_tracks(
 		clip: Animation, source: Animation, start_time: float
 	) -> void:
 	for path in _attachment_fx_paths:
-		for property_name in ["visible", "mesh"]:
+		# A sliced clip needs the complete FX state at its first frame. Without an
+		# `emitting` seed, a start event immediately before Move is omitted from
+		# the slice and the aircraft only exhausts the particles left alive from
+		# the preceding clip before its smoke silently stops.
+		for property_name in ["visible", "emitting", "mesh"]:
 			var track_path := NodePath("%s:%s" % [path, property_name])
 			var source_track := source.find_track(track_path, Animation.TYPE_VALUE)
 			if source_track < 0:
@@ -2250,6 +2344,29 @@ func _seed_clip_attachment_fx_tracks(
 				clip.track_set_interpolation_type(clip_track, Animation.INTERPOLATION_NEAREST)
 				clip.value_track_set_update_mode(clip_track, Animation.UPDATE_DISCRETE)
 			clip.track_insert_key(clip_track, 0.0, value)
+
+
+## Engine smoke belongs to the aircraft's flight state, not to a particular
+## wing/turn animation. Authored clips toggle the same bank at their boundaries;
+## switching Move -> FlyToHover -> Hover would therefore hide every already-live
+## particle during a turn and then start a fresh disconnected trail. Hold both
+## emission and visibility throughout all airborne cruise clips. Takeoff, Land,
+## pickup and destruction retain their authored FX timing.
+func _force_continuous_smoke_tracks(clip: Animation, source_clip_name: String) -> void:
+	var clip_name := _clip_name(source_clip_name)
+	if clip_name not in CONTINUOUS_SMOKE_CLIPS:
+		return
+	for path in _continuous_smoke_fx_paths:
+		for property_name in ["visible", "emitting"]:
+			var track_path := NodePath("%s:%s" % [path, property_name])
+			var track := clip.find_track(track_path, Animation.TYPE_VALUE)
+			if track >= 0:
+				clip.remove_track(track)
+			track = clip.add_track(Animation.TYPE_VALUE)
+			clip.track_set_path(track, track_path)
+			clip.track_set_interpolation_type(track, Animation.INTERPOLATION_NEAREST)
+			clip.value_track_set_update_mode(track, Animation.UPDATE_DISCRETE)
+			clip.track_insert_key(track, 0.0, true)
 
 
 func _clip_target_paths(objects: Array[Dictionary], animation_entries: Array[Dictionary]) -> Dictionary:
@@ -2362,6 +2479,32 @@ func _clip_name(value: String) -> String:
 	var name := value.strip_edges().replace(" ", "_")
 	var overrides: Dictionary = CLIP_NAME_OVERRIDES.get(_source_file_name, {})
 	return overrides.get(name, name)
+
+
+## IMDropShip is a CanFly unit whose XBF has no animation table at all. Give
+## its static model the same named state-machine surface as animated aircraft:
+## looping cruise/hover states and short one-shot transitions. The transition
+## durations are deliberately non-zero so AnimationPlayer emits `finished` and
+## UnitFlightController can advance to the destination state normally.
+func _add_static_flight_clips(library: AnimationLibrary) -> void:
+	if not STATIC_FLIGHT_SOURCE_FILES.has(_source_file_name):
+		return
+	for clip_name in [&"Fly", &"Hover"]:
+		if library.has_animation(clip_name):
+			continue
+		var clip := Animation.new()
+		clip.resource_name = clip_name
+		clip.length = STATIC_FLIGHT_LOOP_SECONDS
+		clip.loop_mode = Animation.LOOP_LINEAR
+		library.add_animation(clip_name, clip)
+	for clip_name in [&"FlyToHover", &"HoverToFly"]:
+		if library.has_animation(clip_name):
+			continue
+		var clip := Animation.new()
+		clip.resource_name = clip_name
+		clip.length = STATIC_FLIGHT_TRANSITION_SECONDS
+		clip.loop_mode = Animation.LOOP_NONE
+		library.add_animation(clip_name, clip)
 
 
 ## Every shipped AT_MGT state and LOD labels frames 200..240 as "Idle 0",

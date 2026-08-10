@@ -5,6 +5,8 @@ extends SceneTree
 
 const UnitScene := preload("res://scenes/units/unit.tscn")
 const ATOrniScene := preload("res://scenes/units/at_orni.tscn")
+const CarryallScene := preload("res://scenes/units/carryall.tscn")
+const ATADVCarryallScene := preload("res://scenes/units/atadv_carryall.tscn")
 const UnitNavigationMapScript := preload("res://scripts/units/navigation/unit_navigation_map.gd")
 const UnitNavigationPlannerScript := preload("res://scripts/units/navigation/unit_navigation_planner.gd")
 const UnitLocalAvoidanceScript := preload("res://scripts/units/navigation/unit_local_avoidance.gd")
@@ -39,6 +41,8 @@ func _initialize() -> void:
 	_run_case("generated UnitDefinitions carry the correct flight flags", _test_definition_flags)
 	_run_case("a flight controller exists only for CanFly units", _test_flight_controller_gating)
 	_run_case("hangar spawn moves outside before climbing to height_offset", _test_hangar_takeoff_sequence)
+	_run_case("every flying scene exposes the airborne animation state machine", _test_flight_clip_catalog)
+	_run_case("flyers transition between Fly and Hover", _test_flyer_cruise_animation)
 	_run_case("a non-Ornithopter, non-carrier flyer can never land", _test_non_ornithopter_never_lands)
 	_run_case("an Ornithopter can land, then take off again on its next order", _test_ornithopter_land_takeoff_round_trip)
 	_run_case("converging air agents separate vertically, then decay back to level", _test_vertical_avoidance)
@@ -107,7 +111,7 @@ func _test_hangar_takeoff_sequence() -> void:
 	# Far enough that 20 ticks of forward movement never gets within
 	# arrival_radius of it — a near rally point oscillates back and forth
 	# across arrival_radius every tick (velocity*delta far exceeds the radius),
-	# flickering between Move and Hover non-deterministically.
+	# flickering between Fly and Hover non-deterministically.
 	var rally: Vector3 = flyer.global_position + Vector3(1000.0, 0.0, 0.0)
 	var exit_point: Vector3 = flyer.global_position + Vector3(4.0, 0.0, 0.0)
 	flyer.begin_hangar_takeoff(rally, exit_point)
@@ -150,9 +154,90 @@ func _test_hangar_takeoff_sequence() -> void:
 		"takeoff must finish at the base flight level plus scaled height_offset above ground")
 	_expect(flyer.flight_is_airborne_phase(), "the unit must be cruising once the climb completes")
 	if player != null:
-		_expect(player.current_animation == &"Move",
-			"once cruising toward the rally point, the animation must switch to Move")
+		_expect(player.current_animation == &"Fly",
+			"once cruising toward the rally point, the animation must switch to Fly")
 	flyer.free()
+
+
+func _test_flight_clip_catalog() -> void:
+	var definitions := DirAccess.open("res://resources/units/definitions")
+	_expect(definitions != null, "generated unit definitions must be readable")
+	if definitions == null:
+		return
+	for file_name in definitions.get_files():
+		if file_name.get_extension() != "tres":
+			continue
+		var definition = load("res://resources/units/definitions/%s" % file_name)
+		if definition == null or not bool(definition.can_fly):
+			continue
+		var packed := load(String(definition.scene_path)) as PackedScene
+		var flyer := packed.instantiate() as Unit if packed != null else null
+		_expect(flyer != null, "%s flying scene must instantiate" % definition.config_id)
+		if flyer == null:
+			continue
+		root.add_child(flyer)
+		for clip_name in [&"Fly", &"Hover", &"FlyToHover", &"HoverToFly"]:
+			_expect(
+				_first_player_with(flyer, clip_name) != null,
+				"%s must expose the %s flight clip" % [definition.config_id, clip_name]
+			)
+		flyer.free()
+
+
+func _test_flyer_cruise_animation() -> void:
+	for model_case in [
+		{"name": "ATOrni", "scene": ATOrniScene},
+		{"name": "Carryall", "scene": CarryallScene},
+		{"name": "ATADVCarryall", "scene": ATADVCarryallScene},
+	]:
+		var flyer: Unit = (model_case["scene"] as PackedScene).instantiate()
+		root.add_child(flyer)
+		flyer.can_move_any_direction = true
+		var target := flyer.global_position + Vector3(1000.0, 0.0, 0.0)
+		flyer.begin_hangar_takeoff(target, Vector3.INF)
+		var player := _first_player_with(flyer, &"Fly")
+		_expect(
+			player != null,
+			"the converted %s model must expose its Fly clip" % model_case["name"]
+		)
+		_fast_forward_takeoff(flyer)
+		for _frame in 3:
+			flyer._physics_process(0.05)
+		_expect(
+			flyer.flight_is_airborne_phase(),
+			"%s must reach cruise" % model_case["name"]
+		)
+		_expect(
+			player != null and player.current_animation == &"Fly",
+			"a moving %s must cruise with Fly" % model_case["name"]
+		)
+		if player != null:
+			_expect(
+				player.get_animation(&"Fly").loop_mode == Animation.LOOP_LINEAR,
+				"the %s Fly clip must loop for the whole cruise" % model_case["name"]
+			)
+			flyer.flight_set_movement_animation(false)
+			_expect(
+				player.current_animation == &"FlyToHover",
+				"a stopping %s must transition through FlyToHover" % model_case["name"]
+			)
+			player.animation_finished.emit(&"FlyToHover")
+			_expect(
+				player.current_animation == &"Hover"
+				and player.get_animation(&"Hover").loop_mode == Animation.LOOP_LINEAR,
+				"a stopped %s must loop Hover" % model_case["name"]
+			)
+			flyer.flight_set_movement_animation(true)
+			_expect(
+				player.current_animation == &"HoverToFly",
+				"a restarting %s must transition through HoverToFly" % model_case["name"]
+			)
+			player.animation_finished.emit(&"HoverToFly")
+			_expect(
+				player.current_animation == &"Fly",
+				"a moving %s must return to Fly" % model_case["name"]
+			)
+		flyer.free()
 
 
 func _test_non_ornithopter_never_lands() -> void:

@@ -49,6 +49,8 @@ func _initialize() -> void:
 	_run_case("XBF loop boundaries preserve authored snaps", _test_xbf_loop_boundaries)
 	_run_case("XBF FX banks retain parameters and event frames", _test_xbf_fx_banks)
 	_run_case("building markers bake authored attachment FX banks", _test_building_attachment_effects)
+	_run_case("aircraft smoke banks form expanding trails", _test_aircraft_smoke_trails)
+	_run_case("static flying models receive flight state clips", _test_static_flight_clips)
 	_run_case(
 		"animated FX textures follow their authored event frames",
 		_test_authored_texture_event_frames
@@ -1321,6 +1323,122 @@ func _test_building_attachment_effects() -> bool:
 			"AT Starport runway markers must receive their green flash bank"
 		)
 		starport_root.free()
+	return true
+
+
+func _test_aircraft_smoke_trails() -> bool:
+	var sources := [
+		"G_Carryall_H0.XbF",
+		"AT_Carryall_H0.xbf",
+		"HK_Carryall_H0.xbf",
+		"OR_Carryall_H0.xbf",
+		"AT_Ornithopter_H0.xbf",
+	]
+	for source_file: String in sources:
+		var builder = ModelBakeBuilderScript.new()
+		builder.bake_attachment_bank_effects = true
+		var scene: PackedScene = builder.build(
+			"res://assets/raw_original_content/3DDATA/Units/%s" % source_file
+		)
+		_expect(scene != null, "%s must build its smoke trail" % source_file)
+		if scene == null:
+			continue
+		var root := scene.instantiate()
+		var marker := _find_original_node_exact(root, "#smoke01")
+		var smoke_fx: GPUParticles3D = null
+		if marker != null:
+			for child in marker.get_children():
+				var candidate := child as GPUParticles3D
+				var candidate_process := candidate.process_material as ParticleProcessMaterial \
+					if candidate != null else null
+				if candidate_process != null and candidate_process.scale_curve != null:
+					smoke_fx = candidate
+					break
+		var process := smoke_fx.process_material as ParticleProcessMaterial \
+			if smoke_fx != null else null
+		var scale_texture := process.scale_curve as CurveTexture \
+			if process != null else null
+		var alpha_texture := process.alpha_curve as CurveTexture \
+			if process != null else null
+		var quad := smoke_fx.draw_pass_1 as QuadMesh if smoke_fx != null else null
+		var material := quad.material as StandardMaterial3D if quad != null else null
+		var player := root.get_node_or_null("AnimationPlayer") as AnimationPlayer
+		var smoke_path := String(root.get_path_to(smoke_fx)) \
+			if smoke_fx != null else ""
+		var continuously_emits := player != null and smoke_fx != null
+		for clip_name in [&"Move", &"Fly", &"FlyToHover", &"Hover", &"HoverToFly"]:
+			var clip := player.get_animation(clip_name) if player != null else null
+			for property_name in ["visible", "emitting"]:
+				var track := clip.find_track(
+					NodePath("%s:%s" % [smoke_path, property_name]), Animation.TYPE_VALUE
+				) if clip != null else -1
+				continuously_emits = continuously_emits \
+					and track >= 0 and clip.track_get_key_count(track) == 1 \
+					and is_zero_approx(clip.track_get_key_time(track, 0)) \
+					and bool(clip.track_get_key_value(track, 0))
+		_expect(
+			smoke_fx != null and smoke_fx.amount == 60 and smoke_fx.lifetime >= 0.8
+			and not smoke_fx.local_coords,
+			"%s smoke must be dense, long-lived and remain behind in world space" \
+				% source_file
+		)
+		_expect(
+			scale_texture != null and scale_texture.curve != null
+			and is_equal_approx(scale_texture.curve.sample(0.0), 1.0)
+			and quad != null
+			and is_equal_approx(
+				quad.size.x / float(smoke_fx.get_meta(
+					"xbf_fx_world_particle_size", 1.0
+				)), 5.56
+			)
+			and is_equal_approx(
+				5.56 * scale_texture.curve.sample(0.85), 12.0
+			),
+			"%s smoke must expand substantially over its lifetime" % source_file
+		)
+		_expect(
+			alpha_texture != null and alpha_texture.curve != null
+			and is_zero_approx(alpha_texture.curve.sample(0.0))
+			and is_zero_approx(alpha_texture.curve.sample(1.0))
+			and material != null
+			and material.blend_mode == BaseMaterial3D.BLEND_MODE_MIX,
+			"%s smoke must ease in and dissolve with alpha blending" % source_file
+		)
+		_expect(
+			continuously_emits,
+			"%s must keep its smoke alive across flight and turn clips" % source_file
+		)
+		root.free()
+	return true
+
+
+func _test_static_flight_clips() -> bool:
+	var builder = ModelBakeBuilderScript.new()
+	var scene: PackedScene = builder.build(
+		"res://assets/raw_original_content/3DDATA/Units/IM_DropShip_H0.XBF"
+	)
+	_expect(scene != null, "IMDropShip must build from its static XBF")
+	if scene == null:
+		return true
+	var root := scene.instantiate()
+	var player := root.get_node_or_null("AnimationPlayer") as AnimationPlayer
+	_expect(player != null, "static IMDropShip must receive an AnimationPlayer")
+	if player != null:
+		for clip_name in [&"Fly", &"Hover"]:
+			var clip := player.get_animation(clip_name)
+			_expect(
+				clip != null and clip.length > 0.0
+				and clip.loop_mode == Animation.LOOP_LINEAR,
+				"IMDropShip %s must be a non-empty looping state" % clip_name
+			)
+		for clip_name in [&"FlyToHover", &"HoverToFly"]:
+			var clip := player.get_animation(clip_name)
+			_expect(
+				clip != null and clip.length > 0.0
+				and clip.loop_mode == Animation.LOOP_NONE,
+				"IMDropShip %s must be a non-empty one-shot transition" % clip_name
+			)
+	root.free()
 	return true
 
 

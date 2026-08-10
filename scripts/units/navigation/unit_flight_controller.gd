@@ -22,7 +22,7 @@ enum Phase {
 	PICKUP_TAKEOFF,
 }
 
-const CRUISE_MOVE_ANIMATION := &"Move"  # no literal "Fly" clip exists; reuse Move
+const FLY_ANIMATION := &"Fly"
 const HOVER_ANIMATION := &"Hover"
 const FLY_TO_HOVER_ANIMATION := &"FlyToHover"
 const HOVER_TO_FLY_ANIMATION := &"HoverToFly"
@@ -292,7 +292,7 @@ func set_cruise_moving(is_moving: bool, speed_scale: float) -> void:
 		return
 	if is_moving == _cruise_moving:
 		if is_moving and _transition_player == null:
-			_unit.flight_play_clip(CRUISE_MOVE_ANIMATION, true, speed_scale)
+			_unit.flight_play_clip(FLY_ANIMATION, true, speed_scale)
 		return
 	_cruise_moving = is_moving
 	if is_moving:
@@ -309,7 +309,7 @@ func set_cruise_moving(is_moving: bool, speed_scale: float) -> void:
 
 func _play_cruise_state_clip(is_moving: bool, speed_scale: float) -> void:
 	if is_moving:
-		_unit.flight_play_clip(CRUISE_MOVE_ANIMATION, true, speed_scale)
+		_unit.flight_play_clip(FLY_ANIMATION, true, speed_scale)
 	else:
 		_unit.flight_play_clip(HOVER_ANIMATION, true, 1.0)
 
