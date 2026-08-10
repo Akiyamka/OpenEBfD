@@ -9,6 +9,7 @@ the generator can be removed and those resources become authored game data.
 from __future__ import annotations
 
 import argparse
+import math
 import re
 import sqlite3
 from pathlib import Path
@@ -733,10 +734,13 @@ def turret_text(
         ),
         # Omitted when true: that is TurretDefinition's own default.
         *([] if fire_sound_exclusive else ["fire_sound_exclusive = false"]),
-        f"yaw_speed = {float(row['turret_y_rotation_angle'] or 0.0):.6g}",
-        f"pitch_speed = {float(row['turret_x_rotation_angle'] or 0.0):.6g}",
-        f"acceptable_yaw = {float(row['turret_y_acceptable_aim'] or 1.0):.6g}",
-        f"acceptable_pitch = {float(row['turret_x_acceptable_aim'] or 1.0):.6g}",
+        # Legacy turret angles are degrees while Unit TurnRate and Godot are
+        # radians. The generated resources are the clean boundary: every
+        # angular value below is normalized to radians.
+        f"yaw_speed = {math.radians(float(row['turret_y_rotation_angle'] or 0.0)):.9g}",
+        f"pitch_speed = {math.radians(float(row['turret_x_rotation_angle'] or 0.0)):.9g}",
+        f"acceptable_yaw = {math.radians(float(row['turret_y_acceptable_aim'] or 1.0)):.9g}",
+        f"acceptable_pitch = {math.radians(float(row['turret_x_acceptable_aim'] or 1.0)):.9g}",
         f"bullet_count = {int(row['turret_bullet_count'] or 1)}",
     ]
     gate_overrides = TURRET_DEPLOY_GATE_OVERRIDES.get(str(row["name"]), {})
@@ -763,7 +767,7 @@ def turret_text(
         ("maximum_pitch", "turret_max_x_rotation"),
     ]:
         if row[column] is not None:
-            properties.append(f"{prop} = {float(row[column]):.6g}")
+            properties.append(f"{prop} = {math.radians(float(row[column])):.9g}")
     return resource_text("TurretDefinition", "res://scripts/combat/turret_definition.gd", properties)
 
 

@@ -28,7 +28,7 @@ const SHOT_LIGHT_REAR_OFFSET := CombatTurretFxScript.SHOT_LIGHT_REAR_OFFSET
 ## Turret rotation angles are authored as per-update steps. Use the same 20 Hz
 ## rules cadence as unit movement while keeping interpolation frame-rate safe.
 const AIM_UPDATES_PER_SECOND := 20.0
-const DEFAULT_ACCEPTABLE_AIM_DEGREES := 1.0
+const DEFAULT_ACCEPTABLE_AIM := deg_to_rad(1.0)
 const IDLE_SCAN_MIN_SECONDS := 3.0
 const IDLE_SCAN_MAX_SECONDS := 5.0
 const IDLE_SCAN_MAX_YAW := deg_to_rad(70.0)
@@ -84,6 +84,11 @@ var _definition_bullet
 
 var current_yaw := 0.0
 var current_pitch := 0.0
+## Unit TurnRate is added to an articulated turret's authored yaw rate. In the
+## original movement model the hull and turret could turn together; treating
+## TurretYRotationAngle as relative to the chassis preserves that combined
+## world-space aiming rate without making a 360-degree mount rotate its hull.
+var _yaw_speed_bonus := 0.0
 var _idle_scan_rng := RandomNumberGenerator.new()
 var _idle_scan_active := false
 var _idle_scan_seconds_until_target := 0.0
@@ -119,6 +124,7 @@ static var _definition_catalog := CombatDefinitionCatalogScript.new()
 
 func configure(turret_id: StringName) -> bool:
 	unbind_model()
+	_yaw_speed_bonus = 0.0
 	_idle_scan_rng.randomize()
 	_reset_idle_scan()
 	_definition_bullet = null
@@ -317,6 +323,10 @@ func has_independent_yaw() -> bool:
 	return _yaw_pivot != null and _axis_speed(_yaw_config(), &"yaw_speed") > 0.0
 
 
+func set_yaw_speed_bonus(speed_radians_per_update: float) -> void:
+	_yaw_speed_bonus = maxf(speed_radians_per_update, 0.0)
+
+
 ## True when an animation target belongs to this weapon's articulated branch
 ## or to the ancestor chain that carries that branch. A Fire clip confined to
 ## this set can be layered over sibling locomotion branches.
@@ -341,7 +351,7 @@ func requires_hull_turn_for(world_position: Vector3) -> bool:
 		&"minimum_yaw", &"maximum_yaw"
 	)
 	return absf(angle_difference(desired_yaw, reachable_yaw)) \
-		> deg_to_rad(_acceptable_yaw_degrees())
+		> _acceptable_yaw()
 
 
 ## Signed world-Y rotation still required from the owner hull before the target
@@ -453,7 +463,7 @@ func aim_at(world_position: Vector3, delta: float, pivot_relative_yaw := false) 
 		)
 		_turn_yaw_toward(
 			world_position, desired_yaw,
-			_axis_speed(yaw_config, &"yaw_speed"), delta
+			_yaw_turn_speed(yaw_config), delta
 		)
 		_apply_aim_transforms()
 	if _pitch_pivot != null:
@@ -483,10 +493,10 @@ func aim_at(world_position: Vector3, delta: float, pivot_relative_yaw := false) 
 func _turn_yaw_toward(
 		world_position: Vector3,
 		desired_yaw: float,
-		speed_degrees: float,
+		speed: float,
 		delta: float
 	) -> void:
-	_turn_shared_axis(world_position, desired_yaw, speed_degrees, delta, false)
+	_turn_shared_axis(world_position, desired_yaw, speed, delta, false)
 
 
 func _world_yaw_error(world_position: Vector3) -> float:
@@ -507,21 +517,21 @@ func _world_yaw_error(world_position: Vector3) -> float:
 func _turn_pitch_toward(
 		world_position: Vector3,
 		desired_pitch: float,
-		speed_degrees: float,
+		speed: float,
 		delta: float
 	) -> void:
-	_turn_shared_axis(world_position, desired_pitch, speed_degrees, delta, true)
+	_turn_shared_axis(world_position, desired_pitch, speed, delta, true)
 
 
 func _turn_shared_axis(
 		world_position: Vector3,
 		desired_angle: float,
-		speed_degrees: float,
+		speed: float,
 		delta: float,
 		pitch_axis: bool
 	) -> void:
 	var starting_angle := current_pitch if pitch_axis else current_yaw
-	var full_step := _turn_axis(starting_angle, desired_angle, speed_degrees, delta)
+	var full_step := _turn_axis(starting_angle, desired_angle, speed, delta)
 	if is_equal_approx(full_step, starting_angle):
 		return
 	if _yaw_pivot == null or _pitch_pivot == null or _yaw_pivot != _pitch_pivot:
@@ -589,7 +599,7 @@ func _angular_errors(
 
 func recenter(delta: float) -> bool:
 	_idle_scan_active = false
-	current_yaw = _turn_axis(current_yaw, 0.0, _axis_speed(_yaw_config(), &"yaw_speed"), delta)
+	current_yaw = _turn_axis(current_yaw, 0.0, _yaw_turn_speed(_yaw_config()), delta)
 	current_pitch = _turn_axis(current_pitch, 0.0, _axis_speed(_pitch_config(), &"pitch_speed"), delta)
 	_apply_aim_transforms()
 	return is_zero_approx(current_yaw) and is_zero_approx(current_pitch)
@@ -616,7 +626,7 @@ func idle_scan(delta: float) -> void:
 		_idle_scan_seconds_until_target = _next_idle_scan_interval()
 	current_yaw = _turn_axis(
 		current_yaw, _idle_scan_target_yaw,
-		_axis_speed(_yaw_config(), &"yaw_speed"), delta
+		_yaw_turn_speed(_yaw_config()), delta
 	)
 	_apply_aim_transforms()
 
@@ -657,9 +667,9 @@ func is_aimed_at(world_position: Vector3) -> bool:
 	var errors := _angular_errors(
 		direction, yaw_target_direction, target_direction
 	)
-	return errors.x <= deg_to_rad(_acceptable_yaw_degrees()) \
+	return errors.x <= _acceptable_yaw() \
 		and (_pitch_pivot == null \
-			or errors.y <= deg_to_rad(_acceptable_pitch_degrees()))
+			or errors.y <= _acceptable_pitch())
 
 
 ## Readiness variant for a rigid multi-barrel mount whose yaw is authored
@@ -676,9 +686,9 @@ func is_group_yaw_aimed_at(world_position: Vector3) -> bool:
 	var errors := _angular_errors(
 		direction, pivot_target_direction, firing_direction
 	)
-	return errors.x <= deg_to_rad(_acceptable_yaw_degrees()) \
+	return errors.x <= _acceptable_yaw() \
 		and (_pitch_pivot == null \
-			or errors.y <= deg_to_rad(_acceptable_pitch_degrees()))
+			or errors.y <= _acceptable_pitch())
 
 
 func emission_points() -> Array[Dictionary]:
@@ -864,7 +874,7 @@ func target_range(target_or_position: Variant, aim_offset := Vector3.ZERO) -> in
 	# the pitch, so attack pursuit continues to an actually fireable position.
 	if _pitch_pivot != null:
 		var pitch_error := _pitch_limit_error(target_position)
-		if pitch_error > deg_to_rad(_acceptable_pitch_degrees()):
+		if pitch_error > _acceptable_pitch():
 			var closer_position := target_position
 			closer_position.x = lerpf(range_origin.x, target_position.x, 0.5)
 			closer_position.z = lerpf(range_origin.z, target_position.z, 0.5)
@@ -1611,10 +1621,10 @@ func _ballistic_aim_origin() -> Vector3:
 		else _muzzle_group_origin()
 
 
-func _turn_axis(current: float, target: float, speed_degrees: float, delta: float) -> float:
-	if speed_degrees <= 0.0 or delta <= 0.0:
+func _turn_axis(current: float, target: float, speed: float, delta: float) -> float:
+	if speed <= 0.0 or delta <= 0.0:
 		return current
-	var maximum_step := deg_to_rad(speed_degrees) * AIM_UPDATES_PER_SECOND * delta
+	var maximum_step := speed * AIM_UPDATES_PER_SECOND * delta
 	return rotate_toward(current, target, maximum_step)
 
 
@@ -1627,16 +1637,23 @@ func _clamp_rule_angle(
 	var maximum_value := float(joint_config.get(maximum_field))
 	if is_nan(minimum_value) and is_nan(maximum_value):
 		return wrapf(angle, -PI, PI)
-	var minimum := minimum_value if not is_nan(minimum_value) else -180.0
-	var maximum := maximum_value if not is_nan(maximum_value) else 180.0
-	if maximum - minimum >= 360.0:
+	var minimum := minimum_value if not is_nan(minimum_value) else -PI
+	var maximum := maximum_value if not is_nan(maximum_value) else PI
+	if maximum - minimum >= TAU:
 		return wrapf(angle, -PI, PI)
-	return clampf(angle, deg_to_rad(minimum), deg_to_rad(maximum))
+	return clampf(angle, minimum, maximum)
 
 
 func _axis_speed(joint_config: Resource, field_name: StringName) -> float:
 	return maxf(float(joint_config.get(field_name)), 0.0) \
 		if joint_config != null else 0.0
+
+
+func _yaw_turn_speed(joint_config: Resource) -> float:
+	var authored_speed := _axis_speed(joint_config, &"yaw_speed")
+	if authored_speed <= 0.0:
+		return 0.0
+	return authored_speed + _yaw_speed_bonus
 
 
 func _yaw_config() -> Resource:
@@ -1653,21 +1670,21 @@ func _pitch_config() -> Resource:
 	return null
 
 
-func _acceptable_yaw_degrees() -> float:
+func _acceptable_yaw() -> float:
 	var yaw_config := _yaw_config()
 	if yaw_config != null:
 		return maxf(
 			float(yaw_config.acceptable_yaw),
-			DEFAULT_ACCEPTABLE_AIM_DEGREES
+			DEFAULT_ACCEPTABLE_AIM
 		)
-	return DEFAULT_ACCEPTABLE_AIM_DEGREES
+	return DEFAULT_ACCEPTABLE_AIM
 
 
-func _acceptable_pitch_degrees() -> float:
+func _acceptable_pitch() -> float:
 	var pitch_config := _pitch_config()
 	if pitch_config != null:
 		return maxf(
 			float(pitch_config.acceptable_pitch),
-			DEFAULT_ACCEPTABLE_AIM_DEGREES
+			DEFAULT_ACCEPTABLE_AIM
 		)
-	return DEFAULT_ACCEPTABLE_AIM_DEGREES
+	return DEFAULT_ACCEPTABLE_AIM

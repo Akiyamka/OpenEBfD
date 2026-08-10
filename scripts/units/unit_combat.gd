@@ -880,6 +880,11 @@ func _combat_turret_for_weapon(weapon_index: int):
 ## outlast that animation (e.g. snapping a just-folded-away deploy-only
 ## turret back to its deployed pose).
 func sync_active_turret_weapons() -> void:
+	var hull_yaw_bonus := 0.0
+	if not (_owner.is_deploying() or _owner.is_deployed()):
+		hull_yaw_bonus = maxf(float(_owner.turn_rate), 0.0)
+	for turret in _owner.combat_turrets:
+		turret.set_yaw_speed_bonus(hull_yaw_bonus)
 	var active_indices := {}
 	for turret in _active_turrets():
 		active_indices[turret.weapon_index()] = true
@@ -920,6 +925,7 @@ func configure_combat_turrets() -> void:
 		var turret_value: Variant = turret_values[weapon_index]
 		var turret = CombatTurretScript.new()
 		if turret.configure(StringName(String(turret_value))):
+			turret.set_yaw_speed_bonus(maxf(float(_owner.turn_rate), 0.0))
 			turret.bind_model(_owner.visual_root, weapon_index)
 			_owner.combat_turrets.append(turret)
 

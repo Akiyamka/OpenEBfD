@@ -339,6 +339,14 @@ func _test_kobra_deployed_hull_frozen() -> void:
 		not active_turrets[0].requires_hull_turn(),
 		"Kobra's deployed gun has real yaw travel and must never ask for a hull turn"
 	)
+	var deployed_turret = active_turrets[0]
+	_expect(
+		is_equal_approx(
+			rad_to_deg(deployed_turret._yaw_turn_speed(deployed_turret._yaw_config())),
+			4.0
+		),
+		"a deployed Kobra must use only its authored 4-degree turret rate"
+	)
 	kobra.free()
 
 

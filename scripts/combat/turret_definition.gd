@@ -34,14 +34,16 @@ extends Resource
 ## tools/generate_unit_definitions.py, so a regeneration keeps it) for a weapon
 ## whose sample is deliberately meant to pile up.
 @export var fire_sound_exclusive: bool = true
+## All turret angles are normalized by the legacy converter to radians. Speeds
+## are radians per 20 Hz rules update; limits and tolerances are radians.
 @export var yaw_speed: float
 @export var minimum_yaw: float = NAN
 @export var maximum_yaw: float = NAN
 @export var pitch_speed: float
 @export var minimum_pitch: float = NAN
 @export var maximum_pitch: float = NAN
-@export var acceptable_yaw: float = 1.0
-@export var acceptable_pitch: float = 1.0
+@export var acceptable_yaw: float = deg_to_rad(1.0)
+@export var acceptable_pitch: float = deg_to_rad(1.0)
 @export var bullet_count: int = 1
 ## Zero leaves projectile timing to the authored fire animation.
 @export var burst_shot_count: int = 0

@@ -408,12 +408,15 @@ func _test_turret_recenter_after_move() -> void:
 		+ rest_direction.rotated(Vector3.UP, deg_to_rad(30.0)) * 10.0
 
 	_expect(unit.command_attack(target), "the Minotaurus must accept the side target")
-	for frame in 4:
-		unit._process(1.0 / 20.0)
+	unit._process(1.0 / 20.0)
 	var attack_yaw := absf(turret.current_yaw_degrees())
+	var expected_yaw := 5.0 + rad_to_deg(unit.turn_rate)
 	_expect(
-		is_equal_approx(attack_yaw, 20.0),
-		"four rule updates must turn the Minotaurus turret by four 5-degree steps"
+		is_equal_approx(attack_yaw, expected_yaw),
+		(
+			"one rule update must combine the Minotaurus turret's 5-degree rate "
+			+ "with its %.3f-degree hull rate"
+		) % rad_to_deg(unit.turn_rate)
 	)
 
 	unit.move_to(unit.global_position + rest_direction * 10.0)
@@ -432,8 +435,8 @@ func _test_turret_recenter_after_move() -> void:
 		"the first movement frame must begin returning the turret instead of snapping or caching it"
 	)
 	_expect(
-		absf(returning_yaw - (attack_yaw - 5.0 / 3.0)) < 0.01,
-		"recentring must use the Minotaurus authored 5 degrees per 20 Hz update"
+		absf(returning_yaw - (attack_yaw - expected_yaw / 3.0)) < 0.01,
+		"recentring must use the Minotaurus combined turret and hull turn rate"
 	)
 	var returning_direction: Vector3 = turret.peek_emission()["direction"]
 	_expect(
@@ -449,7 +452,7 @@ func _test_turret_recenter_after_move() -> void:
 	var reacquired_direction: Vector3 = turret.peek_emission()["direction"]
 	_expect(
 		rad_to_deg(Assertions.horizontal_angle_between(returning_direction, reacquired_direction))
-			<= 5.0 / 3.0 + 0.1,
+			<= expected_yaw / 3.0 + 0.1,
 		"a repeated attack order must resume from the visible pose without restoring a cached yaw"
 	)
 
