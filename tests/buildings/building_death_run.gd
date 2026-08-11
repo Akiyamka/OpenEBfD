@@ -110,6 +110,23 @@ func _test_building_with_destroy_clip() -> void:
 			player != null and player.current_animation == &"Explode",
 			"the corpse must play the authored Explode clip, got %s" % (player.current_animation if player != null else "<no player>")
 		)
+		# Regression: States/Destroy is authored exactly like every other
+		# States child -- Building.play_state()'s visibility toggle hides
+		# every child but the currently active one, and Destroy is never the
+		# active state through any normal path, so it carries visible = false
+		# from the moment the scene loads. Confirmed by direct inspection: it
+		# is the ONLY node in the whole detached subtree that is ever false
+		# (every descendant mesh/light already reports visible = true on its
+		# own), so nothing renders unless this one flag is corrected on
+		# handoff. A player-only check above would still pass with the model
+		# entirely invisible, which is exactly what shipped and was caught by
+		# manual testing, not by this suite -- see
+		# BuildingDeathSequence.begin()'s destroy_node.visible = true.
+		var model := corpse.get_node_or_null("Destroy") as Node3D
+		_expect(
+			model != null and model.visible,
+			"the detached Destroy model must be visible, or the whole death corpse renders as nothing"
+		)
 		# Mirrors DeathCorpse's own "never joins the units group" invariant for
 		# the unit side: this corpse lands as a sibling under the same parent
 		# real buildings live under, and code that walks that parent's children

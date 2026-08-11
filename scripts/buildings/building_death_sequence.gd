@@ -60,6 +60,16 @@ func begin() -> void:
 	var world_transform := states_node.global_transform
 	_building.prepare_model_for_corpse(destroy_node)
 	states_node.remove_child(destroy_node)
+	# States/Destroy is authored exactly like every other States child (Idle,
+	# Damage1, ...): Building.play_state()'s visibility toggle hides every
+	# child but the active one, and Destroy is never the active state through
+	# any normal path, so it carries visible = false from the moment the
+	# scene loads. Handing it to the corpse without correcting that leaves
+	# the whole detached subtree invisible -- confirmed: every descendant
+	# mesh/light under it is individually visible = true, only the node
+	# itself was ever false. Nothing else ever flips this back for Destroy
+	# specifically, unlike Idle/DamageN which play_state() visits normally.
+	destroy_node.visible = true
 
 	DeathCorpseScript.spawn(
 		parent, destroy_node, world_transform, clip, [], Vector3.ZERO,
