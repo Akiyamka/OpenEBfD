@@ -1145,6 +1145,42 @@ correctly. Be aware that the Godot editor's mesh-resource preview shows the
 mesh in local space without the node transform, so such meshes look lying
 down or edge-on in the Inspector while being correct in the scene.
 
+## Effects
+
+### `BigExplosion`'s `_firesphere` mesh bakes asymmetric, not misrotated
+
+**Observed data:** Comparing `_firesphere`/`_innerfire`-style meshes across
+every converted explosion effect (`aerialexplosion`, `bigexplosion`,
+`dhbigexplosion`, `explosion`, `smallexplosion`), all but one are symmetric
+around the vertical Y axis in both X and Z, as expected for a dome/sphere
+rising from the ground (e.g. `smallexplosion`'s `_firesphere`: X and Z both
+span -110..110). `bigexplosion.scn`'s `_firesphere` alone is not: its AABB is
+`pos=(-102.88, -0.445, -0.000015)`, `size=(205.76, 160.09, 102.88)` -- X is
+symmetric (-102.88..102.88) but Z only spans 0..102.88, exactly half the
+expected range. Confirmed via manual testing: building deaths (which
+exercise `BigExplosion` far more visibly than the single pre-existing
+`StuntFrigate` unit death ever did) show it as a second, delayed burst
+"lying on its side" next to the correct vertical fireball flash. Rotating
+the node roughly -65..-90° around X in the editor fixes the angle (X is
+untouched by an X-axis rotation, matching that only Y/Z are entangled), but
+the rotation pivot isn't the mesh's centroid, so it also needs a
+translate along Z afterward to recenter -- consistent with a real
+half-baked mesh, not just a missing rotation on an otherwise-correct node.
+
+**Original-engine quirk:** Unknown yet whether this is a peculiarity of the
+source `BigExplosion.xbf` mesh data itself or an edge case in how the
+converter bakes it -- every other explosion effect converts correctly with
+the same converter code, so it is not systemic. Not investigated further:
+flagged during the building death animation work (see
+scripts/buildings/building_death_sequence.gd) but deliberately deferred as
+a separate, pre-existing issue rather than blocking that branch.
+
+**OpenEBfD compatibility status:** Unfixed. `BigExplosion` (used by
+`StuntFrigate` and every building whose `ExplosionType` is `BigExplosion`,
+e.g. `ATConYard`) renders with `_firesphere` visibly wrong until this is
+resolved, either by correcting the converter and reconverting, or by
+patching the converted scene directly.
+
 ## Textures
 
 ### Move, Attack, and Deploy cursor blue rings omit their screen marker
