@@ -34,3 +34,6 @@ model_name = "AT_Conyard"
 icon_path = "icons\\\\ico2_acy.tga"
 icon_grey_path = "icons\\\\grey_ico2_acy.tga"
 sidebar_type = &"Buildings"
+explosion_effect_ids = [&"BigExplosion"]
+explosion_type_id = &"BigExplosion"
+explosion_scene_paths = {&"BigExplosion": "res://assets/converted/impact_effects/bigexplosion/bigexplosion.scn"}

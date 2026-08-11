@@ -34,3 +34,6 @@ model_name = "HK_IN_MossPalace"
 icon_path = ""
 icon_grey_path = ""
 sidebar_type = &""
+explosion_effect_ids = [&"MidExplosion"]
+explosion_type_id = &"MidExplosion"
+explosion_scene_paths = {}

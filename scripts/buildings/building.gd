@@ -15,6 +15,7 @@ const BuildingWallVisualScript := preload("res://scripts/buildings/building_wall
 const BuildingRefineryDocksScript := preload("res://scripts/buildings/building_refinery_docks.gd")
 const BuildingRallyPointScript := preload("res://scripts/buildings/building_rally_point.gd")
 const BuildingCombatScript := preload("res://scripts/buildings/building_combat.gd")
+const BuildingDeathSequenceScript := preload("res://scripts/buildings/building_death_sequence.gd")
 const CombatTurretScript := preload("res://scripts/combat/combat_turret.gd")
 const AuthoredFireControllerScript := preload(
 	"res://scripts/combat/authored_fire_controller.gd"
@@ -123,6 +124,7 @@ var _refinery_docks = BuildingRefineryDocksScript.new()
 var _wall_visual = BuildingWallVisualScript.new()
 var _combat_hull = CombatHullScript.new()
 var _building_combat = BuildingCombatScript.new()
+var _death_sequence = BuildingDeathSequenceScript.new()
 var _authored_fire_controller = AuthoredFireControllerScript.new()
 @warning_ignore("unused_private_class_variable")
 var _popup_turret_state: int:
@@ -137,6 +139,7 @@ func _init() -> void:
 	_wall_visual.configure(self)
 	_refinery_docks.configure(self)
 	_building_combat.configure(self, _authored_fire_controller)
+	_death_sequence.configure(self)
 
 
 func _ready() -> void:
@@ -543,11 +546,45 @@ func take_damage(amount: float, _death_cause: StringName = &"") -> void:
 		return
 	health += outcome.health_delta
 	if outcome.is_lethal:
-		# §2.1 "Building destruction": no debris/ruins remain, so the footprint
-		# is freed immediately via queue_free() — survivors must be spawned
-		# first, before the building (and its footprint bounds) disappear.
+		# §2.1 "Building destruction": the footprint is freed the same frame
+		# the killing blow lands — survivors must be spawned first, before the
+		# building (and its footprint bounds) disappear. What happens after
+		# that (a detached death-clip corpse, the rules-authored explosion,
+		# and its sound) is BuildingDeathSequence's job; queue_free() always
+		# happens inside it, on every branch.
 		BuildingSurvivorsScript.spawn_for_destroyed_building(self)
-		queue_free()
+		_begin_death_sequence()
+
+
+func _begin_death_sequence() -> void:
+	_death_sequence.begin()
+
+
+## Called by BuildingDeathSequence right before it detaches `model`
+## (States/Destroy) to hand it to a DeathCorpse. Mirrors
+## Unit.prepare_model_for_corpse()'s checklist role (scripts/units/unit.gd:767)
+## for the much smaller set of things Building itself caches into its model
+## subtree: nothing in Building binds turrets or fire animation to
+## States/Destroy specifically (turrets/_building_combat only ever bind to
+## state_root(current_state) via _bind_combat_turrets(), and Destroy is never
+## a selectable state through play_state()), so there is no combat-facing
+## detach step here the way Unit needs one. Still must:
+## - drop any _scroll_fx_meshes now living under the detached subtree, so
+##   _process()'s per-frame set_instance_shader_parameter() doesn't touch a
+##   node the corpse now owns;
+## - stop _process()/_physics_process() before queue_free() takes effect at
+##   end of frame — otherwise this building's own combat/turret/refinery-dock
+##   ticks would still run once more against a node about to be freed, the
+##   same class of "dead node still running this frame's logic" bug
+##   Unit.prepare_model_for_corpse()'s doc comment calls out (cdc79b6/2b745b2).
+func prepare_model_for_corpse(model: Node3D) -> void:
+	var remaining: Array[MeshInstance3D] = []
+	for mesh_instance in _scroll_fx_meshes:
+		if mesh_instance != model and not model.is_ancestor_of(mesh_instance):
+			remaining.append(mesh_instance)
+	_scroll_fx_meshes = remaining
+	set_process(false)
+	set_physics_process(false)
 
 
 func combat_armour_type() -> StringName:

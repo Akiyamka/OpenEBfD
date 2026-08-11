@@ -34,3 +34,6 @@ model_name = "HK_Helipad"
 icon_path = "icons\\\\HK_Helipad.tga"
 icon_grey_path = "icons\\\\grey_HK_Helipad.tga"
 sidebar_type = &"Buildings"
+explosion_effect_ids = [&"MidExplosion"]
+explosion_type_id = &"MidExplosion"
+explosion_scene_paths = {}

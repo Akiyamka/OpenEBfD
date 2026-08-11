@@ -33,3 +33,8 @@ extends Resource
 @export var icon_path: String
 @export var icon_grey_path: String
 @export var sidebar_type: StringName
+
+@export_group("Effects and links")
+@export var explosion_effect_ids: Array[StringName] = []
+@export var explosion_type_id: StringName
+@export var explosion_scene_paths: Dictionary = {}

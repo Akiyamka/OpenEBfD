@@ -34,3 +34,6 @@ model_name = "AT_RocketTurret"
 icon_path = "icons\\\\AT_RocketTurret.tga"
 icon_grey_path = "icons\\\\grey_AT_RocketTurret.tga"
 sidebar_type = &"Buildings"
+explosion_effect_ids = [&"SmExplosion"]
+explosion_type_id = &"SmExplosion"
+explosion_scene_paths = {&"SmExplosion": "res://assets/converted/impact_effects/smallexplosion/smallexplosion.scn"}
