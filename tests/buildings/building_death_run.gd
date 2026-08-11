@@ -110,6 +110,15 @@ func _test_building_with_destroy_clip() -> void:
 			player != null and player.current_animation == &"Explode",
 			"the corpse must play the authored Explode clip, got %s" % (player.current_animation if player != null else "<no player>")
 		)
+		# Mirrors DeathCorpse's own "never joins the units group" invariant for
+		# the unit side: this corpse lands as a sibling under the same parent
+		# real buildings live under, and code that walks that parent's children
+		# by group (Match._refresh_sidebar_house_pages()) must never mistake it
+		# for a live building and try to read config_id/house_id off it.
+		_expect(
+			not corpse.is_in_group("buildings"),
+			"a building's DeathCorpse must never join the \"buildings\" group"
+		)
 	var explosion_effects := _explosion_effects_in(world)
 	_expect(
 		explosion_effects.size() == 1,
