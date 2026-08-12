@@ -100,17 +100,35 @@ func refresh_variant_visual() -> void:
 	if not _has_wall_role():
 		return
 	var variants := _owner.get_node_or_null("WallVariants") as Node3D
-	if variants == null:
-		return
-	for variant in variants.get_children():
-		if variant is Node3D:
-			variant.visible = false
-		for state_node in variant.get_children():
-			if state_node is Node3D:
-				state_node.visible = false
+	if variants != null:
+		for variant in variants.get_children():
+			if variant is Node3D:
+				variant.visible = false
+			for state_node in variant.get_children():
+				if state_node is Node3D:
+					state_node.visible = false
 
 	var visual_state := String(_owner.current_state)
 	if visual_state != "idle" and not visual_state.begins_with("damage"):
+		# Non-idle states (construct, deconstruct, sell, ...) have only one
+		# generic States/<state> mesh, not a per-topology WallVariants family,
+		# so it can't be swapped for a pre-rotated model -- instead rotate that
+		# single mesh by the same quarter-turn a WallVariants mesh would get
+		# for this neighbour mask, so a segment between north/south neighbours
+		# turns 90 degrees relative to one between east/west neighbours.
+		# The visible child is found by visibility rather than state_root(),
+		# because state_root() matches on the authored state name ("construction")
+		# while current_state here holds the clip name ("construct").
+		var transitional_states := _owner.get_node_or_null("States") as Node3D
+		if transitional_states != null:
+			for child in transitional_states.get_children():
+				if child is Node3D and (child as Node3D).visible:
+					(child as Node3D).rotation.y = (
+						float(_rotation_quarters) * PI * 0.5 - transitional_states.global_rotation.y
+					)
+					break
+		return
+	if variants == null:
 		return
 	var state_player := _owner.get_node_or_null("StatePlayer") as AnimationPlayer
 	if state_player != null:

@@ -172,6 +172,7 @@ func start_chain(
 		_status.call("Wall line has no buildable segments")
 		_end_chain()
 		return
+	var line_start_world_position: Vector3 = _placement.wall_marker_world_position(cells[0])
 	# Two different owners are in play here and they are not interchangeable:
 	# _player_provider answers the local PlayerData (what _refund() spends from),
 	# while the chain needs the roster's local_player_id. Collapsing them into one
@@ -182,6 +183,12 @@ func start_chain(
 		maxi(config.cost, 0), maxf(config.build_time_ticks, 1.0), cells, owner_id
 	)
 	advance_chain()
+	# Played only now, after advance_chain(): _placement.begin()/.cancel() calls
+	# made while evaluating segment availability free every child of _placement
+	# (including a just-attached one-shot audio player) via _clear_preview_cells(),
+	# so an earlier call here would be silently killed before it could be heard.
+	if _chain != null:
+		_placement.play_wall_line_start_thud(line_start_world_position)
 
 
 func advance_chain() -> void:
