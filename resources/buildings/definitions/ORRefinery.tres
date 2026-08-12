@@ -35,3 +35,6 @@ model_name = "OR_Refinery"
 icon_path = "icons\\\\OR_Refinery.tga"
 icon_grey_path = "icons\\\\grey_OR_Refinery.tga"
 sidebar_type = &"Buildings"
+explosion_effect_ids = [&"BigExplosion"]
+explosion_type_id = &"BigExplosion"
+explosion_scene_paths = {&"BigExplosion": "res://assets/converted/impact_effects/bigexplosion/bigexplosion.scn"}

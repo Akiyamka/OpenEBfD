@@ -34,3 +34,6 @@ model_name = "OR_palace"
 icon_path = "icons\\\\OR_Palace.tga"
 icon_grey_path = "icons\\\\grey_OR_Palace.tga"
 sidebar_type = &"Buildings"
+explosion_effect_ids = [&"BigExplosion"]
+explosion_type_id = &"BigExplosion"
+explosion_scene_paths = {&"BigExplosion": "res://assets/converted/impact_effects/bigexplosion/bigexplosion.scn"}

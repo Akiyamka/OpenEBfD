@@ -34,3 +34,6 @@ model_name = "AT_Windtrap"
 icon_path = "icons\\\\AT_Windtrap.tga"
 icon_grey_path = "icons\\\\grey_AT_Windtrap.tga"
 sidebar_type = &"Buildings"
+explosion_effect_ids = [&"Explosion"]
+explosion_type_id = &"Explosion"
+explosion_scene_paths = {&"Explosion": "res://assets/converted/impact_effects/explosion/explosion.scn"}

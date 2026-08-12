@@ -876,7 +876,8 @@ def deploy_points_text(points: list[sqlite3.Row]) -> str:
 
 def building_definition_text(row: sqlite3.Row, occupy_rows: list[str], links: list[str],
                              primary: list[str], secondary: list[str], roles: list[str],
-                             deploy_points: list[sqlite3.Row]) -> str:
+                             deploy_points: list[sqlite3.Row], explosion_effects: list[str],
+                             explosion_paths: dict[str, str]) -> str:
     return resource_text(
         "BuildingDefinition",
         "res://scripts/buildings/building_definition.gd",
@@ -918,6 +919,11 @@ def building_definition_text(row: sqlite3.Row, occupy_rows: list[str], links: li
             f"icon_path = {godot_string(str(row['icon'] or ''))}",
             f"icon_grey_path = {godot_string(str(row['icon_grey'] or ''))}",
             f"sidebar_type = {string_name(row['sidebar_type'])}",
+            f"explosion_effect_ids = {array_text(explosion_effects)}",
+            f"explosion_type_id = {string_name(row['explosion_type_name'])}",
+            "explosion_scene_paths = " + "{" + ", ".join(
+                f"{string_name(key)}: {godot_string(explosion_paths[key])}" for key in sorted(explosion_paths)
+            ) + "}",
         ],
     )
 
@@ -1127,13 +1133,15 @@ def main() -> int:
             SELECT b.*, t.name AS turret_name, h.name AS house_name,
                    bg.name AS building_group_name, armour.name AS armour_name,
                    art.xaf AS xaf, art.icon AS icon, art.icon_grey AS icon_grey,
-                   art.sidebar_type AS sidebar_type
+                   art.sidebar_type AS sidebar_type,
+                   explosion.name AS explosion_type_name
               FROM buildings b
               LEFT JOIN turrets t ON t.id=b.turret_attach_id
               LEFT JOIN houses h ON h.id=b.house_id
               LEFT JOIN building_groups bg ON bg.id=b.building_group_id
               LEFT JOIN armour_types armour ON armour.id=b.armour_type_id
               LEFT JOIN art_configs art ON art.entity_type='building' AND art.entity_id=b.id
+              LEFT JOIN explosion_types explosion ON explosion.id=b.explosion_type_id
              ORDER BY b.id
         """):
             building_id = str(building["name"])
@@ -1176,7 +1184,18 @@ def main() -> int:
             secondary = unit_list(connection, "SELECT b.name FROM building_requires_secondary link JOIN buildings b ON b.id=link.required_building_id WHERE link.building_id=? ORDER BY link.rowid", int(building["id"]))
             roles = unit_list(connection, "SELECT r.name FROM building_role_tags link JOIN building_roles r ON r.id=link.role_id WHERE link.building_id=? ORDER BY r.id", int(building["id"]))
             deploy_points = list(connection.execute("SELECT tile_x,tile_y,angle FROM building_deploy_points WHERE building_id=? ORDER BY seq", (int(building["id"]),)))
-            ok = write_or_check(output, building_definition_text(building, occupy, links, primary, secondary, roles, deploy_points), args.check) and ok
+            explosion_effects = unit_list(connection, "SELECT e.name FROM entity_explosion_effects link JOIN explosion_types e ON e.id=link.explosion_type_id WHERE link.entity_type='building' AND link.entity_id=? ORDER BY link.seq", int(building["id"]))
+            # Mirrors the unit loop's runtime fallback (CombatBullet.explosion_effect_ids()):
+            # a building with no explicit effect list still explodes using its
+            # single ExplosionType, so the scene-path dict must cover that id too.
+            explosion_lookup_effects = explosion_effects
+            if not explosion_lookup_effects and building["explosion_type_name"]:
+                explosion_lookup_effects = [str(building["explosion_type_name"])]
+            explosion_paths = {
+                effect: path for effect in explosion_lookup_effects
+                if (path := visual_path(art_xaf(connection, effect), "assets/converted/impact_effects"))
+            }
+            ok = write_or_check(output, building_definition_text(building, occupy, links, primary, secondary, roles, deploy_points, explosion_effects, explosion_paths), args.check) and ok
         ok = write_or_check(
             BUILDING_MANIFEST_PATH,
             manifest_text(building_paths, building_scene_paths),

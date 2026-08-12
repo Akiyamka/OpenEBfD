@@ -10,6 +10,7 @@ const MatchFixtureScene := preload("res://tests/fixtures/match_fixture.tscn")
 const HarvesterControllerScript := preload("res://scripts/units/harvester_controller.gd")
 const HarvesterScene := preload("res://scenes/units/harvester.tscn")
 const ATRefineryScene := preload("res://assets/converted/buildings/ATRefinery/ATRefinery.scn")
+const HKConYardScene := preload("res://assets/converted/buildings/HKConYard/HKConYard.scn")
 const ATMongooseModelScene := preload(
 	"res://assets/converted/models/AT_mongoose_H0/AT_mongoose_H0.scn"
 )
@@ -47,6 +48,7 @@ func _initialize() -> void:
 	await _run_case("F3 toggles every navigation debug layer", _test_unified_debug_shortcut)
 	await _run_case("rules art configs resolve every test panel icon", _test_match_panel_icons)
 	await _run_case("rules sidebar type selects the panel tab", _test_rules_sidebar_tabs)
+	await _run_case("a dying building's corpse does not break sidebar house-page refresh", _test_dying_building_survives_sidebar_refresh)
 	await _run_case("upgrade panel only lists buildings with an upgrade defined", _test_upgrade_panel_matches_controller)
 	await _run_case("upgrade slot appears after its building is placed later", _test_upgrade_availability_polls)
 	await _run_case("unit slots follow prerequisite buildings and their upgrades", _test_unit_roster_availability)
@@ -706,6 +708,65 @@ func _test_rules_sidebar_tabs() -> void:
 	_expect(
 		side_panel._art_tab_for_entity(&"ATAPC", SidePanel.Tab.INFANTRY) == SidePanel.Tab.VEHICLES,
 		"Units sidebar type must select the Vehicles tab"
+	)
+
+	match_instance.queue_free()
+
+
+## Regression test: a building's DeathCorpse (BuildingDeathSequence.begin(),
+## scripts/buildings/building_death_sequence.gd) is spawned as a sibling
+## under the same "Buildings" node Match._refresh_sidebar_house_pages()
+## walks every _process() tick. Before that method learned to skip children
+## outside the "buildings" group, a corpse landing there (e.g. the local
+## player's own Construction Yard corpse) crashed on
+## `String(building.get("config_id"))` -- RigidBody3D has no such property.
+## Caught via manual testing, not a hypothetical case -- and the crash is a
+## non-fatal GDScript runtime error, so it does NOT propagate as an
+## exception: it silently aborts the rest of _refresh_sidebar_house_pages()
+## for that tick and the game keeps running with no obvious symptom. A test
+## that only checks "did calling this throw" would still pass even with the
+## bug present (confirmed: it did, before this test was rewritten). The
+## actual, observable damage is that anything later in Buildings' child order
+## than the corpse never gets processed that tick -- proven here by placing
+## a freshly captured foreign Construction Yard after the corpse and
+## asserting its house page still registers.
+func _test_dying_building_survives_sidebar_refresh() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	get_root().add_child(match_instance)
+	await process_frame
+
+	var con_yard := match_instance.get_node("Buildings/ATConYard") as Building
+	con_yard.take_damage(con_yard.max_health + con_yard.max_shields + 10.0, &"")
+	_expect(con_yard.is_queued_for_deletion(), "the killing blow must free the Construction Yard")
+
+	var buildings_root := match_instance.get_node("Buildings")
+	var corpse: Node3D = null
+	for child in buildings_root.get_children():
+		if child != con_yard and not (child is Building):
+			corpse = child as Node3D
+	_expect(corpse != null, "the dying Construction Yard must leave a corpse sibling under Buildings")
+	if corpse != null:
+		_expect(
+			not corpse.is_in_group("buildings"),
+			"a building's corpse must never join the \"buildings\" group, or anything that walks"
+			+ " Buildings' children by group would try to read config_id/house_id off it and crash"
+		)
+
+	# Simulates capturing an enemy Construction Yard the same tick: added
+	# after the corpse in Buildings' child order, so it only gets processed
+	# if the loop in _refresh_sidebar_house_pages() actually reaches past
+	# the corpse instead of aborting on it.
+	var captured_yard := HKConYardScene.instantiate() as Building
+	captured_yard.owner_player_id = match_instance.LOCAL_PLAYER_ID
+	buildings_root.add_child(captured_yard)
+	await process_frame
+
+	match_instance._refresh_sidebar_house_pages()
+
+	_expect(
+		&"Harkonnen" in match_instance._sidebar_house_pages,
+		"a captured foreign Construction Yard placed after a corpse must still register its"
+		+ " sidebar house page -- if this fails, the corpse silently swallowed everything after it"
 	)
 
 	match_instance.queue_free()

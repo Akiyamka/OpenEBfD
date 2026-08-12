@@ -34,3 +34,6 @@ model_name = "GP_SFX_Greensmoke_NL"
 icon_path = ""
 icon_grey_path = ""
 sidebar_type = &""
+explosion_effect_ids = []
+explosion_type_id = &""
+explosion_scene_paths = {}

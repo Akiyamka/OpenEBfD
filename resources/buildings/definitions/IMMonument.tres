@@ -34,3 +34,6 @@ model_name = "IM_Monument"
 icon_path = ""
 icon_grey_path = ""
 sidebar_type = &""
+explosion_effect_ids = [&"SmExplosion"]
+explosion_type_id = &"SmExplosion"
+explosion_scene_paths = {&"SmExplosion": "res://assets/converted/impact_effects/smallexplosion/smallexplosion.scn"}

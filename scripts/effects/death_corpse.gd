@@ -38,6 +38,41 @@ const MAX_TUMBLE_ANGULAR_SPEED := 2.0
 ## produce a zero-thickness collider on any axis.
 const MIN_SHAPE_DIMENSION := 0.2
 
+## docs/quirks.md, "Destroy (H3) debris motion is procedural, marked by a
+## '%' name suffix": the H3 model is a burnt-out husk sitting where the
+## building stood — its piece positions trace the same footprint the intact
+## building occupied (confirmed on ATHanger: x/z stay within the building's
+## own occupied extent) — not a pre-scattered rubble pile. The original
+## engine blew pieces off *that* husk procedurally during the explode
+## window; the XBF only ever baked the husk's assembled shape. So each '%'
+## piece's baked transform is the launch point this flings it away from, not
+## a destination to arrive at. The '%' suffix survives verbatim into each
+## piece's original_name meta (model_bake_builder.gd), and is the same
+## signal the original engine used, so it is authoritative on its own —
+## confirmed on ATHanger and ATConYard that every '%' piece's Explode clip
+## carries zero animation tracks, so nothing here can ever fight a competing
+## baked track by driving a piece's transform procedurally.
+const DEBRIS_MARKER_SUFFIX := "%"
+const DEBRIS_MIN_FLIGHT_SECONDS := 0.5
+const DEBRIS_MAX_FLIGHT_SECONDS := 1.0
+const DEBRIS_MAX_STAGGER_SECONDS := 0.12
+## How far a piece flies outward from the husk's own vertical axis, as a
+## multiple of the husk's own height (max piece Y minus min piece Y) —
+## scale-relative rather than a fixed world-unit distance so it reads the
+## same on a small windtrap and a large hangar without per-building tuning.
+const DEBRIS_SCATTER_DISTANCE_MIN := 0.4
+const DEBRIS_SCATTER_DISTANCE_MAX := 1.2
+## Where a piece comes to rest, as a fraction of the husk's height above its
+## own lowest piece (the ground line) — small and randomised per piece so a
+## scattered field of debris doesn't land dead flat.
+const DEBRIS_LANDING_HEIGHT_JITTER := 0.05
+## Peak height of the flight arc, as a fraction of the straight-line distance
+## covered — scale-relative for the same reason as DEBRIS_SCATTER_DISTANCE_*.
+const DEBRIS_ARC_HEIGHT_MIN := 0.2
+const DEBRIS_ARC_HEIGHT_MAX := 0.5
+const DEBRIS_MIN_EXTRA_SPINS := 0.5
+const DEBRIS_MAX_EXTRA_SPINS := 2.0
+
 var owner_player_id := PlayerDataScript.NEUTRAL_PLAYER_ID
 
 var _model: Node3D
@@ -56,6 +91,10 @@ var _animation_done := false
 ## are never counted at all, so one bad layer can neither block the others nor
 ## keep the corpse alive forever.
 var _pending_sounds := 0
+## How many '%'-marked debris pieces are still mid-flight. Mirrors
+## _pending_sounds: _maybe_free() must not free the corpse — and disappear
+## the whole ruin — while pieces are still flying to their resting position.
+var _pending_scatter := 0
 
 
 ## Entry point called by Unit (and later BuildingDeathStrategy) before the
@@ -63,7 +102,9 @@ var _pending_sounds := 0
 ## parent (Unit.visual_root) with its local transform intact — the corpse
 ## reparents it as-is under `world_transform`. `momentum` is
 ## Vector3.ZERO for in-place deaths: no physics simulation runs at all in
-## that case (see _configure_physics()).
+## that case (see _configure_physics()). `scatter_debris` is building-only
+## (BuildingDeathSequence passes true; Unit never does) since only
+## buildings' Destroy models carry '%'-marked debris (see DEBRIS_MARKER_SUFFIX).
 static func spawn(
 		world: Node,
 		model: Node3D,
@@ -73,6 +114,7 @@ static func spawn(
 		momentum: Vector3,
 		corpse_owner_player_id: int,
 		start_sound_paths: Array[String] = [],
+		scatter_debris: bool = false,
 	) -> DeathCorpse:
 	var corpse := DeathCorpseScene.instantiate() as DeathCorpse
 	corpse.owner_player_id = corpse_owner_player_id
@@ -86,6 +128,7 @@ static func spawn(
 	corpse._configure_physics(momentum)
 	corpse._configure_sounds(voice_schedule)
 	corpse._configure_start_sound(start_sound_paths)
+	corpse._configure_debris_scatter(scatter_debris)
 	corpse._maybe_free()
 	return corpse
 
@@ -309,6 +352,104 @@ func _on_sound_finished() -> void:
 	_maybe_free()
 
 
+## Kicks off one procedural flight per '%'-marked debris piece under `_model`
+## (docs/quirks.md, "Destroy (H3) debris motion is procedural"). Each piece's
+## baked transform is where it sits in the burnt husk — the launch point this
+## flings it away from, not a destination — so no piece is repositioned until
+## its own tween actually starts moving it; the husk renders exactly as
+## authored the instant the building dies, then visibly comes apart.
+func _configure_debris_scatter(scatter_debris: bool) -> void:
+	if not scatter_debris or _model == null:
+		return
+	var pieces: Array[Node3D] = []
+	_collect_debris_pieces(_model, pieces)
+	if pieces.is_empty():
+		return
+	var center := Vector3.ZERO
+	var ground_y := INF
+	var top_y := -INF
+	for piece in pieces:
+		center += piece.position
+		ground_y = minf(ground_y, piece.position.y)
+		top_y = maxf(top_y, piece.position.y)
+	center /= pieces.size()
+	# The husk's own height is the one size reference every piece shares,
+	# whatever the building — used to scale both how far pieces fly and how
+	# high they land, so a windtrap and a hangar each scatter proportionally.
+	var husk_height := maxf(top_y - ground_y, 0.001)
+	_pending_scatter = pieces.size()
+	for piece in pieces:
+		_scatter_piece(piece, center, ground_y, husk_height)
+
+
+## A debris piece never has a matching '%' descendant of its own (the
+## converter never nests two authored objects that both carry the marker),
+## so matches are not recursed into — they are collected as one rigid unit,
+## mesh child included.
+func _collect_debris_pieces(node: Node, result: Array[Node3D]) -> void:
+	if node is Node3D and String(node.get_meta("original_name", "")).ends_with(DEBRIS_MARKER_SUFFIX):
+		result.append(node)
+		return
+	for child in node.get_children():
+		_collect_debris_pieces(child, result)
+
+
+func _scatter_piece(piece: Node3D, center: Vector3, ground_y: float, husk_height: float) -> void:
+	var start_transform := piece.transform
+	# Direction away from the husk's own vertical axis, not the camera or
+	# world axes — a piece flies outward from where it sat in the building,
+	# the same way a chunk breaking off a wall would.
+	var outward := Vector3(start_transform.origin.x - center.x, 0.0, start_transform.origin.z - center.z)
+	outward = outward.normalized() if outward.length_squared() > 0.0001 else Vector3(
+		randf_range(-1.0, 1.0), 0.0, randf_range(-1.0, 1.0)
+	).normalized()
+	var travel := husk_height * randf_range(DEBRIS_SCATTER_DISTANCE_MIN, DEBRIS_SCATTER_DISTANCE_MAX)
+	var end_position := start_transform.origin + outward * travel
+	end_position.y = ground_y + husk_height * randf_range(0.0, DEBRIS_LANDING_HEIGHT_JITTER)
+	var arc_height := (end_position - start_transform.origin).length() \
+		* randf_range(DEBRIS_ARC_HEIGHT_MIN, DEBRIS_ARC_HEIGHT_MAX)
+	var spin_axis := Vector3(
+		randf_range(-1.0, 1.0), randf_range(-1.0, 1.0), randf_range(-1.0, 1.0)
+	).normalized()
+	var spin_turns := randf_range(DEBRIS_MIN_EXTRA_SPINS, DEBRIS_MAX_EXTRA_SPINS)
+	var duration := randf_range(DEBRIS_MIN_FLIGHT_SECONDS, DEBRIS_MAX_FLIGHT_SECONDS)
+	var delay := randf_range(0.0, DEBRIS_MAX_STAGGER_SECONDS)
+	var tween := piece.create_tween()
+	tween.tween_interval(delay)
+	tween.tween_method(
+		_advance_debris_piece.bind(piece, start_transform, end_position, arc_height, spin_axis, spin_turns),
+		0.0, 1.0, duration
+	).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tween.finished.connect(_on_piece_scattered)
+
+
+## `progress` arrives already eased by the tween (TRANS_QUAD/EASE_OUT), so the
+## flight starts fast off the husk and settles into landing rather than
+## arriving at constant speed. Rotation accumulates from the piece's own
+## authored orientation rather than towards one, since nothing authored a
+## resting orientation for wherever it happens to land.
+func _advance_debris_piece(
+		progress: float,
+		piece: Node3D,
+		start_transform: Transform3D,
+		end_position: Vector3,
+		arc_height: float,
+		spin_axis: Vector3,
+		spin_turns: float,
+	) -> void:
+	if piece == null or not is_instance_valid(piece):
+		return
+	var position := start_transform.origin.lerp(end_position, progress)
+	position.y += arc_height * sin(PI * progress)
+	var basis := start_transform.basis.rotated(spin_axis, spin_turns * TAU * progress)
+	piece.transform = Transform3D(basis, position)
+
+
+func _on_piece_scattered() -> void:
+	_pending_scatter = maxi(_pending_scatter - 1, 0)
+	_maybe_free()
+
+
 func _maybe_free() -> void:
-	if _animation_done and _pending_sounds == 0:
+	if _animation_done and _pending_sounds == 0 and _pending_scatter == 0:
 		queue_free()

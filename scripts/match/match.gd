@@ -390,6 +390,12 @@ func _refresh_sidebar_house_pages() -> void:
 		return
 	var changed := false
 	for building in buildings_root.get_children():
+		# A dying building's DeathCorpse is spawned as a sibling under this same
+		# container (BuildingDeathSequence.begin(), mirrors the unit side) but,
+		# like a unit's corpse, never joins the "buildings" group — it has no
+		# config_id/house_id and must not be mistaken for a live building here.
+		if not building.is_in_group("buildings"):
+			continue
 		if not EntityQueryScript.is_owned_by(building, LOCAL_PLAYER_ID):
 			continue
 		if not EntityQueryScript.is_operational(building):

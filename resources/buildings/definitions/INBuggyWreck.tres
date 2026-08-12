@@ -34,3 +34,6 @@ model_name = "IN_BuggyWreck"
 icon_path = ""
 icon_grey_path = ""
 sidebar_type = &""
+explosion_effect_ids = [&"Explosion"]
+explosion_type_id = &"Explosion"
+explosion_scene_paths = {&"Explosion": "res://assets/converted/impact_effects/explosion/explosion.scn"}

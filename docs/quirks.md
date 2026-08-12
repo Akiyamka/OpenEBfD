@@ -1124,9 +1124,26 @@ ruin pose. Generic flying-debris projectiles (`[DebrisTypes]`,
 
 **OpenEBfD compatibility status:** The converter preserves the `%`
 marker in each node's `original_name` metadata and correctly bakes the HK
-style keyframed variant. No procedural scatter is implemented yet, so
-`%`-style destroy states currently show the static assembled ruin for the
-clip's duration.
+style keyframed variant. `DeathCorpse` (`scripts/effects/death_corpse.gd`)
+scatters `%`-marked pieces procedurally: the baked husk renders exactly as
+authored the instant the building dies, then each piece flies outward from
+the husk's own vertical axis and falls to the husk's ground line on a
+scale-relative arc, with a random distance, spin, and stagger per piece —
+the baked transform is the launch point, not a destination, since the XBF
+only ever captured the burnt-out husk sitting where the building stood, not
+a pre-scattered debris field.
+
+This split is not confined to the two example houses above, nor does it
+track cleanly by house or by `%` naming. Frame-diffing every converted
+building's `Explode` clip (excluding FX/attachment helper tracks, whose
+leaf node names start with `_`) shows 54 of the 152 buildings have no
+`States/Destroy`/`Explode` clip at all, 85 have the clip but no geometry
+that ever moves, and only 13 -- mostly Harkonnen, plus the four `CNINATTree`
+variants and `GUWormhead` -- have a clip where debris actually animates.
+Notably `HKFactoryFrigate` is static despite being Harkonnen, and
+`ATRefinery` is static despite modeling ~60 individually named debris
+meshes; none of them carry an animation track. Full per-building lists in
+docs/building_destroy_motion.md.
 
 ### Damage states may author whole sub-trees rotated
 
@@ -1144,6 +1161,42 @@ converter carries node transforms through, and baked scenes render
 correctly. Be aware that the Godot editor's mesh-resource preview shows the
 mesh in local space without the node transform, so such meshes look lying
 down or edge-on in the Inspector while being correct in the scene.
+
+## Effects
+
+### `BigExplosion`'s `_firesphere` mesh bakes asymmetric, not misrotated
+
+**Observed data:** Comparing `_firesphere`/`_innerfire`-style meshes across
+every converted explosion effect (`aerialexplosion`, `bigexplosion`,
+`dhbigexplosion`, `explosion`, `smallexplosion`), all but one are symmetric
+around the vertical Y axis in both X and Z, as expected for a dome/sphere
+rising from the ground (e.g. `smallexplosion`'s `_firesphere`: X and Z both
+span -110..110). `bigexplosion.scn`'s `_firesphere` alone is not: its AABB is
+`pos=(-102.88, -0.445, -0.000015)`, `size=(205.76, 160.09, 102.88)` -- X is
+symmetric (-102.88..102.88) but Z only spans 0..102.88, exactly half the
+expected range. Confirmed via manual testing: building deaths (which
+exercise `BigExplosion` far more visibly than the single pre-existing
+`StuntFrigate` unit death ever did) show it as a second, delayed burst
+"lying on its side" next to the correct vertical fireball flash. Rotating
+the node roughly -65..-90° around X in the editor fixes the angle (X is
+untouched by an X-axis rotation, matching that only Y/Z are entangled), but
+the rotation pivot isn't the mesh's centroid, so it also needs a
+translate along Z afterward to recenter -- consistent with a real
+half-baked mesh, not just a missing rotation on an otherwise-correct node.
+
+**Original-engine quirk:** Unknown yet whether this is a peculiarity of the
+source `BigExplosion.xbf` mesh data itself or an edge case in how the
+converter bakes it -- every other explosion effect converts correctly with
+the same converter code, so it is not systemic. Not investigated further:
+flagged during the building death animation work (see
+scripts/buildings/building_death_sequence.gd) but deliberately deferred as
+a separate, pre-existing issue rather than blocking that branch.
+
+**OpenEBfD compatibility status:** Unfixed. `BigExplosion` (used by
+`StuntFrigate` and every building whose `ExplosionType` is `BigExplosion`,
+e.g. `ATConYard`) renders with `_firesphere` visibly wrong until this is
+resolved, either by correcting the converter and reconverting, or by
+patching the converted scene directly.
 
 ## Textures
 

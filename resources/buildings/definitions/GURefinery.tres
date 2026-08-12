@@ -35,3 +35,6 @@ model_name = "GU_Refinery"
 icon_path = ""
 icon_grey_path = ""
 sidebar_type = &""
+explosion_effect_ids = [&"BigExplosion"]
+explosion_type_id = &"BigExplosion"
+explosion_scene_paths = {&"BigExplosion": "res://assets/converted/impact_effects/bigexplosion/bigexplosion.scn"}

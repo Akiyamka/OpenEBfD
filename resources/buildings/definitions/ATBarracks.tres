@@ -36,3 +36,6 @@ model_name = "AT_Barracks"
 icon_path = "icons\\\\AT_Barracks.tga"
 icon_grey_path = "icons\\\\grey_AT_Barracks.tga"
 sidebar_type = &"Buildings"
+explosion_effect_ids = [&"MidExplosion"]
+explosion_type_id = &"MidExplosion"
+explosion_scene_paths = {}

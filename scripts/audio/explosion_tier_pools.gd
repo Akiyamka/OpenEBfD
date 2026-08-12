@@ -64,6 +64,18 @@ const ORDOS_START: Array[String] = [
 	SFX_DIR + "explosionordos06.wav",
 ]
 
+## Building-death "size tier": the reference game's [Building(EvenLarger)]/
+## [LargeBuildingBang] sample set (GeneralSFX.txt/AtreidesSFX.txt), used
+## unconditionally for every building death — buildings have no faction-
+## specific extra layer the way Harkonnen/Ordos vehicles do.
+const BUILDING: Array[String] = [
+	SFX_DIR + "bigxplosion01.wav",
+	SFX_DIR + "bigxplosion02.wav",
+	SFX_DIR + "bigxplosion04.wav",
+	SFX_DIR + "bigxplosion09.wav",
+	SFX_DIR + "bigxplosion17.wav",
+]
+
 
 static func pool_for_tier(tier: StringName) -> Array[String]:
 	match tier:

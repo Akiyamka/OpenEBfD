@@ -34,3 +34,6 @@ model_name = "AT_outpost"
 icon_path = "icons\\\\AT_Outpost.tga"
 icon_grey_path = "icons\\\\grey_AT_Outpost.tga"
 sidebar_type = &"Buildings"
+explosion_effect_ids = [&"MidExplosion"]
+explosion_type_id = &"MidExplosion"
+explosion_scene_paths = {}
