@@ -370,8 +370,13 @@ func _apply_resolved_velocity(
 	# Elastic overlap resolution normally lets overlapping units push each
 	# other apart. A held unit, however, owns its exact position (for example
 	# a harvester unloading on a refinery pad); only the other agent may move
-	# to resolve an overlap with it.
-	var separation: Vector3 = Vector3.ZERO if bool(agent["hold"]) \
+	# to resolve an overlap with it. A unit standing on its firing position
+	# owns its spot the same way and for the same reason it must not be shoved:
+	# being displaced restarts its fire clip, and walking back to `destination`
+	# restarts it again. `separation_velocity` is per-agent, so the arriving
+	# unit still pushes itself clear of the overlap.
+	var separation: Vector3 = Vector3.ZERO \
+		if bool(agent["hold"]) or bool(agent.get("firing_anchor", false)) \
 		else _avoidance.separation_velocity(agent, nearby)
 	if not separation.is_zero_approx():
 		var total: Vector3 = (velocity + separation).limit_length(_unit_speed(unit))

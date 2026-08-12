@@ -129,7 +129,15 @@ func resolve_velocity(
 		var other_moving := true
 		if other.has("_v_pref"):
 			other_moving = not (other["_v_pref"] as Vector3).is_zero_approx()
-		var hard: bool = are_enemies or other_hold
+		# A unit standing on its firing position is a hard obstacle, not a merely
+		# idle one. As a soft neighbour it got RESPONSIBILITY_AGAINST_IDLE, i.e.
+		# the mover barely yielded and elastic `separation_velocity` shoved the
+		# shooter off its spot instead -- so a second rank arriving on an attack
+		# order pushed the first rank around rather than flowing past it. Hard
+		# lines make the arrival steer around the firing line, which is what
+		# turns a queue into an arc.
+		var hard: bool = are_enemies or other_hold \
+			or bool(other.get("firing_anchor", false))
 		var responsibility := RESPONSIBILITY_HARD if hard \
 			else (RESPONSIBILITY_MUTUAL if other_moving else RESPONSIBILITY_AGAINST_IDLE)
 		var other_velocity: Vector2 = _flat(other.get("orca_velocity", Vector3.ZERO))

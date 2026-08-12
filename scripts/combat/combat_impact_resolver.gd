@@ -173,25 +173,7 @@ func _friendly_multiplier(bullet, source: Object, target: Object) -> float:
 
 
 func _are_friendly(source: Object, target: Object) -> bool:
-	if source == null or not is_instance_valid(source) or target == null:
-		return false
-	if source == target:
-		return true
-	var source_owner: Variant = _owner_player_id(source)
-	var target_owner: Variant = _owner_player_id(target)
-	if source_owner == null or target_owner == null:
-		return false
-	if source.has_method("is_allied_with"):
-		return bool(source.call("is_allied_with", int(target_owner)))
-	# -1 is the neutral owner. Distinct neutral objects are not an allied team.
-	return int(source_owner) >= 0 and int(source_owner) == int(target_owner)
-
-
-func _owner_player_id(object: Object) -> Variant:
-	if object.has_method("combat_owner_player_id"):
-		return object.call("combat_owner_player_id")
-	var owner_id := EntityQueryScript.owner_id_of(object)
-	return owner_id if owner_id >= 0 else null
+	return CombatTargetScript.are_friendly(source, target)
 
 
 func _can_resolve_target(bullet, target: Object) -> bool:

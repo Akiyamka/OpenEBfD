@@ -60,6 +60,10 @@ func _initialize() -> void:
 		"an obstructed in-range order repositions instead of shooting the obstacle",
 		_test_obstructed_attack_order
 	)
+	await _run_async_case(
+		"a squadmate on the muzzle line holds the shot and moves the unit off it",
+		_test_friendly_on_the_line_holds_fire
+	)
 	_finish("Unit attack order tests")
 
 func _test_unit_attack_order() -> void:
@@ -542,3 +546,108 @@ func _test_obstructed_attack_order() -> void:
 	attacker.free()
 	target.free()
 
+
+
+## CombatLineOfFire deliberately pierces units, so nothing used to stop a rear
+## rank from firing through its own front rank -- and CombatImpactResolver then
+## billed the front rank the warhead's FriendlyDamageAmount share. The blocked
+## unit now holds the shot and, if the line stays blocked, walks off it.
+func _test_friendly_on_the_line_holds_fire() -> void:
+	var attacker = UnitScene.instantiate()
+	attacker.config_id = &"ATAPC"
+	root.add_child(attacker)
+	attacker.replace_visual_scene(ATAPCModelScene)
+	attacker.owner_player_id = 1
+	var target = UnitScene.instantiate()
+	target.config_id = &"ATAPC"
+	root.add_child(target)
+	target.replace_visual_scene(ATAPCModelScene)
+	target.owner_player_id = 2
+	var turret = attacker.combat_turrets[0]
+	var forward: Vector3 = Vector3(turret.peek_emission()["direction"])
+	forward.y = 0.0
+	forward = forward.normalized()
+	target.global_position = attacker.global_position + forward * 8.0
+	var midpoint: Vector3 = attacker.global_position + forward * 4.0
+	await physics_frame
+
+	_expect(
+		turret.target_range(target) == CombatTurretScript.TargetRange.IN_RANGE,
+		"the friendly-fire regression must begin with the target inside weapon range"
+	)
+	_expect(
+		not turret.friendly_blocks_fire(target, attacker),
+		"an open muzzle line must not be reported as friendly-blocked"
+	)
+
+	var squadmate := Doubles.PhysicsCombatTarget.new(midpoint, 2.5)
+	squadmate.owner_player_id = attacker.owner_player_id
+	root.add_child(squadmate)
+	await physics_frame
+	_expect(
+		turret.has_line_of_fire(target, attacker),
+		"a squadmate must not count as an obstruction: the shell would still arrive"
+	)
+	_expect(
+		turret.friendly_blocks_fire(target, attacker),
+		"a squadmate on the muzzle line must be reported as friendly-blocking"
+	)
+
+	var enemy_blocker := Doubles.PhysicsCombatTarget.new(midpoint, 2.5)
+	enemy_blocker.owner_player_id = target.owner_player_id
+	squadmate.get_parent().remove_child(squadmate)
+	root.add_child(enemy_blocker)
+	await physics_frame
+	_expect(
+		not turret.friendly_blocks_fire(target, attacker),
+		"an enemy body on the line is a target, not a reason to hold the shot"
+	)
+	enemy_blocker.get_parent().remove_child(enemy_blocker)
+	root.add_child(squadmate)
+	await physics_frame
+
+	var fired: Array = []
+	attacker.weapon_fired.connect(
+		func(projectiles: Array, _target: Variant, _weapon_index: int) -> void:
+			fired.append_array(projectiles)
+	)
+	_expect(attacker.command_attack(target), "a blocked line must still accept the order")
+	# Pinned in place so the reposition below cannot silently walk the unit off
+	# the line and turn this into a test of movement rather than of holding fire.
+	var home: Vector3 = attacker.global_position
+	for frame in 240:
+		attacker._process(1.0 / 60.0)
+		attacker.global_position = home
+	_expect(fired.is_empty(), "a unit must not put its shot through a squadmate")
+	_expect(
+		attacker.has_attack_order(),
+		"holding the shot must not drop the order -- the blocker is transient"
+	)
+	_expect(
+		Vector2(
+			attacker.target_position.x - home.x, attacker.target_position.z - home.z
+		).length() > 0.0,
+		"a line that stays blocked must send the unit to a clear firing position"
+	)
+
+	squadmate.free()
+	await physics_frame
+	_expect(
+		not turret.friendly_blocks_fire(target, attacker),
+		"removing the squadmate must clear the friendly block"
+	)
+	for frame in 240:
+		attacker._process(1.0 / 60.0)
+		if not fired.is_empty():
+			break
+	_expect(
+		not fired.is_empty(),
+		"the held shot must resume once the squadmate is off the line"
+	)
+
+	for projectile in fired:
+		if is_instance_valid(projectile) and not projectile.is_queued_for_deletion():
+			projectile.free()
+	enemy_blocker.free()
+	attacker.free()
+	target.free()

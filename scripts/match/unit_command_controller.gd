@@ -301,6 +301,7 @@ func _issue_attack_order(target_or_position: Variant) -> void:
 	if accepted.is_empty():
 		status_changed.emit("Selected units cannot attack this target")
 		return
+	_assign_attack_arcs(accepted, target_or_position)
 	_play_voice_feedback(&"Attack", accepted)
 	if target_or_position is Vector3:
 		var target: Vector3 = target_or_position
@@ -314,6 +315,46 @@ func _issue_attack_order(target_or_position: Variant) -> void:
 	if accepted.size() > 1:
 		label += " with %d units" % accepted.size()
 	status_changed.emit(label)
+
+
+## Spreads one attack command into an arc around the target.
+##
+## An attack order is otherwise entirely per-unit: every shooter runs the same
+## perch search, converges on the same cell, and the first arrivals stop on the
+## max-range ring and wall the rest out of weapon range. Handing each unit its
+## own bearing is what turns that queue into a firing line -- see
+## AttackArcAllocator for the geometry.
+##
+## Left alone deliberately: a lone shooter (nothing to spread), a building or
+## other stationary attacker (no bearing to take), and anything that cannot
+## engage this target at all.
+func _assign_attack_arcs(accepted: Array[Node], target_or_position: Variant) -> void:
+	if _navigation == null or not _navigation.has_method("assign_attack_arcs"):
+		return
+	var target := Vector3.INF
+	if target_or_position is Vector3:
+		target = target_or_position
+	elif target_or_position is Node3D:
+		target = (target_or_position as Node3D).global_position
+	if not target.is_finite():
+		return
+	var shooters: Array[Node3D] = []
+	# The pitch is measured on the tightest arc anyone will actually stand on,
+	# so the shortest engagement range in the group wins.
+	var engagement_radius := INF
+	for entity in accepted:
+		var unit := entity as Node3D
+		if unit == null or not unit.has_method("attack_engagement_radius") \
+		or not unit.has_method("set_attack_arc_direction"):
+			continue
+		var radius := float(unit.call("attack_engagement_radius", target_or_position))
+		if radius <= 0.0:
+			continue
+		shooters.append(unit)
+		engagement_radius = minf(engagement_radius, radius)
+	if shooters.size() <= 1 or not is_finite(engagement_radius):
+		return
+	_navigation.call("assign_attack_arcs", shooters, target, engagement_radius)
 
 
 func _command_target_name(target_or_position: Variant) -> String:

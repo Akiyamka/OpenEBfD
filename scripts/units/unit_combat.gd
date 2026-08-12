@@ -246,6 +246,25 @@ func note_issuing_attack_move(active: bool) -> void:
 	_issuing_attack_move = active
 
 
+## Assigned per command so a group spreads into an arc around the target
+## instead of queueing along its approach line. Must be set after
+## command_attack(), which resets the order's pursuit state.
+func set_attack_arc_direction(direction: Vector3) -> void:
+	_attack_order.set_arc_direction(direction)
+
+
+## How far out this unit prefers to stand when engaging the target: the same
+## 0.8 * shortest-usable-range the pursuit itself aims for. Zero when no weapon
+## can engage the target at all, so the caller can leave it out of the arc.
+func attack_engagement_radius(target_or_position: Variant) -> float:
+	var turret = _pursuit_attack_turret(target_or_position)
+	if turret == null:
+		turret = _primary_attack_turret(target_or_position)
+	if turret == null:
+		return 0.0
+	return float(turret.maximum_range_world()) * 0.8
+
+
 func has_attack_order() -> bool:
 	return _attack_order.is_active()
 
@@ -308,7 +327,13 @@ func _advance_attack_order(delta: float) -> void:
 	if pursuing:
 		_attack_order.advance_pursuit(target_world_position, pursuit_turret, delta)
 	else:
-		_attack_order.stop_pursuit()
+		# Standing in range is the normal case, but a muzzle line that stays
+		# blocked by a squadmate is handled by stepping off it rather than by
+		# waiting -- see UnitAttackOrder.hold_firing_position().
+		_attack_order.hold_firing_position(
+			_friendly_blocks_every_line(in_range_turrets, attack_target),
+			target_world_position, pursuit_turret, delta
+		)
 
 	# A weapon with no yaw of its own aims only by turning the whole unit; one
 	# with a servo is "direct" while the commanded target sits inside its
@@ -418,6 +443,18 @@ func _hull_aim_source_for(target: Variant, may_turn: bool, delta: float) -> AimS
 	return AimSource.HULL_ON_TARGET if aimed else AimSource.HULL_TURNING
 
 
+## Whether every weapon that could fire on the order right now would put its
+## shot through a squadmate first. All of them, not any: a unit whose second
+## weapon still has a clear line is contributing and has no reason to move.
+func _friendly_blocks_every_line(in_range_turrets: Array, attack_target: Variant) -> bool:
+	if in_range_turrets.is_empty():
+		return false
+	for turret in in_range_turrets:
+		if not turret.friendly_blocks_fire(attack_target, _owner):
+			return false
+	return true
+
+
 func _smallest_hull_adjustment_turret(turrets: Array, target_world_position: Vector3):
 	var chosen = null
 	var smallest_adjustment := INF
@@ -490,6 +527,15 @@ func _advance_turret_engagement(
 		if aim_source == AimSource.TURRET \
 		else aim_source == AimSource.HULL_ON_TARGET
 	if not aimed or _weapon_fire_sequences.has(turret.weapon_index()):
+		return true
+	# CombatLineOfFire deliberately pierces units, so a shot taken with a
+	# squadmate on the line hits the squadmate and CombatImpactResolver bills it
+	# the warhead's FriendlyDamageAmount share. Hold the shot instead. The
+	# blocker is transient by construction: either it moves on, or
+	# UnitAttackOrder.hold_firing_position() walks this unit off the line.
+	# Reported as engaged regardless, so the turret keeps tracking its target
+	# rather than falling back to an idle scan.
+	if turret.friendly_blocks_fire(target, _owner):
 		return true
 	# A stream weapon's authored Fire clip is one short burst meant to replay
 	# back-to-back for the duration of a burst window (sized to ReloadCount,

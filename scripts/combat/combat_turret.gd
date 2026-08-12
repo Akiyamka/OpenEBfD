@@ -915,6 +915,40 @@ func has_line_of_fire_from(
 	)
 
 
+## Whether a friendly body currently stands between this weapon's muzzle and
+## the target. Distinct from has_line_of_fire(): the shot would physically
+## arrive, it just arrives through a squadmate first. A lobbing weapon arcs
+## over the whole formation and is never blocked this way.
+func friendly_blocks_fire(target_or_position: Variant, shooter: Object = null) -> bool:
+	return friendly_blocks_fire_from(muzzle_origin(), target_or_position, shooter)
+
+
+## The same query for a perch the shooter has not reached yet, so attack
+## pursuit can reject a firing position that would put its own line through a
+## unit already engaging from in front of it.
+func friendly_blocks_fire_from(
+		origin: Vector3, target_or_position: Variant, shooter: Object = null
+	) -> bool:
+	if not is_configured() or not is_bound() or shooter == null:
+		return false
+	if _model_root == null or not is_instance_valid(_model_root) \
+	or not _model_root.is_inside_tree():
+		return false
+	var bullet = _definition_view()
+	if bullet.has_trajectory():
+		return false
+	var ignored: Array = [shooter, _model_root]
+	if target_or_position is Object:
+		ignored.append(target_or_position as Object)
+	return CombatLineOfFireScript.friendly_on_line(
+		_model_root.get_world_3d(),
+		origin,
+		_bullet_target_position(target_or_position),
+		shooter,
+		ignored
+	)
+
+
 ## World point shots leave from. Falls back to the aim pivot for a weapon whose
 ## muzzle markers are not currently sampled.
 func muzzle_origin() -> Vector3:

@@ -11,6 +11,7 @@ const UnitNavigationDebugScript := preload("res://scripts/units/navigation/unit_
 const NavAgentRegistryScript := preload("res://scripts/units/navigation/shared/nav_agent_registry.gd")
 const NavSpatialHashScript := preload("res://scripts/units/navigation/shared/nav_spatial_hash.gd")
 const GroundSlotAllocatorScript := preload("res://scripts/units/navigation/ground/ground_slot_allocator.gd")
+const AttackArcAllocatorScript := preload("res://scripts/units/navigation/ground/attack_arc_allocator.gd")
 const GroundPathFollowerScript := preload("res://scripts/units/navigation/ground/ground_path_follower.gd")
 const NavBlockerTrackerScript := preload("res://scripts/units/navigation/shared/nav_blocker_tracker.gd")
 const GroundNavigationScript := preload("res://scripts/units/navigation/ground/ground_navigation.gd")
@@ -61,6 +62,7 @@ var navigation_debug = UnitNavigationDebugScript.new()
 var registry := NavAgentRegistryScript.new()
 var spatial_hash := NavSpatialHashScript.new()
 var slot_allocator := GroundSlotAllocatorScript.new()
+var attack_arc := AttackArcAllocatorScript.new()
 var path_follower := GroundPathFollowerScript.new()
 var path_funnel := PathFunnelScript.new()
 var blocker_tracker := NavBlockerTrackerScript.new()
@@ -140,6 +142,25 @@ func debug_enabled() -> bool:
 
 func navigation_tick_index() -> int:
 	return _navigation_tick_index
+
+
+## Marks the agent as standing on a firing position under an explicit attack
+## order. Unlike set_hold_position() this changes no routing state at all --
+## the attack order has already stopped the unit where it stands. It only makes
+## neighbours treat the body as a hard obstacle to steer around and exempts it
+## from elastic separation, so an arriving second rank flows past instead of
+## shoving the shooter off its spot mid-clip.
+##
+## Deliberately weaker than `hold`: a friendly genuinely stuck behind the firing
+## line may still make this unit step aside (`request_yield`), at the cost of
+## one interrupted shot. `hold` refuses that outright and would turn a firing
+## line in a canyon into an impassable wall.
+func set_firing_anchor(unit: Node3D, active: bool) -> void:
+	var agent: Dictionary = registry.agent_for(_agents, unit)
+	if agent.is_empty() or bool(agent["firing_anchor"]) == active:
+		return
+	agent["firing_anchor"] = active
+	_agents[unit.get_instance_id()] = agent
 
 
 func set_hold_position(unit: Node3D, active: bool) -> void:
@@ -287,6 +308,10 @@ func command_move(units: Array, world_target: Vector3, mode := NavConstantsScrip
 		agent["mode"] = mode
 		agent["group_speed"] = group_speed
 		agent["hold"] = false
+		# Any accepted move order means this unit is no longer standing and
+		# shooting -- including the attack pursuit's own move, which is how the
+		# anchor gets released when the target walks out of range.
+		agent["firing_anchor"] = false
 		agent["blocked_time"] = 0.0
 		agent["reported_enemy"] = false
 		agent["exit_point"] = exit_point
@@ -362,6 +387,7 @@ func command_dock(unit: Node3D, world_target: Vector3, allowed_cells: Dictionary
 	agent["mode"] = NavConstantsScript.MoveMode.FREE
 	agent["group_speed"] = INF
 	agent["hold"] = false
+	agent["firing_anchor"] = false
 	agent["blocked_time"] = 0.0
 	agent["reported_enemy"] = false
 	agent["exit_point"] = Vector3.INF
@@ -396,6 +422,10 @@ func stop(unit: Node3D) -> void:
 	agent["path"] = [] as Array[Vector2i]
 	agent["path_index"] = 0
 	agent["active_order"] = false
+	# Cleared unconditionally so every cancel path (target died, order dropped,
+	# player Stop) releases the anchor. UnitAttackOrder.stop_pursuit() re-sets it
+	# immediately afterwards for the one case that is still a firing stop.
+	agent["firing_anchor"] = false
 	if unit.has_method("flight_clear_circles_order"):
 		unit.call("flight_clear_circles_order")
 	agent["destination"] = unit.global_position
@@ -434,6 +464,7 @@ func agent_debug(unit: Node3D) -> Dictionary:
 		"mode": agent["mode"],
 		"group_speed": agent["group_speed"],
 		"hold": agent["hold"],
+		"firing_anchor": agent["firing_anchor"],
 		"no_stop_destination": agent["no_stop_destination"],
 		"departure_access": agent["departure_access"],
 		"blocked_time": agent["blocked_time"],
@@ -500,6 +531,157 @@ func reachable_attack_position(
 			if _ground_target_is_reachable(unit, agent, position):
 				return position
 	return Vector3.INF
+
+
+## Hands every unit in one attack command its own bearing around the target, so
+## the group forms an arc instead of queueing along the approach line. Returns
+## the units that were actually given a slot.
+##
+## `engagement_radius` is the ring the angular pitch is measured on: pass the
+## group's shortest preferred weapon range so spacing is adequate on the
+## tightest arc anyone will stand on.
+func assign_attack_arcs(
+		units: Array, world_target: Vector3, engagement_radius: float
+	) -> Array[Node3D]:
+	var ground_units: Array[Node3D] = []
+	for value in units:
+		var unit := value as Node3D
+		if unit == null or not is_instance_valid(unit):
+			continue
+		register_unit(unit)
+		var agent: Dictionary = registry.agent_for(_agents, unit)
+		# An aircraft picks its own attack station through AirNavigation and has
+		# no ground arc to stand on.
+		if agent.is_empty() or int(registry.domain_for(agent)) == NavAgentRegistryScript.Domain.AIR:
+			continue
+		ground_units.append(unit)
+	if ground_units.is_empty():
+		return ground_units
+	var arcs: Dictionary = attack_arc.assign_arcs(
+		_agents, ground_units, world_target, engagement_radius
+	)
+	var assigned: Array[Node3D] = []
+	for unit in ground_units:
+		var direction: Vector3 = arcs.get(unit.get_instance_id(), Vector3.ZERO)
+		if direction.is_zero_approx() or not unit.has_method("set_attack_arc_direction"):
+			continue
+		unit.call("set_attack_arc_direction", direction)
+		assigned.append(unit)
+	return assigned
+
+
+## Nearest legal, reachable, fireable ground position to this unit's own slot on
+## the firing arc, instead of the nearest one to the target itself.
+##
+## reachable_attack_position() searches outward from the target cell and so
+## returns essentially the same answer for every member of a group: they all
+## walk the same line, the first arrivals stop on the max-range ring, and the
+## rest never get within range at all. Here the ring search is centred on
+## `world_target + preferred_direction * preferred_range` -- the unit's slot --
+## and only constrained to stay inside weapon range, which is what spreads the
+## group around the target.
+##
+## Perches overlapping a friendly already anchored on its own firing position
+## are rejected outright: that rejection is what stops a second rank from
+## choosing the cell directly behind the first rank, where it would be both
+## blocked from advancing and shooting through its own squadmate.
+##
+## The ring search reaches `maximum_range + preferred_range` from the slot, so
+## it still covers every cell reachable by the target-centred search -- an
+## awkward map degrades to the previous answer rather than to no attack at all,
+## without paying for a second full scan to get there.
+func reachable_firing_position(
+		unit: Node3D,
+		world_target: Vector3,
+		maximum_range: float,
+		preferred_direction: Vector3,
+		preferred_range: float,
+		is_fireable_from := Callable()
+	) -> Vector3:
+	if unit == null or runtime_map.grid == null or maximum_range <= 0.0:
+		return Vector3.INF
+	var direction := preferred_direction
+	direction.y = 0.0
+	if direction.length_squared() <= 0.0001:
+		return reachable_attack_position(unit, world_target, maximum_range, is_fireable_from)
+	var agent := registry.movement_probe_for(_agents, unit)
+	if agent.is_empty():
+		return Vector3.INF
+	var grid = runtime_map.grid
+	var cell_size: Vector2 = grid.cell_size()
+	var minimum_cell_span := minf(cell_size.x, cell_size.y)
+	if minimum_cell_span <= 0.0:
+		return Vector3.INF
+	var slot_range := clampf(preferred_range, minimum_cell_span, maximum_range)
+	var slot := world_target + direction.normalized() * slot_range
+	slot.y = world_target.y
+	var blockers := _firing_anchor_blockers(unit, world_target, maximum_range)
+	var own_radius := float(agent.get("radius", 0.0))
+	var slot_cell: Vector2i = grid.world_to_grid(slot)
+	# Rings are measured from the slot, which sits `slot_range` off the target,
+	# so the search has to reach that much further to still contain every cell
+	# the target-centred search would have considered. Cells past weapon range
+	# are dropped by the cheap distance test below before any real work.
+	var maximum_radius := ceili((maximum_range + slot_range) / minimum_cell_span)
+	for radius in range(maximum_radius + 1):
+		for offset in slot_allocator.ring_offsets(radius):
+			var candidate := slot_cell + offset
+			if not grid.in_bounds(candidate):
+				continue
+			var position: Vector3 = grid.grid_to_world(candidate)
+			var horizontal_offset := Vector2(
+				position.x - world_target.x, position.z - world_target.z
+			)
+			if horizontal_offset.length() > maximum_range:
+				continue
+			if not _ground_target_is_legal(agent, position, false):
+				continue
+			if _overlaps_firing_anchor(position, own_radius, blockers):
+				continue
+			if is_fireable_from.is_valid() and not bool(is_fireable_from.call(position)):
+				continue
+			if _ground_target_is_reachable(unit, agent, position):
+				return position
+	return Vector3.INF
+
+
+## Units currently anchored on a firing position (or otherwise pinned) close
+## enough to the target to matter. Pre-filtered by range so the per-candidate
+## test below stays a short loop even in a large battle.
+func _firing_anchor_blockers(
+		unit: Node3D, world_target: Vector3, maximum_range: float
+	) -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	var own_id := unit.get_instance_id()
+	var reach := maximum_range + maximum_range
+	for key in _agents:
+		if int(key) == own_id:
+			continue
+		var other: Dictionary = _agents[key]
+		if not bool(other.get("firing_anchor", false)) and not bool(other.get("hold", false)):
+			continue
+		var other_unit: Node3D = other["unit"]
+		if not is_instance_valid(other_unit):
+			continue
+		var offset := other_unit.global_position - world_target
+		offset.y = 0.0
+		if offset.length() > reach:
+			continue
+		result.append({
+			"position": other_unit.global_position, "radius": float(other["radius"])
+		})
+	return result
+
+
+func _overlaps_firing_anchor(
+		position: Vector3, own_radius: float, blockers: Array[Dictionary]
+	) -> bool:
+	for blocker in blockers:
+		var offset: Vector3 = (blocker["position"] as Vector3) - position
+		offset.y = 0.0
+		if offset.length() < own_radius + float(blocker["radius"]):
+			return true
+	return false
 
 
 func command_log() -> Array[Dictionary]:
