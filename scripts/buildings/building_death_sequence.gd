@@ -71,9 +71,11 @@ func begin() -> void:
 	# specifically, unlike Idle/DamageN which play_state() visits normally.
 	destroy_node.visible = true
 
+	# Final `true`: buildings are the only caller with '%'-marked debris to
+	# scatter (see DeathCorpse.DEBRIS_MARKER_SUFFIX) — units never pass this.
 	DeathCorpseScript.spawn(
 		parent, destroy_node, world_transform, clip, [], Vector3.ZERO,
-		_building.owner_player_id, [],
+		_building.owner_player_id, [], true,
 	)
 	spawn_explosion_effects(parent, world_transform.origin)
 	_building.queue_free()

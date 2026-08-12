@@ -27,6 +27,9 @@ func _initialize() -> void:
 	await _run_case("a delayed layer starts at its authored offset and holds the corpse open until then", _test_delayed_sound_layer)
 	await _run_case("death sound is tuned to be audible at this game's real camera distances, not Godot's point-blank defaults", _test_death_sound_attenuation_tuned)
 	await _run_case("a superseded one-shot fades out and frees instead of being cut with a click", _test_fade_out_and_free)
+	await _run_case("'%'-marked debris launches from its authored husk position and flies apart, holding the corpse open until it lands", _test_debris_scatter_lands_and_holds_corpse_open)
+	await _run_case("debris is left untouched when scatter_debris is not requested", _test_no_scatter_without_the_flag)
+	await _run_case("a model with no '%'-marked children is a scatter no-op", _test_scatter_with_no_debris_pieces)
 	if _failures > 0:
 		printerr("DeathCorpse tests: %d failures after %d assertions" % [_failures, _assertions])
 		quit(1)
@@ -430,6 +433,118 @@ func _test_delayed_sound_layer() -> void:
 			corpse.is_queued_for_deletion(),
 			"the corpse must free once the delayed layer finishes too"
 		)
+	world.queue_free()
+	await process_frame
+
+
+## A stand-in for one of ATHanger's MeshNN% nodes: a Node3D carrying the '%'
+## original_name marker DeathCorpse._collect_debris_pieces() looks for, at a
+## `transform` matching where the converter would bake it in the burnt husk.
+func _make_debris_piece(piece_name: String, piece_transform: Transform3D) -> Node3D:
+	var piece := Node3D.new()
+	piece.name = piece_name
+	piece.set_meta("original_name", "%s%%" % piece_name)
+	piece.transform = piece_transform
+	var mesh_instance := MeshInstance3D.new()
+	var box := BoxMesh.new()
+	box.size = Vector3.ONE
+	mesh_instance.mesh = box
+	piece.add_child(mesh_instance)
+	return piece
+
+
+func _test_debris_scatter_lands_and_holds_corpse_open() -> void:
+	var world := Node3D.new()
+	root.add_child(world)
+	var fixture := _make_model(&"Explode")
+	var model: Node3D = fixture["model"]
+	# piece_a sits low and off to one side, piece_b sits higher near the
+	# other side — mirrors a husk's pieces spanning the building's height,
+	# so DEBRIS_LANDING_HEIGHT_JITTER's "falls toward the lowest piece" claim
+	# is actually exercised for piece_b.
+	var piece_a := _make_debris_piece("Mesh01", Transform3D(Basis.IDENTITY, Vector3(5.0, 0.0, 0.0)))
+	var piece_b := _make_debris_piece("Mesh02", Transform3D(Basis.IDENTITY, Vector3(-5.0, 8.0, 3.0)))
+	model.add_child(piece_a)
+	model.add_child(piece_b)
+	var launch_a := piece_a.transform
+	var launch_b := piece_b.transform
+
+	# A resolvable, never-finished sound layer holds the corpse open
+	# independent of scatter, so this can inspect the landed positions
+	# without racing the corpse freeing (and freeing its children with it)
+	# the instant the last piece lands.
+	var corpse := DeathCorpseScript.spawn(
+		world, model, Transform3D.IDENTITY, &"Explode", _voice([[&"medium", 0.0]]), Vector3.ZERO, 1, [], true
+	)
+	_expect(corpse._pending_scatter == 2, "both '%%' pieces must be counted as pending, got %d" % corpse._pending_scatter)
+	_expect(
+		piece_a.transform.is_equal_approx(launch_a) and piece_b.transform.is_equal_approx(launch_b),
+		"the husk must render exactly as authored the instant the building dies — nothing may jump before its own tween starts"
+	)
+
+	(fixture["player"] as AnimationPlayer).animation_finished.emit(&"Explode")
+	_expect(
+		not corpse.is_queued_for_deletion(),
+		"the corpse must outlive its death clip while debris is still mid-flight"
+	)
+
+	await create_timer(
+		DeathCorpseScript.DEBRIS_MAX_FLIGHT_SECONDS + DeathCorpseScript.DEBRIS_MAX_STAGGER_SECONDS + 0.1
+	).timeout
+	_expect(corpse._pending_scatter == 0, "every piece must have landed by now, got %d still pending" % corpse._pending_scatter)
+	_expect(
+		not piece_a.transform.origin.is_equal_approx(launch_a.origin)
+			and not piece_b.transform.origin.is_equal_approx(launch_b.origin),
+		"pieces must fly away from where the husk placed them, not stay put"
+	)
+	_expect(
+		piece_b.transform.origin.y < launch_b.origin.y,
+		"a piece launched from higher up the husk than the rest must fall toward the ground line, got y=%.2f from y=%.2f" % [
+			piece_b.transform.origin.y, launch_b.origin.y
+		]
+	)
+	_expect(
+		not corpse.is_queued_for_deletion(),
+		"the sound layer must still hold the corpse open even though scatter itself has finished"
+	)
+	_sound_players(corpse)[0].sound_finished.emit()
+	_expect(corpse.is_queued_for_deletion(), "the corpse must free once both scatter and sound have finished")
+	world.queue_free()
+	await process_frame
+
+
+func _test_no_scatter_without_the_flag() -> void:
+	var world := Node3D.new()
+	root.add_child(world)
+	var fixture := _make_model(&"Shot_1")
+	var model: Node3D = fixture["model"]
+	var piece := _make_debris_piece("Mesh01", Transform3D(Basis.IDENTITY, Vector3(5.0, 0.0, 0.0)))
+	model.add_child(piece)
+	var original := piece.transform
+
+	# scatter_debris omitted — Unit's call site never passes it, unlike
+	# BuildingDeathSequence's.
+	var corpse := DeathCorpseScript.spawn(
+		world, model, Transform3D.IDENTITY, &"Shot_1", _no_sounds(), Vector3.ZERO, 1
+	)
+	_expect(corpse._pending_scatter == 0, "scatter must be entirely opt-in")
+	_expect(piece.transform.is_equal_approx(original), "a '%' piece must be left untouched when scatter isn't requested")
+	(fixture["player"] as AnimationPlayer).animation_finished.emit(&"Shot_1")
+	_expect(corpse.is_queued_for_deletion(), "with no scatter pending, the corpse must free on the clip finishing as before")
+	world.queue_free()
+	await process_frame
+
+
+func _test_scatter_with_no_debris_pieces() -> void:
+	var world := Node3D.new()
+	root.add_child(world)
+	var fixture := _make_model(&"Explode")
+	var corpse := DeathCorpseScript.spawn(
+		world, fixture["model"], Transform3D.IDENTITY, &"Explode", _no_sounds(), Vector3.ZERO, 1, [], true
+	)
+	_expect(corpse._pending_scatter == 0, "a model with no '%' children must never block on scatter")
+	(fixture["player"] as AnimationPlayer).animation_finished.emit(&"Explode")
+	_expect(corpse.is_queued_for_deletion(), "scatter_debris=true with nothing to scatter must free normally")
 	world.queue_free()
 	await process_frame
 

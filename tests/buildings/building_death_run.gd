@@ -8,6 +8,7 @@ extends SceneTree
 
 const ATConYardScene := preload("res://assets/converted/buildings/ATConYard/ATConYard.scn")
 const ORConYardScene := preload("res://assets/converted/buildings/ORConYard/ORConYard.scn")
+const ATHangerScene := preload("res://assets/converted/buildings/ATHanger/ATHanger.scn")
 const DeathCorpseScript := preload("res://scripts/effects/death_corpse.gd")
 const CombatImpactEffectScript := preload("res://scripts/combat/combat_impact_effect.gd")
 const DeathSoundPlayerScript := preload("res://scripts/audio/death_sound_player.gd")
@@ -34,6 +35,10 @@ func _initialize() -> void:
 	await _run_case(
 		"the death sound comes from the new ExplosionTierPools.BUILDING pool",
 		_test_sound_from_building_pool
+	)
+	await _run_case(
+		"ATHanger's near-zero-length Explode clip no longer vanishes its burnt husk before the debris scatters",
+		_test_athanger_debris_scatters_and_outlives_its_clip
 	)
 	if _failures > 0:
 		printerr("Building death tests: %d failures after %d assertions" % [_failures, _assertions])
@@ -234,6 +239,53 @@ func _test_sound_from_building_pool() -> void:
 			stream_path in ExplosionTierPoolsScript.BUILDING,
 			"the building death sound must come from ExplosionTierPools.BUILDING, got %s" % stream_path
 		)
+	world.queue_free()
+	await process_frame
+
+
+## Regression guard for the bug that motivated debris scatter: ATHanger's
+## baked Explode clip is only 0.05s long (docs/building_destroy_motion.md),
+## so before scatter existed the corpse froze on that single static burnt
+## husk pose and then freed — the whole thing vanished almost before it was
+## ever visible. Uses the real converted scene, not a fixture, so this also
+## proves ATHanger's actual '%'-marked debris (52 pieces, confirmed by
+## direct inspection) gets picked up by DeathCorpse._collect_debris_pieces().
+func _test_athanger_debris_scatters_and_outlives_its_clip() -> void:
+	_configure_player(5, &"Atreides")
+	var world := Node3D.new()
+	root.add_child(world)
+	var building := ATHangerScene.instantiate() as Building
+	building.owner_player_id = 5
+	world.add_child(building)
+	await process_frame
+
+	building.take_damage(building.max_health + building.max_shields + 10.0, &"")
+
+	var corpses := _corpses_in(world)
+	_expect(corpses.size() == 1, "ATHanger must still spawn exactly one corpse, got %d" % corpses.size())
+	if corpses.is_empty():
+		world.queue_free()
+		await process_frame
+		return
+	var corpse := corpses[0] as DeathCorpse
+	_expect(
+		corpse._pending_scatter > 0,
+		"ATHanger's Destroy model carries '%%'-marked debris; scatter must have picked it up, got %d pending" % corpse._pending_scatter
+	)
+
+	await create_timer(0.2).timeout
+	_expect(
+		is_instance_valid(corpse) and not corpse.is_queued_for_deletion(),
+		"the corpse must outlive ATHanger's near-instant Explode clip while its debris is still flying"
+	)
+
+	await create_timer(
+		DeathCorpseScript.DEBRIS_MAX_FLIGHT_SECONDS + DeathCorpseScript.DEBRIS_MAX_STAGGER_SECONDS
+	).timeout
+	_expect(
+		not is_instance_valid(corpse) or corpse.is_queued_for_deletion(),
+		"the corpse must free once every debris piece has landed"
+	)
 	world.queue_free()
 	await process_frame
 

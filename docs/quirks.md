@@ -1124,9 +1124,26 @@ ruin pose. Generic flying-debris projectiles (`[DebrisTypes]`,
 
 **OpenEBfD compatibility status:** The converter preserves the `%`
 marker in each node's `original_name` metadata and correctly bakes the HK
-style keyframed variant. No procedural scatter is implemented yet, so
-`%`-style destroy states currently show the static assembled ruin for the
-clip's duration.
+style keyframed variant. `DeathCorpse` (`scripts/effects/death_corpse.gd`)
+scatters `%`-marked pieces procedurally: the baked husk renders exactly as
+authored the instant the building dies, then each piece flies outward from
+the husk's own vertical axis and falls to the husk's ground line on a
+scale-relative arc, with a random distance, spin, and stagger per piece —
+the baked transform is the launch point, not a destination, since the XBF
+only ever captured the burnt-out husk sitting where the building stood, not
+a pre-scattered debris field.
+
+This split is not confined to the two example houses above, nor does it
+track cleanly by house or by `%` naming. Frame-diffing every converted
+building's `Explode` clip (excluding FX/attachment helper tracks, whose
+leaf node names start with `_`) shows 54 of the 152 buildings have no
+`States/Destroy`/`Explode` clip at all, 85 have the clip but no geometry
+that ever moves, and only 13 -- mostly Harkonnen, plus the four `CNINATTree`
+variants and `GUWormhead` -- have a clip where debris actually animates.
+Notably `HKFactoryFrigate` is static despite being Harkonnen, and
+`ATRefinery` is static despite modeling ~60 individually named debris
+meshes; none of them carry an animation track. Full per-building lists in
+docs/building_destroy_motion.md.
 
 ### Damage states may author whole sub-trees rotated
 
