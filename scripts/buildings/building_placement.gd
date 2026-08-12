@@ -274,13 +274,15 @@ func try_place_at_hover_cell(
 	if owner_player_id != null and building.has_method("set_owner_player_id"):
 		building.call("set_owner_player_id", owner_player_id)
 	_push_units_out_of_footprint(_anchor_cell, excluded_unit)
-	var placement_thud_section: StringName = (
-		&"WallThud" if _is_wall_candidate else &"BuildingThud"
-	)
+	var is_wall_segment := _is_wall_candidate
 	building_placed.emit(building)
 	_play_placed_building_animation(building)
 	_clear()
-	_play_placement_thud(placement_position, placement_thud_section)
+	# Wall segments confirm the whole line with one WallThud when the line is
+	# drawn (see WallLineSession.start_chain / play_wall_line_start_thud)
+	# rather than per segment here.
+	if not is_wall_segment:
+		_play_placement_thud(placement_position, &"BuildingThud")
 	return PlaceResult.PLACED
 
 
@@ -812,9 +814,21 @@ func _play_placement_thud(world_position: Vector3, section_id: StringName) -> vo
 	SfxSectionCatalogScript.play_at(self, world_position, section_id)
 
 
+## Wall lines confirm once, when the user finishes drawing the line -- before
+## the first queued segment starts building -- rather than per segment.
+func play_wall_line_start_thud(world_position: Vector3) -> void:
+	_play_placement_thud(world_position, &"WallThud")
+
+
 func _play_placed_building_animation(building: Node3D) -> void:
 	_begin_building_construction(building)
 	_set_building_invulnerable(building, true)
+	# Building._ready() only schedules its neighbour-mask/topology refresh via
+	# call_deferred, which would run after the construct animation below has
+	# already started -- refresh it now so the construction mesh picks up the
+	# correct orientation for its neighbours right away.
+	if building.has_method("_refresh_wall_topology"):
+		building.call("_refresh_wall_topology")
 	if AuthoredModelScript.play_one_shot(
 		building,
 		&"construct",

@@ -172,6 +172,7 @@ func start_chain(
 		_status.call("Wall line has no buildable segments")
 		_end_chain()
 		return
+	_placement.play_wall_line_start_thud(_placement.wall_marker_world_position(cells[0]))
 	# Two different owners are in play here and they are not interchangeable:
 	# _player_provider answers the local PlayerData (what _refund() spends from),
 	# while the chain needs the roster's local_player_id. Collapsing them into one
