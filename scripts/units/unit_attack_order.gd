@@ -14,10 +14,11 @@ extends RefCounted
 
 const ATTACK_REPATH_INTERVAL_SECONDS := 0.25
 const ATTACK_REPATH_DISTANCE := 0.5
-## How long a squadmate must sit on this unit's muzzle line before the unit
-## walks off it. A friendly crossing the line is transient and must not start a
-## reposition; a line that stays blocked is a genuinely stacked firing arc, and
-## standing there means either never firing or shooting a squadmate in the back.
+## How much blocked time a muzzle line has to accumulate before the unit walks
+## off it. Accumulated rather than consecutive: a friendly crossing the line is
+## transient and must not start a reposition, but a crowded firing arc clears
+## and re-blocks the same line several times a second, and requiring an
+## unbroken second there meant nobody ever moved (see `hold_firing_position`).
 const FRIENDLY_BLOCK_REPOSITION_SECONDS := 1.0
 
 var _unit: CharacterBody3D
@@ -102,6 +103,15 @@ func set_arc_direction(direction: Vector3) -> void:
 	flattened.y = 0.0
 	_arc_direction = flattened.normalized() if flattened.length_squared() > 0.0001 \
 		else Vector3.ZERO
+	if _arc_direction != Vector3.ZERO:
+		# A fresh arc is a fresh formation. A group already inside weapon range
+		# never walks anywhere on its own (hold_firing_position just stands), so
+		# ordering it onto a target off to one side leaves everybody standing in
+		# the arc built for the *previous* target -- which is exactly the line
+		# they now have to shoot along. Arming the reposition timer makes the
+		# units whose line is blocked take their new slot immediately, while
+		# those with a clear line keep standing and firing.
+		_friendly_block_seconds = FRIENDLY_BLOCK_REPOSITION_SECONDS
 
 
 ## Called when the unit is close enough to shoot: it stops where it stands
@@ -125,8 +135,12 @@ func hold_firing_position(
 	if friendly_blocked:
 		_friendly_block_seconds += delta
 	else:
-		_friendly_block_seconds = 0.0
-		_clearing_line = false
+		# Decays rather than resets. Ten soldiers shuffling shoulder to shoulder
+		# clear and re-block the same line several times a second, and a hard
+		# reset let that flicker pin the counter at zero forever: nobody ever
+		# repositioned, while the shots taken during the blocked moments still
+		# went through a squadmate's back.
+		_friendly_block_seconds = maxf(_friendly_block_seconds - delta, 0.0)
 	if _clearing_line:
 		if _unit.has_active_move_order():
 			# Let the clearing move finish. advance_pursuit's own en-route gate
@@ -135,7 +149,7 @@ func hold_firing_position(
 			advance_pursuit(target_world_position, pursuit_turret, delta)
 			return
 		_clearing_line = false
-	if friendly_blocked and _friendly_block_seconds >= FRIENDLY_BLOCK_REPOSITION_SECONDS:
+	if _friendly_block_seconds >= FRIENDLY_BLOCK_REPOSITION_SECONDS:
 		_friendly_block_seconds = 0.0
 		_clearing_line = true
 		# The unit has been standing, so the approach's repath timer and last

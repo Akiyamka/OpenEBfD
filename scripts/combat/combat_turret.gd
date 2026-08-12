@@ -1026,6 +1026,18 @@ func try_fire_at(request: FireRequest) -> Array:
 		and not preview_bullet.can_reach(range_origin, target_position + aim_offset)
 	):
 		return result
+	# Last gate before the round actually leaves. Order handling asks the same
+	# question when it decides to engage (see UnitCombat), but an authored Fire
+	# clip runs for a second or more between that decision and this shot event,
+	# which is ample time for a squadmate to walk into the line -- and the shot
+	# would then hit that squadmate rather than the target, because
+	# CombatLineOfFire.is_clear deliberately pierces units. Answering it again
+	# here covers every firing path (authored sequences, direct fire, buildings)
+	# from the muzzle that is about to be used.
+	if friendly_blocks_fire_from(
+		Vector3(preview_emission["position"]), target_or_position, request.source
+	):
+		return result
 
 	var parent: Node = request.projectile_parent \
 		if request.projectile_parent != null else _default_projectile_parent()
