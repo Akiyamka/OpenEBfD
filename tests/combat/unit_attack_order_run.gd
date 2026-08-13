@@ -2,6 +2,7 @@ extends "res://tests/support/suite.gd"
 
 const LegacyRulesFixture := preload("res://tests/support/legacy_rules_fixture.gd")
 const CombatTurretScript := preload("res://scripts/combat/combat_turret.gd")
+const FireRequestScript := preload("res://scripts/combat/fire_request.gd")
 const Doubles := preload("res://tests/combat/support/combat_doubles.gd")
 const Assertions := preload("res://tests/combat/support/combat_assertions.gd")
 const UnitScript := preload("res://scripts/units/unit.gd")
@@ -67,6 +68,10 @@ func _initialize() -> void:
 	await _run_async_case(
 		"a squadmate arriving mid-clip cancels the shot at the muzzle",
 		_test_friendly_arriving_mid_clip_cancels_the_shot
+	)
+	await _run_async_case(
+		"the muzzle gate checks the line the round actually flies",
+		_test_friendly_on_the_flown_line_holds_fire
 	)
 	_run_case(
 		"an intermittently blocked line still reaches the reposition",
@@ -738,6 +743,62 @@ func _test_friendly_arriving_mid_clip_cancels_the_shot() -> void:
 			projectile.free()
 	attacker.free()
 	target.free()
+
+
+## A round does not fly the ideal muzzle-to-target line: it leaves along the
+## muzzle's current heading (see parallel_impact_position), which an authored
+## Fire clip poses degrees off the ordered bearing. Checking only the ideal
+## line let a stationary rear rank fire through a squadmate standing on the
+## muzzle's actual heading while the ideal line passed cleanly beside it. The
+## gate must ask along the flown line.
+func _test_friendly_on_the_flown_line_holds_fire() -> void:
+	var attacker = UnitScene.instantiate()
+	attacker.config_id = &"ATAPC"
+	root.add_child(attacker)
+	attacker.replace_visual_scene(ATAPCModelScene)
+	attacker.owner_player_id = 1
+	var turret = attacker.combat_turrets[0]
+	var muzzle: Vector3 = Vector3(turret.peek_emission()["position"])
+	var heading: Vector3 = Vector3(turret.peek_emission()["direction"])
+	heading.y = 0.0
+	heading = heading.normalized()
+	# The ordered point sits well off the muzzle's current heading; the muzzle
+	# has not been servo-aimed onto it (an authored clip fires regardless). The
+	# squadmate stands on the heading, 2.0 laterally off the ideal line -- a
+	# body its 0.9 radius keeps well clear of, so only the flown line crosses it.
+	var ground: Vector3 = attacker.global_position \
+		+ heading.rotated(Vector3.UP, deg_to_rad(30.0)) * 8.0
+	var on_heading := muzzle + heading * 4.0
+	on_heading.y = muzzle.y * 0.5
+	var squadmate := Doubles.PhysicsCombatTarget.new(on_heading, 0.9)
+	squadmate.owner_player_id = attacker.owner_player_id
+	root.add_child(squadmate)
+	await physics_frame
+
+	_expect(
+		turret.friendly_blocks_fire(ground, attacker),
+		"a squadmate on the muzzle's actual heading must read as friendly-blocking"
+	)
+	var held: Array = turret.try_fire_at(FireRequestScript.authored(ground, attacker))
+	_expect(
+		held.is_empty(),
+		"the muzzle gate must hold a shot whose flown line crosses the squadmate"
+	)
+
+	squadmate.get_parent().remove_child(squadmate)
+	await physics_frame
+	turret.reload_ticks_remaining = 0.0
+	var released: Array = turret.try_fire_at(FireRequestScript.authored(ground, attacker))
+	_expect(
+		not released.is_empty(),
+		"clearing the flown line must release the same shot"
+	)
+
+	for projectile in released:
+		if is_instance_valid(projectile) and not projectile.is_queued_for_deletion():
+			projectile.free()
+	squadmate.free()
+	attacker.free()
 
 
 ## The reposition used to require the line to stay blocked for a whole
