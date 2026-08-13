@@ -33,6 +33,8 @@ func setup(facade: Node, runtime_map, planner, avoidance) -> void:
 func register_unit(agents: Dictionary, unit: Node3D, debug_enabled: bool) -> int:
 	if unit == null:
 		return 0
+	if unit.has_method("navigation_is_suspended") and bool(unit.call("navigation_is_suspended")):
+		return 0
 	var key := unit.get_instance_id()
 	if agents.has(key):
 		return int(agents[key]["id"])
@@ -130,6 +132,8 @@ func unregister_unit(agents: Dictionary, unit: Node3D) -> void:
 		return
 	if unit.has_method("set_navigation_debug_visible"):
 		unit.call("set_navigation_debug_visible", false)
+	if unit.has_method("set_navigation_managed"):
+		unit.call("set_navigation_managed", false)
 	agents.erase(unit.get_instance_id())
 
 

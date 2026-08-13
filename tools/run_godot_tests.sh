@@ -26,7 +26,7 @@ readonly SUITES=(
 	tests/combat/multi_turret_run.gd
 	tests/combat/authored_reload_sound_run.gd tests/match/unit_command_run.gd
 	tests/units/deployment_run.gd tests/units/authored_deploy_sound_run.gd tests/units/unit_scene_catalog_run.gd
-	tests/units/harvester_run.gd tests/units/flight_run.gd tests/units/death_strategy_run.gd
+	tests/units/harvester_run.gd tests/units/flight_run.gd tests/units/advanced_carryall_run.gd tests/units/death_strategy_run.gd
 	tests/units/death_animation_run.gd tests/units/authored_death_voice_run.gd
 	tests/effects/death_corpse_run.gd
 	tests/match/demo_boot_run.gd tests/match/snapshot_run.gd tests/maps/run.gd

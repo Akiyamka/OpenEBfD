@@ -121,6 +121,11 @@ class FakeLandedFlyer extends FakeUnit:
 		landed = false
 
 
+class FakeAirborneUnit extends FakeUnit:
+	func combat_is_airborne() -> bool:
+		return true
+
+
 class FakeBuilding extends Node3D:
 	var building_definition := BuildingDefinitionScript.new()
 
@@ -135,6 +140,7 @@ func _initialize() -> void:
 	_test_no_stop_cells(grid)
 	_test_unit_navigation_order_api(grid)
 	_test_disconnected_island_orders(grid)
+	await _test_transport_drop_probe_uses_destination_not_reachability(grid)
 	_test_distributed_targets_avoid_disconnected_island(grid)
 	_test_group_move_redirects_landed_flyer(grid)
 	_test_dock_order_has_per_unit_building_access(grid)
@@ -318,6 +324,56 @@ func _test_disconnected_island_orders(grid: MapNavigationGrid) -> void:
 	navigation.queue_free()
 	stranded.queue_free()
 	reachable.queue_free()
+
+
+func _test_transport_drop_probe_uses_destination_not_reachability(grid: MapNavigationGrid) -> void:
+	var navigation := NavigationSystemScript.new()
+	root.add_child(navigation)
+	navigation.set_physics_process(false)
+	_expect(navigation.setup(grid), "navigation must initialize for transport drop footprint probe")
+	var wall := {}
+	for y in MapNavigationGrid.NAV_SIZE:
+		wall[Vector2i(128, y)] = true
+	navigation.runtime_map.replace_blocked_cells(wall)
+	var cargo := FakeUnit.new()
+	cargo.add_to_group("units")
+	root.add_child(cargo)
+	cargo.global_position = Vector3(100.5, 0.0, 100.5)
+	var destination := Vector3(150.5, 0.0, 100.5)
+	_expect(
+		navigation.can_place_transport_cargo(cargo, destination),
+		"carryall drop must accept a legal destination across a disconnected island"
+	)
+	var ground_blocker := FakeUnit.new()
+	ground_blocker.add_to_group("units")
+	root.add_child(ground_blocker)
+	ground_blocker.global_position = destination
+	_expect(
+		not navigation.can_place_transport_cargo(cargo, destination),
+		"ground footprint occupancy must reject an otherwise legal drop"
+	)
+	_expect(
+		navigation.can_place_transport_cargo(cargo, destination, ground_blocker),
+		"the carrying transport itself must be ignored by its destination occupancy probe"
+	)
+	ground_blocker.queue_free()
+	await process_frame
+	var airborne_blocker := FakeAirborneUnit.new()
+	airborne_blocker.add_to_group("units")
+	root.add_child(airborne_blocker)
+	airborne_blocker.global_position = destination
+	_expect(
+		navigation.can_place_transport_cargo(cargo, destination),
+		"airborne units must not occupy ground cargo footprint space"
+	)
+	navigation.runtime_map.replace_blocked_cells(wall, {grid.world_to_grid(destination): true})
+	_expect(
+		not navigation.can_place_transport_cargo(cargo, destination),
+		"cargo may not be unloaded onto a traversable no-stop apron"
+	)
+	cargo.queue_free()
+	airborne_blocker.queue_free()
+	navigation.queue_free()
 
 
 func _test_distributed_targets_avoid_disconnected_island(grid: MapNavigationGrid) -> void:

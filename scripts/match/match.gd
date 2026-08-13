@@ -14,6 +14,8 @@ const MatchSnapshotScript := preload("res://scripts/match/match_snapshot.gd")
 const AutoloadLookupScript := preload("res://scripts/players/autoload_lookup.gd")
 const TerrainProbeScript := preload("res://scripts/world/terrain_probe.gd")
 const EntityQueryScript := preload("res://scripts/world/entity_query.gd")
+const AbilityBarScript := preload("res://scripts/ui/ability_bar.gd")
+const AdvancedCarryallAbilityScript := preload("res://scripts/match/advanced_carryall_ability.gd")
 const PLACEMENT_ARROW_SCENE := preload("res://assets/converted/placement/build_arrow.scn")
 const PLACEMENT_BUILDING_SCENE := preload("res://assets/converted/placement/build_building.scn")
 const PLACEMENT_CANT_BUILD_SCENE := preload("res://assets/converted/placement/build_cantbuild.scn")
@@ -29,6 +31,7 @@ const ENEMY_PLAYER_ID := 2
 @onready var selection_rectangle = $HUD/SelectionRectangle
 @onready var fps_label: Label = $HUD/FPS
 @onready var side_panel: SidePanel = $HUD/SidePanel
+@onready var ability_bar: AbilityBar = get_node_or_null("HUD/AbilityBar") as AbilityBar
 
 var _fps_update_time := 0.0
 var _building_controller: BuildingController
@@ -140,6 +143,7 @@ func _setup_building_controller() -> void:
 		PLACEMENT_SKIRT_SCENE,
 		PLACEMENT_WALL_SCENE
 	)
+	_building_controller.interaction_mode_changed.connect(_on_building_interaction_mode_changed)
 
 
 func _setup_building_upgrade_controller() -> void:
@@ -171,12 +175,15 @@ func _setup_unit_command_controller() -> void:
 	_unit_command_controller.name = "UnitCommandController"
 	add_child(_unit_command_controller)
 	_unit_command_controller.status_changed.connect(_update_selection_label)
+	_unit_command_controller.target_ability_mode_changed.connect(_on_target_ability_mode_changed)
 	_unit_command_controller.setup(
 		camera,
 		terrain,
 		_unit_navigation_system,
 		selection_rectangle,
-		_unit_deployment_controller
+		_unit_deployment_controller,
+		ability_bar,
+		[AdvancedCarryallAbilityScript.new()]
 	)
 
 
@@ -254,6 +261,11 @@ func _unhandled_input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 		return
 
+	if _unit_command_controller != null and _unit_command_controller.has_active_target_ability() \
+	and _unit_command_controller.handle_unhandled_input(event):
+		get_viewport().set_input_as_handled()
+		return
+
 	if _building_controller != null and _building_controller.handle_unhandled_input(event):
 		get_viewport().set_input_as_handled()
 		return
@@ -264,6 +276,16 @@ func _unhandled_input(event: InputEvent) -> void:
 
 	if _unit_command_controller != null and _unit_command_controller.handle_unhandled_input(event):
 		get_viewport().set_input_as_handled()
+
+
+func _on_target_ability_mode_changed(active: bool) -> void:
+	if active and _building_controller != null:
+		_building_controller.cancel_interaction_modes()
+
+
+func _on_building_interaction_mode_changed(active: bool) -> void:
+	if active and _unit_command_controller != null:
+		_unit_command_controller.cancel_target_ability()
 
 
 func _handle_debug_shortcut(event: InputEvent) -> bool:

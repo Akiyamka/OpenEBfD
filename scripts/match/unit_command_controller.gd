@@ -2,6 +2,7 @@ class_name UnitCommandController
 extends Node
 
 signal status_changed(status: String)
+signal target_ability_mode_changed(active: bool)
 
 const PlayerDataScript := preload("res://scripts/players/player_data.gd")
 const NavConstantsScript := preload("res://scripts/units/navigation/shared/nav_constants.gd")
@@ -11,6 +12,9 @@ const UnitVoiceCatalogScript := preload("res://scripts/audio/unit_voice_catalog.
 const AutoloadLookupScript := preload("res://scripts/players/autoload_lookup.gd")
 const TerrainProbeScript := preload("res://scripts/world/terrain_probe.gd")
 const SelectionPartitionScript := preload("res://scripts/match/selection_partition.gd")
+const SelectionTargetAbilityControllerScript := preload(
+	"res://scripts/match/selection_target_ability_controller.gd"
+)
 
 var _camera: Camera3D
 var _terrain: MapLoader
@@ -39,6 +43,7 @@ var _deployment_cursor_result := NO_CURSOR_OVERRIDE
 var _selected_orders_active := -1
 var _voice_catalog := UnitVoiceCatalogScript.new()
 var _voice_player
+var _target_abilities = SelectionTargetAbilityControllerScript.new()
 
 
 func _ready() -> void:
@@ -52,22 +57,34 @@ func setup(
 		command_terrain: MapLoader,
 		navigation = null,
 		selection_rectangle = null,
-		deployment_controller = null
+		deployment_controller = null,
+		ability_bar = null,
+		target_ability_handlers: Array = []
 	) -> void:
 	_camera = command_camera
 	_terrain = command_terrain
 	_navigation = navigation
 	_selection_rectangle = selection_rectangle
 	_deployment_controller = deployment_controller
+	_target_abilities.configure(ability_bar, target_ability_handlers)
+	if not _target_abilities.status_changed.is_connected(_on_target_ability_status_changed):
+		_target_abilities.status_changed.connect(_on_target_ability_status_changed)
+	if not _target_abilities.mode_changed.is_connected(_on_target_ability_mode_changed):
+		_target_abilities.mode_changed.connect(_on_target_ability_mode_changed)
 
 
 func process() -> void:
+	_prune_uncommandable_selection()
 	_refresh_idle_status()
+	_target_abilities.refresh()
 	var hovered_control := get_viewport().gui_get_hovered_control()
 	if hovered_control != null and hovered_control.mouse_filter != Control.MOUSE_FILTER_IGNORE:
 		_clear_command_cursor()
 		return
-	_update_command_cursor(get_viewport().get_mouse_position())
+	if _target_abilities.is_active():
+		_update_target_ability_cursor(get_viewport().get_mouse_position())
+	else:
+		_update_command_cursor(get_viewport().get_mouse_position())
 
 
 func _exit_tree() -> void:
@@ -78,6 +95,8 @@ func _exit_tree() -> void:
 
 func handle_unhandled_input(event: InputEvent) -> bool:
 	if event is InputEventKey:
+		if _target_abilities.handle_key(event):
+			return true
 		if _is_attack_modifier(event):
 			_attack_modifier_down = event.pressed
 			return false
@@ -90,9 +109,16 @@ func handle_unhandled_input(event: InputEvent) -> bool:
 			return true
 		if _is_deploy_key(event):
 			if event.pressed and not event.echo:
+				# D deliberately keeps its ordinary deployment behaviour.  It is
+				# not a target ability, so leave a map-targeting mode before issuing
+				# the deploy command rather than allowing both modes to coexist.
+				_target_abilities.cancel()
 				_deploy_selected_entities()
 			return true
 	if event is InputEventMouseMotion:
+		if _target_abilities.is_active():
+			_update_target_ability_cursor(event.position)
+			return true
 		if _is_dragging():
 			_update_drag_selection(event.position)
 			return true
@@ -102,12 +128,19 @@ func handle_unhandled_input(event: InputEvent) -> bool:
 		return false
 	match event.button_index:
 		MOUSE_BUTTON_LEFT:
+			if _target_abilities.is_active():
+				if event.pressed:
+					_execute_target_ability(event.position)
+				return true
 			if event.pressed:
 				_begin_drag_selection(event.position)
 			else:
 				_finish_drag_selection(event.position)
 			return true
 		MOUSE_BUTTON_RIGHT:
+			if _target_abilities.is_active() and event.pressed:
+				_target_abilities.cancel()
+				return true
 			if event.pressed:
 				_command_at(event.position, event.ctrl_pressed or _attack_modifier_down)
 				return true
@@ -591,7 +624,71 @@ func _set_selection(entities: Array[Node]) -> void:
 		var callback := Callable(self, "_on_selected_entity_exiting").bind(entity)
 		if not entity.tree_exiting.is_connected(callback):
 			entity.tree_exiting.connect(callback, CONNECT_ONE_SHOT)
+	_target_abilities.selection_changed(_selected_entities)
 	_play_voice_feedback(&"Selection", _selected_entities)
+
+
+func has_active_target_ability() -> bool:
+	return _target_abilities.is_active()
+
+
+func cancel_target_ability() -> void:
+	_target_abilities.cancel()
+
+
+func _prune_uncommandable_selection() -> void:
+	var retained: Array[Node] = []
+	var changed := false
+	for entity in _selected_entities:
+		var retain_selection := is_instance_valid(entity) and (
+			not entity.has_method("can_remain_selected") \
+			or bool(entity.call("can_remain_selected"))
+		)
+		if retain_selection:
+			retained.append(entity)
+		else:
+			if is_instance_valid(entity):
+				var callback := Callable(self, "_on_selected_entity_exiting").bind(entity)
+				if entity.tree_exiting.is_connected(callback):
+					entity.tree_exiting.disconnect(callback)
+				entity.set_selected(false)
+			changed = true
+	if changed:
+		_selected_entities = retained
+		_target_abilities.selection_changed(_selected_entities)
+
+
+func _on_target_ability_status_changed(status: String) -> void:
+	status_changed.emit(status)
+
+
+func _on_target_ability_mode_changed(ability_id: StringName) -> void:
+	target_ability_mode_changed.emit(not ability_id.is_empty())
+	if ability_id.is_empty():
+		_clear_command_cursor()
+
+
+func _execute_target_ability(screen_position: Vector2) -> void:
+	var entity_hit := _raycast(screen_position, ENTITY_SELECTION_COLLISION_MASK)
+	var target = _find_selectable_entity(entity_hit.get("collider") as Node)
+	var terrain_hit := _raycast(screen_position, TERRAIN_COLLISION_MASK)
+	var position: Vector3 = terrain_hit.get("position", Vector3.INF)
+	_target_abilities.execute(target, position)
+
+
+func _update_target_ability_cursor(screen_position: Vector2) -> void:
+	var cursors: Variant = _cursor_manager()
+	if cursors == null:
+		return
+	var entity_hit := _raycast(screen_position, ENTITY_SELECTION_COLLISION_MASK)
+	var target = _find_selectable_entity(entity_hit.get("collider") as Node)
+	var terrain_hit := _raycast(screen_position, TERRAIN_COLLISION_MASK)
+	var position: Vector3 = terrain_hit.get("position", Vector3.INF)
+	cursors.set_override(
+		COMMAND_CURSOR_OVERRIDE,
+		_target_abilities.cursor_for(target, position),
+		COMMAND_CURSOR_PRIORITY
+	)
 
 
 func _play_voice_feedback(kind: StringName, entities: Array[Node]) -> void:
@@ -629,6 +726,7 @@ func _play_voice_feedback(kind: StringName, entities: Array[Node]) -> void:
 
 func _on_selected_entity_exiting(entity: Node) -> void:
 	_selected_entities.erase(entity)
+	_target_abilities.selection_changed(_selected_entities)
 	_selected_orders_active = -1
 	status_changed.emit("")
 
@@ -873,6 +971,9 @@ func _find_selectable_entity(node: Node):
 	var current := node
 	while current != null:
 		if current.is_in_group("units") or current.is_in_group("buildings"):
+			# This resolver is also used by attacks and target abilities, not just
+			# selection.  A carried cargo is unselectable/command-locked through
+			# the later control checks but must remain a damageable target.
 			return current
 		current = current.get_parent()
 	return null
@@ -900,7 +1001,8 @@ func _raycast(screen_position: Vector2, collision_mask: int = 3) -> Dictionary:
 
 func _can_control(unit) -> bool:
 	var players = _players()
-	return players != null and unit.is_owned_by(players.local_player_id)
+	return players != null and unit.is_owned_by(players.local_player_id) \
+		and (not unit.has_method("can_receive_commands") or bool(unit.call("can_receive_commands")))
 
 
 func _owner_status(unit) -> String:

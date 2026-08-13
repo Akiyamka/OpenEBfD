@@ -125,6 +125,54 @@ func unregister_unit(unit: Node3D) -> void:
 	registry.unregister_unit(_agents, unit)
 
 
+## A carried vehicle remains a live combat target but must not participate in
+## routing or avoidance while its transform is owned by a transport anchor.
+## These explicit operations deliberately keep transport code out of the
+## registry/agent dictionaries.
+func suspend_unit(unit: Node3D) -> void:
+	unregister_unit(unit)
+
+
+func resume_unit(unit: Node3D) -> void:
+	if unit != null and is_instance_valid(unit):
+		register_unit(unit)
+
+
+## Read-only footprint/passability probe used before an advanced carryall can
+## commit a drop.  `can_move_to()` already queries an unregistered unit's
+## profile without mutating routing state, so it is the authoritative answer.
+func can_place_transport_cargo(unit: Node3D, world_target: Vector3, ignored_carrier: Node3D = null) -> bool:
+	if unit == null or runtime_map.grid == null:
+		return false
+	# A carryall may cross disconnected islands, so this is deliberately a
+	# destination-footprint probe rather than can_move_to(), which also asks A*
+	# whether the cargo can walk there from its *current* component.
+	var agent: Dictionary = registry.movement_probe_for(_agents, unit)
+	# Cargo is left standing here after unload, so no-stop transit cells are not
+	# legal even though a normal move cursor may use them as a pass-through.
+	if not _ground_target_is_legal(agent, world_target, false):
+		return false
+	var cargo_radius := float(unit.call("navigation_collision_radius", 0.25)) \
+		if unit.has_method("navigation_collision_radius") else 0.25
+	for candidate in get_tree().get_nodes_in_group("units"):
+		var other := candidate as Node3D
+		if other == null or other == unit or other == ignored_carrier or not is_instance_valid(other):
+			continue
+		if other.has_method("combat_is_alive") and not bool(other.call("combat_is_alive")):
+			continue
+		if other.has_method("is_carried") and bool(other.call("is_carried")):
+			continue
+		if other.has_method("combat_is_airborne") and bool(other.call("combat_is_airborne")):
+			continue
+		var other_radius := float(other.call("navigation_collision_radius", 0.25)) \
+			if other.has_method("navigation_collision_radius") else 0.25
+		var offset := other.global_position - world_target
+		offset.y = 0.0
+		if offset.length() < cargo_radius + other_radius:
+			return false
+	return true
+
+
 func set_debug_enabled(value: bool) -> void:
 	_debug_enabled = value
 	navigation_debug.set_enabled(value)

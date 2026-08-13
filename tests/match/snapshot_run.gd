@@ -3,6 +3,8 @@ extends SceneTree
 const MatchSnapshotScript := preload("res://scripts/match/match_snapshot.gd")
 const SnapshotFixtureScene := preload("res://tests/fixtures/snapshot_fixture.tscn")
 const ATRefineryScene := preload("res://assets/converted/buildings/ATRefinery/ATRefinery.scn")
+const ATAdvancedCarryallScene := preload("res://scenes/units/atadv_carryall.tscn")
+const ATScoutScene := preload("res://scenes/units/at_trike.tscn")
 const TEST_SNAPSHOT_PATH := "user://match_snapshot_test.json"
 
 var _failures := 0
@@ -25,6 +27,14 @@ func _initialize() -> void:
 	source_refinery.owner_player_id = 1
 	source.get_node("Buildings").add_child(source_refinery)
 	source_refinery.set_refinery_upgrade_state(2)
+	var source_carryall := ATAdvancedCarryallScene.instantiate() as Unit
+	var source_cargo := ATScoutScene.instantiate() as Unit
+	source_carryall.name = "SnapshotCarryall"
+	source_cargo.name = "SnapshotCargo"
+	source.get_node("Units").add_child(source_carryall)
+	source.get_node("Units").add_child(source_cargo)
+	await process_frame
+	source_carryall.transport_attach_cargo(source_cargo, Vector3(0.0, -2.0, 0.0))
 	var building_transform := Transform3D(Basis(Vector3.UP, 0.4), Vector3(84.0, 0.0, 96.0))
 	var unit_transform := Transform3D(Basis(Vector3.UP, -0.7), Vector3(145.0, 0.0, 72.0))
 	source_building.global_transform = building_transform
@@ -45,8 +55,19 @@ func _initialize() -> void:
 	var restored_building := restored.get_node_or_null("Buildings/ATSmWindtrap") as Node3D
 	var restored_refinery := restored.get_node_or_null("Buildings/SnapshotRefinery") as Building
 	var restored_unit := restored.get_node_or_null("Units/OrdosAPC") as Unit
+	var restored_carryall := restored.get_node_or_null("Units/SnapshotCarryall") as Unit
+	var restored_cargo := restored.get_node_or_null("Units/SnapshotCargo") as Unit
 	_expect(restored_building != null, "saved building should exist after restore")
 	_expect(restored_unit != null, "saved unit should exist after restore")
+	_expect(
+		restored_carryall != null and restored_cargo != null,
+		"snapshot must retain both a carryall and its carried Unit"
+	)
+	_expect(
+		restored_cargo != null and not restored_cargo.is_carried()
+			and restored_cargo.get_parent() == restored.get_node("Units"),
+		"snapshot must restore cargo independently without persisting transport state"
+	)
 	_expect(
 		restored_refinery != null and restored_refinery.refinery_upgrade_state == 2,
 		"refinery dock state should be restored without separate dock buildings"

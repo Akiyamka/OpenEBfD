@@ -22,6 +22,9 @@ const UnitDeployStateScript := preload("res://scripts/units/unit_deploy_state.gd
 const UnitCombatScript := preload("res://scripts/units/unit_combat.gd")
 const UnitAuthoredCollisionScript := preload("res://scripts/units/unit_authored_collision.gd")
 const UnitAnimationDirectorScript := preload("res://scripts/units/unit_animation_director.gd")
+const AdvancedCarryallTransportScript := preload(
+	"res://scripts/units/advanced_carryall_transport.gd"
+)
 static var _definition_catalog := UnitSceneCatalogScript.shared()
 
 signal owner_changed(player_id: int)
@@ -141,6 +144,15 @@ var _terrain_alignment := UnitTerrainAlignmentScript.new()
 var _locomotion := UnitLocomotionScript.new()
 var _movement_sounds := UnitMovementSoundsScript.new()
 var _flight_controller: UnitFlightController = null
+## AdvancedCarryallTransport owns the transport state machine; Unit exposes
+## only the public hooks it needs for tree, navigation, combat and flight.
+var _advanced_carryall_transport = null
+var _transport_cargo_anchor: Node3D
+var _transport_carrier_ref: WeakRef
+var _transport_reservation_ref: WeakRef
+var _transport_docking_locked := false
+var _navigation_suspended_for_transport := false
+var _transport_issuing_navigation := false
 var _death_sequence := UnitDeathSequenceScript.new()
 ## Not `velocity`: navigation_step() zeroes its vertical component, and
 ## UnitFlightController writes global_position directly, bypassing velocity
@@ -176,6 +188,8 @@ func _init() -> void:
 	_deploy.configure(self)
 	_combat.configure(self)
 	_authored_collision.configure(self)
+	_advanced_carryall_transport = AdvancedCarryallTransportScript.new()
+	_advanced_carryall_transport.configure(self)
 
 
 func _ready() -> void:
@@ -211,6 +225,8 @@ func _exit_tree() -> void:
 	# doc comment), so this is the terminal call -- everything above the
 	# module has already run by the time it drops its back reference.
 	_combat.dispose()
+	if _advanced_carryall_transport != null:
+		_advanced_carryall_transport.dispose()
 	for turret in combat_turrets:
 		turret.cancel_authored_fire_fx()
 
@@ -247,6 +263,11 @@ func _physics_process(delta: float) -> void:
 	# updating it at the end of the previous call, but without duplicating
 	# the assignment above every early return below.
 	_previous_global_position = global_position
+	if is_carried():
+		velocity = Vector3.ZERO
+		return
+	if _advanced_carryall_transport != null:
+		_advanced_carryall_transport.advance(delta)
 	if _flight_controller != null and _flight_controller.flight_controls_transition():
 		_flight_controller.advance(delta)
 		return
@@ -309,6 +330,8 @@ func _physics_process(delta: float) -> void:
 ## `exit_point` is a mandatory first waypoint (a production building's front
 ## exit): the unit walks straight to it before regular routing takes over.
 func move_to(world_position: Vector3, exit_point := Vector3.INF) -> void:
+	if not _transport_issuing_navigation and not transport_accepts_regular_order():
+		return
 	if _flight_controller != null and _flight_controller.flight_is_landed():
 		_flight_controller.begin_takeoff_toward(world_position, exit_point)
 		return
@@ -399,11 +422,11 @@ func flight_consume_circles_order_completed() -> bool:
 	return _flight_controller.consume_circles_order_completed() if _flight_controller != null else false
 
 
-## Pickup sequence stubs — phases/clips exist and are individually triggerable;
-## nothing drives them automatically yet (follow-up carryall-AI pass).
-func flight_begin_pickup_sequence() -> void:
+## Flight-facing pickup sequence surface. AdvancedCarryallTransport schedules
+## the phases; UnitFlightController owns their clips and vertical motion.
+func flight_begin_pickup_sequence(landing_position := Vector3.INF) -> void:
 	if _flight_controller != null:
-		_flight_controller.flight_begin_pickup_sequence()
+		_flight_controller.flight_begin_pickup_sequence(landing_position)
 
 
 func flight_advance_pickup(next_sub_phase: int) -> void:
@@ -414,6 +437,14 @@ func flight_advance_pickup(next_sub_phase: int) -> void:
 func flight_complete_pickup_sequence() -> void:
 	if _flight_controller != null:
 		_flight_controller.flight_complete_pickup_sequence()
+
+
+func flight_pickup_transition_finished() -> bool:
+	return _flight_controller != null and _flight_controller.flight_pickup_transition_finished()
+
+
+func flight_transport_takeoff_finished() -> bool:
+	return _flight_controller != null and _flight_controller.flight_transport_takeoff_finished()
 
 
 ## Narrow clip surface used by UnitFlightController; see
@@ -456,6 +487,10 @@ func flight_terrain_hit_at(position: Vector3) -> Dictionary:
 func prepare_navigation_order(
 	world_position: Vector3, exit_point := Vector3.INF, move_mode := 0
 	) -> bool:
+	if not _transport_issuing_navigation and not transport_accepts_regular_order():
+		return false
+	if not can_receive_commands():
+		return false
 	# A harvester mid-unload answers a move order by finishing its clip first,
 	# and takes the order back up when it does.
 	if _harvester != null \
@@ -470,6 +505,10 @@ func set_navigation_managed(active: bool) -> void:
 	if active:
 		velocity = Vector3.ZERO
 		_set_navigation_debug_direction(Vector3.ZERO)
+
+
+func navigation_is_suspended() -> bool:
+	return _navigation_suspended_for_transport
 
 
 func set_navigation_controller(controller) -> void:
@@ -707,6 +746,297 @@ func replace_visual_scene(model_scene: PackedScene) -> void:
 	_rebuild_selection_halo()
 
 
+## --- Advanced Carryall transport facade ---------------------------------
+##
+## These are intentionally the only calls the transport state machine makes
+## into Unit.  It never reads Unit's private navigation/combat/visual fields;
+## Unit remains responsible for its own scene-tree and sibling modules.
+
+func is_advanced_carryall() -> bool:
+	return unit_definition != null \
+		and bool(unit_definition.can_fly) \
+		and bool(unit_definition.advanced_carryall)
+
+
+func has_transport_cargo() -> bool:
+	return _advanced_carryall_transport != null and _advanced_carryall_transport.has_cargo()
+
+
+func can_offer_transport_pickup() -> bool:
+	return is_advanced_carryall() and _advanced_carryall_transport != null \
+		and _advanced_carryall_transport.can_offer_pickup()
+
+
+func can_offer_transport_drop() -> bool:
+	return is_advanced_carryall() and _advanced_carryall_transport != null \
+		and _advanced_carryall_transport.can_offer_drop()
+
+
+func transport_cargo() -> Node3D:
+	return _advanced_carryall_transport.cargo() if _advanced_carryall_transport != null else null
+
+
+func transport_state_name() -> StringName:
+	return _advanced_carryall_transport.state_name() if _advanced_carryall_transport != null else &"idle"
+
+
+func can_pickup(target: Node3D) -> bool:
+	return is_advanced_carryall() and _advanced_carryall_transport != null \
+		and _advanced_carryall_transport.can_pickup(target)
+
+
+func command_pickup(target: Node3D) -> bool:
+	return can_pickup(target) and _advanced_carryall_transport.command_pickup(target)
+
+
+func can_drop_at(world_position: Vector3) -> bool:
+	return is_advanced_carryall() and _advanced_carryall_transport != null \
+		and _advanced_carryall_transport.can_drop_at(world_position)
+
+
+func command_drop(world_position: Vector3) -> bool:
+	return can_drop_at(world_position) and _advanced_carryall_transport.command_drop(world_position)
+
+
+func is_carried() -> bool:
+	return _transport_carrier() != null
+
+
+func can_receive_commands() -> bool:
+	return not is_carried() and not _transport_docking_locked \
+		and not (_advanced_carryall_transport != null and _advanced_carryall_transport.is_command_locked())
+
+
+## Selection has a narrower contract than command acceptance: a transport
+## remains visibly selected through its locked landing/docking animation, but
+## a cargo that is carried or command-locked must disappear from selection.
+func can_remain_selected() -> bool:
+	return not is_carried() and not _transport_docking_locked
+
+
+func can_perform_combat() -> bool:
+	return can_receive_commands()
+
+
+func can_be_picked_up_by(carrier: Node3D) -> bool:
+	if carrier == null or carrier == self or not combat_is_alive() or is_carried():
+		return false
+	if unit_definition == null or bool(unit_definition.infantry) or bool(unit_definition.can_fly):
+		return false
+	# Advanced Carryalls only lift mobile ground vehicles.  Use the runtime
+	# speeds so a mission may intentionally make an otherwise normal vehicle
+	# stationary without changing its generated definition resource.
+	if maxf(move_speed, mech_speed) <= 0.0:
+		return false
+	if is_deploying() or is_deployed():
+		return false
+	var reserved := _transport_reservation()
+	return reserved == null or reserved == carrier
+
+
+func reserve_for_transport(carrier: Node3D) -> bool:
+	if not can_be_picked_up_by(carrier):
+		return false
+	_transport_reservation_ref = weakref(carrier)
+	return true
+
+
+func is_reserved_for_transport(carrier: Node3D) -> bool:
+	return _transport_reservation() == carrier
+
+
+func transport_lock_for_docking(carrier: Node3D) -> void:
+	if _transport_reservation() != carrier:
+		return
+	cancel_all_orders()
+	_transport_docking_locked = true
+
+
+func transport_unlock_after_abort(carrier: Node3D) -> void:
+	if _transport_reservation() != carrier:
+		return
+	_transport_docking_locked = false
+	_transport_reservation_ref = null
+
+
+func transport_target_is_enemy(target: Node3D) -> bool:
+	if target == null or not target.has_method("combat_owner_player_id"):
+		return false
+	var players = _players()
+	return players != null and players.are_enemies(
+		owner_player_id, int(target.call("combat_owner_player_id"))
+	)
+
+
+func transport_move_toward(world_position: Vector3) -> void:
+	_transport_issuing_navigation = true
+	if _navigation_managed and _navigation_system != null:
+		_navigation_system.command_move([self], world_position, NavConstantsScript.MoveMode.FREE)
+	else:
+		move_to(world_position)
+	_transport_issuing_navigation = false
+
+
+func transport_align_with(target: Node3D) -> void:
+	if target != null and target.has_method("facing_direction"):
+		face_direction(target.call("facing_direction") as Vector3)
+
+
+func transport_align_with_point(world_position: Vector3) -> void:
+	var direction := world_position - global_position
+	direction.y = 0.0
+	if direction.length_squared() > 0.000001:
+		face_direction(direction)
+
+
+func transport_track_pickup_landing(target: Node3D) -> void:
+	if target == null or not is_instance_valid(target):
+		return
+	# FlightController owns Y during Land.  Transport owns only the horizontal
+	# co-axial placement, so tracking a mobile target cannot interrupt descent.
+	global_position = Vector3(target.global_position.x, global_position.y, target.global_position.z)
+	transport_align_with(target)
+
+
+func transport_stop_for_docking() -> void:
+	# Do not call cancel_all_orders(): its public Stop path intentionally aborts
+	# an APPROACH transport.  This is the lower-level route neutralization used
+	# after the transport FSM itself has committed to a dock transition.
+	if _navigation_managed and _navigation_system != null:
+		_navigation_system.stop(self)
+	else:
+		target_position = global_position
+		velocity = Vector3.ZERO
+		_has_pending_navigation_order = false
+		_pending_navigation_order = Vector3.ZERO
+		_pending_navigation_exit = Vector3.INF
+	if _flight_controller != null:
+		_flight_controller.clear_circles_order()
+
+
+func transport_can_drop_cargo_at(cargo: Node3D, world_position: Vector3) -> bool:
+	if cargo == null or not is_instance_valid(cargo):
+		return false
+	if _navigation_system != null and _navigation_system.has_method("can_place_transport_cargo"):
+		return bool(_navigation_system.call("can_place_transport_cargo", cargo, world_position, self))
+	# Small test fixtures do not create navigation; accepting a finite point
+	# preserves the same direct-movement fallback used by ordinary Units.
+	return world_position.is_finite()
+
+
+func transport_bounds_half_height() -> float:
+	var bounds := _selection_bounds()
+	return maxf(bounds.size.y * 0.5, 0.25)
+
+
+func transport_vertical_bounds() -> Vector2:
+	var bounds := _selection_bounds()
+	return Vector2(bounds.position.y, bounds.end.y) if bounds.size.y > 0.0 else Vector2(-0.25, 0.25)
+
+
+func transport_attach_cargo(cargo: Node3D, anchor_offset: Vector3) -> void:
+	if cargo == null or not is_instance_valid(cargo):
+		return
+	var anchor := _ensure_transport_cargo_anchor()
+	anchor.position = anchor_offset
+	if cargo.has_method("transport_mark_carried"):
+		cargo.call("transport_mark_carried", self)
+	cargo.reparent(anchor, false)
+	cargo.transform = Transform3D.IDENTITY
+
+
+func transport_detach_cargo(cargo: Node3D, original_parent: Node, world_position: Vector3) -> void:
+	if cargo == null or not is_instance_valid(cargo):
+		return
+	var destination_parent := original_parent
+	if destination_parent == null or not is_instance_valid(destination_parent):
+		destination_parent = EntityQueryScript.units_parent(get_tree(), get_parent())
+	if destination_parent != null:
+		cargo.reparent(destination_parent, true)
+	if cargo.has_method("transport_mark_released"):
+		cargo.call("transport_mark_released", world_position, facing_direction())
+
+
+func transport_release_destroyed_cargo(cargo: Node3D, original_parent: Node) -> void:
+	if cargo == null or not is_instance_valid(cargo):
+		return
+	var destination_parent := original_parent
+	if destination_parent == null or not is_instance_valid(destination_parent):
+		destination_parent = EntityQueryScript.units_parent(get_tree(), get_parent())
+	if destination_parent != null:
+		cargo.reparent(destination_parent, true)
+	if cargo.has_method("transport_mark_destroyed_release"):
+		cargo.call("transport_mark_destroyed_release")
+
+
+func transport_cargo_destroyed(cargo: Node3D) -> void:
+	if _advanced_carryall_transport != null:
+		_advanced_carryall_transport.cargo_destroyed(cargo)
+
+
+func transport_accepts_regular_order() -> bool:
+	return _advanced_carryall_transport == null or _advanced_carryall_transport.accepts_regular_order()
+
+
+func transport_abort_docking_recover() -> void:
+	if _flight_controller != null:
+		_flight_controller.flight_complete_pickup_sequence()
+
+
+func transport_mark_carried(carrier: Node3D) -> void:
+	_transport_carrier_ref = weakref(carrier)
+	_transport_reservation_ref = null
+	_transport_docking_locked = false
+	cancel_all_orders()
+	_navigation_suspended_for_transport = true
+	if _navigation_system != null and _navigation_system.has_method("suspend_unit"):
+		_navigation_system.call("suspend_unit", self)
+
+
+func transport_mark_released(world_position: Vector3, carrier_facing: Vector3) -> void:
+	_transport_carrier_ref = null
+	_transport_reservation_ref = null
+	_transport_docking_locked = false
+	global_position = world_position
+	face_direction(carrier_facing)
+	_terrain_snap_body()
+	_navigation_suspended_for_transport = false
+	if _navigation_system != null and _navigation_system.has_method("resume_unit"):
+		_navigation_system.call("resume_unit", self)
+
+
+func transport_mark_destroyed_release() -> void:
+	_transport_carrier_ref = null
+	_transport_reservation_ref = null
+	_transport_docking_locked = false
+	_navigation_suspended_for_transport = true
+
+
+func _ensure_transport_cargo_anchor() -> Node3D:
+	if _transport_cargo_anchor != null and is_instance_valid(_transport_cargo_anchor):
+		return _transport_cargo_anchor
+	_transport_cargo_anchor = Node3D.new()
+	_transport_cargo_anchor.name = "CargoAnchor"
+	# The visual root contains the carrier's authored slope/bank transform.
+	# Parenting here makes the cargo inherit translation plus yaw, pitch and
+	# roll as a real descendant rather than copying a partial transform.
+	var anchor_parent: Node = visual_root if visual_root != null else self
+	anchor_parent.add_child(_transport_cargo_anchor)
+	if visual_root != null:
+		_transport_cargo_anchor.basis = _terrain_alignment.visual_rest_basis_inverse()
+	return _transport_cargo_anchor
+
+
+func _transport_carrier() -> Node3D:
+	var carrier: Variant = _transport_carrier_ref.get_ref() if _transport_carrier_ref != null else null
+	return carrier as Node3D if carrier != null and is_instance_valid(carrier) else null
+
+
+func _transport_reservation() -> Node3D:
+	var reservation: Variant = _transport_reservation_ref.get_ref() if _transport_reservation_ref != null else null
+	return reservation as Node3D if reservation != null and is_instance_valid(reservation) else null
+
+
 func set_invulnerable(value: bool) -> void:
 	invulnerable = value
 
@@ -731,11 +1061,29 @@ func take_damage(amount: float, death_cause: StringName = &"") -> void:
 		_begin_death_sequence(death_cause)
 
 
+## Transport destruction is a lifecycle rule, not an attack.  It must destroy
+## the attached cargo even if a scripted scenario made that vehicle normally
+## invulnerable; this narrow bypass is never used by combat damage.
+func force_transport_death(death_cause: StringName = &"transport_destroyed") -> void:
+	if not combat_is_alive():
+		return
+	invulnerable = false
+	shields = 0.0
+	health = 0.0
+	_begin_death_sequence(death_cause)
+
+
 func combat_armour_type() -> StringName:
 	return armour_type
 
 
 func combat_is_airborne() -> bool:
+	if is_carried():
+		return true
+	if _advanced_carryall_transport != null and _advanced_carryall_transport.counts_as_ground_target():
+		# Pickup/drop landing and docking deliberately expose the carrier as a
+		# ground target even though its flight controller owns the transition.
+		return false
 	return unit_definition != null and unit_definition.can_fly and not flight_is_landed()
 
 
@@ -744,6 +1092,13 @@ func combat_is_airborne() -> bool:
 ## to do lives in UnitDeathSequence; _previous_global_position is the facade's
 ## own bookkeeping and is handed over by value.
 func _begin_death_sequence(cause: StringName) -> void:
+	if is_carried():
+		var carrier := _transport_carrier()
+		if carrier != null and carrier.has_method("transport_cargo_destroyed"):
+			carrier.call("transport_cargo_destroyed", self)
+		_transport_carrier_ref = null
+	if _advanced_carryall_transport != null:
+		_advanced_carryall_transport.on_owner_death()
 	_death_sequence.begin(cause, _previous_global_position)
 
 
@@ -1047,6 +1402,9 @@ func stop_at_current_position() -> void:
 ## Shared Stop-command contract. Stopping also breaks a harvester's autonomous
 ## economy loop, which would otherwise pick a new field on the next tick.
 func cancel_all_orders() -> bool:
+	var cancelled_transport := false
+	if _advanced_carryall_transport != null:
+		cancelled_transport = _advanced_carryall_transport.cancel_pending_order()
 	var had_order := (
 		has_attack_order()
 		or _has_pending_navigation_order
@@ -1059,7 +1417,7 @@ func cancel_all_orders() -> bool:
 		_pending_navigation_exit = Vector3.INF
 		stop_at_current_position()
 	var had_harvester_order: bool = _harvester != null and _harvester.cancel_all_orders()
-	return had_order or had_harvester_order
+	return had_order or had_harvester_order or cancelled_transport
 
 
 ## Shared unit deployment interface. Eligibility and the per-unit strategy
@@ -1067,10 +1425,14 @@ func cancel_all_orders() -> bool:
 ## alignment and animation phases so future deployable units can reuse the
 ## same contract.
 func deploy(desired_facing: Vector3 = Vector3.ZERO) -> bool:
+	if not can_receive_commands():
+		return false
 	return _deploy.begin_deploy(desired_facing)
 
 
 func undeploy() -> bool:
+	if not can_receive_commands():
+		return false
 	return _deploy.begin_undeploy()
 
 

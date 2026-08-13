@@ -12,6 +12,7 @@
 [ext_resource type="PackedScene" path="res://scenes/units/atmcv.tscn" id="8_nrmfh"]
 [ext_resource type="PackedScene" path="res://scenes/units/at_engineer.tscn" id="9_5l5ba"]
 [ext_resource type="PackedScene" path="res://scenes/ui/side_panel.tscn" id="9_nabld"]
+[ext_resource type="PackedScene" path="res://scenes/ui/ability_bar.tscn" id="9_ability_bar"]
 [ext_resource type="PackedScene" path="res://scenes/units/at_orni.tscn" id="10_6gj2j"]
 [ext_resource type="PackedScene" path="res://scenes/units/at_repair_unit.tscn" id="11_hb6dm"]
 [ext_resource type="PackedScene" path="res://scenes/units/at_scout.tscn" id="12_qwf54"]
@@ -133,6 +134,8 @@ owner_player_id = 1
 [node name="Units" type="Node3D" parent="." unique_id=21881757]
 
 [node name="HUD" type="CanvasLayer" parent="." unique_id=1178120540]
+
+[node name="AbilityBar" parent="HUD" unique_id=412406091 instance=ExtResource("9_ability_bar")]
 
 [node name="Help" type="Label" parent="HUD" unique_id=1755436348]
 offset_left = 16.0

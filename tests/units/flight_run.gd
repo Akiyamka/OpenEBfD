@@ -70,6 +70,7 @@ func _initialize() -> void:
 	_run_case("Circles Stop enters idle cruise", _test_circles_stop_enters_idle_cruise)
 	_run_case("air orders share their clamped destination with Circles flight", _test_circles_order_uses_bounded_destination)
 	_run_case("locked flight rejects lateral separation", _test_locked_flight_rejects_lateral_separation)
+	_run_case("Pickup lift physically raises a transport before Takeoff", _test_pickup_lift_altitude)
 	_run_case("a non-Ornithopter, non-carrier flyer can never land", _test_non_ornithopter_never_lands)
 	_run_case("an Ornithopter can land, then take off again on its next order", _test_ornithopter_land_takeoff_round_trip)
 	_run_case("converging air agents separate vertically, then decay back to level", _test_vertical_avoidance)
@@ -438,6 +439,29 @@ func _test_locked_flight_rejects_lateral_separation() -> void:
 	_expect(avoidance.calls == 0,
 		"landing/pickup lock must not receive a lateral-separation velocity")
 	locked.free()
+
+
+func _test_pickup_lift_altitude() -> void:
+	var carrier: Unit = ATADVCarryallScene.instantiate()
+	root.add_child(carrier)
+	carrier.global_position = Vector3(5.0, 9.0, 5.0)
+	carrier.flight_begin_pickup_sequence(carrier.global_position)
+	for _frame in 20:
+		carrier._physics_process(0.2)
+		if carrier.flight_pickup_transition_finished():
+			break
+	_expect(carrier.flight_pickup_transition_finished(), "Land clip must complete before pickup lift test")
+	var landed_y := carrier.global_position.y
+	carrier.flight_advance_pickup(UnitFlightControllerScript.Phase.PICKUP_START)
+	for _frame in 20:
+		carrier._physics_process(0.2)
+		if carrier.flight_pickup_transition_finished():
+			break
+	carrier.flight_advance_pickup(UnitFlightControllerScript.Phase.PICKUP_LIFT)
+	carrier._physics_process(0.4)
+	_expect(carrier.global_position.y > landed_y + 0.01,
+		"Pickup lift must raise the carrier/cargo transform instead of only timing a clip")
+	carrier.free()
 
 
 func _test_non_ornithopter_never_lands() -> void:

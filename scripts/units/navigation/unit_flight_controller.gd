@@ -98,6 +98,13 @@ var _circles_departure := Vector3.INF
 var _circles_departure_planned := false
 var _circles_idle_turn_sign := 1.0
 var _visual_bank := 0.0
+## A transport owns the order between pickup clips.  The flight controller
+## advances the authored clip/vertical motion and exposes completion, but
+## never decides when a cargo is attached or detached.
+var _pickup_transition_finished := false
+var _pickup_ground_altitude := 0.0
+var _pickup_cruise_altitude := 0.0
+var _pickup_landing_start_altitude := 0.0
 
 
 func configure(unit, unit_definition) -> void:
@@ -403,23 +410,28 @@ static func _segment_reaches(start: Vector3, end: Vector3, target: Vector3, radi
 	return (to_target - segment * t).length() <= radius
 
 
-## Pickup sequence — stub only, per scope. Phase/clip constants exist and are
-## individually triggerable; nothing drives the sub-phases automatically yet
-## (that is the follow-up carryall-AI pass).
-func flight_begin_pickup_sequence() -> void:
+## Pickup sequence is scheduled by AdvancedCarryallTransport.  This controller
+## owns the authored clip progression and vertical body transform only.
+func flight_begin_pickup_sequence(landing_position := Vector3.INF) -> void:
 	if not can_enter_pickup_sequence():
 		return
 	phase = Phase.PICKUP_LAND
 	_phase_elapsed = 0.0
+	_pickup_transition_finished = false
 	clear_circles_order()
 	_visual_bank = 0.0
 	_unit.flight_set_visual_bank(0.0)
+	var landing: Vector3 = landing_position if landing_position.is_finite() else _unit.global_position
+	_pickup_ground_altitude = _sample_ground_altitude(landing)
+	_pickup_landing_start_altitude = _unit.global_position.y
+	_pickup_cruise_altitude = _pickup_ground_altitude + BASE_FLIGHT_ALTITUDE + height_offset
 	_unit.flight_play_clip(LAND_ANIMATION, false, 1.0)
 
 
 func flight_advance_pickup(next_sub_phase: Phase) -> void:
 	phase = next_sub_phase
 	_phase_elapsed = 0.0
+	_pickup_transition_finished = false
 	match next_sub_phase:
 		Phase.PICKUP_START:
 			_unit.flight_play_clip(PICKUP_START_ANIMATION, false, 1.0)
@@ -430,8 +442,27 @@ func flight_advance_pickup(next_sub_phase: Phase) -> void:
 
 
 func flight_complete_pickup_sequence() -> void:
-	# The follow-up carryall-AI pass supplies the real post-lift destination.
-	_start_takeoff(_unit.global_position, Vector3.INF)
+	# Pickup lift already raised the transport a visible part of the way.  Start
+	# Takeoff from its present altitude so the clip continues upward smoothly,
+	# rather than snapping it back to terrain before the final ascent.
+	_post_takeoff_move_target = _unit.global_position
+	_post_takeoff_exit_point = Vector3.INF
+	phase = Phase.TAKING_OFF
+	_phase_elapsed = 0.0
+	ground_altitude = _unit.global_position.y
+	cruise_altitude = _pickup_cruise_altitude
+	_unit.flight_play_clip(TAKEOFF_ANIMATION, false, 1.0)
+
+
+func flight_pickup_transition_finished() -> bool:
+	return _pickup_transition_finished
+
+
+## Pickup/drop transport remains command-locked through Takeoff.  The state
+## machine uses this instead of treating `begin_takeoff` as an instantaneous
+## completion, so a player cannot slip a normal order into the transition.
+func flight_transport_takeoff_finished() -> bool:
+	return phase == Phase.CRUISING or phase == Phase.HOVERING
 
 
 ## Called unconditionally every tick from Unit._snap_to_terrain(delta) whenever
@@ -461,7 +492,18 @@ func advance(delta: float) -> void:
 		_unit.global_position.y = cruise_altitude + _vertical_avoidance_offset
 		_unit.flight_set_visual_slope_target(Vector3.UP)
 		return
-	# Pickup sub-phases: stub only, no automatic advancement this pass.
+	if phase == Phase.PICKUP_LAND:
+		_advance_pickup_landing(delta)
+		return
+	if phase == Phase.PICKUP_START:
+		_advance_pickup_clip(delta, PICKUP_START_ANIMATION, DEFAULT_LAND_SECONDS)
+		return
+	if phase == Phase.PICKUP_LIFT:
+		_advance_pickup_lift(delta)
+		return
+	if phase == Phase.PICKUP_END:
+		_advance_pickup_clip(delta, PICKUP_END_ANIMATION, DEFAULT_LAND_SECONDS)
+		return
 
 
 func _advance_hangar_exit(delta: float) -> void:
@@ -498,6 +540,42 @@ func _advance_vertical_transition(
 	if next_phase == Phase.CRUISING:
 		_cruise_state_initialized = false
 		_unit.move_to(_post_takeoff_move_target, _post_takeoff_exit_point)
+
+
+func _advance_pickup_landing(delta: float) -> void:
+	if _pickup_transition_finished:
+		return
+	_phase_elapsed += maxf(delta, 0.0)
+	var duration: float = _unit.flight_clip_length(LAND_ANIMATION, DEFAULT_LAND_SECONDS)
+	var t := clampf(_phase_elapsed / duration, 0.0, 1.0) if duration > 0.0 else 1.0
+	_unit.global_position.y = lerpf(_pickup_landing_start_altitude, _pickup_ground_altitude, t)
+	_unit.flight_set_visual_slope_target(Vector3.UP)
+	if t >= 1.0:
+		_pickup_transition_finished = true
+
+
+func _advance_pickup_clip(delta: float, clip_name: StringName, fallback_seconds: float) -> void:
+	if _pickup_transition_finished:
+		return
+	_phase_elapsed += maxf(delta, 0.0)
+	var duration: float = _unit.flight_clip_length(clip_name, fallback_seconds)
+	if duration <= 0.0 or _phase_elapsed >= duration:
+		_pickup_transition_finished = true
+
+
+func _advance_pickup_lift(delta: float) -> void:
+	if _pickup_transition_finished:
+		return
+	_phase_elapsed += maxf(delta, 0.0)
+	var duration: float = _unit.flight_clip_length(PICKUP_ANIMATION, DEFAULT_LAND_SECONDS)
+	var t := clampf(_phase_elapsed / duration, 0.0, 1.0) if duration > 0.0 else 1.0
+	# The dedicated Pickup animation visibly establishes airborne state before
+	# EndPickup/Takeoff.  Takeoff then covers the remaining climb continuously.
+	var lift_altitude := lerpf(_pickup_ground_altitude, _pickup_cruise_altitude, 0.35)
+	_unit.global_position.y = lerpf(_pickup_ground_altitude, lift_altitude, t)
+	_unit.flight_set_visual_slope_target(Vector3.UP)
+	if t >= 1.0:
+		_pickup_transition_finished = true
 
 
 func _advance_vertical_avoidance(delta: float) -> void:

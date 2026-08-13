@@ -65,6 +65,14 @@ func set_flight_bank(angle: float) -> void:
 	set_slope_target(_last_terrain_normal)
 
 
+## A transport anchor is parented below `visual_root` so cargo inherits the
+## carrier's presentation pitch/roll.  Converted model roots also carry a
+## fixed source-coordinate conversion basis; exposing its inverse here keeps
+## that rest conversion from rotating the cargo's gameplay body 180 degrees.
+func visual_rest_basis_inverse() -> Basis:
+	return _visual_root_rest_basis.inverse()
+
+
 func terrain_hit_at(position: Vector3) -> Dictionary:
 	return TerrainProbeScript.height_hit(
 		_unit.get_world_3d(),

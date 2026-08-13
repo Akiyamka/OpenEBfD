@@ -99,6 +99,11 @@ func configure(owner: CharacterBody3D) -> void:
 func advance(delta: float) -> void:
 	if _owner == null:
 		return
+	if _owner.has_method("can_perform_combat") and not bool(_owner.call("can_perform_combat")):
+		# A carried/docking unit remains damageable and targetable, but may not
+		# autonomously acquire, turn, fire or pursue while its carrier owns it.
+		cancel_attack_order()
+		return
 	_target_acquisition.advance(delta)
 	_advance_attack_order(delta)
 	_advance_fire_sequences(delta)
@@ -173,6 +178,9 @@ func _active_turrets() -> Array:
 
 
 func can_attack(target_or_position: Variant) -> bool:
+	if _owner != null and _owner.has_method("can_perform_combat") \
+	and not bool(_owner.call("can_perform_combat")):
+		return false
 	for turret in _active_turrets():
 		if turret.can_target(target_or_position):
 			return true
@@ -184,6 +192,9 @@ func can_attack(target_or_position: Variant) -> bool:
 ## belong to UnitCommandController so Ctrl can deliberately force friendly or
 ## neutral fire through this same combat-facing API.
 func command_attack(target_or_position: Variant) -> bool:
+	if _owner != null and _owner.has_method("can_perform_combat") \
+	and not bool(_owner.call("can_perform_combat")):
+		return false
 	if not can_attack(target_or_position):
 		return false
 	_cancel_all_fire_sequences()
@@ -693,7 +704,7 @@ func _on_authored_weapon_fired(
 
 
 func _reload_starts_after_fire_animation() -> bool:
-	return _owner.unit_definition != null and _owner.unit_definition.infantry
+	return _owner != null and _owner.unit_definition != null and _owner.unit_definition.infantry
 
 
 func _finish_fire_sequence_for(weapon_index: int) -> void:

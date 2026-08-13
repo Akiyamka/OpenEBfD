@@ -11,6 +11,10 @@ signal resources_changed(credits: int, energy: int)
 signal sell_mode_changed(active: bool)
 signal wall_mode_changed(active: bool)
 signal repair_mode_changed(active: bool)
+## One public interaction contract for all map-pointer modes.  Selection
+## abilities use it to remain mutually exclusive with placement as well as the
+## older sell/repair/wall modes.
+signal interaction_mode_changed(active: bool)
 
 const BuildingQueueScript := preload("res://scripts/buildings/building_queue.gd")
 const BuildingPlacementScript := preload("res://scripts/buildings/building_placement.gd")
@@ -165,6 +169,7 @@ func setup(
 	sell_mode_changed.emit(_sell_mode)
 	wall_mode_changed.emit(_wall_line_mode)
 	repair_mode_changed.emit(_repair_mode)
+	interaction_mode_changed.emit(false)
 
 
 func process(delta: float) -> void:
@@ -278,6 +283,24 @@ func handle_unhandled_input(event: InputEvent) -> bool:
 	return false
 
 
+## Match composition calls this when a map-target ability takes ownership of
+## pointer input.  Keeping the cancellation on BuildingController preserves
+## its one authoritative mode/preview cleanup path.
+func cancel_interaction_modes() -> void:
+	var had_mode := _sell_mode or _repair_mode or _wall_line_mode or _building_placement.is_active()
+	if _sell_mode:
+		_deactivate_sell_mode()
+	if _repair_mode:
+		_deactivate_repair_mode(true)
+	if _wall_line_mode:
+		_deactivate_wall_line_mode(true)
+	if _building_placement.is_active():
+		_cancel_building_placement()
+	if had_mode:
+		status_changed.emit("Building interaction canceled")
+		interaction_mode_changed.emit(false)
+
+
 func _begin_placement_pointer_action(screen_position: Vector2) -> void:
 	_pointer_gesture.begin(screen_position)
 
@@ -348,6 +371,7 @@ func _set_sell_mode(active: bool) -> void:
 		status_changed.emit("Sell mode: select one of your buildings")
 	else:
 		status_changed.emit("Sell mode canceled")
+	interaction_mode_changed.emit(active)
 
 
 func _set_wall_line_mode(active: bool, building_id: StringName = &"") -> void:
@@ -368,6 +392,7 @@ func _set_wall_line_mode(active: bool, building_id: StringName = &"") -> void:
 			_building_placement.cancel()
 		status_changed.emit("Wall mode canceled")
 	_refresh_building_option_states()
+	interaction_mode_changed.emit(active)
 
 
 func _set_repair_mode(active: bool) -> void:
@@ -387,6 +412,7 @@ func _set_repair_mode(active: bool) -> void:
 		status_changed.emit("Repair mode: right-click a damaged building; left-click to exit")
 	else:
 		status_changed.emit("Repair mode canceled")
+	interaction_mode_changed.emit(active)
 
 
 ## Deactivation body of _set_sell_mode(false); sell mode has no guard, so
@@ -835,6 +861,7 @@ func _begin_ready_building_placement() -> void:
 	_building_placement.process(get_viewport().get_mouse_position())
 	status_changed.emit("%s placement ready" % order.display_name)
 	_refresh_building_option_states()
+	interaction_mode_changed.emit(true)
 
 
 func _start_wall_chain(
@@ -907,6 +934,7 @@ func _cancel_building_placement() -> void:
 	var display_name := _building_placement.cancel()
 	status_changed.emit("%s placement canceled" % display_name)
 	_refresh_building_option_states()
+	interaction_mode_changed.emit(false)
 
 
 func _play_building_state(building: Node3D, state: StringName) -> void:

@@ -8,6 +8,7 @@
 [ext_resource type="PackedScene" path="res://scenes/units/atmcv.tscn" id="8_6wlgg"]
 [ext_resource type="PackedScene" path="res://scenes/units/hkmcv.tscn" id="9_5xq1e"]
 [ext_resource type="PackedScene" path="res://scenes/ui/side_panel.tscn" id="10_side_panel"]
+[ext_resource type="PackedScene" path="res://scenes/ui/ability_bar.tscn" id="11_ability_bar"]
 [ext_resource type="Script" uid="uid://c3sursjoim88" path="res://scripts/ui/selection_rectangle.gd" id="12_selection_rectangle"]
 
 [sub_resource type="Environment" id="Environment_main"]
@@ -95,6 +96,8 @@ offset_right = -296.0
 offset_bottom = 44.0
 text = "FPS: --"
 horizontal_alignment = 2
+
+[node name="AbilityBar" parent="HUD" unique_id=412406091 instance=ExtResource("11_ability_bar")]
 
 [node name="SidePanel" parent="HUD" unique_id=1902101368 instance=ExtResource("10_side_panel")]
 layout_mode = 3

@@ -1,0 +1,80 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://scripts/ui/ability_bar.gd" id="1_ability_bar"]
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxNormal"]
+bg_color = Color(0, 0, 0, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.7, 0.7, 0.7, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxHover"]
+bg_color = Color(0.12, 0.12, 0.12, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(1, 1, 1, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxPressed"]
+bg_color = Color(0.25, 0.25, 0.25, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(1, 1, 1, 1)
+
+[node name="AbilityBar" type="Control"]
+visible = false
+anchors_preset = 12
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_left = 16.0
+offset_top = -68.0
+offset_right = 120.0
+offset_bottom = -16.0
+grow_vertical = 0
+mouse_filter = 2
+script = ExtResource("1_ability_bar")
+
+[node name="Buttons" type="HBoxContainer" parent="."]
+layout_mode = 0
+offset_right = 104.0
+offset_bottom = 48.0
+theme_override_constants/separation = 8
+
+[node name="PickupButton" type="Button" parent="Buttons"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(48, 48)
+layout_mode = 2
+focus_mode = 0
+toggle_mode = true
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+theme_override_colors/font_hover_color = Color(1, 1, 1, 1)
+theme_override_colors/font_pressed_color = Color(1, 1, 1, 1)
+theme_override_font_sizes/font_size = 24
+theme_override_styles/normal = SubResource("StyleBoxNormal")
+theme_override_styles/hover = SubResource("StyleBoxHover")
+theme_override_styles/pressed = SubResource("StyleBoxPressed")
+theme_override_styles/disabled = SubResource("StyleBoxNormal")
+text = "F"
+tooltip_text = "Pick Up (F)"
+
+[node name="DropButton" type="Button" parent="Buttons"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(48, 48)
+layout_mode = 2
+focus_mode = 0
+toggle_mode = true
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+theme_override_colors/font_hover_color = Color(1, 1, 1, 1)
+theme_override_colors/font_pressed_color = Color(1, 1, 1, 1)
+theme_override_font_sizes/font_size = 24
+theme_override_styles/normal = SubResource("StyleBoxNormal")
+theme_override_styles/hover = SubResource("StyleBoxHover")
+theme_override_styles/pressed = SubResource("StyleBoxPressed")
+theme_override_styles/disabled = SubResource("StyleBoxNormal")
+text = "C"
+tooltip_text = "Drop Cargo (C)"

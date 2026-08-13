@@ -68,6 +68,7 @@ class FakeHarvester extends FakeUnit:
 	func can_harvest_spice() -> bool:
 		return true
 
+
 	func command_harvest(spice_layer, navigation_grid, cell: Vector2i) -> bool:
 		harvest_commands.append({"spice_layer": spice_layer, "grid": navigation_grid, "cell": cell})
 		return true
@@ -90,6 +91,22 @@ class FakeHarvester extends FakeUnit:
 		if defer_navigation_orders:
 			return false
 		cancel_harvest_order()
+		return true
+
+
+class FakeCarriedCargo extends FakeUnit:
+	func can_receive_commands() -> bool:
+		return false
+
+	func can_remain_selected() -> bool:
+		return false
+
+
+class FakeLockedCarrier extends FakeUnit:
+	func can_receive_commands() -> bool:
+		return false
+
+	func can_remain_selected() -> bool:
 		return true
 
 
@@ -179,6 +196,17 @@ class FakeNavigation extends RefCounted:
 		if not accepted.is_empty():
 			commands.append({"units": accepted, "target": target, "mode": mode})
 		return accepted
+
+
+class FakeTargetAbility extends RefCounted:
+	func definitions(_selection: Array[Node]) -> Array[Dictionary]:
+		return [{"id": &"test_target", "slot": &"pickup", "keycode": KEY_F, "enabled": true}]
+
+	func cursor_for(_id: StringName, _selection: Array[Node], _target, _position: Vector3) -> int:
+		return CursorManagerScript.CursorType.DN5
+
+	func execute(_id: StringName, _selection: Array[Node], _target, _position: Vector3) -> Dictionary:
+		return {"ok": true, "message": "done"}
 
 
 ## A combat-deploy-style unit (Kindjal/Mortar/Kobra): unlike the MCV, `D` or a
@@ -277,6 +305,9 @@ func _initialize() -> void:
 	players.set_relation(1, 2, PlayerData.Relation.ENEMY)
 
 	_run_case("selection ownership and movement", _test_selection_ownership_and_movement.bind(local_player, enemy_player))
+	_run_case("carried cargo remains attackable but cannot be selected", _test_carried_cargo_targeting.bind(local_player, enemy_player))
+	_run_case("locked transport remains selected while cargo is pruned", _test_transport_selection_lock.bind(local_player))
+	_run_case("targeting right-click cancels and D keeps deployment", _test_target_mode_input_priority.bind(local_player))
 	_run_case("right click and Ctrl route target-specific attack orders", _test_attack_orders.bind(local_player, enemy_player, neutral_player))
 	_run_case("clicking the selected unit again requests deployment", _test_repeated_click_deployment.bind(local_player))
 	_run_case("rectangle unit selection", _test_rectangle_unit_selection.bind(local_player, enemy_player))
@@ -367,6 +398,79 @@ func _test_selection_ownership_and_movement(token: int, local_player, enemy_play
 	commands.queue_free()
 	local_unit.queue_free()
 	enemy_unit.queue_free()
+	return token
+
+
+func _test_carried_cargo_targeting(token: int, local_player, enemy_player) -> int:
+	var commands := FakeUnitCommandController.new()
+	root.add_child(commands)
+	var attacker := _make_unit("Attacker", local_player)
+	var cargo := FakeCarriedCargo.new()
+	cargo.name = "CarriedCargo"
+	cargo.player = enemy_player
+	cargo.add_to_group("units")
+	root.add_child(attacker)
+	root.add_child(cargo)
+	var collider := Node.new()
+	cargo.add_child(collider)
+	_expect(commands._find_selectable_entity(collider) == cargo,
+		"resolver must retain carried cargo as a damageable target")
+	commands.raycast_hits.append({"collider": collider})
+	commands.handle_unhandled_input(_mouse_event(MOUSE_BUTTON_LEFT))
+	_expect(not cargo.selected and commands.selection_text() == "No entity selected",
+		"command-locked cargo must not become a player selection")
+	commands._set_selection([attacker])
+	commands.raycast_hits.append({"collider": collider})
+	commands.handle_unhandled_input(_mouse_event(MOUSE_BUTTON_RIGHT))
+	_expect(attacker.attack_targets == [cargo], "carried cargo must remain independently attackable")
+	commands.queue_free()
+	attacker.queue_free()
+	cargo.queue_free()
+	return token
+
+
+func _test_transport_selection_lock(token: int, local_player) -> int:
+	var commands := FakeUnitCommandController.new()
+	root.add_child(commands)
+	var carrier := FakeLockedCarrier.new()
+	carrier.name = "DockingCarryall"
+	carrier.player = local_player
+	carrier.add_to_group("units")
+	root.add_child(carrier)
+	commands._set_selection([carrier])
+	commands._prune_uncommandable_selection()
+	_expect(carrier.selected and commands.selection_text().begins_with("DockingCarryall selected"),
+		"a command-locked carrier must remain selected throughout docking animation")
+	commands.queue_free()
+	carrier.queue_free()
+	return token
+
+
+func _test_target_mode_input_priority(token: int, local_player) -> int:
+	var commands := FakeUnitCommandController.new()
+	root.add_child(commands)
+	var unit := FakeToggleUnit.new()
+	unit.name = "Deployable"
+	unit.player = local_player
+	unit.add_to_group("units")
+	root.add_child(unit)
+	commands._set_selection([unit])
+	commands._target_abilities.configure(null, [FakeTargetAbility.new()])
+	commands._target_abilities.selection_changed([unit])
+	commands.handle_unhandled_input(_key_event(KEY_F, true))
+	_expect(commands.has_active_target_ability(), "F must enter target mode before input-priority checks")
+	commands.handle_unhandled_input(_mouse_event(MOUSE_BUTTON_RIGHT))
+	_expect(not commands.has_active_target_ability() and unit.move_targets.is_empty(),
+		"right click in target mode must only cancel and never issue a normal order")
+	var deployment := FakeDeploymentController.new()
+	deployment.deployment_entities.append(unit)
+	commands._deployment_controller = deployment
+	commands.handle_unhandled_input(_key_event(KEY_F, true))
+	commands.handle_unhandled_input(_key_event(KEY_D, true))
+	_expect(not commands.has_active_target_ability() and deployment.calls == [unit],
+		"D must cancel target mode then retain its ordinary deployment behavior")
+	commands.queue_free()
+	unit.queue_free()
 	return token
 
 

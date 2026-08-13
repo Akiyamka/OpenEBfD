@@ -1203,16 +1203,19 @@ def main() -> int:
         ) and ok
 
         settings = connection.execute(
-            "SELECT max_building_placement_tile_dist, repair_rate FROM general_settings WHERE id=1"
+            "SELECT max_building_placement_tile_dist, repair_rate, adv_carryall_pickup_enemy_delay FROM general_settings WHERE id=1"
         ).fetchone()
         placement_distance = settings[0] if settings is not None else 6
         repair_rate = settings[1] if settings is not None else 12
+        advanced_carryall_delay = settings[2] if settings is not None else 60
         ok = write_or_check(GAME_SETTINGS_PATH, resource_text(
             "GameSettings", "res://scripts/rules/game_settings.gd",
             [
                 f"max_building_placement_tile_dist = {int(placement_distance or 6)}",
                 f"building_repair_rate = {float(repair_rate or 12):.1f}",
                 "maximum_ground_decals = 256",
+                "advanced_carryall_pickup_enemy_delay_ticks = "
+                f"{int(advanced_carryall_delay if advanced_carryall_delay is not None else 60)}",
             ],
         ), args.check) and ok
         spice = connection.execute("""

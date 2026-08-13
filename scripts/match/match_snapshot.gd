@@ -67,15 +67,22 @@ func erase() -> Dictionary:
 
 func _capture_entities(root: Node3D, expected_type) -> Array:
 	var entities: Array = []
-	for child in root.get_children():
-		if not is_instance_of(child, expected_type):
-			continue
-		var entity := child as Node3D
-		if entity == null or entity.scene_file_path.is_empty():
-			push_warning("MatchSnapshot: cannot save %s because it has no source scene" % child.name)
-			continue
-		entities.append(_capture_entity(entity))
+	_capture_entity_descendants(root, expected_type, entities)
 	return entities
+
+
+func _capture_entity_descendants(parent: Node, expected_type, entities: Array) -> void:
+	for child in parent.get_children():
+		# Transport orders and attachment state stay transient, but the carried
+		# Unit itself must not disappear from an F7 snapshot merely because its
+		# live instance currently sits below a CargoAnchor.
+		if is_instance_of(child, expected_type):
+			var entity := child as Node3D
+			if entity == null or entity.scene_file_path.is_empty():
+				push_warning("MatchSnapshot: cannot save %s because it has no source scene" % child.name)
+			else:
+				entities.append(_capture_entity(entity))
+		_capture_entity_descendants(child, expected_type, entities)
 
 
 func _capture_entity(entity: Node3D) -> Dictionary:
