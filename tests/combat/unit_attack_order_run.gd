@@ -2,6 +2,7 @@ extends "res://tests/support/suite.gd"
 
 const LegacyRulesFixture := preload("res://tests/support/legacy_rules_fixture.gd")
 const CombatTurretScript := preload("res://scripts/combat/combat_turret.gd")
+const FireRequestScript := preload("res://scripts/combat/fire_request.gd")
 const Doubles := preload("res://tests/combat/support/combat_doubles.gd")
 const Assertions := preload("res://tests/combat/support/combat_assertions.gd")
 const UnitScript := preload("res://scripts/units/unit.gd")
@@ -59,6 +60,22 @@ func _initialize() -> void:
 	await _run_async_case(
 		"an obstructed in-range order repositions instead of shooting the obstacle",
 		_test_obstructed_attack_order
+	)
+	await _run_async_case(
+		"a squadmate on the muzzle line holds the shot and moves the unit off it",
+		_test_friendly_on_the_line_holds_fire
+	)
+	await _run_async_case(
+		"a squadmate arriving mid-clip cancels the shot at the muzzle",
+		_test_friendly_arriving_mid_clip_cancels_the_shot
+	)
+	await _run_async_case(
+		"the muzzle gate checks the line the round actually flies",
+		_test_friendly_on_the_flown_line_holds_fire
+	)
+	_run_case(
+		"an intermittently blocked line still reaches the reposition",
+		_test_flickering_block_still_repositions
 	)
 	_finish("Unit attack order tests")
 
@@ -542,3 +559,279 @@ func _test_obstructed_attack_order() -> void:
 	attacker.free()
 	target.free()
 
+
+
+## CombatLineOfFire deliberately pierces units, so nothing used to stop a rear
+## rank from firing through its own front rank -- and CombatImpactResolver then
+## billed the front rank the warhead's FriendlyDamageAmount share. The blocked
+## unit now holds the shot and, if the line stays blocked, walks off it.
+func _test_friendly_on_the_line_holds_fire() -> void:
+	var attacker = UnitScene.instantiate()
+	attacker.config_id = &"ATAPC"
+	root.add_child(attacker)
+	attacker.replace_visual_scene(ATAPCModelScene)
+	attacker.owner_player_id = 1
+	var target = UnitScene.instantiate()
+	target.config_id = &"ATAPC"
+	root.add_child(target)
+	target.replace_visual_scene(ATAPCModelScene)
+	target.owner_player_id = 2
+	var turret = attacker.combat_turrets[0]
+	var forward: Vector3 = Vector3(turret.peek_emission()["direction"])
+	forward.y = 0.0
+	forward = forward.normalized()
+	target.global_position = attacker.global_position + forward * 8.0
+	var midpoint: Vector3 = attacker.global_position + forward * 4.0
+	await physics_frame
+
+	_expect(
+		turret.target_range(target) == CombatTurretScript.TargetRange.IN_RANGE,
+		"the friendly-fire regression must begin with the target inside weapon range"
+	)
+	_expect(
+		not turret.friendly_blocks_fire(target, attacker),
+		"an open muzzle line must not be reported as friendly-blocked"
+	)
+
+	var squadmate := Doubles.PhysicsCombatTarget.new(midpoint, 2.5)
+	squadmate.owner_player_id = attacker.owner_player_id
+	root.add_child(squadmate)
+	await physics_frame
+	_expect(
+		turret.has_line_of_fire(target, attacker),
+		"a squadmate must not count as an obstruction: the shell would still arrive"
+	)
+	_expect(
+		turret.friendly_blocks_fire(target, attacker),
+		"a squadmate on the muzzle line must be reported as friendly-blocking"
+	)
+
+	var enemy_blocker := Doubles.PhysicsCombatTarget.new(midpoint, 2.5)
+	enemy_blocker.owner_player_id = target.owner_player_id
+	squadmate.get_parent().remove_child(squadmate)
+	root.add_child(enemy_blocker)
+	await physics_frame
+	_expect(
+		not turret.friendly_blocks_fire(target, attacker),
+		"an enemy body on the line is a target, not a reason to hold the shot"
+	)
+	enemy_blocker.get_parent().remove_child(enemy_blocker)
+	root.add_child(squadmate)
+	await physics_frame
+
+	var fired: Array = []
+	attacker.weapon_fired.connect(
+		func(projectiles: Array, _target: Variant, _weapon_index: int) -> void:
+			fired.append_array(projectiles)
+	)
+	_expect(attacker.command_attack(target), "a blocked line must still accept the order")
+	# Pinned in place so the reposition below cannot silently walk the unit off
+	# the line and turn this into a test of movement rather than of holding fire.
+	var home: Vector3 = attacker.global_position
+	for frame in 240:
+		attacker._process(1.0 / 60.0)
+		attacker.global_position = home
+	_expect(fired.is_empty(), "a unit must not put its shot through a squadmate")
+	_expect(
+		attacker.has_attack_order(),
+		"holding the shot must not drop the order -- the blocker is transient"
+	)
+	_expect(
+		Vector2(
+			attacker.target_position.x - home.x, attacker.target_position.z - home.z
+		).length() > 0.0,
+		"a line that stays blocked must send the unit to a clear firing position"
+	)
+
+	squadmate.free()
+	await physics_frame
+	_expect(
+		not turret.friendly_blocks_fire(target, attacker),
+		"removing the squadmate must clear the friendly block"
+	)
+	for frame in 240:
+		attacker._process(1.0 / 60.0)
+		if not fired.is_empty():
+			break
+	_expect(
+		not fired.is_empty(),
+		"the held shot must resume once the squadmate is off the line"
+	)
+
+	for projectile in fired:
+		if is_instance_valid(projectile) and not projectile.is_queued_for_deletion():
+			projectile.free()
+	enemy_blocker.free()
+	attacker.free()
+	target.free()
+
+
+## Deciding to engage and actually launching the round are separated by the
+## whole authored Fire clip -- a second or more, during which a squadmate can
+## walk into a line that was clear when the sequence started. Measured on ten
+## HKTroopers ordered onto a flank target, 14 of 30 rounds left the muzzle that
+## way. The muzzle asks the question again for itself.
+func _test_friendly_arriving_mid_clip_cancels_the_shot() -> void:
+	var attacker = UnitScene.instantiate()
+	attacker.config_id = &"ATAPC"
+	root.add_child(attacker)
+	attacker.replace_visual_scene(ATAPCModelScene)
+	attacker.owner_player_id = 1
+	var target = UnitScene.instantiate()
+	target.config_id = &"ATAPC"
+	root.add_child(target)
+	target.replace_visual_scene(ATAPCModelScene)
+	target.owner_player_id = 2
+	var turret = attacker.combat_turrets[0]
+	var forward: Vector3 = Vector3(turret.peek_emission()["direction"])
+	forward.y = 0.0
+	forward = forward.normalized()
+	target.global_position = attacker.global_position + forward * 8.0
+	var midpoint: Vector3 = attacker.global_position + forward * 4.0
+	await physics_frame
+
+	var fired: Array = []
+	attacker.weapon_fired.connect(
+		func(projectiles: Array, _target: Variant, _weapon_index: int) -> void:
+			fired.append_array(projectiles)
+	)
+	var home: Vector3 = attacker.global_position
+	_expect(attacker.command_attack(target), "a clear line must accept the order")
+	# Run until the clip is under way but before its shot event, so the engage
+	# decision is already made and only the muzzle can still refuse.
+	var sequence_started := false
+	for frame in 240:
+		attacker._process(1.0 / 60.0)
+		attacker.global_position = home
+		if attacker._fire_sequence_active:
+			sequence_started = true
+			break
+		if not fired.is_empty():
+			break
+	_expect(
+		sequence_started and fired.is_empty(),
+		"the clip must start before its shot event for this regression to mean anything"
+	)
+
+	var squadmate := Doubles.PhysicsCombatTarget.new(midpoint, 2.5)
+	squadmate.owner_player_id = attacker.owner_player_id
+	root.add_child(squadmate)
+	await physics_frame
+	_expect(
+		turret.friendly_blocks_fire(target, attacker),
+		"the arriving squadmate must land on the muzzle line"
+	)
+	for frame in 240:
+		attacker._process(1.0 / 60.0)
+		attacker.global_position = home
+	_expect(
+		fired.is_empty(),
+		"a squadmate that arrives mid-clip must still cancel the round at the muzzle"
+	)
+
+	squadmate.free()
+	await physics_frame
+	for frame in 480:
+		attacker._process(1.0 / 60.0)
+		attacker.global_position = home
+		if not fired.is_empty():
+			break
+	_expect(not fired.is_empty(), "the shot must resume once the line clears again")
+
+	for projectile in fired:
+		if is_instance_valid(projectile) and not projectile.is_queued_for_deletion():
+			projectile.free()
+	attacker.free()
+	target.free()
+
+
+## A round does not fly the ideal muzzle-to-target line: it leaves along the
+## muzzle's current heading (see parallel_impact_position), which an authored
+## Fire clip poses degrees off the ordered bearing. Checking only the ideal
+## line let a stationary rear rank fire through a squadmate standing on the
+## muzzle's actual heading while the ideal line passed cleanly beside it. The
+## gate must ask along the flown line.
+func _test_friendly_on_the_flown_line_holds_fire() -> void:
+	var attacker = UnitScene.instantiate()
+	attacker.config_id = &"ATAPC"
+	root.add_child(attacker)
+	attacker.replace_visual_scene(ATAPCModelScene)
+	attacker.owner_player_id = 1
+	var turret = attacker.combat_turrets[0]
+	var muzzle: Vector3 = Vector3(turret.peek_emission()["position"])
+	var heading: Vector3 = Vector3(turret.peek_emission()["direction"])
+	heading.y = 0.0
+	heading = heading.normalized()
+	# The ordered point sits well off the muzzle's current heading; the muzzle
+	# has not been servo-aimed onto it (an authored clip fires regardless). The
+	# squadmate stands on the heading, 2.0 laterally off the ideal line -- a
+	# body its 0.9 radius keeps well clear of, so only the flown line crosses it.
+	var ground: Vector3 = attacker.global_position \
+		+ heading.rotated(Vector3.UP, deg_to_rad(30.0)) * 8.0
+	var on_heading := muzzle + heading * 4.0
+	on_heading.y = muzzle.y * 0.5
+	var squadmate := Doubles.PhysicsCombatTarget.new(on_heading, 0.9)
+	squadmate.owner_player_id = attacker.owner_player_id
+	root.add_child(squadmate)
+	await physics_frame
+
+	_expect(
+		turret.friendly_blocks_fire(ground, attacker),
+		"a squadmate on the muzzle's actual heading must read as friendly-blocking"
+	)
+	var held: Array = turret.try_fire_at(FireRequestScript.authored(ground, attacker))
+	_expect(
+		held.is_empty(),
+		"the muzzle gate must hold a shot whose flown line crosses the squadmate"
+	)
+
+	squadmate.get_parent().remove_child(squadmate)
+	await physics_frame
+	turret.reload_ticks_remaining = 0.0
+	var released: Array = turret.try_fire_at(FireRequestScript.authored(ground, attacker))
+	_expect(
+		not released.is_empty(),
+		"clearing the flown line must release the same shot"
+	)
+
+	for projectile in released:
+		if is_instance_valid(projectile) and not projectile.is_queued_for_deletion():
+			projectile.free()
+	squadmate.free()
+	attacker.free()
+
+
+## The reposition used to require the line to stay blocked for a whole
+## uninterrupted second. In a real crowd it never does: ten soldiers shuffling
+## shoulder to shoulder clear and re-block the same line several times a second,
+## which pinned the counter at zero and left everyone standing in a formation
+## built for the previous target.
+func _test_flickering_block_still_repositions() -> void:
+	var attacker = UnitScene.instantiate()
+	attacker.config_id = &"ATAPC"
+	root.add_child(attacker)
+	attacker.replace_visual_scene(ATAPCModelScene)
+	attacker.owner_player_id = 1
+	var turret = attacker.combat_turrets[0]
+	var forward: Vector3 = Vector3(turret.peek_emission()["direction"])
+	forward.y = 0.0
+	forward = forward.normalized()
+	var ground: Vector3 = attacker.global_position + forward * 8.0
+	_expect(attacker.command_attack(ground), "the attack-ground order must be accepted")
+	var order = attacker.combat()._attack_order
+	var home: Vector3 = attacker.global_position
+
+	var delta := 1.0 / 60.0
+	for frame in 600:
+		# Blocked on two frames out of three: never a full second in a row, but
+		# unmistakably a line this unit cannot shoot along.
+		order.hold_firing_position(frame % 3 != 0, ground, turret, delta)
+		attacker.global_position = home
+		if attacker.has_active_move_order():
+			break
+	_expect(
+		attacker.has_active_move_order(),
+		"an intermittently blocked line must still send the unit to a clear slot"
+	)
+
+	attacker.free()

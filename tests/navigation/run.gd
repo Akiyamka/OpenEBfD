@@ -30,6 +30,7 @@ class FakeUnit extends Node3D:
 	var is_selected := false
 	var defer_navigation_orders := false
 	var prepared_navigation_targets: Array[Vector3] = []
+	var attack_arc_direction := Vector3.ZERO
 
 	func _init(size := 1.0, infantry := false) -> void:
 		unit_definition.size = roundi(size)
@@ -62,6 +63,9 @@ class FakeUnit extends Node3D:
 
 	func is_enemy_of(player_id: int) -> bool:
 		return owner_player_id != player_id
+
+	func set_attack_arc_direction(value: Vector3) -> void:
+		attack_arc_direction = value
 
 
 class FakeTurningUnit extends FakeUnit:
@@ -172,6 +176,9 @@ func _initialize() -> void:
 	_test_lane_through_standing_formation(grid)
 	_test_overlap_is_squeezed_out(grid)
 	_test_hold_position_resists_separation(grid)
+	_test_firing_anchor_resists_separation(grid)
+	_test_attack_arc_spreads_a_group(grid)
+	_test_firing_position_follows_its_arc_slot(grid)
 	_test_combat_deployed_unit_resists_displacement(grid)
 	_test_large_overlap_spans_spatial_buckets(grid)
 	_test_enemy_stays_solid_under_separation(grid)
@@ -2188,6 +2195,182 @@ func _test_hold_position_resists_separation(grid: MapNavigationGrid) -> void:
 	navigation.queue_free()
 	held.queue_free()
 	overlapping.queue_free()
+
+
+## The regression this exists for: a unit that stopped to shoot used to be a
+## merely-idle neighbour, so elastic separation shoved it off its spot, its
+## reserved destination walked it back, and the fire clip restarted every time.
+func _test_firing_anchor_resists_separation(grid: MapNavigationGrid) -> void:
+	var navigation := NavigationSystemScript.new()
+	root.add_child(navigation)
+	navigation.set_physics_process(false)
+	_expect(navigation.setup(grid), "navigation system must initialize")
+
+	var shooter := FakeUnit.new()
+	var arriving := FakeUnit.new()
+	root.add_child(shooter)
+	root.add_child(arriving)
+	shooter.global_position = Vector3(180.5, 0.0, 180.5)
+	arriving.global_position = Vector3(180.6, 0.0, 180.5)
+	navigation.register_unit(shooter)
+	navigation.register_unit(arriving)
+	navigation.set_firing_anchor(shooter, true)
+	var anchored_position := shooter.global_position
+	var contact := float(navigation._agents[shooter.get_instance_id()]["radius"]) \
+		+ float(navigation._agents[arriving.get_instance_id()]["radius"])
+	_expect(shooter.global_position.distance_to(arriving.global_position) < contact,
+		"firing-anchor fixture must begin with overlapping agents")
+
+	for _iteration in 60:
+		navigation.call("_navigation_tick", 0.05)
+	_expect(shooter.global_position.is_equal_approx(anchored_position),
+		"separation must not displace a unit standing on its firing position")
+	_expect(shooter.global_position.distance_to(arriving.global_position) >= contact - 0.01,
+		"the arriving unit must still separate itself from a firing unit")
+
+	# Unlike hold, the anchor is not a permanent pin: any accepted move order
+	# releases it, which is how the attack pursuit resumes when the target runs.
+	navigation.command_move([shooter], Vector3(190.5, 0.0, 180.5))
+	_expect(not bool(navigation._agents[shooter.get_instance_id()]["firing_anchor"]),
+		"a fresh move order must release the firing anchor")
+
+	navigation.queue_free()
+	shooter.queue_free()
+	arriving.queue_free()
+
+
+## Every member of an attack command used to run the same target-centred perch
+## search and converge on the same cell. The arc is what stops the first
+## arrivals from walling the rest out of weapon range.
+func _test_attack_arc_spreads_a_group(grid: MapNavigationGrid) -> void:
+	var navigation := NavigationSystemScript.new()
+	root.add_child(navigation)
+	navigation.set_physics_process(false)
+	_expect(navigation.setup(grid), "navigation system must initialize")
+
+	var target := Vector3(120.5, 0.0, 120.5)
+	var squad: Array[Node3D] = []
+	for index in 5:
+		var unit := FakeUnit.new()
+		root.add_child(unit)
+		# One file abreast, approaching the target from +Z.
+		unit.global_position = Vector3(118.5 + float(index), 0.0, 132.5)
+		navigation.register_unit(unit)
+		squad.append(unit)
+	var assigned := navigation.assign_attack_arcs(squad, target, 12.0)
+	_expect(assigned.size() == squad.size(), "every ground shooter must receive an arc slot")
+
+	var bearings: Array[float] = []
+	for unit in squad:
+		var direction: Vector3 = (unit as FakeUnit).attack_arc_direction
+		_expect(direction.is_normalized() and is_zero_approx(direction.y),
+			"an arc slot must be a horizontal unit bearing")
+		bearings.append(atan2(direction.z, direction.x))
+	var minimum_separation := INF
+	for a_index in bearings.size():
+		for b_index in range(a_index + 1, bearings.size()):
+			minimum_separation = minf(
+				minimum_separation, absf(angle_difference(bearings[a_index], bearings[b_index]))
+			)
+	_expect(minimum_separation > 0.01,
+		"no two units may be sent to the same bearing around the target")
+
+	# The group approaches from +Z, so every slot must stay on that side: an arc
+	# wider than a half-circle would walk units around a target that shoots back.
+	var approach := atan2(1.0, 0.0)
+	var widest := 0.0
+	for bearing in bearings:
+		widest = maxf(widest, absf(angle_difference(approach, bearing)))
+	_expect(widest <= PI * 0.5 + 0.001,
+		"the firing arc must stay within a half-circle of the approach side")
+
+	# Slots follow the order the units already stand in: a unit on the
+	# counter-clockwise flank must not be sent to the clockwise one, or the two
+	# flanks trade places and cross the whole crowd on the way to their slots.
+	for unit in squad:
+		var offset := unit.global_position - target
+		offset.y = 0.0
+		var start_side := angle_difference(approach, atan2(offset.z, offset.x))
+		if absf(start_side) < 0.001:
+			continue
+		var slot: Vector3 = (unit as FakeUnit).attack_arc_direction
+		var slot_side := angle_difference(approach, atan2(slot.z, slot.x))
+		_expect(
+			absf(slot_side) < 0.001 or signf(slot_side) == signf(start_side),
+			"an arc slot must stay on the flank the unit already occupies"
+		)
+
+	navigation.queue_free()
+	for unit in squad:
+		unit.queue_free()
+
+
+## reachable_attack_position() answers "nearest cell to the target", which is
+## the same answer for everyone. reachable_firing_position() answers "nearest
+## legal cell to my own slot", and refuses a cell already held by a shooter.
+func _test_firing_position_follows_its_arc_slot(grid: MapNavigationGrid) -> void:
+	var navigation := NavigationSystemScript.new()
+	root.add_child(navigation)
+	navigation.set_physics_process(false)
+	_expect(navigation.setup(grid), "navigation system must initialize")
+
+	var target := Vector3(140.5, 0.0, 140.5)
+	var unit := FakeUnit.new()
+	root.add_child(unit)
+	unit.global_position = Vector3(140.5, 0.0, 160.5)
+	navigation.register_unit(unit)
+
+	var maximum_range := 30.0
+	var preferred_range := 16.0
+	var centred := navigation.reachable_attack_position(unit, target, maximum_range)
+	_expect(
+		Vector2(centred.x - target.x, centred.z - target.z).length() <= 2.0,
+		"the target-centred search must still return a cell next to the target"
+	)
+
+	var slot := target + Vector3.RIGHT * preferred_range
+	var perch := navigation.reachable_firing_position(
+		unit, target, maximum_range, Vector3.RIGHT, preferred_range
+	)
+	_expect(perch.is_finite(), "an unobstructed arc slot must yield a firing position")
+	_expect(
+		Vector2(perch.x - slot.x, perch.z - slot.z).length() <= 2.0,
+		"the firing position must land on the requested arc slot, not next to the target"
+	)
+	_expect(
+		Vector2(perch.x - target.x, perch.z - target.z).length() <= maximum_range,
+		"an arc slot outside weapon range must still be pulled inside it"
+	)
+
+	# A squadmate already anchored on that exact slot must push the search off
+	# it: choosing the cell behind a firing unit is what both blocked the second
+	# rank and put its shot through the first rank's back.
+	var occupant := FakeUnit.new()
+	root.add_child(occupant)
+	occupant.global_position = slot
+	navigation.register_unit(occupant)
+	navigation.set_firing_anchor(occupant, true)
+	var contact := float(navigation._agents[unit.get_instance_id()]["radius"]) \
+		+ float(navigation._agents[occupant.get_instance_id()]["radius"])
+	var displaced := navigation.reachable_firing_position(
+		unit, target, maximum_range, Vector3.RIGHT, preferred_range
+	)
+	_expect(displaced.is_finite(), "an occupied arc slot must still yield a firing position")
+	_expect(
+		Vector2(displaced.x - slot.x, displaced.z - slot.z).length() >= contact,
+		"a firing position must not overlap a squadmate already anchored on that slot"
+	)
+
+	# A unit with no arc assigned keeps the previous target-centred behaviour.
+	var unslotted := navigation.reachable_firing_position(
+		unit, target, maximum_range, Vector3.ZERO, preferred_range
+	)
+	_expect(unslotted.is_equal_approx(centred),
+		"without an arc slot the firing search must fall back to the target-centred one")
+
+	navigation.queue_free()
+	unit.queue_free()
+	occupant.queue_free()
 
 
 ## A combat-deployed unit (Kindjal/Mortar/Kobra) drives the same

@@ -18,7 +18,8 @@ func resolve(
 		world_position: Vector3,
 		direct_target: Object = null,
 		source: Object = null,
-		damage_scale := 1.0
+		damage_scale := 1.0,
+		deliberate := true
 	) -> Array[Dictionary]:
 	var results: Array[Dictionary] = []
 	var bullet = bullet_or_payload
@@ -51,7 +52,7 @@ func resolve(
 			continue
 		var direct := target.get_instance_id() == direct_instance_id
 		var result := _resolve_target(
-			bullet, target, source, world_position, direct, damage_scale
+			bullet, target, source, world_position, direct, deliberate, damage_scale
 		)
 		if not result.is_empty():
 			results.append(result)
@@ -64,6 +65,7 @@ func _resolve_target(
 		source: Object,
 		world_position: Vector3,
 		direct: bool,
+		deliberate: bool,
 		damage_scale: float
 	) -> Dictionary:
 	var armour_type := StringName(String(target.call("combat_armour_type")))
@@ -79,7 +81,12 @@ func _resolve_target(
 	# intersections). A deliberately selected direct target still receives the
 	# weapon payload; otherwise Ctrl-force-fire with ordinary bullets such as
 	# HEAT_B successfully launches and hits but can never damage its target.
-	var friendly_multiplier := 1.0 if direct else _friendly_multiplier(bullet, source, target)
+	# `deliberate` separates that case from a body the projectile merely struck
+	# en route -- a squadmate walking across the flight path is billed the
+	# FriendlyDamageAmount share, not the full round meant for the ordered
+	# target behind it.
+	var friendly_multiplier := 1.0 if direct and deliberate \
+		else _friendly_multiplier(bullet, source, target)
 	var total_multiplier := distance_multiplier * friendly_multiplier
 
 	var effect_context := {
@@ -173,25 +180,7 @@ func _friendly_multiplier(bullet, source: Object, target: Object) -> float:
 
 
 func _are_friendly(source: Object, target: Object) -> bool:
-	if source == null or not is_instance_valid(source) or target == null:
-		return false
-	if source == target:
-		return true
-	var source_owner: Variant = _owner_player_id(source)
-	var target_owner: Variant = _owner_player_id(target)
-	if source_owner == null or target_owner == null:
-		return false
-	if source.has_method("is_allied_with"):
-		return bool(source.call("is_allied_with", int(target_owner)))
-	# -1 is the neutral owner. Distinct neutral objects are not an allied team.
-	return int(source_owner) >= 0 and int(source_owner) == int(target_owner)
-
-
-func _owner_player_id(object: Object) -> Variant:
-	if object.has_method("combat_owner_player_id"):
-		return object.call("combat_owner_player_id")
-	var owner_id := EntityQueryScript.owner_id_of(object)
-	return owner_id if owner_id >= 0 else null
+	return CombatTargetScript.are_friendly(source, target)
 
 
 func _can_resolve_target(bullet, target: Object) -> bool:

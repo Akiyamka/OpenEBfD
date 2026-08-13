@@ -499,7 +499,15 @@ func _handle_collisions(collisions: Array[Dictionary]) -> bool:
 		if entity != null:
 			if not bullet.can_hit(entity):
 				continue
-			_impact_target(entity, Vector3(collision["position"]), _stops_at(entity))
+			# A body the segment crossed is only the shot's chosen victim when it
+			# is the ordered target itself; anything else -- notably a squadmate
+			# stepping onto the line mid-flight -- is an incidental hit, so the
+			# resolver bills it the FriendlyDamageAmount share instead of the
+			# full round.
+			_impact_target(
+				entity, Vector3(collision["position"]), _stops_at(entity),
+				entity == target()
+			)
 			if state != State.FLYING:
 				return true
 			continue
@@ -524,9 +532,11 @@ func _stops_at(entity: Object) -> bool:
 	return true
 
 
-func _impact_target(entity: Object, world_position: Vector3, stop: bool) -> void:
+func _impact_target(
+		entity: Object, world_position: Vector3, stop: bool, deliberate := true
+	) -> void:
 	global_position = world_position
-	_resolve_impact(entity, world_position)
+	_resolve_impact(entity, world_position, deliberate)
 	if stop:
 		_finish_impact(&"impact_target", world_position)
 
@@ -547,9 +557,12 @@ func _impact_ground(world_position: Vector3) -> void:
 	_finish_impact(&"impact_ground", world_position)
 
 
-func _resolve_impact(direct_target: Object, world_position: Vector3) -> void:
+func _resolve_impact(
+		direct_target: Object, world_position: Vector3, deliberate := true
+	) -> void:
 	var results: Array[Dictionary] = _impact_resolver.resolve(
-		bullet, self, world_position, direct_target, _source(), _damage_scale
+		bullet, self, world_position, direct_target, _source(), _damage_scale,
+		deliberate
 	)
 	for result in results:
 		var resolved_target: Object = result["target"] as Object

@@ -65,6 +65,12 @@ func register_unit(agents: Dictionary, unit: Node3D, debug_enabled: bool) -> int
 		"mode": NavConstantsScript.MoveMode.FREE,
 		"group_speed": INF,
 		"hold": false,
+		# Standing on a firing position under an explicit attack order. Weaker
+		# than `hold`: the body must not be shoved off the spot mid-clip (which
+		# restarts the fire animation and, once it walks back, loops), but a
+		# friendly genuinely stuck behind the firing line may still ask it to
+		# step aside -- see `request_yield`, which `hold` refuses outright.
+		"firing_anchor": false,
 		"blocked_time": 0.0,
 		"reported_enemy": false,
 		"avoidance_direction": Vector3.ZERO,

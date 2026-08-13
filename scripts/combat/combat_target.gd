@@ -2,6 +2,7 @@ class_name CombatTarget
 extends RefCounted
 
 const CombatRulesScript := preload("res://scripts/combat/combat_rules.gd")
+const EntityQueryScript := preload("res://scripts/world/entity_query.gd")
 
 
 static func entity_of(collider: Object) -> Object:
@@ -45,6 +46,38 @@ static func hit_radius(
 	if target != null and target.has_method("combat_hit_radius"):
 		return maxf(float(target.call("combat_hit_radius")), fallback)
 	return fallback
+
+
+## Ownership/alliance test shared by the two places that need it for opposite
+## reasons: CombatImpactResolver scales a delivered warhead down to
+## FriendlyDamageAmount, and CombatLineOfFire decides whether a shot should be
+## held rather than put through a squadmate's back. Keeping one rule here stops
+## the two from drifting apart -- a shot held on a body the resolver would then
+## have billed at full damage is the failure mode that matters.
+static func are_friendly(source: Object, target: Object) -> bool:
+	if source == null or not is_instance_valid(source) or target == null:
+		return false
+	if source == target:
+		return true
+	var source_owner: Variant = owner_player_id_of(source)
+	var target_owner: Variant = owner_player_id_of(target)
+	if source_owner == null or target_owner == null:
+		return false
+	if source.has_method("is_allied_with"):
+		return bool(source.call("is_allied_with", int(target_owner)))
+	# -1 is the neutral owner. Distinct neutral objects are not an allied team.
+	return int(source_owner) >= 0 and int(source_owner) == int(target_owner)
+
+
+## Null rather than -1 for "no owner at all", so a neutral object (-1) and an
+## unowned one stay distinguishable to are_friendly().
+static func owner_player_id_of(object: Object) -> Variant:
+	if object == null or not is_instance_valid(object):
+		return null
+	if object.has_method("combat_owner_player_id"):
+		return object.call("combat_owner_player_id")
+	var owner_id := EntityQueryScript.owner_id_of(object)
+	return owner_id if owner_id >= 0 else null
 
 
 static func collision_rids(target: Object) -> Array[RID]:

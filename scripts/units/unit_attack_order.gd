@@ -14,6 +14,12 @@ extends RefCounted
 
 const ATTACK_REPATH_INTERVAL_SECONDS := 0.25
 const ATTACK_REPATH_DISTANCE := 0.5
+## How much blocked time a muzzle line has to accumulate before the unit walks
+## off it. Accumulated rather than consecutive: a friendly crossing the line is
+## transient and must not start a reposition, but a crowded firing arc clears
+## and re-blocks the same line several times a second, and requiring an
+## unbroken second there meant nobody ever moved (see `hold_firing_position`).
+const FRIENDLY_BLOCK_REPOSITION_SECONDS := 1.0
 
 var _unit: CharacterBody3D
 var _active := false
@@ -25,6 +31,15 @@ var _repath_remaining := 0.0
 var _last_path_position := Vector3.INF
 var _pursuit_destination := Vector3.INF
 var _pursuit_rejected := false
+## Horizontal bearing from the target toward this unit's slot on the group's
+## firing arc, assigned per command by AttackArcAllocator. Zero means "no arc
+## was assigned" (a lone unit, an autonomous engagement) and the perch search
+## falls back to its previous target-centred behaviour.
+var _arc_direction := Vector3.ZERO
+var _friendly_block_seconds := 0.0
+## Walking to a clear slot because a squadmate is on the line. Suppresses the
+## per-frame stop_pursuit() that would otherwise cancel the move immediately.
+var _clearing_line := false
 
 
 func configure(unit: CharacterBody3D) -> void:
@@ -79,13 +94,71 @@ func clear() -> bool:
 	return had_order
 
 
+## The bearing this unit should engage from, as a horizontal vector pointing
+## from the target toward its slot. Assigned right after the order by
+## UnitNavigationSystem.assign_attack_arcs(); a unit that never receives one
+## keeps engaging from wherever it approached.
+func set_arc_direction(direction: Vector3) -> void:
+	var flattened := direction
+	flattened.y = 0.0
+	_arc_direction = flattened.normalized() if flattened.length_squared() > 0.0001 \
+		else Vector3.ZERO
+	if _arc_direction != Vector3.ZERO:
+		# A fresh arc is a fresh formation. A group already inside weapon range
+		# never walks anywhere on its own (hold_firing_position just stands), so
+		# ordering it onto a target off to one side leaves everybody standing in
+		# the arc built for the *previous* target -- which is exactly the line
+		# they now have to shoot along. Arming the reposition timer makes the
+		# units whose line is blocked take their new slot immediately, while
+		# those with a clear line keep standing and firing.
+		_friendly_block_seconds = FRIENDLY_BLOCK_REPOSITION_SECONDS
+
+
 ## Called when the unit is close enough to shoot: it stops where it stands
-## rather than continuing to the perch it was walking to.
+## rather than continuing to the perch it was walking to, and claims the spot so
+## arriving squadmates steer around it instead of shoving it off mid-clip.
 func stop_pursuit() -> void:
-	if not _is_pursuing:
+	if _is_pursuing:
+		_unit.stop_at_current_position()
+		_is_pursuing = false
+	_set_firing_anchor(true)
+
+
+## Per-frame handling for a unit that is already in range. It normally just
+## stands and shoots -- but a muzzle line that stays blocked by a squadmate is
+## not solved by standing there, so after FRIENDLY_BLOCK_REPOSITION_SECONDS the
+## unit walks to a clear slot on the arc instead. It stays in range throughout,
+## so its weapons keep firing during the sidestep.
+func hold_firing_position(
+	friendly_blocked: bool, target_world_position: Vector3, pursuit_turret, delta: float
+) -> void:
+	if friendly_blocked:
+		_friendly_block_seconds += delta
+	else:
+		# Decays rather than resets. Ten soldiers shuffling shoulder to shoulder
+		# clear and re-block the same line several times a second, and a hard
+		# reset let that flicker pin the counter at zero forever: nobody ever
+		# repositioned, while the shots taken during the blocked moments still
+		# went through a squadmate's back.
+		_friendly_block_seconds = maxf(_friendly_block_seconds - delta, 0.0)
+	if _clearing_line:
+		if _unit.has_active_move_order():
+			# Let the clearing move finish. advance_pursuit's own en-route gate
+			# turns this into a no-op unless the target moved far enough to
+			# invalidate the slot it is walking to.
+			advance_pursuit(target_world_position, pursuit_turret, delta)
+			return
+		_clearing_line = false
+	if _friendly_block_seconds >= FRIENDLY_BLOCK_REPOSITION_SECONDS:
+		_friendly_block_seconds = 0.0
+		_clearing_line = true
+		# The unit has been standing, so the approach's repath timer and last
+		# path position are stale. Clear both to force a fresh perch search.
+		_repath_remaining = 0.0
+		_last_path_position = Vector3.INF
+		advance_pursuit(target_world_position, pursuit_turret, delta)
 		return
-	_unit.stop_at_current_position()
-	_is_pursuing = false
+	stop_pursuit()
 
 
 ## Walks toward a position from which the ordered target can actually be hit,
@@ -111,6 +184,7 @@ func advance_pursuit(
 	):
 		return
 	_is_pursuing = true
+	_set_firing_anchor(false)
 	_last_path_position = target_world_position
 	_repath_remaining = ATTACK_REPATH_INTERVAL_SECONDS
 	var pursuit_position := target_world_position
@@ -121,9 +195,22 @@ func advance_pursuit(
 	var reachable_position := Vector3.INF
 	if primary_turret != null:
 		var maximum_range := float(primary_turret.maximum_range_world())
-		reachable_position = _unit.navigation_reachable_attack_position(
-			target_world_position, maximum_range, _line_of_fire_probe(primary_turret)
+		# First choice: a perch on this unit's own slot of the firing arc that
+		# can see the target AND does not put the shot through a squadmate.
+		reachable_position = _unit.navigation_reachable_firing_position(
+			target_world_position, maximum_range, _arc_direction, preferred_range,
+			_line_of_fire_probe(primary_turret, true)
 		)
+		if not reachable_position.is_finite():
+			# A friendly on the line is transient, so failing that search must
+			# not cancel the approach or -- worse -- trip the "the target is
+			# shielded from this side" branch below. Retry on line of fire
+			# alone; hold_firing_position() takes another run at clearing the
+			# line once the unit is actually standing there.
+			reachable_position = _unit.navigation_reachable_firing_position(
+				target_world_position, maximum_range, _arc_direction, preferred_range,
+				_line_of_fire_probe(primary_turret, false)
+			)
 		if not reachable_position.is_finite():
 			var any_perch: Vector3 = _unit.navigation_reachable_attack_position(
 				target_world_position, maximum_range
@@ -165,7 +252,13 @@ func advance_pursuit(
 ## Accepts only perches whose muzzle would see the ordered target. The probe
 ## samples terrain height at the candidate because navigation cells carry the
 ## map floor rather than the elevation the unit will actually stand at.
-func _line_of_fire_probe(primary_turret) -> Callable:
+##
+## `avoid_friendly_lines` additionally rejects a perch whose shot would pass
+## through a squadmate first. Kept optional because the two questions have
+## different failure modes: an obstacle shielding the target is permanent and
+## means "stop closing", while a friendly on the line is transient and means
+## "prefer somewhere else, but keep going if there is nowhere else".
+func _line_of_fire_probe(primary_turret, avoid_friendly_lines := false) -> Callable:
 	var attack_target: Variant = target()
 	if primary_turret == null or attack_target == null:
 		return Callable()
@@ -176,9 +269,21 @@ func _line_of_fire_probe(primary_turret) -> Callable:
 	return func(candidate: Vector3) -> bool:
 		var hit: Dictionary = unit.flight_terrain_hit_at(candidate)
 		var ground: Vector3 = hit["position"] if not hit.is_empty() else candidate
-		return primary_turret.has_line_of_fire_from(
-			ground + Vector3.UP * muzzle_height, attack_target, unit
-		)
+		var origin := ground + Vector3.UP * muzzle_height
+		if not primary_turret.has_line_of_fire_from(origin, attack_target, unit):
+			return false
+		return not avoid_friendly_lines \
+			or not primary_turret.friendly_blocks_fire_from(origin, attack_target, unit)
+
+
+## Pushes the navigation agent's firing-anchor flag. Deliberately unconditional
+## rather than transition-guarded: several unrelated paths clear the agent-side
+## flag on their own (a cancelled order, `stop()`, a fresh command), and a
+## cached "already anchored" here would leave the two silently out of step. The
+## facade's own set_firing_anchor() is where the redundant write is dropped.
+func _set_firing_anchor(active: bool) -> void:
+	if _unit != null and is_instance_valid(_unit):
+		_unit.set_navigation_firing_anchor(active)
 
 
 func _reset_pursuit() -> void:
@@ -187,3 +292,7 @@ func _reset_pursuit() -> void:
 	_last_path_position = Vector3.INF
 	_pursuit_destination = Vector3.INF
 	_pursuit_rejected = false
+	_arc_direction = Vector3.ZERO
+	_friendly_block_seconds = 0.0
+	_clearing_line = false
+	_set_firing_anchor(false)

@@ -974,6 +974,49 @@ func navigation_reachable_attack_position(
 	)
 
 
+## Perch search biased toward this unit's own slot on the group's firing arc.
+## Degrades to navigation_reachable_attack_position() when no arc was assigned
+## or the navigation system predates the call.
+func navigation_reachable_firing_position(
+	target_world_position: Vector3,
+	maximum_range: float,
+	preferred_direction: Vector3,
+	preferred_range: float,
+	probe := Callable()
+) -> Vector3:
+	if not _navigation_managed \
+	or _navigation_system == null \
+	or not _navigation_system.has_method("reachable_firing_position"):
+		return navigation_reachable_attack_position(
+			target_world_position, maximum_range, probe
+		)
+	return _navigation_system.call(
+		"reachable_firing_position", self, target_world_position, maximum_range,
+		preferred_direction, preferred_range, probe
+	)
+
+
+## Marks this unit as standing on a firing position, so arriving squadmates
+## steer around it instead of shoving it off its spot mid-clip. Owned by
+## UnitAttackOrder; public only because the navigation system is Unit's.
+func set_navigation_firing_anchor(active: bool) -> void:
+	if _navigation_managed and _navigation_system != null \
+	and _navigation_system.has_method("set_firing_anchor"):
+		_navigation_system.call("set_firing_anchor", self, active)
+
+
+## The bearing this unit should engage its current attack target from, assigned
+## per command by UnitNavigationSystem.assign_attack_arcs().
+func set_attack_arc_direction(direction: Vector3) -> void:
+	_combat.set_attack_arc_direction(direction)
+
+
+## Ring the group's arc pitch is measured on: how far out this unit prefers to
+## stand when engaging `target_or_position`. Zero when it cannot engage it.
+func attack_engagement_radius(target_or_position: Variant) -> float:
+	return _combat.attack_engagement_radius(target_or_position)
+
+
 ## Issues the pursuit move and returns whether navigation accepted it. The
 ## note_issuing_attack_move() bracket tells _combat.prepare_for_move_order()
 ## (reached through prepare_navigation_order()) that the move it is about to

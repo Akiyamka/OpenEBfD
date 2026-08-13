@@ -37,6 +37,7 @@ func _initialize() -> void:
 	_run_case("elevated-only trajectory mounts prefer the high ballistic arc", _test_elevated_trajectory_mounts)
 	await _run_async_case("trajectory misses continue until contact instead of bursting in air", _test_trajectory_moving_target_miss)
 	await _run_async_case("projectiles collide and Sonic pierces in 3D", _test_projectile_world_collision)
+	await _run_async_case("a squadmate struck en route is billed FriendlyDamageAmount", _test_incidental_friendly_interception)
 	await _run_async_case("flame streams pierce units and buildings but stop at walls", _test_continuous_stream_piercing)
 	_run_case("a continuous stream's pulses split one clip's total damage evenly", _test_continuous_stream_damage_split)
 	_finish("Projectile flight tests")
@@ -373,6 +374,63 @@ func _test_projectile_world_collision() -> void:
 	_expect(wave.traveled_distance >= 8.0, "piercing must not end the wave at the first collision")
 	wave.free()
 	blocker.free()
+	target.free()
+
+
+## A shot meant for one target that physically strikes a squadmate on the way
+## (typically one stepping onto the line during the round's flight, which no
+## pre-shot muzzle check can prevent) is incidental friendly fire: it still
+## stops the round, but bills the FriendlyDamageAmount share instead of the
+## full payload. A deliberately force-fired friendly target keeps taking the
+## full round.
+func _test_incidental_friendly_interception() -> void:
+	var source := Doubles.CombatSource.new()
+	var squadmate := Doubles.PhysicsCombatTarget.new(Vector3(0.0, 0.0, -4.0), 0.75)
+	squadmate.owner_player_id = source.owner_player_id
+	var target := Doubles.PhysicsCombatTarget.new(Vector3(0.0, 0.0, -8.0), 0.75)
+	root.add_child(squadmate)
+	root.add_child(target)
+	await physics_frame
+
+	var shell = CombatProjectileScript.new()
+	root.add_child(shell)
+	shell.launch(
+		_bullets.runtime_bullet(&"StraightBomb"),
+		Bullets.emission(Vector3.ZERO, Vector3.FORWARD),
+		target,
+		source
+	)
+	shell.advance(0.5)
+	_expect(
+		shell.finish_reason == &"impact_target",
+		"the intercepted round must still stop on the squadmate's body"
+	)
+	_expect(
+		is_zero_approx(squadmate.damage_taken),
+		"StraightBomb's FriendlyDamageAmount=0 must spare the intercepting squadmate"
+	)
+	_expect(
+		is_zero_approx(target.damage_taken),
+		"the intercepted round must not reach its intended target"
+	)
+	shell.free()
+
+	squadmate.damage_taken = 0.0
+	var forced = CombatProjectileScript.new()
+	root.add_child(forced)
+	forced.launch(
+		_bullets.runtime_bullet(&"StraightBomb"),
+		Bullets.emission(Vector3.ZERO, Vector3.FORWARD),
+		squadmate,
+		source
+	)
+	forced.advance(0.5)
+	_expect(
+		squadmate.damage_taken > 0.0,
+		"a deliberately force-fired friendly target must still take the full round"
+	)
+	forced.free()
+	squadmate.free()
 	target.free()
 
 

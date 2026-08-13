@@ -915,6 +915,89 @@ func has_line_of_fire_from(
 	)
 
 
+## Whether a friendly body currently stands between this weapon's muzzle and
+## the target. Distinct from has_line_of_fire(): the shot would physically
+## arrive, it just arrives through a squadmate first. A lobbing weapon arcs
+## over the whole formation and is never blocked this way.
+##
+## Asked along the segment the round will actually fly -- the muzzle's current
+## heading projected to the target plane (see `parallel_impact_position`) --
+## rather than the ideal muzzle-to-target line. The two differ whenever the
+## muzzle is posed off the ordered bearing, which an authored Fire clip does as
+## a matter of course (measured ~2.5 degrees on an HKTrooper mid-clip: enough
+## lateral drift over a weapon range to put the real trajectory through a
+## squadmate the ideal line clears).
+func friendly_blocks_fire(target_or_position: Variant, shooter: Object = null) -> bool:
+	return _friendly_blocks_flight_path(
+		peek_emission(), target_or_position,
+		_bullet_target_position(target_or_position), shooter
+	)
+
+
+## The friendly-line question for the segment a round leaving `emission` right
+## now would actually travel. Shared by the public current-muzzle query above
+## and the last-word gate inside try_fire_at(), which previews the specific
+## muzzle it is about to use.
+func _friendly_blocks_flight_path(
+		emission: Dictionary,
+		target_or_position: Variant,
+		aim_position: Vector3,
+		shooter: Object
+	) -> bool:
+	if not is_configured() or not is_bound() or shooter == null \
+	or emission.is_empty() or not aim_position.is_finite():
+		return false
+	if _model_root == null or not is_instance_valid(_model_root) \
+	or not _model_root.is_inside_tree():
+		return false
+	var bullet = _definition_view()
+	if bullet.has_trajectory():
+		return false
+	var origin := Vector3(emission["position"])
+	var flight_target := BallisticsScript.parallel_impact_position(
+		origin, aim_position, Vector3(emission["direction"])
+	)
+	# The ordered target itself stays excluded even though the probe now ends at
+	# a coordinate: a deliberate force-fire on a friendly must not read its own
+	# target's body as a squadmate on the line.
+	var ignored: Array = [shooter, _model_root]
+	if target_or_position is Object:
+		ignored.append(target_or_position as Object)
+	return CombatLineOfFireScript.friendly_on_line(
+		_model_root.get_world_3d(),
+		origin,
+		flight_target,
+		shooter,
+		ignored
+	)
+
+
+## The same query for a perch the shooter has not reached yet, so attack
+## pursuit can reject a firing position that would put its own line through a
+## unit already engaging from in front of it.
+func friendly_blocks_fire_from(
+		origin: Vector3, target_or_position: Variant, shooter: Object = null
+	) -> bool:
+	if not is_configured() or not is_bound() or shooter == null:
+		return false
+	if _model_root == null or not is_instance_valid(_model_root) \
+	or not _model_root.is_inside_tree():
+		return false
+	var bullet = _definition_view()
+	if bullet.has_trajectory():
+		return false
+	var ignored: Array = [shooter, _model_root]
+	if target_or_position is Object:
+		ignored.append(target_or_position as Object)
+	return CombatLineOfFireScript.friendly_on_line(
+		_model_root.get_world_3d(),
+		origin,
+		_bullet_target_position(target_or_position),
+		shooter,
+		ignored
+	)
+
+
 ## World point shots leave from. Falls back to the aim pivot for a weapon whose
 ## muzzle markers are not currently sampled.
 func muzzle_origin() -> Vector3:
@@ -990,6 +1073,20 @@ func try_fire_at(request: FireRequest) -> Array:
 	or (
 		not target_or_position is Object
 		and not preview_bullet.can_reach(range_origin, target_position + aim_offset)
+	):
+		return result
+	# Last gate before the round actually leaves. Order handling asks the same
+	# question when it decides to engage (see UnitCombat), but an authored Fire
+	# clip runs for a second or more between that decision and this shot event,
+	# which is ample time for a squadmate to walk into the line -- and the shot
+	# would then hit that squadmate rather than the target, because
+	# CombatLineOfFire.is_clear deliberately pierces units. Answering it again
+	# here covers every firing path (authored sequences, direct fire, buildings)
+	# from the muzzle that is about to be used, along the heading that muzzle is
+	# actually posed at right now (see friendly_blocks_fire).
+	if _friendly_blocks_flight_path(
+		preview_emission, target_or_position, target_position + aim_offset,
+		request.source
 	):
 		return result
 

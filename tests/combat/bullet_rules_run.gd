@@ -333,6 +333,31 @@ func _test_impact_resolution() -> void:
 		"FriendlyDamageAmount must not suppress a deliberate direct hit"
 	)
 
+	# The same body struck en route -- a squadmate stepping onto the flight path
+	# of a round meant for something else -- is incidental, and takes the
+	# FriendlyDamageAmount share rather than the full round.
+	ally.damage_taken = 0.0
+	resolver.resolve(heat, ally, ally.global_position, ally, source, 1.0, false)
+	_expect(
+		is_zero_approx(ally.damage_taken),
+		"HEAT_B's FriendlyDamageAmount=0 must zero an incidental hit on a squadmate"
+	)
+	ally.damage_taken = 0.0
+	var incidental_results: Array[Dictionary] = resolver.resolve(
+		mortar, ally, ally.global_position, ally, source, 1.0, false
+	)
+	_expect(
+		incidental_results.size() >= 1 \
+			and is_equal_approx(float(incidental_results[0]["friendly_multiplier"]), 0.5),
+		"Mortar_B's FriendlyDamageAmount=50 must halve an incidental squadmate hit"
+	)
+	enemy.damage_taken = 0.0
+	resolver.resolve(mortar, enemy, enemy.global_position, enemy, source, 1.0, false)
+	_expect(
+		is_equal_approx(enemy.damage_taken, mortar.damage_against(&"None")),
+		"an enemy body struck en route must still take the full round"
+	)
+
 	direct.damage_taken = 0.0
 	ally.damage_taken = 0.0
 	enemy.damage_taken = 0.0
