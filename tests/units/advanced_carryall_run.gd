@@ -92,6 +92,8 @@ class FakeCarrier extends Node3D:
 	var phase_log: Array[StringName] = []
 	var aborts := 0
 	var docking_stops := 0
+	var landing_clearance := 0.0
+	var alignment_steps_remaining := 0
 
 	func transport_move_toward(position: Vector3) -> void:
 		var offset := position - global_position
@@ -106,21 +108,25 @@ class FakeCarrier extends Node3D:
 		offset.y = 0.0
 		return offset.length() <= navigation_stop_distance + 0.01
 
-	func transport_align_with(_target: Node3D) -> void:
+	func transport_align_with(_target: Node3D, _delta: float) -> bool:
 		phase_log.append(&"align_pickup")
+		return _advance_alignment()
 
-	func transport_align_with_point(_position: Vector3) -> void:
+	func transport_align_with_point(_position: Vector3, _delta: float) -> bool:
 		phase_log.append(&"align_drop")
+		return _advance_alignment()
 
-	func transport_track_pickup_landing(target: Node3D) -> void:
+	func transport_track_pickup_landing(target: Node3D, delta: float) -> bool:
 		global_position = Vector3(target.global_position.x, global_position.y, target.global_position.z)
 		phase_log.append(&"track_pickup")
+		return transport_align_with(target, delta)
 
 	func transport_stop_for_docking() -> void:
 		docking_stops += 1
 
-	func flight_begin_pickup_sequence(_position: Vector3) -> void:
+	func flight_begin_pickup_sequence(_position: Vector3, clearance: float) -> void:
 		pickup_finished = false
+		landing_clearance = clearance
 		phase_log.append(&"land")
 
 	func flight_pickup_transition_finished() -> bool:
@@ -165,6 +171,12 @@ class FakeCarrier extends Node3D:
 
 	func transport_vertical_bounds() -> Vector2:
 		return Vector2(-1.0, 0.5)
+
+	func _advance_alignment() -> bool:
+		if alignment_steps_remaining <= 0:
+			return true
+		alignment_steps_remaining -= 1
+		return false
 
 
 class FakeAbilityCarrier extends Node3D:
@@ -218,6 +230,7 @@ func _initialize() -> void:
 	_run_case("generic target ability hotkeys, repeat, Esc, selection change and bar toggle", _test_target_ability_controller)
 	await _test_ability_bar_scene()
 	await _test_real_cargo_anchor()
+	await _test_real_constrained_alignment()
 	await _test_real_eligibility_and_variants()
 	if _failures > 0:
 		printerr("Advanced Carryall tests: %d failures after %d assertions" % [_failures, _assertions])
@@ -238,11 +251,17 @@ func _test_pickup_order() -> void:
 	transport.advance(0.1)
 	_expect(transport.state_name() == &"land_pickup", "arrival must start Land")
 	_expect(transport.counts_as_ground_target(), "landing/docking carrier must become a ground target")
+	_expect(is_equal_approx(carrier.landing_clearance, 2.05),
+		"pickup landing must stop where carrier bottom meets cargo top")
 	cargo.global_position = Vector3(3, 0, -2)
 	transport.advance(0.1)
 	_expect(carrier.global_position.is_equal_approx(cargo.global_position),
 		"Land must continue following a target that moves before docking lock")
 	carrier.pickup_finished = true
+	carrier.alignment_steps_remaining = 1
+	transport.advance(0.1)
+	_expect(transport.state_name() == &"land_pickup" and not cargo.locked,
+		"completed Land must wait for constrained pickup-axis alignment")
 	transport.advance(0.1)
 	_expect(transport.state_name() == &"start_pickup" and cargo.locked,
 		"Land completion must lock cargo and start StartPickup")
@@ -386,6 +405,8 @@ func _test_drop_validation() -> void:
 	_expect(transport.command_drop(Vector3(5, 0, 0)), "valid point must begin drop")
 	transport.advance(0.1)
 	_expect(transport.counts_as_ground_target(), "drop landing must expose the carrier as a ground target")
+	_expect(is_equal_approx(carrier.landing_clearance, 2.55),
+		"drop landing must stop with the carried cargo's lower bound on terrain")
 	carrier.pickup_finished = true; transport.advance(0.1)
 	carrier.pickup_finished = true; transport.advance(0.1); transport.advance(0.99)
 	_expect(cargo.attached, "cargo must remain attached during drop pause")
@@ -529,6 +550,7 @@ func _test_real_cargo_anchor() -> void:
 	var cargo_id := cargo.get_instance_id()
 	var expected_anchor_y := carrier.transport_vertical_bounds().x - cargo.transport_vertical_bounds().y - 0.05
 	carrier.transport_attach_cargo(cargo, Vector3(0, expected_anchor_y, 0))
+	expected_anchor_y = carrier.transport_vertical_bounds().x - cargo.transport_vertical_bounds().y - 0.05
 	_expect(cargo.get_instance_id() == cargo_id and cargo.is_carried(), "cargo must remain the same carried Unit")
 	_expect(cargo.get_parent().name == "CargoAnchor", "cargo must be a real descendant of lower anchor")
 	_expect(not cargo.can_receive_commands() and not cargo.can_perform_combat(),
@@ -542,11 +564,37 @@ func _test_real_cargo_anchor() -> void:
 	carrier.global_rotation += Vector3(0.1, 0.3, -0.1)
 	_expect(not cargo.global_transform.is_equal_approx(before), "cargo transform must follow carrier translation and rotation")
 	_expect(cargo.combat_is_airborne(), "attached cargo must be an air target")
-	_expect(is_equal_approx((cargo.get_parent() as Node3D).position.y, expected_anchor_y),
-		"authored vertical bounds place cargo directly below carrier without overlap")
+	var actual_anchor_y := (cargo.get_parent() as Node3D).position.y
+	_expect(is_equal_approx(actual_anchor_y, expected_anchor_y),
+		("authored vertical bounds place cargo directly below carrier without overlap "
+		+ "(actual=%.4f expected=%.4f)") % [actual_anchor_y, expected_anchor_y])
 	carrier.transport_detach_cargo(cargo, units, Vector3(8, 0, 5))
 	_expect(not cargo.is_carried() and not cargo.navigation_is_suspended(),
 		"safe detach restores cargo's normal navigation contract")
+	units.free()
+
+
+func _test_real_constrained_alignment() -> void:
+	_current_case = "real carryall alignment uses the turn-rate constraint"
+	var units := Node3D.new()
+	root.add_child(units)
+	var carrier: Unit = ATADVCarryallScene.instantiate()
+	var cargo: Unit = ATScoutScene.instantiate()
+	units.add_child(carrier); units.add_child(cargo)
+	await process_frame
+	carrier.global_rotation = Vector3.ZERO
+	cargo.global_rotation = Vector3(0.0, PI, 0.0)
+	var initial_error := carrier.facing_direction().angle_to(cargo.facing_direction())
+	var aligned := carrier.transport_align_with(cargo, 0.05)
+	var first_step_error := carrier.facing_direction().angle_to(cargo.facing_direction())
+	_expect(not aligned and first_step_error < initial_error and first_step_error > 0.1,
+		"one alignment tick must make bounded progress without snapping to cargo yaw")
+	for _step in 40:
+		if carrier.transport_align_with(cargo, 0.05):
+			aligned = true
+			break
+	_expect(aligned and carrier.facing_direction().is_equal_approx(cargo.facing_direction()),
+		"repeated constrained turns must eventually align the carryall with cargo")
 	units.free()
 
 

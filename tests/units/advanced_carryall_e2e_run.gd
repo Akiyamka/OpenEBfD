@@ -48,7 +48,7 @@ func _initialize() -> void:
 	_expect(bool(pickup_result.get("ok", false)),
 		"the production ability adapter must issue pickup to the real Advanced Carryall")
 
-	var pickup_trace := await _wait_for_state(carrier, &"carrying", PICKUP_TIMEOUT_FRAMES)
+	var pickup_trace := await _wait_for_state(carrier, cargo, &"carrying", PICKUP_TIMEOUT_FRAMES)
 	if not bool(pickup_trace.get("reached", false)):
 		print("Pickup timeout: states=%s carrier=%s cargo=%s nav=%s" % [
 			pickup_trace.get("states", []), carrier.global_position, cargo.global_position,
@@ -60,6 +60,21 @@ func _initialize() -> void:
 		"pickup must enter the authored landing phase")
 	_expect((pickup_trace.get("states", []) as Array).has(&"hold_pickup"),
 		"pickup must enter the one-second friendly docking hold")
+	var pickup_hold := _first_sample(pickup_trace, &"hold_pickup")
+	var pickup_carrier_bounds: Vector2 = pickup_hold.get("carrier_bounds", Vector2.ZERO)
+	var pickup_cargo_bounds: Vector2 = pickup_hold.get("cargo_bounds", Vector2.ZERO)
+	var pickup_gap := (
+		float(pickup_hold.get("carrier_y", 0.0)) + pickup_carrier_bounds.x
+		- float(pickup_hold.get("cargo_y", 0.0)) - pickup_cargo_bounds.y
+	)
+	_expect(is_equal_approx(pickup_gap, 0.05),
+		"pickup descent must stop when carrier bottom reaches cargo top (gap=%.4f)" % pickup_gap)
+	_expect_constrained_pickup_alignment(pickup_trace)
+	_expect_continuous_ascent(
+		pickup_trace,
+		[&"lift_pickup", &"end_pickup", &"takeoff_pickup"],
+		"loaded pickup"
+	)
 	_expect(carrier.global_position.distance_to(carrier_start) > 1.0,
 		"navigation must physically fly the carrier toward cargo")
 	_expect(cargo.get_instance_id() == cargo_instance_id and cargo.is_carried(),
@@ -75,7 +90,7 @@ func _initialize() -> void:
 	var drop_result: Dictionary = ability.execute(&"drop", selected_carriers, null, DROP_POSITION)
 	_expect(bool(drop_result.get("ok", false)),
 		"the production ability adapter must issue a legal drop order")
-	var drop_trace := await _wait_for_state(carrier, &"idle", DROP_TIMEOUT_FRAMES)
+	var drop_trace := await _wait_for_state(carrier, cargo, &"idle", DROP_TIMEOUT_FRAMES)
 	if not bool(drop_trace.get("reached", false)):
 		print("Drop timeout: states=%s carrier=%s cargo=%s nav=%s" % [
 			drop_trace.get("states", []), carrier.global_position, cargo.global_position,
@@ -87,6 +102,17 @@ func _initialize() -> void:
 		"drop must enter the authored landing phase")
 	_expect((drop_trace.get("states", []) as Array).has(&"hold_drop"),
 		"drop must enter its docking hold before release")
+	var drop_hold := _first_sample(drop_trace, &"hold_drop")
+	var drop_cargo_bounds: Vector2 = drop_hold.get("cargo_bounds", Vector2.ZERO)
+	var dropped_bottom := float(drop_hold.get("cargo_y", 0.0)) + drop_cargo_bounds.x
+	_expect(is_equal_approx(dropped_bottom, DROP_POSITION.y),
+		"drop descent must stop with the carried cargo's lower bound on terrain (bottom=%.4f)" \
+		% dropped_bottom)
+	_expect_continuous_ascent(
+		drop_trace,
+		[&"lift_drop", &"end_drop", &"takeoff_drop"],
+		"empty drop"
+	)
 	_expect(cargo.global_position.distance_to(cargo_before_drop_flight) > 1.0,
 		"attached cargo must travel with the carrier to the drop point")
 	_expect(cargo.get_instance_id() == cargo_instance_id and not cargo.is_carried(),
@@ -109,16 +135,89 @@ func _initialize() -> void:
 	quit(0)
 
 
-func _wait_for_state(carrier: Unit, desired: StringName, maximum_frames: int) -> Dictionary:
+func _wait_for_state(
+	carrier: Unit, cargo: Unit, desired: StringName, maximum_frames: int
+) -> Dictionary:
 	var states: Array[StringName] = []
+	var samples: Array[Dictionary] = []
 	for _frame in maximum_frames:
 		await physics_frame
 		var state := carrier.transport_state_name()
+		samples.append({
+			"state": state,
+			"carrier_y": carrier.global_position.y,
+			"carrier_yaw": carrier.global_rotation.y,
+			"carrier_bounds": carrier.transport_vertical_bounds(),
+			"cargo_y": cargo.global_position.y,
+			"cargo_yaw": cargo.global_rotation.y,
+			"cargo_bounds": cargo.transport_vertical_bounds(),
+		})
 		if states.is_empty() or states.back() != state:
 			states.append(state)
 		if state == desired:
-			return {"reached": true, "states": states}
-	return {"reached": false, "states": states}
+			return {"reached": true, "states": states, "samples": samples}
+	return {"reached": false, "states": states, "samples": samples}
+
+
+func _first_sample(trace: Dictionary, state: StringName) -> Dictionary:
+	for sample: Dictionary in trace.get("samples", []):
+		if StringName(sample.get("state", &"")) == state:
+			return sample
+	return {}
+
+
+func _expect_constrained_pickup_alignment(trace: Dictionary) -> void:
+	var landing_samples: Array[Dictionary] = []
+	for sample: Dictionary in trace.get("samples", []):
+		if StringName(sample.get("state", &"")) == &"land_pickup":
+			landing_samples.append(sample)
+	var hold := _first_sample(trace, &"hold_pickup")
+	if landing_samples.size() < 2 or hold.is_empty():
+		_expect(false, "pickup trace must contain enough landing frames to verify constrained alignment")
+		return
+	var initial_error := absf(angle_difference(
+		float(landing_samples[0].get("carrier_yaw", 0.0)),
+		float(landing_samples[0].get("cargo_yaw", 0.0))
+	))
+	var next_error := absf(angle_difference(
+		float(landing_samples[1].get("carrier_yaw", 0.0)),
+		float(landing_samples[1].get("cargo_yaw", 0.0))
+	))
+	var hold_error := absf(angle_difference(
+		float(hold.get("carrier_yaw", 0.0)),
+		float(hold.get("cargo_yaw", 0.0))
+	))
+	_expect(initial_error > 0.1 and next_error < initial_error and next_error > 0.01,
+		"pickup-axis alignment must start gradually instead of snapping in one frame")
+	_expect(hold_error < 0.001,
+		"pickup docking hold must start only after constrained alignment completes")
+
+
+func _expect_continuous_ascent(
+	trace: Dictionary, ascent_states: Array[StringName], label: String
+) -> void:
+	var previous_y := -INF
+	var total_samples := 0
+	var never_descended := true
+	for state in ascent_states:
+		var first_y := INF
+		var last_y := -INF
+		var state_samples := 0
+		for sample: Dictionary in trace.get("samples", []):
+			if StringName(sample.get("state", &"")) != state:
+				continue
+			var current_y := float(sample.get("carrier_y", 0.0))
+			never_descended = never_descended and current_y + 0.0001 >= previous_y
+			previous_y = current_y
+			if state_samples == 0:
+				first_y = current_y
+			last_y = current_y
+			state_samples += 1
+			total_samples += 1
+		_expect(state_samples > 1 and last_y > first_y + 0.01,
+			"%s must keep rising throughout %s" % [label, state])
+	_expect(never_descended, "%s ascent must never move downward" % label)
+	_expect(total_samples > 3, "%s trace must contain the complete ascent" % label)
 
 
 func _make_grid() -> MapNavigationGrid:

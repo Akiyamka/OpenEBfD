@@ -148,7 +148,12 @@ var _flight_controller: UnitFlightController = null
 ## only the public hooks it needs for tree, navigation, combat and flight.
 var _advanced_carryall_transport = null
 var _transport_cargo_anchor: Node3D
+var _transport_docking_gap := 0.0
 var _transport_carrier_ref: WeakRef
+var _transport_carried_vertical_bounds := Vector2.ZERO
+var _transport_has_carried_vertical_bounds := false
+var _transport_carrier_vertical_bounds := Vector2.ZERO
+var _transport_has_carrier_vertical_bounds := false
 var _transport_reservation_ref: WeakRef
 var _transport_docking_locked := false
 var _navigation_suspended_for_transport := false
@@ -442,9 +447,11 @@ func flight_continue_navigation(world_position: Vector3, exit_point := Vector3.I
 
 ## Flight-facing pickup sequence surface. AdvancedCarryallTransport schedules
 ## the phases; UnitFlightController owns their clips and vertical motion.
-func flight_begin_pickup_sequence(landing_position := Vector3.INF) -> void:
+func flight_begin_pickup_sequence(
+	landing_position := Vector3.INF, landing_clearance := 0.0
+) -> void:
 	if _flight_controller != null:
-		_flight_controller.flight_begin_pickup_sequence(landing_position)
+		_flight_controller.flight_begin_pickup_sequence(landing_position, landing_clearance)
 
 
 func flight_advance_pickup(next_sub_phase: int) -> void:
@@ -907,25 +914,25 @@ func transport_approach_reached(world_position: Vector3) -> bool:
 	return assigned_offset.length_squared() <= 0.0001 and not has_active_move_order()
 
 
-func transport_align_with(target: Node3D) -> void:
-	if target != null and target.has_method("facing_direction"):
-		face_direction(target.call("facing_direction") as Vector3)
+func transport_align_with(target: Node3D, delta: float) -> bool:
+	if target == null or not target.has_method("facing_direction"):
+		return true
+	return turn_toward(target.call("facing_direction") as Vector3, delta)
 
 
-func transport_align_with_point(world_position: Vector3) -> void:
+func transport_align_with_point(world_position: Vector3, delta: float) -> bool:
 	var direction := world_position - global_position
 	direction.y = 0.0
-	if direction.length_squared() > 0.000001:
-		face_direction(direction)
+	return turn_toward(direction, delta)
 
 
-func transport_track_pickup_landing(target: Node3D) -> void:
+func transport_track_pickup_landing(target: Node3D, delta: float) -> bool:
 	if target == null or not is_instance_valid(target):
-		return
+		return false
 	# FlightController owns Y during Land.  Transport owns only the horizontal
 	# co-axial placement, so tracking a mobile target cannot interrupt descent.
 	global_position = Vector3(target.global_position.x, global_position.y, target.global_position.z)
-	transport_align_with(target)
+	return transport_align_with(target, delta)
 
 
 func transport_stop_for_docking() -> void:
@@ -960,6 +967,10 @@ func transport_bounds_half_height() -> float:
 
 
 func transport_vertical_bounds() -> Vector2:
+	if _transport_has_carried_vertical_bounds:
+		return _transport_carried_vertical_bounds
+	if _transport_has_carrier_vertical_bounds:
+		return _transport_carrier_vertical_bounds
 	var bounds := _selection_bounds()
 	return Vector2(bounds.position.y, bounds.end.y) if bounds.size.y > 0.0 else Vector2(-0.25, 0.25)
 
@@ -968,11 +979,40 @@ func transport_attach_cargo(cargo: Node3D, anchor_offset: Vector3) -> void:
 	if cargo == null or not is_instance_valid(cargo):
 		return
 	var anchor := _ensure_transport_cargo_anchor()
-	anchor.position = anchor_offset
+	var carrier_bounds := transport_vertical_bounds()
+	_transport_carrier_vertical_bounds = carrier_bounds
+	_transport_has_carrier_vertical_bounds = true
+	var cargo_bounds_before: Vector2 = cargo.call("transport_vertical_bounds") as Vector2 \
+		if cargo.has_method("transport_vertical_bounds") else Vector2(-0.5, 0.5)
+	var docking_gap := carrier_bounds.x - cargo_bounds_before.y - anchor_offset.y
+	_transport_docking_gap = docking_gap
+	_set_transport_anchor_offset(anchor, anchor_offset)
 	if cargo.has_method("transport_mark_carried"):
 		cargo.call("transport_mark_carried", self)
 	cargo.call("transport_reparent_to", anchor, false)
 	cargo.transform = Transform3D.IDENTITY
+	anchor.force_update_transform()
+	cargo.force_update_transform()
+	# Once cargo is nested below VisualRoot, an uncached recursive bounds query
+	# would include its markers as though they belonged to the carrier hull.
+	# Refresh through the cached carrier/cargo bounds captured before reparenting.
+	_refresh_transport_cargo_anchor(cargo)
+
+
+func _refresh_transport_cargo_anchor(cargo: Node3D) -> void:
+	if cargo == null or not is_instance_valid(cargo) \
+	or _transport_cargo_anchor == null or not is_instance_valid(_transport_cargo_anchor):
+		return
+	var cargo_bounds: Vector2 = cargo.call("transport_vertical_bounds") as Vector2 \
+		if cargo.has_method("transport_vertical_bounds") else Vector2(-0.5, 0.5)
+	var anchor_offset := Vector3(
+		0.0,
+		transport_vertical_bounds().x - cargo_bounds.y - _transport_docking_gap,
+		0.0
+	)
+	_set_transport_anchor_offset(_transport_cargo_anchor, anchor_offset)
+	_transport_cargo_anchor.force_update_transform()
+	cargo.force_update_transform()
 
 
 func transport_detach_cargo(cargo: Node3D, original_parent: Node, world_position: Vector3) -> void:
@@ -985,6 +1025,8 @@ func transport_detach_cargo(cargo: Node3D, original_parent: Node, world_position
 		cargo.call("transport_reparent_to", destination_parent, true)
 	if cargo.has_method("transport_mark_released"):
 		cargo.call("transport_mark_released", world_position, facing_direction())
+	_transport_docking_gap = 0.0
+	_transport_has_carrier_vertical_bounds = false
 
 
 func transport_release_destroyed_cargo(cargo: Node3D, original_parent: Node) -> void:
@@ -997,6 +1039,8 @@ func transport_release_destroyed_cargo(cargo: Node3D, original_parent: Node) -> 
 		cargo.call("transport_reparent_to", destination_parent, true)
 	if cargo.has_method("transport_mark_destroyed_release"):
 		cargo.call("transport_mark_destroyed_release")
+	_transport_docking_gap = 0.0
+	_transport_has_carrier_vertical_bounds = false
 
 
 func transport_cargo_destroyed(cargo: Node3D) -> void:
@@ -1024,6 +1068,8 @@ func transport_abort_docking_recover() -> void:
 
 
 func transport_mark_carried(carrier: Node3D) -> void:
+	_transport_carried_vertical_bounds = transport_vertical_bounds()
+	_transport_has_carried_vertical_bounds = true
 	_transport_carrier_ref = weakref(carrier)
 	_transport_reservation_ref = null
 	_transport_docking_locked = false
@@ -1035,6 +1081,7 @@ func transport_mark_carried(carrier: Node3D) -> void:
 
 func transport_mark_released(world_position: Vector3, carrier_facing: Vector3) -> void:
 	_transport_carrier_ref = null
+	_transport_has_carried_vertical_bounds = false
 	_transport_reservation_ref = null
 	_transport_docking_locked = false
 	global_position = world_position
@@ -1047,6 +1094,7 @@ func transport_mark_released(world_position: Vector3, carrier_facing: Vector3) -
 
 func transport_mark_destroyed_release() -> void:
 	_transport_carrier_ref = null
+	_transport_has_carried_vertical_bounds = false
 	_transport_reservation_ref = null
 	_transport_docking_locked = false
 	_navigation_suspended_for_transport = true
@@ -1065,6 +1113,18 @@ func _ensure_transport_cargo_anchor() -> Node3D:
 	if visual_root != null:
 		_transport_cargo_anchor.basis = _terrain_alignment.visual_rest_basis_inverse()
 	return _transport_cargo_anchor
+
+
+func _set_transport_anchor_offset(anchor: Node3D, unit_local_offset: Vector3) -> void:
+	if visual_root == null or anchor.get_parent() != visual_root:
+		anchor.position = unit_local_offset
+		return
+	# CargoAnchor lives below VisualRoot to inherit presentation pitch and roll,
+	# but its authored offset is expressed in Unit-local coordinates. Undo the
+	# model conversion rest basis when assigning that point, just as the anchor
+	# basis itself is corrected in _ensure_transport_cargo_anchor().
+	anchor.position = _terrain_alignment.visual_rest_basis_inverse() \
+		* (unit_local_offset - visual_root.position)
 
 
 func _transport_carrier() -> Node3D:

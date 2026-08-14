@@ -37,6 +37,7 @@ enum State {
 ## Final safety aperture after landing already owns horizontal target tracking.
 ## Navigation approach completion is a separate owner contract below.
 const DOCKING_APERTURE_RADIUS := 0.65
+const DOCKING_GAP := 0.05
 const ALLIED_DOCK_SECONDS := 1.0
 const DROP_DOCK_SECONDS := 1.0
 
@@ -166,7 +167,7 @@ func advance(delta: float) -> void:
 			return
 	match _state:
 		State.APPROACH_PICKUP:
-			_advance_pickup_approach()
+			_advance_pickup_approach(delta)
 		State.LAND_PICKUP:
 			# The target is deliberately not command-locked until we are directly
 			# overhead.  It can therefore finish a movement step while the Land
@@ -176,18 +177,21 @@ func advance(delta: float) -> void:
 			if landing_target == null or not _target_still_reserved(landing_target):
 				_abort_pending_operation()
 				return
-			_owner.call("transport_track_pickup_landing", landing_target)
+			var aligned := bool(_owner.call("transport_track_pickup_landing", landing_target, delta))
 			if bool(_owner.call("flight_pickup_transition_finished")):
 				var target := landing_target
 				if target == null or not _target_still_reserved(target):
 					_abort_pending_operation()
+					return
+				if not aligned:
+					# Land may finish before a large heading change. Keep the craft at
+					# docking height while its normal turn-rate constraint completes.
 					return
 				if _horizontal_distance_to(target.global_position) > DOCKING_APERTURE_RADIUS:
 					# A moving target slipped beyond the docking aperture.  Return to
 					# approach instead of locking and attaching at a distance.
 					_state = State.APPROACH_PICKUP
 					return
-				_owner.call("transport_stop_for_docking")
 				target.call("transport_lock_for_docking", _owner)
 				_docking_seconds = _pickup_docking_seconds(target)
 				_owner.call("flight_advance_pickup", UnitFlightControllerScript.Phase.PICKUP_START)
@@ -210,9 +214,10 @@ func advance(delta: float) -> void:
 			if bool(_owner.call("flight_transport_takeoff_finished")):
 				_state = State.CARRYING
 		State.APPROACH_DROP:
-			_advance_drop_approach()
+			_advance_drop_approach(delta)
 		State.LAND_DROP:
-			if bool(_owner.call("flight_pickup_transition_finished")):
+			var aligned := bool(_owner.call("transport_align_with_point", _drop_position, delta))
+			if aligned and bool(_owner.call("flight_pickup_transition_finished")):
 				_owner.call("flight_advance_pickup", UnitFlightControllerScript.Phase.PICKUP_START)
 				_state = State.START_DROP
 		State.START_DROP:
@@ -263,7 +268,7 @@ func cargo_destroyed(cargo_unit: Node3D) -> void:
 		_state = State.RECOVER_TAKEOFF
 
 
-func _advance_pickup_approach() -> void:
+func _advance_pickup_approach(_delta: float) -> void:
 	var target := _pending_target()
 	if target == null or not _target_still_reserved(target):
 		_abort_pending_operation()
@@ -271,8 +276,12 @@ func _advance_pickup_approach() -> void:
 	_owner.call("transport_move_toward", target.global_position)
 	if not bool(_owner.call("transport_approach_reached", target.global_position)):
 		return
-	_owner.call("transport_align_with", target)
-	_owner.call("flight_begin_pickup_sequence", target.global_position)
+	_owner.call("transport_stop_for_docking")
+	_owner.call(
+		"flight_begin_pickup_sequence",
+		target.global_position,
+		_pickup_landing_clearance(target)
+	)
 	_state = State.LAND_PICKUP
 
 
@@ -289,7 +298,7 @@ func _advance_pickup_hold(delta: float) -> void:
 	_state = State.LIFT_PICKUP
 
 
-func _advance_drop_approach() -> void:
+func _advance_drop_approach(_delta: float) -> void:
 	var carried := _cargo()
 	if carried == null or not _drop_point_is_valid(carried, _drop_position):
 		# A map change may invalidate a previously legal point.  Keeping cargo
@@ -300,9 +309,12 @@ func _advance_drop_approach() -> void:
 	_owner.call("transport_move_toward", _drop_position)
 	if not bool(_owner.call("transport_approach_reached", _drop_position)):
 		return
-	_owner.call("transport_align_with_point", _drop_position)
 	_owner.call("transport_stop_for_docking")
-	_owner.call("flight_begin_pickup_sequence", _drop_position)
+	_owner.call(
+		"flight_begin_pickup_sequence",
+		_drop_position,
+		_drop_landing_clearance(carried)
+	)
 	_state = State.LAND_DROP
 
 
@@ -399,9 +411,27 @@ func _drop_point_is_valid(carried: Node3D, world_position: Vector3) -> bool:
 
 func _cargo_anchor_offset(target: Node3D) -> Vector3:
 	var carrier_extents: Vector2 = _owner.call("transport_vertical_bounds") as Vector2
-	var cargo_extents: Vector2 = target.call("transport_vertical_bounds") as Vector2 \
-		if target.has_method("transport_vertical_bounds") else Vector2(-0.5, 0.5)
+	var cargo_extents := _vertical_bounds(target)
 	# Root transforms sit at different authored heights: a vehicle commonly has
 	# its origin at the ground, not its centre.  Set cargo root Y from exact
 	# carrier-bottom/cargo-top extents so visible bounds touch only at the gap.
-	return Vector3(0.0, carrier_extents.x - cargo_extents.y - 0.05, 0.0)
+	return Vector3(0.0, carrier_extents.x - cargo_extents.y - DOCKING_GAP, 0.0)
+
+
+func _pickup_landing_clearance(target: Node3D) -> float:
+	# Raise the carrier root until its authored lower bound meets the target's
+	# authored upper bound. The flight controller adds this clearance to the
+	# terrain sample at the target position.
+	return -_cargo_anchor_offset(target).y
+
+
+func _drop_landing_clearance(carried: Node3D) -> float:
+	# Cargo is already at the same lower anchor used by pickup. Account for its
+	# full authored height so its lower bound, rather than the carrier root,
+	# reaches the terrain during unloading.
+	return -_cargo_anchor_offset(carried).y - _vertical_bounds(carried).x
+
+
+func _vertical_bounds(unit: Node3D) -> Vector2:
+	return unit.call("transport_vertical_bounds") as Vector2 \
+		if unit.has_method("transport_vertical_bounds") else Vector2(-0.5, 0.5)
