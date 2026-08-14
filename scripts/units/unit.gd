@@ -152,7 +152,11 @@ var _transport_carrier_ref: WeakRef
 var _transport_reservation_ref: WeakRef
 var _transport_docking_locked := false
 var _navigation_suspended_for_transport := false
-var _transport_issuing_navigation := false
+var _transport_reparenting := false
+## Internal continuations (transport tracking and post-takeoff routing) belong
+## to an already accepted order. They must not pass through the player-order
+## cancellation gate and accidentally abort that same transport operation.
+var _issuing_internal_navigation := false
 var _death_sequence := UnitDeathSequenceScript.new()
 ## Not `velocity`: navigation_step() zeroes its vertical component, and
 ## UnitFlightController writes global_position directly, bypassing velocity
@@ -221,9 +225,14 @@ func _ready() -> void:
 
 
 func _exit_tree() -> void:
-	# Unit never re-enters the tree after this (see UnitCombat.dispose()'s own
-	# doc comment), so this is the terminal call -- everything above the
-	# module has already run by the time it drops its back reference.
+	# Reparenting live cargo into or out of CargoAnchor temporarily exits and
+	# re-enters the SceneTree. The explicit reparent guard distinguishes that
+	# narrow lifecycle event from actual scene teardown while cargo is carried.
+	if _transport_reparenting:
+		return
+	# Every other exit is terminal (see UnitCombat.dispose()'s own doc comment):
+	# everything above the module has already run before it drops its back
+	# reference.
 	_combat.dispose()
 	if _advanced_carryall_transport != null:
 		_advanced_carryall_transport.dispose()
@@ -330,7 +339,7 @@ func _physics_process(delta: float) -> void:
 ## `exit_point` is a mandatory first waypoint (a production building's front
 ## exit): the unit walks straight to it before regular routing takes over.
 func move_to(world_position: Vector3, exit_point := Vector3.INF) -> void:
-	if not _transport_issuing_navigation and not transport_accepts_regular_order():
+	if not _issuing_internal_navigation and not transport_accepts_regular_order():
 		return
 	if _flight_controller != null and _flight_controller.flight_is_landed():
 		_flight_controller.begin_takeoff_toward(world_position, exit_point)
@@ -422,6 +431,15 @@ func flight_consume_circles_order_completed() -> bool:
 	return _flight_controller.consume_circles_order_completed() if _flight_controller != null else false
 
 
+## UnitFlightController calls this after an authored takeoff finishes. This is
+## continuation of the order that initiated takeoff, not a fresh player order;
+## in particular it must not cancel an Advanced Carryall pickup approach.
+func flight_continue_navigation(world_position: Vector3, exit_point := Vector3.INF) -> void:
+	_issuing_internal_navigation = true
+	move_to(world_position, exit_point)
+	_issuing_internal_navigation = false
+
+
 ## Flight-facing pickup sequence surface. AdvancedCarryallTransport schedules
 ## the phases; UnitFlightController owns their clips and vertical motion.
 func flight_begin_pickup_sequence(landing_position := Vector3.INF) -> void:
@@ -487,7 +505,7 @@ func flight_terrain_hit_at(position: Vector3) -> Dictionary:
 func prepare_navigation_order(
 	world_position: Vector3, exit_point := Vector3.INF, move_mode := 0
 	) -> bool:
-	if not _transport_issuing_navigation and not transport_accepts_regular_order():
+	if not _issuing_internal_navigation and not transport_accepts_regular_order():
 		return false
 	if not can_receive_commands():
 		return false
@@ -869,12 +887,12 @@ func transport_target_is_enemy(target: Node3D) -> bool:
 
 
 func transport_move_toward(world_position: Vector3) -> void:
-	_transport_issuing_navigation = true
+	_issuing_internal_navigation = true
 	if _navigation_managed and _navigation_system != null:
 		_navigation_system.command_move([self], world_position, NavConstantsScript.MoveMode.FREE)
 	else:
 		move_to(world_position)
-	_transport_issuing_navigation = false
+	_issuing_internal_navigation = false
 
 
 ## Semantic handoff between transport approach and authored landing. The
@@ -953,7 +971,7 @@ func transport_attach_cargo(cargo: Node3D, anchor_offset: Vector3) -> void:
 	anchor.position = anchor_offset
 	if cargo.has_method("transport_mark_carried"):
 		cargo.call("transport_mark_carried", self)
-	cargo.reparent(anchor, false)
+	cargo.call("transport_reparent_to", anchor, false)
 	cargo.transform = Transform3D.IDENTITY
 
 
@@ -964,7 +982,7 @@ func transport_detach_cargo(cargo: Node3D, original_parent: Node, world_position
 	if destination_parent == null or not is_instance_valid(destination_parent):
 		destination_parent = EntityQueryScript.units_parent(get_tree(), get_parent())
 	if destination_parent != null:
-		cargo.reparent(destination_parent, true)
+		cargo.call("transport_reparent_to", destination_parent, true)
 	if cargo.has_method("transport_mark_released"):
 		cargo.call("transport_mark_released", world_position, facing_direction())
 
@@ -976,7 +994,7 @@ func transport_release_destroyed_cargo(cargo: Node3D, original_parent: Node) -> 
 	if destination_parent == null or not is_instance_valid(destination_parent):
 		destination_parent = EntityQueryScript.units_parent(get_tree(), get_parent())
 	if destination_parent != null:
-		cargo.reparent(destination_parent, true)
+		cargo.call("transport_reparent_to", destination_parent, true)
 	if cargo.has_method("transport_mark_destroyed_release"):
 		cargo.call("transport_mark_destroyed_release")
 
@@ -984,6 +1002,16 @@ func transport_release_destroyed_cargo(cargo: Node3D, original_parent: Node) -> 
 func transport_cargo_destroyed(cargo: Node3D) -> void:
 	if _advanced_carryall_transport != null:
 		_advanced_carryall_transport.cargo_destroyed(cargo)
+
+
+## The cargo Unit owns its temporary SceneTree exit guard so terminal module
+## disposal remains correct even when an entire carried hierarchy is freed.
+func transport_reparent_to(new_parent: Node, keep_global_transform: bool) -> void:
+	if new_parent == null or not is_instance_valid(new_parent):
+		return
+	_transport_reparenting = true
+	reparent(new_parent, keep_global_transform)
+	_transport_reparenting = false
 
 
 func transport_accepts_regular_order() -> bool:

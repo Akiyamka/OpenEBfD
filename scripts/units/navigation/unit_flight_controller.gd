@@ -539,7 +539,7 @@ func _advance_vertical_transition(
 	_phase_elapsed = 0.0
 	if next_phase == Phase.CRUISING:
 		_cruise_state_initialized = false
-		_unit.move_to(_post_takeoff_move_target, _post_takeoff_exit_point)
+		_unit.flight_continue_navigation(_post_takeoff_move_target, _post_takeoff_exit_point)
 
 
 func _advance_pickup_landing(delta: float) -> void:

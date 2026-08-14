@@ -1,0 +1,16 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="PackedScene" path="res://scenes/units/atadv_carryall.tscn" id="1_carryall"]
+[ext_resource type="PackedScene" path="res://scenes/units/at_trike.tscn" id="2_cargo"]
+
+[node name="AdvancedCarryallE2E" type="Node3D"]
+
+[node name="Units" type="Node3D" parent="."]
+
+[node name="Carryall" parent="Units" instance=ExtResource("1_carryall")]
+position = Vector3(32, 0, 32)
+owner_player_id = 1
+
+[node name="Cargo" parent="Units" instance=ExtResource("2_cargo")]
+position = Vector3(40, 0, 32)
+owner_player_id = 1
