@@ -285,6 +285,15 @@ func _physics_process(delta: float) -> void:
 	if _flight_controller != null and _flight_controller.flight_controls_transition():
 		_flight_controller.advance(delta)
 		return
+	# A managed flyer receives its locked landing/docking tick through
+	# navigation_step().  Without a navigation system there is no such callback,
+	# so advance the flight-owned transition here and skip ordinary locomotion;
+	# otherwise its stale target_position would pull against the Land approach.
+	if _flight_controller != null \
+	and _flight_controller.flight_navigation_is_locked() \
+	and not _navigation_managed:
+		_flight_controller.advance(delta)
+		return
 	if is_deploying():
 		velocity = Vector3.ZERO
 		if _deploy.advance_alignment(delta):
@@ -346,6 +355,8 @@ func _physics_process(delta: float) -> void:
 func move_to(world_position: Vector3, exit_point := Vector3.INF) -> void:
 	if not _issuing_internal_navigation and not transport_accepts_regular_order():
 		return
+	if _flight_controller != null and not _issuing_internal_navigation:
+		_flight_controller.cancel_pending_landing()
 	if _flight_controller != null and _flight_controller.flight_is_landed():
 		_flight_controller.begin_takeoff_toward(world_position, exit_point)
 		return
@@ -398,11 +409,44 @@ func flight_navigation_is_locked() -> bool:
 	return _flight_controller != null and _flight_controller.flight_navigation_is_locked()
 
 
+## UnitFlightController owns transition timing; Unit performs the corresponding
+## owner-local horizontal transform and facing update. Returns true at target.
+func flight_advance_transition_motion(
+	world_position: Vector3, delta: float, align_to_motion := true
+) -> bool:
+	var offset := world_position - global_position
+	offset.y = 0.0
+	var distance := offset.length()
+	if distance <= 0.0001 or delta <= 0.0:
+		velocity = Vector3.ZERO
+		_set_navigation_debug_direction(Vector3.ZERO)
+		return distance <= 0.0001
+	var direction := offset / distance
+	if align_to_motion:
+		turn_toward(direction, delta)
+	var step := minf(maxf(navigation_move_speed(), 0.0) * delta, distance)
+	global_position += direction * step
+	velocity = direction * (step / delta)
+	_set_navigation_debug_direction(velocity)
+	return step >= distance - 0.0001
+
+
+## Neutralize the normal route when Land takes ownership of horizontal motion.
+func flight_stop_navigation_for_transition() -> void:
+	if _navigation_managed and _navigation_system != null:
+		_navigation_system.stop(self)
+	else:
+		target_position = global_position
+		velocity = Vector3.ZERO
+		_has_pending_navigation_order = false
+		_pending_navigation_order = Vector3.ZERO
+		_pending_navigation_exit = Vector3.INF
+
+
 ## Only Ornithopters (ammo-replenish docking) or carriers (pickup sequence) may
 ## ever leave cruise/hover to land; every other CanFly unit rejects this and
-## only ever takes off once, at spawn. No AI calls this yet in this pass —
-## `allowed_cells` mirrors the command_dock exception shape for the follow-up
-## pass that issues real land orders.
+## only ever takes off once, at spawn. Distant requests fly normally until the
+## Land clip can cover the remaining horizontal approach.
 func flight_request_land(landing_position: Vector3, allowed_cells: Dictionary = {}) -> bool:
 	return _flight_controller != null and _flight_controller.flight_request_land(landing_position, allowed_cells)
 
@@ -902,16 +946,23 @@ func transport_move_toward(world_position: Vector3) -> void:
 	_issuing_internal_navigation = false
 
 
-## Semantic handoff between transport approach and authored landing. The
-## transport state machine asks only whether approach is complete; navigation
-## remains the sole owner of the distance/profile rules behind that answer.
+## Semantic handoff between transport approach and authored landing. Navigation
+## verifies that this exact destination is still active; the flight controller
+## supplies the speed-by-Land-duration radius for the animation handoff.
 func transport_approach_reached(world_position: Vector3) -> bool:
+	var approach_radius := _flight_controller.flight_landing_approach_radius() \
+		if _flight_controller != null else arrival_radius
 	if _navigation_managed and _navigation_system != null \
 	and _navigation_system.has_method("destination_reached"):
-		return bool(_navigation_system.call("destination_reached", self, world_position))
+		return bool(_navigation_system.call(
+			"destination_reached", self, world_position, approach_radius
+		))
 	var assigned_offset := target_position - world_position
 	assigned_offset.y = 0.0
-	return assigned_offset.length_squared() <= 0.0001 and not has_active_move_order()
+	var remaining := world_position - global_position
+	remaining.y = 0.0
+	return assigned_offset.length_squared() <= 0.0001 \
+		and remaining.length() <= maxf(arrival_radius, approach_radius)
 
 
 func transport_align_with(target: Node3D, delta: float) -> bool:
@@ -929,9 +980,11 @@ func transport_align_with_point(world_position: Vector3, delta: float) -> bool:
 func transport_track_pickup_landing(target: Node3D, delta: float) -> bool:
 	if target == null or not is_instance_valid(target):
 		return false
-	# FlightController owns Y during Land.  Transport owns only the horizontal
-	# co-axial placement, so tracking a mobile target cannot interrupt descent.
-	global_position = Vector3(target.global_position.x, global_position.y, target.global_position.z)
+	# FlightController owns both the Land descent and its horizontal approach.
+	# Retargeting each tick lets a still-mobile reserved unit be followed without
+	# teleporting the carrier directly above it.
+	if _flight_controller != null:
+		_flight_controller.flight_update_pickup_landing_target(target.global_position)
 	return transport_align_with(target, delta)
 
 
@@ -939,14 +992,7 @@ func transport_stop_for_docking() -> void:
 	# Do not call cancel_all_orders(): its public Stop path intentionally aborts
 	# an APPROACH transport.  This is the lower-level route neutralization used
 	# after the transport FSM itself has committed to a dock transition.
-	if _navigation_managed and _navigation_system != null:
-		_navigation_system.stop(self)
-	else:
-		target_position = global_position
-		velocity = Vector3.ZERO
-		_has_pending_navigation_order = false
-		_pending_navigation_order = Vector3.ZERO
-		_pending_navigation_exit = Vector3.INF
+	flight_stop_navigation_for_transition()
 	if _flight_controller != null:
 		_flight_controller.clear_circles_order()
 

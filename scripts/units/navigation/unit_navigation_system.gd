@@ -529,12 +529,14 @@ func arrival_tolerance(unit: Node3D) -> float:
 	return maxf(_arrival_radius(unit), radius * 0.35)
 
 
-## Answers whether the unit has reached the exact destination most recently
-## accepted by navigation. Gameplay state machines use this semantic result
-## instead of duplicating radius/profile formulas. Verifying the expected
-## destination prevents a rejected or superseded order from reporting a stale
-## arrival.
-func destination_reached(unit: Node3D, expected_destination: Vector3) -> bool:
+## Answers whether the unit has approached the exact destination most recently
+## accepted by navigation. Most callers use the ordinary arrival tolerance;
+## authored transitions may supply a larger handoff radius (for example Land's
+## speed-by-duration approach). Verifying the expected destination prevents a
+## rejected or superseded order from reporting a stale arrival.
+func destination_reached(
+	unit: Node3D, expected_destination: Vector3, acceptance_radius := 0.0
+) -> bool:
 	var agent := registry.agent_for(_agents, unit)
 	if agent.is_empty():
 		return false
@@ -545,7 +547,7 @@ func destination_reached(unit: Node3D, expected_destination: Vector3) -> bool:
 		return false
 	var remaining := assigned - unit.global_position
 	remaining.y = 0.0
-	return remaining.length() <= arrival_tolerance(unit)
+	return remaining.length() <= maxf(arrival_tolerance(unit), maxf(acceptance_radius, 0.0))
 
 
 func route_is_unreachable(unit: Node3D) -> bool:

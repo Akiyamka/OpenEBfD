@@ -13,4 +13,5 @@ owner_player_id = 1
 
 [node name="Cargo" parent="Units" instance=ExtResource("2_cargo")]
 position = Vector3(40, 0, 32)
+rotation = Vector3(0, 1.570796, 0)
 owner_player_id = 1

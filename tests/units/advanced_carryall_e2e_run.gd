@@ -60,6 +60,13 @@ func _initialize() -> void:
 		"pickup must enter the authored landing phase")
 	_expect((pickup_trace.get("states", []) as Array).has(&"hold_pickup"),
 		"pickup must enter the one-second friendly docking hold")
+	var pickup_land := _first_sample(pickup_trace, &"land_pickup")
+	var pickup_land_offset := Vector2(
+		float(pickup_land.get("carrier_x", 0.0)) - float(pickup_land.get("cargo_x", 0.0)),
+		float(pickup_land.get("carrier_z", 0.0)) - float(pickup_land.get("cargo_z", 0.0))
+	)
+	_expect(pickup_land_offset.length() > 1.0,
+		"Carryall must begin Land on approach instead of directly above pickup cargo")
 	var pickup_hold := _first_sample(pickup_trace, &"hold_pickup")
 	var pickup_carrier_bounds: Vector2 = pickup_hold.get("carrier_bounds", Vector2.ZERO)
 	var pickup_cargo_bounds: Vector2 = pickup_hold.get("cargo_bounds", Vector2.ZERO)
@@ -103,6 +110,13 @@ func _initialize() -> void:
 		"drop must enter the authored landing phase")
 	_expect((drop_trace.get("states", []) as Array).has(&"hold_drop"),
 		"drop must enter its docking hold before release")
+	var drop_land := _first_sample(drop_trace, &"land_drop")
+	var drop_land_offset := Vector2(
+		float(drop_land.get("carrier_x", 0.0)) - DROP_POSITION.x,
+		float(drop_land.get("carrier_z", 0.0)) - DROP_POSITION.z
+	)
+	_expect(drop_land_offset.length() > 1.0,
+		"Carryall must begin Land on approach instead of directly above the drop point")
 	var drop_hold := _first_sample(drop_trace, &"hold_drop")
 	var drop_cargo_bounds: Vector2 = drop_hold.get("cargo_bounds", Vector2.ZERO)
 	var dropped_bottom := float(drop_hold.get("cargo_y", 0.0)) + drop_cargo_bounds.x
@@ -147,10 +161,14 @@ func _wait_for_state(
 		var state := carrier.transport_state_name()
 		samples.append({
 			"state": state,
+			"carrier_x": carrier.global_position.x,
 			"carrier_y": carrier.global_position.y,
+			"carrier_z": carrier.global_position.z,
 			"carrier_yaw": carrier.global_rotation.y,
 			"carrier_bounds": carrier.transport_vertical_bounds(),
+			"cargo_x": cargo.global_position.x,
 			"cargo_y": cargo.global_position.y,
+			"cargo_z": cargo.global_position.z,
 			"cargo_yaw": cargo.global_rotation.y,
 			"cargo_bounds": cargo.transport_vertical_bounds(),
 		})
@@ -190,7 +208,8 @@ func _expect_constrained_pickup_alignment(trace: Dictionary) -> void:
 		float(hold.get("cargo_yaw", 0.0))
 	))
 	_expect(initial_error > 0.1 and next_error < initial_error and next_error > 0.01,
-		"pickup-axis alignment must start gradually instead of snapping in one frame")
+		("pickup-axis alignment must start gradually instead of snapping in one frame "
+		+ "(initial=%.4f next=%.4f)") % [initial_error, next_error])
 	_expect(hold_error < 0.001,
 		"pickup docking hold must start only after constrained alignment completes")
 

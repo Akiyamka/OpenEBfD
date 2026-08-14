@@ -167,6 +167,7 @@ func _test_hangar_takeoff_sequence() -> void:
 	if player != null:
 		_expect(player.current_animation == &"Takeoff", "reaching the hangar exit must start Takeoff")
 
+	var takeoff_start: Vector3 = flyer.global_position
 	var last_y: float = flyer.global_position.y
 	var climbed := false
 	for i in 20:
@@ -176,8 +177,16 @@ func _test_hangar_takeoff_sequence() -> void:
 		if flyer.global_position.y > last_y + 0.0001:
 			climbed = true
 		last_y = flyer.global_position.y
+		if not flyer._flight_controller.flight_is_taking_off():
+			break
 
 	_expect(climbed, "altitude must have actually increased during takeoff")
+	var takeoff_horizontal := flyer.global_position - takeoff_start
+	takeoff_horizontal.y = 0.0
+	_expect(takeoff_horizontal.length() > 0.01,
+		"an aircraft with a rally order must move toward it while taking off")
+	_expect(flyer.global_position.distance_to(rally) < takeoff_start.distance_to(rally),
+		"takeoff motion must reduce the remaining distance to the rally point")
 	_expect(is_equal_approx(flyer.global_position.y,
 		UnitFlightControllerScript.BASE_FLIGHT_ALTITUDE
 		+ float(flyer.unit_definition.height_offset) * UnitFlightControllerScript.HEIGHT_OFFSET_WORLD_SCALE),
@@ -514,6 +523,7 @@ func _test_non_ornithopter_never_lands() -> void:
 func _test_ornithopter_land_takeoff_round_trip() -> void:
 	var flyer: Unit = ATOrniScene.instantiate()
 	root.add_child(flyer)
+	flyer.can_move_any_direction = true
 	flyer.begin_hangar_takeoff(flyer.global_position, Vector3.INF)
 	_fast_forward_takeoff(flyer)
 	_expect(flyer.flight_is_airborne_phase(), "must reach cruise before requesting a landing")
@@ -522,33 +532,75 @@ func _test_ornithopter_land_takeoff_round_trip() -> void:
 	# falls back to the target position's own Y — give it a ground-level Y (0.0)
 	# rather than the flyer's current cruise-altitude Y, or there is nothing to
 	# descend to.
-	var land_target: Vector3 = Vector3(flyer.global_position.x + 5.0, 0.0, flyer.global_position.z)
+	var land_target: Vector3 = Vector3(flyer.global_position.x + 60.0, 0.0, flyer.global_position.z)
 	var accepted: bool = flyer.flight_request_land(land_target, {})
 	_expect(accepted, "an Ornithopter must be allowed to request a landing")
 
 	var player := _first_player_with(flyer, &"Land")
 	if player != null:
-		_expect(player.current_animation == &"Land", "landing must play Land immediately")
+		_expect(player.current_animation != &"Land",
+			"a distant landing request must approach before playing Land")
+
+	var approach_y := flyer.global_position.y
+	var landing_started := false
+	for _frame in 100:
+		flyer._physics_process(0.05)
+		if flyer._flight_controller.phase == UnitFlightControllerScript.Phase.LANDING:
+			landing_started = true
+			break
+		_expect(is_equal_approx(flyer.global_position.y, approach_y),
+			"the aircraft must stay at cruise height before entering the Land radius")
+	_expect(landing_started, "the aircraft must begin Land on its final approach")
+	var land_start_offset := land_target - flyer.global_position
+	land_start_offset.y = 0.0
+	_expect(land_start_offset.length() > flyer.arrival_radius + 0.01,
+		"Land must begin before the aircraft is directly over its destination")
+	_expect(land_start_offset.length() <= flyer._flight_controller.flight_landing_approach_radius() + 0.01,
+		"Land must begin only after entering its speed-and-duration approach radius")
+	if player != null:
+		_expect(player.current_animation == &"Land", "final approach must play Land")
 
 	var last_y: float = flyer.global_position.y
+	var last_distance := land_start_offset.length()
 	var descended := false
 	for i in 20:
-		flyer._physics_process(0.2)
+		flyer._physics_process(0.1)
 		_expect(flyer.global_position.y <= last_y + 0.0001,
 			"altitude must descend monotonically while landing")
 		if flyer.global_position.y < last_y - 0.0001:
 			descended = true
 		last_y = flyer.global_position.y
+		var remaining := land_target - flyer.global_position
+		remaining.y = 0.0
+		_expect(remaining.length() <= last_distance + 0.0001,
+			"the Land clip must keep moving horizontally toward its destination")
+		last_distance = remaining.length()
+		if flyer.flight_is_landed():
+			break
 
 	_expect(descended, "altitude must have actually decreased while landing")
 	_expect(flyer.flight_is_landed(), "the unit must be landed once the descent completes")
+	var landed_offset := land_target - flyer.global_position
+	landed_offset.y = 0.0
+	_expect(landed_offset.length() <= 0.001,
+		"the horizontal landing approach must finish at the requested point")
 
 	var far_target: Vector3 = flyer.global_position + Vector3(30.0, 0.0, 0.0)
+	var takeoff_start := flyer.global_position
 	flyer.move_to(far_target)
 	_expect(flyer.flight_is_airborne_phase(), "ordering a landed flyer to move must start a fresh takeoff")
 	if player != null:
 		_expect(player.current_animation == &"Takeoff", "re-launch must play Takeoff again")
-	_fast_forward_takeoff(flyer)
+	for _frame in 40:
+		flyer._physics_process(0.1)
+		if not flyer._flight_controller.flight_is_taking_off():
+			break
+	var takeoff_offset := flyer.global_position - takeoff_start
+	takeoff_offset.y = 0.0
+	_expect(takeoff_offset.length() > 0.01,
+		"a landed aircraft must move toward its order while Takeoff raises it")
+	_expect(flyer.global_position.distance_to(far_target) < takeoff_start.distance_to(far_target),
+		"Takeoff must reduce the remaining distance to an existing move target")
 	_expect(is_equal_approx(flyer.global_position.y,
 		UnitFlightControllerScript.BASE_FLIGHT_ALTITUDE
 		+ float(flyer.unit_definition.height_offset) * UnitFlightControllerScript.HEIGHT_OFFSET_WORLD_SCALE),

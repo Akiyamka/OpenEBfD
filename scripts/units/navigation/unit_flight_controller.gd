@@ -102,6 +102,7 @@ var _visual_bank := 0.0
 ## advances the authored clip/vertical motion and exposes completion, but
 ## never decides when a cargo is attached or detached.
 var _pickup_transition_finished := false
+var _pickup_landing_target := Vector3.INF
 var _pickup_landing_altitude := 0.0
 var _pickup_cruise_altitude := 0.0
 var _pickup_landing_start_altitude := 0.0
@@ -121,6 +122,8 @@ func configure(unit, unit_definition) -> void:
 	_circles_departure = Vector3.INF
 	_circles_departure_planned = false
 	_visual_bank = 0.0
+	_landing_target = Vector3.INF
+	_pickup_landing_target = Vector3.INF
 	_helipad_resource_id = &""
 	for value in unit_definition.resource_ids:
 		_helipad_resource_id = StringName(String(value))
@@ -150,6 +153,26 @@ func flight_navigation_is_locked() -> bool:
 		or phase == Phase.PICKUP_LIFT \
 		or phase == Phase.PICKUP_END \
 		or phase == Phase.PICKUP_TAKEOFF
+
+
+## Begin the authored descent far enough from the destination that ordinary
+## flight speed can cover the remaining horizontal distance during Land.
+func flight_landing_approach_radius() -> float:
+	var duration: float = _unit.flight_clip_length(LAND_ANIMATION, DEFAULT_LAND_SECONDS)
+	return maxf(
+		float(_unit.arrival_radius),
+		maxf(float(_unit.navigation_move_speed()), 0.0) * maxf(duration, 0.0)
+	)
+
+
+## A normal move order supersedes only a not-yet-started landing approach.
+## Once Land owns the transition, transport/flight command locking decides
+## when another order may be accepted.
+func cancel_pending_landing() -> void:
+	if phase != Phase.CRUISING and phase != Phase.HOVERING:
+		return
+	_landing_target = Vector3.INF
+	_landing_allowed_cells.clear()
 
 
 func can_enter_ornithopter_land_cycle() -> bool:
@@ -195,24 +218,41 @@ func _start_takeoff(move_target: Vector3, exit_point: Vector3) -> void:
 
 ## Only Ornithopters (ammo-replenish docking) or carriers (pickup sequence) may
 ## ever leave CRUISING/HOVERING to land — every other CanFly unit only takes
-## off once, at spawn, and never lands again. `allowed_cells` is accepted now
-## (matching the command_dock exception shape) for the follow-up pass that
-## wires an actual land order; this pass does not issue any nav order itself.
+## off once, at spawn, and never lands again. A distant target remains an
+## ordinary flight order until it enters the authored Land approach radius.
 func flight_request_land(target_position: Vector3, allowed_cells: Dictionary) -> bool:
 	if phase != Phase.CRUISING and phase != Phase.HOVERING:
 		return false
 	if not (can_enter_ornithopter_land_cycle() or can_enter_pickup_sequence()):
 		return false
-	phase = Phase.LANDING
-	_phase_elapsed = 0.0
+	if not target_position.is_finite():
+		return false
 	_landing_target = target_position
 	_landing_allowed_cells = allowed_cells
+	if _landing_approach_reached():
+		_start_landing_descent()
+	else:
+		_unit.flight_continue_navigation(target_position)
+	return true
+
+
+func _start_landing_descent() -> void:
+	phase = Phase.LANDING
+	_phase_elapsed = 0.0
+	_unit.flight_stop_navigation_for_transition()
 	clear_circles_order()
 	_visual_bank = 0.0
 	_unit.flight_set_visual_bank(0.0)
-	ground_altitude = _sample_ground_altitude(target_position)
+	ground_altitude = _sample_ground_altitude(_landing_target)
 	_unit.flight_play_clip(LAND_ANIMATION, false, 1.0)
-	return true
+
+
+func _landing_approach_reached() -> bool:
+	if not _landing_target.is_finite():
+		return false
+	var offset: Vector3 = _landing_target - _unit.global_position
+	offset.y = 0.0
+	return offset.length() <= flight_landing_approach_radius()
 
 
 func flight_set_vertical_offset(value: float) -> void:
@@ -424,6 +464,7 @@ func flight_begin_pickup_sequence(
 	_visual_bank = 0.0
 	_unit.flight_set_visual_bank(0.0)
 	var landing: Vector3 = landing_position if landing_position.is_finite() else _unit.global_position
+	_pickup_landing_target = landing
 	var terrain_altitude := _sample_ground_altitude(landing)
 	_pickup_landing_altitude = terrain_altitude + maxf(landing_clearance, 0.0)
 	_pickup_landing_start_altitude = _unit.global_position.y
@@ -484,16 +525,21 @@ func advance(delta: float) -> void:
 	if phase == Phase.TAKING_OFF:
 		_advance_vertical_transition(
 			delta, TAKEOFF_ANIMATION, DEFAULT_TAKEOFF_SECONDS,
-			ground_altitude, cruise_altitude, Phase.CRUISING
+			ground_altitude, cruise_altitude, Phase.CRUISING,
+			_takeoff_motion_target()
 		)
 		return
 	if phase == Phase.LANDING:
 		_advance_vertical_transition(
 			delta, LAND_ANIMATION, DEFAULT_LAND_SECONDS,
-			cruise_altitude, ground_altitude, Phase.LANDED
+			cruise_altitude, ground_altitude, Phase.LANDED,
+			_landing_target
 		)
 		return
 	if phase == Phase.CRUISING or phase == Phase.HOVERING:
+		if _landing_approach_reached():
+			_start_landing_descent()
+			return
 		_advance_vertical_avoidance(delta)
 		_advance_cruise_altitude(delta)
 		_unit.global_position.y = cruise_altitude + _vertical_avoidance_offset
@@ -533,9 +579,12 @@ func _advance_vertical_transition(
 		default_seconds: float,
 		from_altitude: float,
 		to_altitude: float,
-		next_phase: Phase
+		next_phase: Phase,
+		horizontal_target := Vector3.INF
 	) -> void:
 	_phase_elapsed += delta
+	if horizontal_target.is_finite():
+		_unit.flight_advance_transition_motion(horizontal_target, delta)
 	var duration: float = _unit.flight_clip_length(clip_name, default_seconds)
 	var t := clampf(_phase_elapsed / duration, 0.0, 1.0) if duration > 0.0 else 1.0
 	_unit.global_position.y = lerpf(from_altitude, to_altitude, t)
@@ -547,9 +596,26 @@ func _advance_vertical_transition(
 	if next_phase == Phase.CRUISING:
 		_cruise_state_initialized = false
 		_unit.flight_continue_navigation(_post_takeoff_move_target, _post_takeoff_exit_point)
+	elif next_phase == Phase.LANDED:
+		_landing_target = Vector3.INF
+		_landing_allowed_cells.clear()
+
+
+func _takeoff_motion_target() -> Vector3:
+	return _post_takeoff_exit_point \
+		if _post_takeoff_exit_point.is_finite() else _post_takeoff_move_target
+
+
+func flight_update_pickup_landing_target(world_position: Vector3) -> void:
+	if phase == Phase.PICKUP_LAND and world_position.is_finite():
+		_pickup_landing_target = world_position
 
 
 func _advance_pickup_landing(delta: float) -> void:
+	if _pickup_landing_target.is_finite():
+		# AdvancedCarryallTransport aligns the hull with the cargo's authored
+		# pickup axis. Do not replace that constrained facing with travel heading.
+		_unit.flight_advance_transition_motion(_pickup_landing_target, delta, false)
 	if _pickup_transition_finished:
 		return
 	_phase_elapsed += maxf(delta, 0.0)
