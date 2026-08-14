@@ -278,17 +278,19 @@ func _test_pickup_order() -> void:
 	_expect(not cargo.attached, "friendly cargo must not attach before one-second pause")
 	transport.advance(0.02)
 	_expect(cargo.attached and transport.state_name() == &"lift_pickup",
-		"pause completion must attach cargo before Pickup lift")
-	_expect(not transport.counts_as_ground_target(),
-		"carrier and attached cargo become airborne when Pickup lift begins")
+		"pause completion must attach cargo before the Pickup clip")
+	_expect(transport.counts_as_ground_target(),
+		"carrier must remain a ground target throughout the Pickup clip")
 	_expect(is_equal_approx(carrier.attached_offset.y, -2.05),
 		"transport computes lower-anchor offset from authored bottom/top bounds")
 	carrier.pickup_finished = true
 	transport.advance(0.1)
-	_expect(transport.state_name() == &"end_pickup", "Pickup lift must end before EndPickup")
+	_expect(transport.state_name() == &"end_pickup", "Pickup clip must end before EndPickup")
 	carrier.pickup_finished = true
 	transport.advance(0.1)
 	_expect(transport.state_name() == &"takeoff_pickup", "EndPickup must be followed by locked Takeoff")
+	_expect(not transport.counts_as_ground_target(),
+		"carrier must become airborne only when Takeoff begins")
 	carrier.takeoff_finished = true
 	transport.advance(0.1)
 	_expect(transport.state_name() == &"carrying", "carrier is usable only after cruise resumes")
@@ -416,8 +418,10 @@ func _test_drop_validation() -> void:
 	carrier.pickup_finished = true; transport.advance(0.1); transport.advance(0.99)
 	_expect(cargo.attached, "cargo must remain attached during drop pause")
 	transport.advance(0.02)
-	_expect(cargo.released and transport.state_name() == &"lift_drop", "drop releases only after pause")
-	_expect(not transport.counts_as_ground_target(), "carrier becomes airborne again when drop lift begins")
+	_expect(cargo.released and transport.state_name() == &"lift_drop",
+		"drop releases only after its docking pause")
+	_expect(transport.counts_as_ground_target(),
+		"carrier must remain a ground target throughout the post-drop Pickup clip")
 	carrier.free()
 	cargo.free()
 

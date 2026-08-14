@@ -448,9 +448,10 @@ func flight_advance_pickup(next_sub_phase: Phase) -> void:
 
 
 func flight_complete_pickup_sequence() -> void:
-	# Pickup lift already raised the transport a visible part of the way.  Start
-	# Takeoff from its present altitude so the clip continues upward smoothly,
-	# rather than snapping it back to terrain before the final ascent.
+	# Start Takeoff from the transport's present altitude.  During a normal
+	# pickup/drop this is the fixed docking height held throughout StartPickup,
+	# Pickup and EndPickup.  Keeping the actual position also lets an aborted
+	# landing recover without first snapping down to the intended docking height.
 	_post_takeoff_move_target = _unit.global_position
 	_post_takeoff_exit_point = Vector3.INF
 	phase = Phase.TAKING_OFF
@@ -505,10 +506,10 @@ func advance(delta: float) -> void:
 		_advance_pickup_clip(delta, PICKUP_START_ANIMATION, DEFAULT_LAND_SECONDS)
 		return
 	if phase == Phase.PICKUP_LIFT:
-		_advance_pickup_lift(delta)
+		_advance_pickup_clip(delta, PICKUP_ANIMATION, DEFAULT_LAND_SECONDS)
 		return
 	if phase == Phase.PICKUP_END:
-		_advance_pickup_end(delta)
+		_advance_pickup_clip(delta, PICKUP_END_ANIMATION, DEFAULT_LAND_SECONDS)
 		return
 
 
@@ -567,45 +568,6 @@ func _advance_pickup_clip(delta: float, clip_name: StringName, fallback_seconds:
 	var duration: float = _unit.flight_clip_length(clip_name, fallback_seconds)
 	if duration <= 0.0 or _phase_elapsed >= duration:
 		_pickup_transition_finished = true
-
-
-func _advance_pickup_lift(delta: float) -> void:
-	_advance_pickup_ascent_clip(delta, PICKUP_ANIMATION, DEFAULT_LAND_SECONDS, 0.0)
-
-
-func _advance_pickup_end(delta: float) -> void:
-	var pickup_duration: float = _unit.flight_clip_length(PICKUP_ANIMATION, DEFAULT_LAND_SECONDS)
-	_advance_pickup_ascent_clip(
-		delta, PICKUP_END_ANIMATION, DEFAULT_LAND_SECONDS, pickup_duration
-	)
-
-
-func _advance_pickup_ascent_clip(
-	delta: float,
-	clip_name: StringName,
-	fallback_seconds: float,
-	elapsed_before_phase: float
-) -> void:
-	if _pickup_transition_finished:
-		return
-	_phase_elapsed += maxf(delta, 0.0)
-	var duration: float = _unit.flight_clip_length(clip_name, fallback_seconds)
-	var t := clampf(_phase_elapsed / duration, 0.0, 1.0) if duration > 0.0 else 1.0
-	var phase_start := _pickup_ascent_altitude(elapsed_before_phase)
-	var phase_end := _pickup_ascent_altitude(elapsed_before_phase + duration)
-	_unit.global_position.y = lerpf(phase_start, phase_end, t)
-	_unit.flight_set_visual_slope_target(Vector3.UP)
-	if t >= 1.0:
-		_pickup_transition_finished = true
-
-
-func _pickup_ascent_altitude(elapsed: float) -> float:
-	var pickup_duration: float = _unit.flight_clip_length(PICKUP_ANIMATION, DEFAULT_LAND_SECONDS)
-	var end_duration: float = _unit.flight_clip_length(PICKUP_END_ANIMATION, DEFAULT_LAND_SECONDS)
-	var takeoff_duration: float = _unit.flight_clip_length(TAKEOFF_ANIMATION, DEFAULT_TAKEOFF_SECONDS)
-	var total_duration: float = pickup_duration + end_duration + takeoff_duration
-	var progress := clampf(elapsed / total_duration, 0.0, 1.0) if total_duration > 0.0 else 1.0
-	return lerpf(_pickup_landing_altitude, _pickup_cruise_altitude, progress)
 
 
 func _advance_vertical_avoidance(delta: float) -> void:

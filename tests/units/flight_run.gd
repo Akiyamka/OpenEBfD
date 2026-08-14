@@ -70,7 +70,7 @@ func _initialize() -> void:
 	_run_case("Circles Stop enters idle cruise", _test_circles_stop_enters_idle_cruise)
 	_run_case("air orders share their clamped destination with Circles flight", _test_circles_order_uses_bounded_destination)
 	_run_case("locked flight rejects lateral separation", _test_locked_flight_rejects_lateral_separation)
-	_run_case("Pickup, EndPickup and Takeoff form one continuous ascent", _test_pickup_lift_altitude)
+	_run_case("pickup clips hold docking height before Takeoff ascends", _test_pickup_takeoff_altitude)
 	_run_case("a non-Ornithopter, non-carrier flyer can never land", _test_non_ornithopter_never_lands)
 	_run_case("an Ornithopter can land, then take off again on its next order", _test_ornithopter_land_takeoff_round_trip)
 	_run_case("converging air agents separate vertically, then decay back to level", _test_vertical_avoidance)
@@ -441,7 +441,7 @@ func _test_locked_flight_rejects_lateral_separation() -> void:
 	locked.free()
 
 
-func _test_pickup_lift_altitude() -> void:
+func _test_pickup_takeoff_altitude() -> void:
 	var carrier: Unit = ATADVCarryallScene.instantiate()
 	root.add_child(carrier)
 	carrier.global_position = Vector3(5.0, 9.0, 5.0)
@@ -450,47 +450,45 @@ func _test_pickup_lift_altitude() -> void:
 		carrier._physics_process(0.2)
 		if carrier.flight_pickup_transition_finished():
 			break
-	_expect(carrier.flight_pickup_transition_finished(), "Land clip must complete before pickup lift test")
+	_expect(carrier.flight_pickup_transition_finished(),
+		"Land clip must complete before docking clip test")
 	_expect(is_equal_approx(carrier.global_position.y, 11.0),
 		"transport landing clearance must stop its root above terrain")
+	var docking_y := carrier.global_position.y
 	carrier.flight_advance_pickup(UnitFlightControllerScript.Phase.PICKUP_START)
-	for _frame in 20:
-		carrier._physics_process(0.2)
-		if carrier.flight_pickup_transition_finished():
-			break
-	var previous_y := carrier.global_position.y
+	_assert_stationary_transport_clip(carrier, docking_y, &"StartPickup")
 	carrier.flight_advance_pickup(UnitFlightControllerScript.Phase.PICKUP_LIFT)
-	previous_y = _assert_continuous_transport_ascent(carrier, previous_y, &"Pickup")
+	_assert_stationary_transport_clip(carrier, docking_y, &"Pickup")
 	carrier.flight_advance_pickup(UnitFlightControllerScript.Phase.PICKUP_END)
-	previous_y = _assert_continuous_transport_ascent(carrier, previous_y, &"EndPickup")
+	_assert_stationary_transport_clip(carrier, docking_y, &"EndPickup")
 	carrier.flight_complete_pickup_sequence()
+	var previous_y := carrier.global_position.y
 	for _frame in 40:
 		carrier._physics_process(0.1)
 		var current_y := carrier.global_position.y
 		_expect(current_y > previous_y + 0.0001,
-			"Takeoff must continue rising without a stationary frame")
+			"Takeoff must raise the transport on every frame")
 		previous_y = current_y
 		if carrier.flight_transport_takeoff_finished():
 			break
 	_expect(carrier.flight_transport_takeoff_finished(),
-		"continuous transport ascent must finish at cruise altitude")
+		"Takeoff must finish at cruise altitude")
+	_expect(previous_y > docking_y + 0.01,
+		"Takeoff must perform the complete vertical ascent")
 	carrier.free()
 
 
-func _assert_continuous_transport_ascent(
-	carrier: Unit, previous_y: float, phase_name: StringName
-) -> float:
+func _assert_stationary_transport_clip(
+	carrier: Unit, docking_y: float, phase_name: StringName
+) -> void:
 	for _frame in 40:
 		carrier._physics_process(0.1)
-		var current_y := carrier.global_position.y
-		_expect(current_y > previous_y + 0.0001,
-			"%s must raise the transport on every frame" % phase_name)
-		previous_y = current_y
+		_expect(is_equal_approx(carrier.global_position.y, docking_y),
+			"%s must hold the transport at docking height" % phase_name)
 		if carrier.flight_pickup_transition_finished():
 			break
 	_expect(carrier.flight_pickup_transition_finished(),
-		"%s ascent phase must complete" % phase_name)
-	return previous_y
+		"%s docking clip must complete" % phase_name)
 
 
 func _test_non_ornithopter_never_lands() -> void:

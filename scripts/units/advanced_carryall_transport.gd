@@ -96,13 +96,14 @@ func is_command_locked() -> bool:
 	]
 
 
-## Land/Start/pause are physically on the ground.  Lift begins only after a
-## pickup attach or a drop detach, which is the exact frame both carrier and
-## cargo switch to their airborne combat contracts.
+## Every docking clip is played at the lower landing height.  The historical
+## LIFT_* state names denote the authored Pickup clip after cargo attach/drop,
+## not physical ascent; the carrier becomes airborne only when Takeoff starts.
 func counts_as_ground_target() -> bool:
 	return _state in [
-		State.LAND_PICKUP, State.START_PICKUP, State.HOLD_PICKUP,
-		State.LAND_DROP, State.START_DROP, State.HOLD_DROP,
+		State.LAND_PICKUP, State.START_PICKUP, State.HOLD_PICKUP, State.LIFT_PICKUP,
+		State.END_PICKUP, State.LAND_DROP, State.START_DROP, State.HOLD_DROP,
+		State.LIFT_DROP, State.END_DROP,
 	]
 
 

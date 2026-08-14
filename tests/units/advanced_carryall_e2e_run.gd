@@ -70,9 +70,10 @@ func _initialize() -> void:
 	_expect(is_equal_approx(pickup_gap, 0.05),
 		"pickup descent must stop when carrier bottom reaches cargo top (gap=%.4f)" % pickup_gap)
 	_expect_constrained_pickup_alignment(pickup_trace)
-	_expect_continuous_ascent(
+	_expect_docking_then_takeoff(
 		pickup_trace,
-		[&"lift_pickup", &"end_pickup", &"takeoff_pickup"],
+		[&"start_pickup", &"lift_pickup", &"end_pickup"],
+		&"takeoff_pickup",
 		"loaded pickup"
 	)
 	_expect(carrier.global_position.distance_to(carrier_start) > 1.0,
@@ -108,9 +109,10 @@ func _initialize() -> void:
 	_expect(is_equal_approx(dropped_bottom, DROP_POSITION.y),
 		"drop descent must stop with the carried cargo's lower bound on terrain (bottom=%.4f)" \
 		% dropped_bottom)
-	_expect_continuous_ascent(
+	_expect_docking_then_takeoff(
 		drop_trace,
-		[&"lift_drop", &"end_drop", &"takeoff_drop"],
+		[&"start_drop", &"lift_drop", &"end_drop"],
+		&"takeoff_drop",
 		"empty drop"
 	)
 	_expect(cargo.global_position.distance_to(cargo_before_drop_flight) > 1.0,
@@ -193,31 +195,47 @@ func _expect_constrained_pickup_alignment(trace: Dictionary) -> void:
 		"pickup docking hold must start only after constrained alignment completes")
 
 
-func _expect_continuous_ascent(
-	trace: Dictionary, ascent_states: Array[StringName], label: String
+func _expect_docking_then_takeoff(
+	trace: Dictionary,
+	docking_states: Array[StringName],
+	takeoff_state: StringName,
+	label: String
 ) -> void:
-	var previous_y := -INF
-	var total_samples := 0
-	var never_descended := true
-	for state in ascent_states:
-		var first_y := INF
-		var last_y := -INF
+	var docking_y := INF
+	var docking_samples := 0
+	var held_docking_height := true
+	for state in docking_states:
 		var state_samples := 0
 		for sample: Dictionary in trace.get("samples", []):
 			if StringName(sample.get("state", &"")) != state:
 				continue
 			var current_y := float(sample.get("carrier_y", 0.0))
-			never_descended = never_descended and current_y + 0.0001 >= previous_y
-			previous_y = current_y
-			if state_samples == 0:
-				first_y = current_y
-			last_y = current_y
+			if docking_samples == 0:
+				docking_y = current_y
+			held_docking_height = held_docking_height \
+				and is_equal_approx(current_y, docking_y)
 			state_samples += 1
-			total_samples += 1
-		_expect(state_samples > 1 and last_y > first_y + 0.01,
-			"%s must keep rising throughout %s" % [label, state])
-	_expect(never_descended, "%s ascent must never move downward" % label)
-	_expect(total_samples > 3, "%s trace must contain the complete ascent" % label)
+			docking_samples += 1
+		_expect(state_samples > 1,
+			"%s trace must contain the complete %s docking clip" % [label, state])
+	_expect(held_docking_height,
+		"%s must hold one fixed height throughout StartPickup, Pickup and EndPickup" % label)
+
+	var previous_y := docking_y
+	var takeoff_samples := 0
+	var never_descended := true
+	var last_y := docking_y
+	for sample: Dictionary in trace.get("samples", []):
+		if StringName(sample.get("state", &"")) != takeoff_state:
+			continue
+		var current_y := float(sample.get("carrier_y", 0.0))
+		never_descended = never_descended and current_y + 0.0001 >= previous_y
+		previous_y = current_y
+		last_y = current_y
+		takeoff_samples += 1
+	_expect(takeoff_samples > 1 and last_y > docking_y + 0.01,
+		"%s must perform its vertical ascent during %s" % [label, takeoff_state])
+	_expect(never_descended, "%s Takeoff must never move downward" % label)
 
 
 func _make_grid() -> MapNavigationGrid:
