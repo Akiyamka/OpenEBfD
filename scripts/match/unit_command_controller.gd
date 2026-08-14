@@ -93,6 +93,16 @@ func _exit_tree() -> void:
 		cursors.clear_override(COMMAND_CURSOR_OVERRIDE)
 
 
+## Target-ability hotkeys must be offered before GUI focus gets a chance to
+## consume an ordinary letter key. Match's `_unhandled_input` never sees such
+## an event, while button presses bypass that path entirely. Keeping only the
+## generic target-ability dispatcher here makes keyboard and button activation
+## equivalent without moving normal RTS keys out of Match's priority chain.
+func _input(event: InputEvent) -> void:
+	if event is InputEventKey and _target_abilities.handle_key(event):
+		get_viewport().set_input_as_handled()
+
+
 func handle_unhandled_input(event: InputEvent) -> bool:
 	if event is InputEventKey:
 		if _target_abilities.handle_key(event):

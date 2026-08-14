@@ -308,6 +308,7 @@ func _initialize() -> void:
 	_run_case("carried cargo remains attackable but cannot be selected", _test_carried_cargo_targeting.bind(local_player, enemy_player))
 	_run_case("locked transport remains selected while cargo is pruned", _test_transport_selection_lock.bind(local_player))
 	_run_case("targeting right-click cancels and D keeps deployment", _test_target_mode_input_priority.bind(local_player))
+	await _test_target_hotkey_input_dispatch(local_player)
 	_run_case("right click and Ctrl route target-specific attack orders", _test_attack_orders.bind(local_player, enemy_player, neutral_player))
 	_run_case("clicking the selected unit again requests deployment", _test_repeated_click_deployment.bind(local_player))
 	_run_case("rectangle unit selection", _test_rectangle_unit_selection.bind(local_player, enemy_player))
@@ -472,6 +473,40 @@ func _test_target_mode_input_priority(token: int, local_player) -> int:
 	commands.queue_free()
 	unit.queue_free()
 	return token
+
+
+func _test_target_hotkey_input_dispatch(local_player) -> void:
+	_current_case = "target ability hotkey precedes focused GUI input"
+	var failures_before := _failures
+	var commands := FakeUnitCommandController.new()
+	commands.setup(null, null, null, null, null, null, [FakeTargetAbility.new()])
+	root.add_child(commands)
+	var unit := FakeToggleUnit.new()
+	unit.name = "Carryall"
+	unit.player = local_player
+	unit.add_to_group("units")
+	root.add_child(unit)
+	commands._set_selection([unit])
+	var focused_edit := LineEdit.new()
+	root.add_child(focused_edit)
+	focused_edit.grab_focus()
+	await process_frame
+	var event := InputEventKey.new()
+	event.pressed = true
+	event.physical_keycode = KEY_F
+	Input.parse_input_event(event)
+	await process_frame
+	_expect(
+		commands.has_active_target_ability(),
+		"physical F must enter target mode through Godot input even while GUI owns keyboard focus"
+	)
+	commands.cancel_target_ability()
+	focused_edit.queue_free()
+	commands.queue_free()
+	unit.queue_free()
+	await process_frame
+	if failures_before == _failures:
+		print("PASS: %s" % _current_case)
 
 
 func _test_attack_orders(token: int, local_player, enemy_player, neutral_player) -> int:

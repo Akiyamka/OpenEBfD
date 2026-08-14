@@ -34,7 +34,9 @@ enum State {
 	RECOVER_TAKEOFF,
 }
 
-const APPROACH_RADIUS := 0.65
+## Final safety aperture after landing already owns horizontal target tracking.
+## Navigation approach completion is a separate owner contract below.
+const DOCKING_APERTURE_RADIUS := 0.65
 const ALLIED_DOCK_SECONDS := 1.0
 const DROP_DOCK_SECONDS := 1.0
 
@@ -180,7 +182,7 @@ func advance(delta: float) -> void:
 				if target == null or not _target_still_reserved(target):
 					_abort_pending_operation()
 					return
-				if _horizontal_distance_to(target.global_position) > APPROACH_RADIUS:
+				if _horizontal_distance_to(target.global_position) > DOCKING_APERTURE_RADIUS:
 					# A moving target slipped beyond the docking aperture.  Return to
 					# approach instead of locking and attaching at a distance.
 					_state = State.APPROACH_PICKUP
@@ -267,7 +269,7 @@ func _advance_pickup_approach() -> void:
 		_abort_pending_operation()
 		return
 	_owner.call("transport_move_toward", target.global_position)
-	if _horizontal_distance_to(target.global_position) > APPROACH_RADIUS:
+	if not bool(_owner.call("transport_approach_reached", target.global_position)):
 		return
 	_owner.call("transport_align_with", target)
 	_owner.call("flight_begin_pickup_sequence", target.global_position)
@@ -296,7 +298,7 @@ func _advance_drop_approach() -> void:
 		_state = State.CARRYING if carried != null else State.IDLE
 		return
 	_owner.call("transport_move_toward", _drop_position)
-	if _horizontal_distance_to(_drop_position) > APPROACH_RADIUS:
+	if not bool(_owner.call("transport_approach_reached", _drop_position)):
 		return
 	_owner.call("transport_align_with_point", _drop_position)
 	_owner.call("transport_stop_for_docking")

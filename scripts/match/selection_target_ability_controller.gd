@@ -130,7 +130,11 @@ func _contains_available(ability_id: StringName) -> bool:
 func _ability_for_key(event: InputEventKey) -> StringName:
 	for definition: Dictionary in _definitions():
 		var keycode := int(definition.get("keycode", KEY_NONE))
-		if keycode != KEY_NONE and (event.keycode == keycode or event.physical_keycode == keycode):
+		if keycode != KEY_NONE and (
+			event.keycode == keycode
+			or event.physical_keycode == keycode
+			or event.key_label == keycode
+		):
 			return StringName(definition.get("id", &""))
 	return &""
 

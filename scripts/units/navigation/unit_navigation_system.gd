@@ -529,6 +529,25 @@ func arrival_tolerance(unit: Node3D) -> float:
 	return maxf(_arrival_radius(unit), radius * 0.35)
 
 
+## Answers whether the unit has reached the exact destination most recently
+## accepted by navigation. Gameplay state machines use this semantic result
+## instead of duplicating radius/profile formulas. Verifying the expected
+## destination prevents a rejected or superseded order from reporting a stale
+## arrival.
+func destination_reached(unit: Node3D, expected_destination: Vector3) -> bool:
+	var agent := registry.agent_for(_agents, unit)
+	if agent.is_empty():
+		return false
+	var assigned: Vector3 = agent["destination"]
+	var expected_offset := expected_destination - assigned
+	expected_offset.y = 0.0
+	if expected_offset.length_squared() > 0.0001:
+		return false
+	var remaining := assigned - unit.global_position
+	remaining.y = 0.0
+	return remaining.length() <= arrival_tolerance(unit)
+
+
 func route_is_unreachable(unit: Node3D) -> bool:
 	var agent := registry.agent_for(_agents, unit)
 	return not agent.is_empty() and bool(agent.get("route_unreachable", false))

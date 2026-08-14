@@ -13,6 +13,9 @@ const AdvancedCarryallAbilityScript := preload(
 const SelectionTargetAbilityControllerScript := preload(
 	"res://scripts/match/selection_target_ability_controller.gd"
 )
+const UnitNavigationSystemScript := preload(
+	"res://scripts/units/navigation/unit_navigation_system.gd"
+)
 const CursorManagerScript := preload("res://scripts/ui/cursor_manager.gd")
 const AbilityBarScene := preload("res://scenes/ui/ability_bar.tscn")
 const ATADVCarryallScene := preload("res://scenes/units/atadv_carryall.tscn")
@@ -83,6 +86,7 @@ class FakeCarrier extends Node3D:
 	var pickup_finished := false
 	var takeoff_finished := false
 	var drop_allowed := true
+	var navigation_stop_distance := 0.0
 	var attached: Node3D
 	var attached_offset := Vector3.ZERO
 	var phase_log: Array[StringName] = []
@@ -90,7 +94,17 @@ class FakeCarrier extends Node3D:
 	var docking_stops := 0
 
 	func transport_move_toward(position: Vector3) -> void:
-		global_position = position
+		var offset := position - global_position
+		offset.y = 0.0
+		if navigation_stop_distance > 0.0 and offset.length() > navigation_stop_distance:
+			global_position += offset.normalized() * (offset.length() - navigation_stop_distance)
+		else:
+			global_position = position
+
+	func transport_approach_reached(position: Vector3) -> bool:
+		var offset := position - global_position
+		offset.y = 0.0
+		return offset.length() <= navigation_stop_distance + 0.01
 
 	func transport_align_with(_target: Node3D) -> void:
 		phase_log.append(&"align_pickup")
@@ -195,6 +209,8 @@ class GenericTestAbility extends RefCounted:
 func _initialize() -> void:
 	await process_frame
 	_run_case("pickup order is Land, Start, pause, attach, Pickup, End, Takeoff", _test_pickup_order)
+	_run_case("navigation owns destination completion semantics", _test_navigation_completion_contract)
+	_run_case("pickup begins where navigation parks a large carrier", _test_navigation_arrival_handoff)
 	_run_case("enemy delay is 3.4 seconds and neutral remains 1 second", _test_relation_delays)
 	_run_case("drop pauses before release and invalid drop does not start", _test_drop_validation)
 	_run_case("abort and cargo death recover flight without a stuck transition", _test_recovery)
@@ -258,6 +274,56 @@ func _test_pickup_order() -> void:
 		"carrier destruction must use the cargo lifecycle death bypass even if cargo is invulnerable")
 	carrier.free()
 	cargo.free()
+
+
+func _test_navigation_arrival_handoff() -> void:
+	var carrier := FakeCarrier.new()
+	carrier.navigation_stop_distance = 1.4
+	var cargo := FakeCargo.new()
+	root.add_child(carrier)
+	root.add_child(cargo)
+	cargo.global_position = Vector3(8.0, 0.0, 0.0)
+	var transport = AdvancedCarryallTransportScript.new()
+	transport.configure(carrier)
+	_expect(transport.command_pickup(cargo), "large carrier setup must accept pickup")
+	transport.advance(0.1)
+	_expect(
+		transport.state_name() == &"land_pickup",
+		"navigation arrival tolerance must hand the order to landing instead of following forever"
+	)
+	carrier.free()
+	cargo.free()
+
+
+func _test_navigation_completion_contract() -> void:
+	var navigation = UnitNavigationSystemScript.new()
+	root.add_child(navigation)
+	var carrier := FakeCarrier.new()
+	root.add_child(carrier)
+	var destination := Vector3(8.0, 0.0, 0.0)
+	# Tests may seed the facade-owned registry directly. Production modules use
+	# NavAgentRegistry's public surface, as enforced by the architecture checker.
+	navigation._agents[carrier.get_instance_id()] = {
+		"unit": carrier,
+		"destination": destination,
+		"radius": 4.0,
+	}
+	carrier.global_position = Vector3.ZERO
+	_expect(
+		not navigation.destination_reached(carrier, destination),
+		"navigation must reject a destination that is still far away"
+	)
+	carrier.global_position = Vector3(6.61, 0.0, 0.0)
+	_expect(
+		navigation.destination_reached(carrier, destination),
+		"navigation must report completion according to its own registered profile"
+	)
+	_expect(
+		not navigation.destination_reached(carrier, destination + Vector3.RIGHT),
+		"a superseded destination must not report stale completion"
+	)
+	carrier.free()
+	navigation.free()
 
 
 func _test_relation_delays() -> void:

@@ -877,6 +877,18 @@ func transport_move_toward(world_position: Vector3) -> void:
 	_transport_issuing_navigation = false
 
 
+## Semantic handoff between transport approach and authored landing. The
+## transport state machine asks only whether approach is complete; navigation
+## remains the sole owner of the distance/profile rules behind that answer.
+func transport_approach_reached(world_position: Vector3) -> bool:
+	if _navigation_managed and _navigation_system != null \
+	and _navigation_system.has_method("destination_reached"):
+		return bool(_navigation_system.call("destination_reached", self, world_position))
+	var assigned_offset := target_position - world_position
+	assigned_offset.y = 0.0
+	return assigned_offset.length_squared() <= 0.0001 and not has_active_move_order()
+
+
 func transport_align_with(target: Node3D) -> void:
 	if target != null and target.has_method("facing_direction"):
 		face_direction(target.call("facing_direction") as Vector3)
