@@ -1454,7 +1454,11 @@ func _build_attachment_bank_effects(root: Node3D, xbf) -> Array[Dictionary]:
 			billboard.mesh = meshes[0]
 			visual = billboard
 		visual.name = _unique_sibling_node_name("AttachmentFX", _existing_child_names(marker))
-		visual.visible = false
+		# A stopped particle emitter must remain visible so particles already in
+		# flight can finish their lifetime. `emitting` alone gates new particles;
+		# a stopped and empty emitter draws nothing. Static billboard banks still
+		# need their authored start/stop events to toggle visibility.
+		visual.visible = emitter != null
 		visual.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		visual.set_meta("xbf_fx_attachment", attachment)
 		visual.set_meta("xbf_fx_bank_id", bank_id)
@@ -1828,19 +1832,16 @@ func _add_attachment_fx_tracks(anim: Animation, effects: Array[Dictionary]) -> v
 	for effect: Dictionary in effects:
 		var path := String(effect["path"])
 		var lifetime := float(effect.get("lifetime", 0.0))
-		var visibility_track := anim.add_track(Animation.TYPE_VALUE)
-		anim.track_set_path(visibility_track, NodePath("%s:visible" % path))
-		anim.track_set_interpolation_type(visibility_track, Animation.INTERPOLATION_NEAREST)
-		anim.value_track_set_update_mode(visibility_track, Animation.UPDATE_DISCRETE)
-		anim.track_insert_key(visibility_track, 0.0, false)
-		# An emitter's start/stop pair gates emission, not visibility: the source
-		# banks are intermittent (AT Refinery's #smoke02 runs source frames 5-70
-		# and 90-100 of a 201-frame loop), and cutting a stopped stream's
-		# existing particles instead of letting them live out their lifetime
-		# would pop the whole plume out of existence. The node itself stays
-		# visible until the last particle can have expired, so a hidden or
-		# stopped bank still costs nothing.
 		if lifetime <= 0.0:
+			var visibility_track := anim.add_track(Animation.TYPE_VALUE)
+			anim.track_set_path(visibility_track, NodePath("%s:visible" % path))
+			anim.track_set_interpolation_type(
+				visibility_track, Animation.INTERPOLATION_NEAREST
+			)
+			anim.value_track_set_update_mode(
+				visibility_track, Animation.UPDATE_DISCRETE
+			)
+			anim.track_insert_key(visibility_track, 0.0, false)
 			for event: Dictionary in effect["events"]:
 				var action := String(event.get("action", ""))
 				if action != "start" and action != "stop":
@@ -1851,6 +1852,8 @@ func _add_attachment_fx_tracks(anim: Animation, effects: Array[Dictionary]) -> v
 					action == "start"
 				)
 		else:
+			# Never animate an emitter's visibility. Hiding it kills particles that
+			# were emitted before a stop event or an animation-clip transition.
 			var emission_track := anim.add_track(Animation.TYPE_VALUE)
 			anim.track_set_path(emission_track, NodePath("%s:emitting" % path))
 			anim.track_set_interpolation_type(emission_track, Animation.INTERPOLATION_NEAREST)
@@ -1861,10 +1864,6 @@ func _add_attachment_fx_tracks(anim: Animation, effects: Array[Dictionary]) -> v
 				anim.track_insert_key(
 					emission_track, float(switch["time"]), bool(switch["started"])
 				)
-			for interval: Vector2 in _visible_intervals(switches, lifetime, anim.length):
-				anim.track_insert_key(visibility_track, interval.x, true)
-				if interval.y < anim.length:
-					anim.track_insert_key(visibility_track, interval.y, false)
 
 		var meshes := effect["meshes"] as Array[QuadMesh]
 		if meshes.size() <= 1:
@@ -1897,37 +1896,6 @@ func _sorted_bank_switches(events: Array) -> Array[Dictionary]:
 		func(a: Dictionary, b: Dictionary) -> bool: return float(a["time"]) < float(b["time"])
 	)
 	return switches
-
-
-## Spans over which an emitter can still hold a live particle: every emitting
-## window extended by one particle lifetime, merged where a restart lands inside
-## the previous window's tail. Without the merge a re-start would be followed by
-## the earlier window's delayed hide and blank the plume mid-loop.
-func _visible_intervals(
-		switches: Array[Dictionary],
-		lifetime: float,
-		length: float
-	) -> Array[Vector2]:
-	var intervals: Array[Vector2] = []
-	var open := -1.0
-	for switch: Dictionary in switches:
-		var time := float(switch["time"])
-		if bool(switch["started"]):
-			if open < 0.0:
-				open = time
-		elif open >= 0.0:
-			intervals.append(Vector2(open, minf(time + lifetime, length)))
-			open = -1.0
-	if open >= 0.0:
-		intervals.append(Vector2(open, length))
-
-	var merged: Array[Vector2] = []
-	for interval: Vector2 in intervals:
-		if not merged.is_empty() and interval.x <= merged[-1].y:
-			merged[-1] = Vector2(merged[-1].x, maxf(merged[-1].y, interval.y))
-			continue
-		merged.append(interval)
-	return merged
 
 
 func _is_animated_shield_texture(texture_name: String) -> bool:
@@ -2354,10 +2322,11 @@ func _seed_clip_attachment_fx_tracks(
 
 ## Engine smoke belongs to the aircraft's flight state, not to a particular
 ## wing/turn animation. Authored clips toggle the same bank at their boundaries;
-## switching Move -> FlyToHover -> Hover would therefore hide every already-live
-## particle during a turn and then start a fresh disconnected trail. Hold both
-## emission and visibility throughout all airborne cruise clips and the landing
-## descent. Takeoff, pickup and destruction retain their authored FX timing.
+## switching Move -> FlyToHover -> Hover would therefore stop the trail during
+## a turn. Hold emission throughout all airborne cruise clips and the landing
+## descent. Emitters themselves remain globally visible so particles already in
+## flight survive any stop or clip transition. Takeoff, pickup and destruction
+## retain their authored emission timing.
 func _force_continuous_smoke_tracks(clip: Animation, source_clip_name: String) -> void:
 	var clip_name := _clip_name(source_clip_name)
 	var is_carryall_descent := clip_name == &"Land" \
@@ -2365,16 +2334,15 @@ func _force_continuous_smoke_tracks(clip: Animation, source_clip_name: String) -
 	if clip_name not in CONTINUOUS_SMOKE_CLIPS and not is_carryall_descent:
 		return
 	for path in _continuous_smoke_fx_paths:
-		for property_name in ["visible", "emitting"]:
-			var track_path := NodePath("%s:%s" % [path, property_name])
-			var track := clip.find_track(track_path, Animation.TYPE_VALUE)
-			if track >= 0:
-				clip.remove_track(track)
-			track = clip.add_track(Animation.TYPE_VALUE)
-			clip.track_set_path(track, track_path)
-			clip.track_set_interpolation_type(track, Animation.INTERPOLATION_NEAREST)
-			clip.value_track_set_update_mode(track, Animation.UPDATE_DISCRETE)
-			clip.track_insert_key(track, 0.0, true)
+		var track_path := NodePath("%s:emitting" % path)
+		var track := clip.find_track(track_path, Animation.TYPE_VALUE)
+		if track >= 0:
+			clip.remove_track(track)
+		track = clip.add_track(Animation.TYPE_VALUE)
+		clip.track_set_path(track, track_path)
+		clip.track_set_interpolation_type(track, Animation.INTERPOLATION_NEAREST)
+		clip.value_track_set_update_mode(track, Animation.UPDATE_DISCRETE)
+		clip.track_insert_key(track, 0.0, true)
 
 
 func _clip_target_paths(objects: Array[Dictionary], animation_entries: Array[Dictionary]) -> Dictionary:

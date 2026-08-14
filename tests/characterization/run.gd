@@ -1238,8 +1238,8 @@ func _test_building_attachment_effects() -> bool:
 		smoke_root.free()
 
 	# An idle stack is authored as intermittent puffs, so emission is gated by
-	# the start/stop pair while the node stays visible one particle lifetime
-	# longer - long enough for the last puff to drift away instead of popping.
+	# the start/stop pair while visibility remains permanently enabled. This lets
+	# every stopped puff finish even across animation loops and clip changes.
 	var refinery_builder = ModelBakeBuilderScript.new()
 	refinery_builder.bake_attachment_bank_effects = true
 	var refinery_scene: PackedScene = refinery_builder.build(
@@ -1262,10 +1262,10 @@ func _test_building_attachment_effects() -> bool:
 			NodePath("%s:visible" % stack_path), Animation.TYPE_VALUE
 		) if refinery_timeline != null and stack_fx != null else -1
 		_expect(
-			emitting_track >= 0 and visible_track >= 0,
-			"#smoke02 must gate emission and visibility separately"
+			emitting_track >= 0 and visible_track < 0 and stack_fx.visible,
+			"#smoke02 must gate only emission and keep its particle tail visible"
 		)
-		if emitting_track >= 0 and visible_track >= 0:
+		if emitting_track >= 0:
 			var emitting_values: Array[bool] = []
 			for key_index in refinery_timeline.track_get_key_count(emitting_track):
 				emitting_values.append(
@@ -1274,20 +1274,6 @@ func _test_building_attachment_effects() -> bool:
 			_expect(
 				emitting_values == [false, true, false, true, false],
 				"#smoke02 must puff on its authored start/stop frames"
-			)
-			var last_stop := 0.0
-			for key_index in refinery_timeline.track_get_key_count(emitting_track):
-				if not bool(refinery_timeline.track_get_key_value(emitting_track, key_index)):
-					last_stop = refinery_timeline.track_get_key_time(emitting_track, key_index)
-			var hidden_at := 0.0
-			for key_index in refinery_timeline.track_get_key_count(visible_track):
-				if not bool(refinery_timeline.track_get_key_value(visible_track, key_index)):
-					hidden_at = refinery_timeline.track_get_key_time(visible_track, key_index)
-			_expect(
-				is_equal_approx(
-					snappedf(hidden_at - last_stop, 0.01), snappedf(stack_fx.lifetime, 0.01)
-				),
-				"the stack must stay drawn for one particle lifetime past its last puff"
 			)
 		refinery_root.free()
 
@@ -1366,6 +1352,7 @@ func _test_aircraft_smoke_trails() -> bool:
 		var smoke_path := String(root.get_path_to(smoke_fx)) \
 			if smoke_fx != null else ""
 		var continuously_emits := player != null and smoke_fx != null
+		var emitter_never_hidden := smoke_fx != null and smoke_fx.visible
 		var continuous_clips: Array[StringName] = [
 			&"Move", &"Fly", &"FlyToHover", &"Hover", &"HoverToFly",
 		]
@@ -1373,14 +1360,17 @@ func _test_aircraft_smoke_trails() -> bool:
 			continuous_clips.append(&"Land")
 		for clip_name in continuous_clips:
 			var clip := player.get_animation(clip_name) if player != null else null
-			for property_name in ["visible", "emitting"]:
-				var track := clip.find_track(
-					NodePath("%s:%s" % [smoke_path, property_name]), Animation.TYPE_VALUE
-				) if clip != null else -1
-				continuously_emits = continuously_emits \
-					and track >= 0 and clip.track_get_key_count(track) == 1 \
-					and is_zero_approx(clip.track_get_key_time(track, 0)) \
-					and bool(clip.track_get_key_value(track, 0))
+			var emission_track := clip.find_track(
+				NodePath("%s:emitting" % smoke_path), Animation.TYPE_VALUE
+			) if clip != null else -1
+			var visibility_track := clip.find_track(
+				NodePath("%s:visible" % smoke_path), Animation.TYPE_VALUE
+			) if clip != null else -1
+			continuously_emits = continuously_emits \
+				and emission_track >= 0 and clip.track_get_key_count(emission_track) == 1 \
+				and is_zero_approx(clip.track_get_key_time(emission_track, 0)) \
+				and bool(clip.track_get_key_value(emission_track, 0))
+			emitter_never_hidden = emitter_never_hidden and visibility_track < 0
 		_expect(
 			smoke_fx != null and smoke_fx.amount == 60 and smoke_fx.lifetime >= 0.8
 			and not smoke_fx.local_coords,
@@ -1410,8 +1400,8 @@ func _test_aircraft_smoke_trails() -> bool:
 			"%s smoke must ease in and dissolve with alpha blending" % source_file
 		)
 		_expect(
-			continuously_emits,
-			"%s must keep its smoke alive across flight, turn, and landing clips" % source_file
+			continuously_emits and emitter_never_hidden,
+			"%s must keep emitting in flight without hiding live smoke tails" % source_file
 		)
 		root.free()
 	return true
