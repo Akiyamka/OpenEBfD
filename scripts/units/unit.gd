@@ -1074,6 +1074,7 @@ func transport_mark_carried(carrier: Node3D) -> void:
 	_transport_reservation_ref = null
 	_transport_docking_locked = false
 	cancel_all_orders()
+	_reset_locomotion_after_transport()
 	_navigation_suspended_for_transport = true
 	if _navigation_system != null and _navigation_system.has_method("suspend_unit"):
 		_navigation_system.call("suspend_unit", self)
@@ -1087,9 +1088,17 @@ func transport_mark_released(world_position: Vector3, carrier_facing: Vector3) -
 	global_position = world_position
 	face_direction(carrier_facing)
 	_terrain_snap_body()
+	_reset_locomotion_after_transport()
 	_navigation_suspended_for_transport = false
 	if _navigation_system != null and _navigation_system.has_method("resume_unit"):
 		_navigation_system.call("resume_unit", self)
+
+
+func _reset_locomotion_after_transport() -> void:
+	_idle_animations.reset()
+	_locomotion.reset_to_idle(_idle_animations.play_sequence)
+	_movement_sounds.notify_movement_state(false)
+	restore_combat_turret_poses()
 
 
 func transport_mark_destroyed_release() -> void:

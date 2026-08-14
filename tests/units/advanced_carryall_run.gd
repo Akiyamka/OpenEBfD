@@ -24,6 +24,9 @@ const ORADVCarryallScene := preload("res://scenes/units/oradv_carryall.tscn")
 const StuntATADVCarryallScene := preload("res://scenes/units/stunt_atadv_carryall.tscn")
 const ATScoutScene := preload("res://scenes/units/at_trike.tscn")
 const ATInfantryScene := preload("res://scenes/units/at_militia.tscn")
+const ATMongooseScene := preload("res://scenes/units/at_mongoose.tscn")
+const ATMinotaurusScene := preload("res://scenes/units/at_minotaurus.tscn")
+const HKDevastatorScene := preload("res://scenes/units/hk_devastator.tscn")
 
 var _assertions := 0
 var _failures := 0
@@ -225,11 +228,13 @@ func _initialize() -> void:
 	_run_case("pickup begins where navigation parks a large carrier", _test_navigation_arrival_handoff)
 	_run_case("enemy delay is 3.4 seconds and neutral remains 1 second", _test_relation_delays)
 	_run_case("drop pauses before release and invalid drop does not start", _test_drop_validation)
+	_run_case("move order cancels drop before landing starts", _test_drop_approach_cancellation)
 	_run_case("abort and cargo death recover flight without a stuck transition", _test_recovery)
 	_run_case("ability adapter shows F/C, cursors, and chooses deterministic nearest carrier", _test_ability_adapter)
 	_run_case("generic target ability hotkeys, repeat, Esc, selection change and bar toggle", _test_target_ability_controller)
 	await _test_ability_bar_scene()
 	await _test_real_cargo_anchor()
+	await _test_released_mechs_return_to_idle()
 	await _test_real_constrained_alignment()
 	await _test_real_eligibility_and_variants()
 	if _failures > 0:
@@ -417,6 +422,35 @@ func _test_drop_validation() -> void:
 	cargo.free()
 
 
+func _test_drop_approach_cancellation() -> void:
+	var carrier := FakeCarrier.new()
+	var cargo := FakeCargo.new()
+	root.add_child(carrier)
+	root.add_child(cargo)
+	var transport = AdvancedCarryallTransportScript.new()
+	transport.configure(carrier)
+	transport.command_pickup(cargo)
+	transport.advance(0.1); carrier.pickup_finished = true; transport.advance(0.1)
+	carrier.pickup_finished = true; transport.advance(0.1); transport.advance(1.01)
+	carrier.pickup_finished = true; transport.advance(0.1)
+	carrier.pickup_finished = true; transport.advance(0.1)
+	carrier.takeoff_finished = true; transport.advance(0.1)
+	_expect(transport.command_drop(Vector3(12, 0, 0)), "setup must begin a drop approach")
+	var phase_count := carrier.phase_log.size()
+	_expect(transport.accepts_regular_order(), "move order must be accepted during drop approach")
+	_expect(
+		transport.state_name() == &"carrying",
+		"cancelling a loaded approach must restore carrying state"
+	)
+	transport.advance(0.1)
+	_expect(
+		carrier.phase_log.size() == phase_count and cargo.attached and not cargo.released,
+		"cancelled drop must not restart landing or release cargo on the next tick"
+	)
+	carrier.free()
+	cargo.free()
+
+
 func _test_recovery() -> void:
 	var carrier := FakeCarrier.new()
 	var cargo := FakeCargo.new()
@@ -572,6 +606,47 @@ func _test_real_cargo_anchor() -> void:
 	_expect(not cargo.is_carried() and not cargo.navigation_is_suspended(),
 		"safe detach restores cargo's normal navigation contract")
 	units.free()
+
+
+func _test_released_mechs_return_to_idle() -> void:
+	_current_case = "released mechs return to idle"
+	var units := Node3D.new()
+	root.add_child(units)
+	var carrier: Unit = ATADVCarryallScene.instantiate()
+	units.add_child(carrier)
+	var cargo_scenes: Array[PackedScene] = [
+		HKDevastatorScene, ATMinotaurusScene, ATMongooseScene,
+	]
+	var cargos: Array[Unit] = []
+	for cargo_scene in cargo_scenes:
+		var cargo: Unit = cargo_scene.instantiate()
+		cargos.append(cargo)
+		units.add_child(cargo)
+	await process_frame
+	for cargo in cargos:
+		var direction := cargo.facing_direction()
+		cargo.set_navigation_destination(cargo.global_position + direction * 20.0)
+		cargo.navigation_step(direction * cargo.navigation_move_speed(), 0.1)
+		_expect(
+			cargo.is_movement_animation_active() and _has_active_mech_clip(cargo),
+			"%s setup must enter an authored movement clip" % cargo.config_id
+		)
+		cargo.transport_mark_carried(carrier)
+		cargo.transport_mark_released(cargo.global_position, direction)
+		_expect(
+			not cargo.is_movement_animation_active() and not _has_active_mech_clip(cargo),
+			"%s must be idle immediately after transport release" % cargo.config_id
+		)
+	units.free()
+
+
+func _has_active_mech_clip(unit: Unit) -> bool:
+	for player in unit.animation_players():
+		if player.is_playing() and player.current_animation in [
+			&"Move", &"Move_Start", &"Move_Stop", &"Turn_Left", &"Turn_Right",
+		]:
+			return true
+	return false
 
 
 func _test_real_constrained_alignment() -> void:

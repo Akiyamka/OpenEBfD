@@ -66,6 +66,12 @@ const DENSE_SMOKE_CARRYALL_MAX_SOURCE_SIZE := 8.0
 const CONTINUOUS_SMOKE_CLIPS: PackedStringArray = [
 	"Move", "Fly", "FlyToHover", "Hover", "HoverToFly",
 ]
+const CONTINUOUS_SMOKE_LANDING_SOURCE_FILES := {
+	"g_carryall_h0.xbf": true,
+	"at_carryall_h0.xbf": true,
+	"hk_carryall_h0.xbf": true,
+	"or_carryall_h0.xbf": true,
+}
 const STATIC_FLIGHT_SOURCE_FILES := {
 	"im_dropship_h0.xbf": true,
 }
@@ -2350,11 +2356,13 @@ func _seed_clip_attachment_fx_tracks(
 ## wing/turn animation. Authored clips toggle the same bank at their boundaries;
 ## switching Move -> FlyToHover -> Hover would therefore hide every already-live
 ## particle during a turn and then start a fresh disconnected trail. Hold both
-## emission and visibility throughout all airborne cruise clips. Takeoff, Land,
-## pickup and destruction retain their authored FX timing.
+## emission and visibility throughout all airborne cruise clips and the landing
+## descent. Takeoff, pickup and destruction retain their authored FX timing.
 func _force_continuous_smoke_tracks(clip: Animation, source_clip_name: String) -> void:
 	var clip_name := _clip_name(source_clip_name)
-	if clip_name not in CONTINUOUS_SMOKE_CLIPS:
+	var is_carryall_descent := clip_name == &"Land" \
+		and CONTINUOUS_SMOKE_LANDING_SOURCE_FILES.has(_source_file_name)
+	if clip_name not in CONTINUOUS_SMOKE_CLIPS and not is_carryall_descent:
 		return
 	for path in _continuous_smoke_fx_paths:
 		for property_name in ["visible", "emitting"]:

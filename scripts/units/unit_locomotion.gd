@@ -92,6 +92,20 @@ func is_movement_animation_active() -> bool:
 	return _movement_animation_active
 
 
+## Transport interrupts the ordinary gait chain instead of letting Move_Stop
+## finish. A carried unit receives no physics ticks, so leaving STARTING,
+## MOVING, TURNING or STOPPING alive here would freeze that exact pose until
+## after release. Return every player and the logical state to idle immediately.
+func reset_to_idle(play_idle: Callable) -> void:
+	_movement_animation_active = false
+	_state = State.IDLE
+	_gait_elapsed = 0.0
+	_start_remaining = 0.0
+	for player in _players:
+		player.speed_scale = 1.0
+		play_idle.call(player)
+
+
 func gait_phase() -> float:
 	return _gait_elapsed
 

@@ -1366,7 +1366,12 @@ func _test_aircraft_smoke_trails() -> bool:
 		var smoke_path := String(root.get_path_to(smoke_fx)) \
 			if smoke_fx != null else ""
 		var continuously_emits := player != null and smoke_fx != null
-		for clip_name in [&"Move", &"Fly", &"FlyToHover", &"Hover", &"HoverToFly"]:
+		var continuous_clips: Array[StringName] = [
+			&"Move", &"Fly", &"FlyToHover", &"Hover", &"HoverToFly",
+		]
+		if not source_file.contains("Ornithopter"):
+			continuous_clips.append(&"Land")
+		for clip_name in continuous_clips:
 			var clip := player.get_animation(clip_name) if player != null else null
 			for property_name in ["visible", "emitting"]:
 				var track := clip.find_track(
@@ -1406,7 +1411,7 @@ func _test_aircraft_smoke_trails() -> bool:
 		)
 		_expect(
 			continuously_emits,
-			"%s must keep its smoke alive across flight and turn clips" % source_file
+			"%s must keep its smoke alive across flight, turn, and landing clips" % source_file
 		)
 		root.free()
 	return true

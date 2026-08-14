@@ -363,12 +363,13 @@ func _abort_pending_operation() -> void:
 	if pending != null and pending.has_method("transport_unlock_after_abort"):
 		pending.call("transport_unlock_after_abort", _owner)
 	_pending_target_ref = null
+	_drop_position = Vector3.INF
 	_docking_elapsed = 0.0
 	if is_command_locked():
 		_owner.call("transport_abort_docking_recover")
 		_state = State.RECOVER_TAKEOFF
-	elif _cargo() == null:
-		_state = State.IDLE
+	else:
+		_state = State.CARRYING if _cargo() != null else State.IDLE
 
 
 func _pending_target() -> Node3D:
