@@ -32,6 +32,7 @@ readonly SUITES=(
 	tests/effects/death_corpse_run.gd
 	tests/match/demo_boot_run.gd tests/match/snapshot_run.gd tests/maps/run.gd
 	tests/navigation/run.gd
+	tests/net/loopback_run.gd
 )
 
 failures=()
