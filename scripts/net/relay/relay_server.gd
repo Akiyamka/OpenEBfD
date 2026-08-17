@@ -93,34 +93,19 @@ const ROOM_CODE_ALLOWED_CHARS := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrst
 ## dictionary with unbounded-length keys.
 const ROOM_CODE_MAX_LENGTH := 64
 
-## Close codes sent to a rejected client, and the one fact that makes this
-## worth stating explicitly rather than picking numbers by feel: **not every
-## WebSocket close code Godot 4.7's WebSocketPeer is asked to send actually
-## arrives.** Verified empirically (a throwaway probe tried every code
-## 1000-1015, 2999-4999 through a real accept_stream()/close()/poll() round
-## trip and read back what the client observed): codes 1000-1003 and
-## 1007-1011 -- the set RFC 6455 originally defined -- round-trip exactly as
-## sent, and so does everything in the registered 3000-4999 range. Every
-## other code tested, including the later-IANA-registered 1012-1015 (one of
-## which, 1013 "Try Again Later", is exactly the code this module used to
-## send for "room full"), arrives at the client as 1002 "Protocol error" no
-## matter what reason string went with it -- Godot's WSL implementation
-## silently substitutes it, and the caller has no way to tell "the server
-## rejected me for reason X" from "something violated the WebSocket
-## protocol" if it picks a code from that gap. The lesson generalizes: this
-## module only ever sends 1003 (a real RFC 6455 code, "received data of a
-## type it cannot accept" -- exactly true for the text-frame case) or a code
-## in the 4000-4999 private-use range, and the future WebSocket client
-## transport should treat close code as the authoritative way to tell these
-## rejection reasons apart, not the close reason string alone (the reason
-## string round-trips correctly for every code tested here, but nothing
-## upstream of this module can control what an intermediary between it and
-## a browser client might do to it, whereas the close *code* is a fixed
-## 2-byte field the WebSocket protocol itself carries).
-const CLOSE_NO_ROOM_CODE := 4000
-const CLOSE_INVALID_ROOM_CODE := 4001
-const CLOSE_ROOM_FULL := 4002
-const CLOSE_PROTOCOL_ERROR := 1003
+## Close codes sent to a rejected client. Defined in `relay_protocol.gd`
+## (preloaded below) rather than here, so a client transport can learn the
+## protocol without preloading this server script -- see that file's doc
+## comment for the empirical finding behind the exact numbers (Godot 4.7
+## silently rewrites close codes 1012-1015 into 1002, which is why every
+## rejection here uses the 4000 range instead). Re-declared as local aliases
+## so existing call sites in this file, and `RelayServerScript.CLOSE_*` in
+## tests/net/relay_run.gd, keep working unchanged.
+const RelayProtocolScript := preload("res://scripts/net/relay_protocol.gd")
+const CLOSE_NO_ROOM_CODE := RelayProtocolScript.CLOSE_NO_ROOM_CODE
+const CLOSE_INVALID_ROOM_CODE := RelayProtocolScript.CLOSE_INVALID_ROOM_CODE
+const CLOSE_ROOM_FULL := RelayProtocolScript.CLOSE_ROOM_FULL
+const CLOSE_PROTOCOL_ERROR := RelayProtocolScript.CLOSE_PROTOCOL_ERROR
 
 var _server: TCPServer
 ## Human-readable one-line descriptions of joins, leaves and rejections,

@@ -10,9 +10,13 @@ extends "res://tests/support/suite.gd"
 
 const LoopbackHubScript := preload("res://scripts/net/loopback_hub.gd")
 const NetTransportScript := preload("res://scripts/net/net_transport.gd")
+const TransportConformanceScript := preload("res://tests/net/transport_conformance.gd")
 
 
 func _initialize() -> void:
+	_run_case(
+		"shared NetTransport conformance suite holds for LoopbackTransport", _test_conformance_suite
+	)
 	_run_case("zero latency: sender and peer both receive after one step", _test_zero_latency)
 	_run_case("latency_ticks=3 delays delivery by exactly three steps", _test_fixed_latency)
 	_run_case(
@@ -43,6 +47,24 @@ func _initialize() -> void:
 		_test_base_class_reports_errors
 	)
 	_finish("Loopback transport tests")
+
+
+## Runs tests/net/transport_conformance.gd against LoopbackTransport -- see
+## that file's doc comment for what it checks and why it is shared with
+## tests/net/websocket_transport_run.gd. Each call to `make_transport` needs
+## its own unique endpoint id (LoopbackHub.add_endpoint() errors on a
+## duplicate), hence the counter; it is wrapped in a one-element array so the
+## closure mutates the same cell regardless of GDScript's lambda-capture
+## semantics for plain local variables.
+func _test_conformance_suite() -> void:
+	var hub := LoopbackHubScript.new()
+	var next_id := [0]
+	var make_transport := func():
+		next_id[0] += 1
+		return hub.add_endpoint(StringName("conformance-%d" % next_id[0]))
+	var open_transport := func(transport): transport.open("")
+	var pump := func(): hub.step()
+	TransportConformanceScript.run(Callable(self, "_expect"), make_transport, open_transport, pump)
 
 
 func _test_zero_latency() -> void:

@@ -34,6 +34,7 @@ readonly SUITES=(
 	tests/navigation/run.gd
 	tests/net/loopback_run.gd
 	tests/net/relay_run.gd
+	tests/net/websocket_transport_run.gd
 )
 
 failures=()
