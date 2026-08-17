@@ -1,0 +1,9 @@
+extends RefCounted
+
+
+func deploy() -> void:
+	await _settle()
+
+
+func _settle() -> void:
+	pass

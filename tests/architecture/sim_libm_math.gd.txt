@@ -1,0 +1,5 @@
+extends RefCounted
+
+
+func step(angle: float, speed: float) -> Vector2:
+	return Vector2(cos(angle) * speed, sin(angle) * speed)

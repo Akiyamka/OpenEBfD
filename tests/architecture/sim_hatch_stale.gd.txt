@@ -1,0 +1,5 @@
+extends RefCounted
+
+
+func table_index(index: int) -> int:
+	return index & 0xFFFF  # arch-allow: sim-no-libm-math — left behind by an earlier rewrite

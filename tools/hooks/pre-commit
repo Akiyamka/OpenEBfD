@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+"""Pre-commit hook: run the architecture checker over the *staged* tree.
+
+Install with `make install-hooks`, which points `core.hooksPath` at
+tools/hooks/. Remove with `make uninstall-hooks`.
+
+Two details are worth the extra code over a one-line shell hook:
+
+*   It checks the **index**, not the working tree. `git checkout-index` extracts
+    exactly what is about to be committed into a temp directory, so a commit
+    cannot pass because of an unstaged fix, and cannot fail because of unstaged
+    experimental edits.
+*   It runs the checker's own self-test **only** when the checker, its manifest
+    or its fixtures are part of the commit. That keeps the common case at half a
+    second instead of two and a half.
+
+`git commit --no-verify` skips this, as with any hook. That is fine: CI runs the
+same checks and is the gate that actually counts.
+"""
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+CHECKER = "tools/check_architecture.py"
+SELF_TEST = "tools/test_check_architecture.py"
+
+# Staged paths that make the architecture check worth running at all.
+RELEVANT_PREFIXES = ("scripts/",)
+RELEVANT_FILES = (CHECKER, SELF_TEST, "tools/architecture_rules.toml")
+# Staged paths that additionally require the checker's own self-test.
+SELF_TEST_PREFIXES = ("tests/architecture/",)
+SELF_TEST_FILES = RELEVANT_FILES
+
+
+def git(*args: str, cwd: Path | None = None) -> str:
+    result = subprocess.run(
+        ["git", *args], capture_output=True, text=True, check=True, cwd=cwd
+    )
+    return result.stdout
+
+
+def staged_paths(root: Path) -> list[str]:
+    output = git(
+        "diff", "--cached", "--name-only", "--diff-filter=ACMR", cwd=root
+    )
+    return [line for line in output.splitlines() if line]
+
+
+def touches(paths: list[str], prefixes: tuple[str, ...], files: tuple[str, ...]) -> bool:
+    return any(
+        path in files or path.startswith(prefixes) for path in paths
+    )
+
+
+def main() -> int:
+    try:
+        root = Path(git("rev-parse", "--show-toplevel").strip())
+    except subprocess.CalledProcessError:
+        print("pre-commit: not inside a git repository", file=sys.stderr)
+        return 1
+
+    paths = staged_paths(root)
+    run_checker = touches(paths, RELEVANT_PREFIXES, RELEVANT_FILES)
+    run_self_test = touches(paths, SELF_TEST_PREFIXES, SELF_TEST_FILES)
+    if not (run_checker or run_self_test):
+        return 0
+
+    staged = Path(tempfile.mkdtemp(prefix="openebfd-precommit-"))
+    try:
+        # -a extracts every tracked file as staged; the repo is ~11 MB, and
+        # running the extracted copy of the checker means the checker, its
+        # manifest and the sources all come from the same commit.
+        git("checkout-index", f"--prefix={staged}/", "-a", cwd=root)
+
+        commands: list[tuple[str, list[str]]] = []
+        if run_self_test:
+            commands.append(("checker self-test", [str(staged / SELF_TEST)]))
+        if run_checker or run_self_test:
+            commands.append(
+                ("architecture rules", [str(staged / CHECKER), str(staged)])
+            )
+
+        for label, command in commands:
+            completed = subprocess.run([sys.executable, *command])
+            if completed.returncode != 0:
+                print(
+                    f"\npre-commit: {label} failed on the staged tree "
+                    f"(exit {completed.returncode}).\n"
+                    "Fix the finding and `git add` it, or commit with "
+                    "--no-verify if you mean to push a known violation.",
+                    file=sys.stderr,
+                )
+                return completed.returncode
+    finally:
+        shutil.rmtree(staged, ignore_errors=True)
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

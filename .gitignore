@@ -19,6 +19,9 @@ mono_crash.*.json
 Thumbs.db
 *.swp
 
+# Python bytecode from the tools/ scripts
+__pycache__/
+
 # Original assets for testing
 assets/*
 !assets/converted/

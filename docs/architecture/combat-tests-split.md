@@ -418,7 +418,7 @@ exactly the failure AGENTS.md records as having already bitten this repository o
 
 ## Check expectations per stage
 
-| Stage | `check_architecture.sh` | `gdlint` |
+| Stage | `check_architecture.py` | `gdlint` |
 |---|---|---|
 | 0–3 | green | exactly **one** error: `max-file-lines` on `tests/combat/run.gd` |
 | 4 | green | **zero or one**, and the only permissible one is that same `max-file-lines` |
@@ -483,7 +483,7 @@ already there today.
 After **every** stage:
 
 ```bash
-./tools/check_architecture.sh              # silence + exit 0, always
+python3 tools/check_architecture.py        # silence + exit 0, always
 ./tools/godot-container lint               # see the expectations table above
 ```
 

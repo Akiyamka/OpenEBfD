@@ -60,37 +60,92 @@ machine-checked — see "Architecture checks".
 
 ## Architecture checks
 
-`tools/check_architecture.sh` statically enforces the structural rules above
-over every `scripts/**/*.gd`. It needs no container and runs in under a second,
-but it is **not** part of `tools/run_godot_tests.sh` — run it separately, in
-particular after any refactor that moves logic between a facade and its
-modules:
+`tools/check_architecture.py` statically enforces the structural rules above.
+It needs no container and runs in half a second. `make lint` runs it, and
+`make godot-test` starts with `make lint`, so it is covered by the normal test
+command — but run it directly after any refactor that moves logic between a
+facade and its modules:
 
 ```bash
-./tools/check_architecture.sh   # silence and exit 0 means clean
+python3 tools/check_architecture.py   # silence and exit 0 means clean
 ```
 
-It reports, with `file:line`:
+Exit codes matter: **0** clean, **1** findings in the code, **2** the manifest
+or the invocation is broken. A 2 means nothing was checked.
 
-- **private owner access** — a module reaching into `_unit._x`, `_facade._x`,
-  `_owner._x` or `_source._x`. Modules talk to their owner through its public
-  API; if something is missing there, widen the API deliberately rather than
-  reaching past it.
-- **navigation sibling access through facade** — `_facade.planner`,
-  `_facade.avoidance`, `_facade.registry` and the other navigation subsystems.
-  A module must not use the facade as a directory of its siblings.
-- **bare class_name reference** — using `SomeClass.` without an explicit
-  `preload()` of that script in the same file. See "Code rules" above for why
-  this one has already caused a confusing cross-suite failure.
-- **direct autoload path lookup** — `get_node_or_null("/root/Players")` or
-  `/root/Cursors` anywhere except `scripts/players/autoload_lookup.gd`.
+### The rule manifest
+
+Rules are data in `tools/architecture_rules.toml`, not code. A **zone** selects
+files by glob; a **rule** forbids something inside exactly one zone:
+
+- **zone `all`** — every `scripts/**/*.gd`. Holds the module boundary rules:
+  private owner access (`_unit._x`, `_facade._x`, `_owner._x`, `_source._x`),
+  navigation sibling access through the facade, bare `class_name` references
+  without a `preload` (see "Code rules" above for the failure this caused), and
+  direct `/root/Players` autoload lookups outside
+  `scripts/players/autoload_lookup.gd`.
+- **zone `sim`** — `scripts/sim/**`, currently empty and marked
+  `allow_empty = true` because the simulation layer has not moved in yet. Holds
+  the determinism rules for lockstep multiplayer: no scene tree API, no `await`,
+  no tweens or timers, no signals, no frame `delta`, no unseeded RNG, no libm
+  trigonometry, no `Vector*` angle methods, no wall clock, no threads. See
+  `docs/architecture/network-multiplayer.md`.
 
 Only `scripts/` is scanned; `tests/` may still reach into internals.
 
-`tools/test_check_architecture.sh` is the checker's own self-test, driven by the
-fixtures in `tests/architecture/*.gd.txt`. Run it if a clean result looks
-suspicious — it verifies the checker still fails on each rule it claims to
-enforce, so a passing self-test is what makes "no output" trustworthy.
+Adding a rule is a manifest entry plus a fixture — never a code change, unless
+the rule needs real analysis, in which case add a `kind` in the checker.
+Every rule must carry `why` and `instead`; both are printed on a violation,
+because a rule that does not say what to do instead gets worked around blindly.
+
+### Escape hatches
+
+A single line can be exempted:
+
+```gdscript
+return int(cos(angle) * 32768.0)  # arch-allow: sim-no-libm-math — table generation runs offline
+```
+
+The reason is mandatory (8 characters minimum) and an unknown rule id is an
+error. Hatches are counted against `allow_budget` in `[settings]` — ratchet it
+down as hatches are removed, never up, the same idiom as `max-file-lines` in
+`.gdlintrc`. A hatch on a line that no longer violates its rule is reported as
+`stale-arch-allow`, so the budget cannot quietly drift into lying about how much
+is suppressed.
+
+### The checker's own self-test
+
+`tools/test_check_architecture.py` drives the checker over the fixtures in
+`tests/architecture/*.gd.txt`. Run it if a clean result looks suspicious — a
+passing self-test is what makes "no output" trustworthy. Beyond exit codes it
+asserts which rule fired, that zones actually scope (the same fixture is clean
+outside its zone), and, crucially, that **every rule in the manifest has a
+fixture that violates it**. A rule with no failing fixture cannot be told apart
+from a rule that silently stopped matching, so the self-test fails when a new
+rule arrives without one.
+
+### Where the checks run
+
+Three places, deliberately overlapping, so no single one has to be remembered:
+
+- **CI** — `.github/workflows/checks.yml` runs the self-test, the checker, and
+  `gdlint` (pinned to the same `gdtoolkit==4.3.4` as the container) on every push
+  to `main` and every pull request. This is the gate that counts. The Godot test
+  suite cannot run there: `.gitignore` excludes `assets/`, so a fresh checkout
+  has no game files — `make godot-test` stays a local command.
+- **pre-commit** — `tools/hooks/pre-commit`, activated per clone with
+  `make install-hooks` (it points `core.hooksPath` at `tools/hooks/`, which
+  also disables anything hand-written in `.git/hooks`; `make uninstall-hooks`
+  reverts). It checks the **index**, not the working tree, by extracting the
+  staged commit with `git checkout-index` — a commit cannot pass on the strength
+  of an unstaged fix. It runs the checker's self-test only when the checker, its
+  manifest or its fixtures are part of the commit, which keeps the common case
+  at half a second. `git commit --no-verify` skips it.
+- **Claude Code** — `.claude/settings.json` registers a `PostToolUse` hook,
+  `tools/hooks/claude_post_edit.py`, which runs the checker after any Write or
+  Edit under `scripts/` (or to the manifest) and feeds findings straight back
+  into the agent's context. Reporting only, never a gate; it exists so a
+  violation is seen where it was written rather than at commit time.
 
 ## Godot container
 

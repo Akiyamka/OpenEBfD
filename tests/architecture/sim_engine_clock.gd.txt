@@ -1,0 +1,5 @@
+extends RefCounted
+
+
+func stamp() -> int:
+	return Time.get_ticks_msec()

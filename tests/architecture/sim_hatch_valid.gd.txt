@@ -1,0 +1,6 @@
+extends RefCounted
+
+
+func table_index(angle: float) -> int:
+	# The generated table is built once, outside any tick, so libm is safe here.
+	return int(cos(angle) * 32768.0)  # arch-allow: sim-no-libm-math — table generation runs offline

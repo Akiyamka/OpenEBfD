@@ -1,0 +1,8 @@
+extends RefCounted
+
+var _view
+
+
+func retarget() -> void:
+	var turret := _view.get_node("Turret")
+	turret.queue_free()

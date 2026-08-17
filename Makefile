@@ -6,7 +6,7 @@ PERF_WARMUP ?= 60
 PERF_BUDGET_MS ?= 0
 PERF_LABEL ?= $(shell git rev-parse --short HEAD)
 
-.PHONY: rules-editor rules-export voice-feedback voice-feedback-check unit-definitions unit-definitions-check lint godot-image godot-check godot-test godot-perf godot-convert-map godot-convert-building godot-convert-all-buildings godot-convert-all-units godot-convert-projectiles godot-convert-placement godot-convert-cursors godot-convert-spice-mound godot-convert-audio godot-export-web godot-watch-export godot-shell godot-version
+.PHONY: rules-editor rules-export voice-feedback voice-feedback-check unit-definitions unit-definitions-check lint install-hooks uninstall-hooks godot-image godot-check godot-test godot-perf godot-convert-map godot-convert-building godot-convert-all-buildings godot-convert-all-units godot-convert-projectiles godot-convert-placement godot-convert-cursors godot-convert-spice-mound godot-convert-audio godot-export-web godot-watch-export godot-shell godot-version
 
 rules-editor:
 	cd $(RULES_EDITOR_DIR) && RULES_DB="$(RULES_DB)" npm start
@@ -33,9 +33,20 @@ godot-check:
 	$(GODOT_CONTAINER) check
 
 lint:
-	./tools/test_check_architecture.sh
-	./tools/check_architecture.sh
+	python3 tools/test_check_architecture.py
+	python3 tools/check_architecture.py
 	$(GODOT_CONTAINER) lint
+
+# Per-clone, so it cannot be tracked in git — run this once after cloning.
+# core.hooksPath replaces .git/hooks wholesale, so any hand-written hooks in
+# there stop firing until `make uninstall-hooks`.
+install-hooks:
+	git config core.hooksPath tools/hooks
+	@echo "core.hooksPath -> tools/hooks; pre-commit now checks the staged tree"
+
+uninstall-hooks:
+	git config --unset core.hooksPath
+	@echo "core.hooksPath cleared; .git/hooks is in charge again"
 
 godot-test:
 	$(MAKE) unit-definitions-check

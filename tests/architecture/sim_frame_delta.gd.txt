@@ -1,0 +1,7 @@
+extends RefCounted
+
+var _travelled := 0.0
+
+
+func advance(delta: float, speed: float) -> void:
+	_travelled += delta * speed

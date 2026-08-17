@@ -1,0 +1,199 @@
+# Architecture rules enforced by tools/check_architecture.py.
+#
+# A *zone* is a set of files described by glob patterns. A *rule* forbids
+# something inside exactly one zone. Rules live here as data so that adding one
+# is a few lines plus a fixture in tests/architecture/; only rules that need
+# real analysis (see `kind`) carry code in the checker.
+#
+# Every rule must say `why` and `instead`, and both are printed on a violation.
+# A rule whose message does not say what to do instead gets worked around
+# blindly, which is worse than having no rule at all.
+#
+# Escape hatch: append to the offending line
+#
+#     # arch-allow: <rule-id>[,<rule-id>...] — <reason>
+#
+# The reason is mandatory (8 characters minimum), hatches are counted against
+# `allow_budget` below, and a hatch on a line that does not actually violate
+# its rule is itself reported. Accepted separators between ids and reason are
+# `—`, `--` and `:`.
+
+[settings]
+# Total `# arch-allow:` comments permitted under scripts/. Ratchet this down as
+# hatches are removed, never up — the same idiom as `max-file-lines` in
+# .gdlintrc. The checker prints the live count on every run and suggests
+# lowering the budget when the tree is cleaner than the budget allows.
+allow_budget = 0
+
+# Minimum length of a hatch reason, in characters.
+min_reason_length = 8
+
+
+# ---------------------------------------------------------------------------
+# Zones
+# ---------------------------------------------------------------------------
+
+[zones.all]
+description = "Every runtime script. tests/ is not scanned and may reach into internals."
+include = ["scripts/**/*.gd"]
+
+[zones.sim]
+description = """
+The deterministic simulation layer. Every client in a lockstep match runs this \
+code and must reach a bit-identical result, so it may not touch engine frame \
+timing, the scene tree, unseeded randomness, wall-clock time, threads or \
+non-portable math. See docs/architecture/network-multiplayer.md.
+"""
+include = ["scripts/sim/**/*.gd"]
+# Staged ahead of the phase 3 refactor: no simulation code has moved in yet.
+# Without this flag an empty zone is an error, because a mistyped glob enforces
+# nothing while looking perfectly healthy.
+allow_empty = true
+
+
+# ---------------------------------------------------------------------------
+# Module boundary rules
+# ---------------------------------------------------------------------------
+
+[[rules]]
+id = "private-owner-access"
+zone = "all"
+pattern = '\b(?:_facade|_owner|_unit|_source)\._\w+'
+summary = "module reaches into its owner's private member"
+why = """
+A module that reads its owner's underscore-prefixed members is coupled to the \
+owner's internals, so the owner can no longer change them safely.
+"""
+instead = "widen the owner's public API deliberately, then call that"
+
+[[rules]]
+id = "facade-sibling-access"
+zone = "all"
+pattern = '''\b_facade\.(?:runtime_map|planner|avoidance|registry|spatial_hash|slot_allocator|path_follower|path_funnel|blocker_tracker|ground_navigation|air_navigation)\b'''
+summary = "navigation sibling reached through the facade"
+why = "the facade is not a directory of its siblings; module-to-module wiring through it hides the real dependency graph"
+instead = "take the collaborator as a constructor argument, or route the call through the facade's own API"
+
+[[rules]]
+id = "direct-autoload-lookup"
+zone = "all"
+kind = "forbid-in-strings"
+pattern = '''\bget_node_or_null\s*\(\s*["']/root/(?:Players|Cursors)["']'''
+exempt = ["scripts/players/autoload_lookup.gd"]
+summary = "autoload fetched by hardcoded /root path"
+why = "a scattered hardcoded path breaks silently when an autoload is renamed or when a scene runs standalone in a test"
+instead = "AutoloadLookup, which is the single place allowed to know these paths"
+
+[[rules]]
+id = "bare-class-name-reference"
+zone = "all"
+kind = "require-preload"
+summary = "class_name used without preloading its script"
+why = """
+A bare global-name reference does not show up when grepping a file for its \
+preloads, and when the referenced script fails to parse the failure surfaces \
+somewhere unrelated — this already cost us a confusing cross-suite combat \
+test failure.
+"""
+instead = 'const XScript := preload("res://path/to/script.gd") in this file'
+
+
+# ---------------------------------------------------------------------------
+# Determinism rules for the simulation layer
+#
+# These exist because a lockstep match desyncs on a single divergent bit. They
+# are proxies for the real requirement, which only the determinism property
+# tests can check: identical state hashes across replays, frame rates and
+# platforms.
+# ---------------------------------------------------------------------------
+
+[[rules]]
+id = "sim-no-node-api"
+zone = "sim"
+pattern = '\b(?:get_node|get_node_or_null|get_tree|get_parent|get_viewport|add_child|remove_child|queue_free|instantiate)\s*\('
+summary = "scene tree API used in the simulation"
+why = "the simulation owns state; nodes are views over it. Reaching into the tree puts gameplay state where no snapshot, replay or checksum can see it"
+instead = "keep the state in the sim layer and let the view read it; sim classes extend RefCounted so this API should not even be reachable"
+
+[[rules]]
+id = "sim-no-await"
+zone = "sim"
+pattern = '\bawait\b'
+summary = "await in simulation code"
+why = """
+A coroutine parks state on the VM stack, invisible to snapshots, replays and \
+checksums, and resumes on engine frame timing. This is the single most likely \
+source of a desync in this codebase.
+"""
+instead = "an explicit state field advanced by the tick, so the wait is part of the simulation state"
+
+[[rules]]
+id = "sim-no-tween-or-timer"
+zone = "sim"
+pattern = '\b(?:create_tween|Tween\.new|Timer\.new|create_timer)\s*\(|\bSceneTreeTimer\b'
+summary = "tween or timer drives simulation state"
+why = "both advance on engine frame time rather than on the simulation tick, and neither is captured by a snapshot"
+instead = "a tick deadline stored in sim state (`_ready_at_tick`), compared against the tick counter"
+
+[[rules]]
+id = "sim-no-signals"
+zone = "sim"
+pattern = '^\s*signal\s+\w+|\.(?:connect|disconnect)\s*\('
+summary = "signal used in simulation code"
+why = "signal dispatch order is engine-owned and the connection set is state that no snapshot captures"
+instead = "return the event from the tick, or append it to an explicit event queue the caller drains"
+
+[[rules]]
+id = "sim-no-frame-delta"
+zone = "sim"
+pattern = '\bfunc\s+_(?:process|physics_process)\s*\(|\bdelta\s*:\s*float\b'
+summary = "simulation advanced by frame time"
+why = """
+The engine clamps physics steps per frame, so a client that drops frames \
+silently skips them and diverges. The turn scheduler owns the clock.
+"""
+instead = "advance_tick(tick: int), called by the turn scheduler at a fixed 25 Hz"
+
+[[rules]]
+id = "sim-no-global-rng"
+zone = "sim"
+pattern = '(?<!\.)\b(?:randi|randf|randi_range|randf_range|randfn|randomize|rand_from_seed)\s*\('
+summary = "unseeded randomness in the simulation"
+why = "global RNG is per-process state, so two clients draw different numbers from the first call onwards"
+instead = "the seeded simulation RNG, whose cursor is part of the state checksum; cosmetic randomness belongs in the view layer"
+
+[[rules]]
+id = "sim-no-libm-math"
+zone = "sim"
+pattern = '(?<!\.)\b(?:sin|cos|tan|asin|acos|atan|atan2|sinh|cosh|tanh|pow|exp|log|fmod|fposmod)\s*\('
+summary = "non-portable math function in the simulation"
+why = """
+IEEE-754 pins down `+ - * /` and `sqrt` on every platform, but these route \
+through the platform's libm, which differs between Linux, Windows, macOS and \
+WASM.
+"""
+instead = "SimMath, whose trigonometry runs off a generated table over integer angle units"
+
+[[rules]]
+id = "sim-no-vector-angle-math"
+zone = "sim"
+pattern = '\.(?:rotated|rotated_local|angle|angle_to|angle_to_point|slerp|bezier_interpolate|cubic_interpolate)\s*\('
+summary = "Vector method built on non-portable math"
+why = "these are libm trigonometry behind a Vector2/Vector3 method call, so they carry the same cross-platform divergence"
+instead = "SimMath.rotate_units and friends; plain +, -, *, dot, length, normalized and distance_to stay portable and are fine"
+
+[[rules]]
+id = "sim-no-engine-clock"
+zone = "sim"
+pattern = '\bTime\.\w+|\bOS\.get_ticks_\w+|\bEngine\.get_(?:frames_drawn|process_frames|physics_frames)\b'
+summary = "wall-clock or frame counter read in the simulation"
+why = "any clock other than the tick counter differs between clients by construction, and differs between a live match and its replay"
+instead = "the tick counter, which is the simulation's only clock"
+
+[[rules]]
+id = "sim-no-threads"
+zone = "sim"
+pattern = '\b(?:Thread|WorkerThreadPool|Mutex|Semaphore)\b'
+summary = "threading primitive in the simulation"
+why = "concurrent mutation makes the result depend on scheduling, which is the one thing no checksum can be made stable against"
+instead = "keep the tick single-threaded; parallelise the view layer instead"

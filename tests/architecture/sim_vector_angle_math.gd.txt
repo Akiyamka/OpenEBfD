@@ -1,0 +1,5 @@
+extends RefCounted
+
+
+func aim(offset: Vector3, turn: float) -> Vector3:
+	return offset.rotated(Vector3.UP, turn)

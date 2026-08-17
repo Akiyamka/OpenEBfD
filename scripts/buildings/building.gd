@@ -374,7 +374,7 @@ func _damage_visual_states() -> Array[StringName]:
 
 ## Single entry point for "which States child is this state?". The extracted
 ## modules (BuildingWallVisual, BuildingRefineryDocks, BuildingCombat) reach
-## their owner through a base-typed `_owner`, and tools/check_architecture.sh
+## their owner through a base-typed `_owner`, and tools/check_architecture.py
 ## forbids `_owner._private_method`, so this is deliberately public and they
 ## call it as `_owner.call("state_root", state)` rather than each keeping a
 ## copy of the search below -- there used to be one per module.

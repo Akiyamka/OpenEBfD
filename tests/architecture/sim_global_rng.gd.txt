@@ -1,0 +1,5 @@
+extends RefCounted
+
+
+func scatter_offset() -> float:
+	return randf_range(-0.5, 0.5)

@@ -1,0 +1,7 @@
+extends RefCounted
+
+signal died(entity_id: int)
+
+
+func kill(entity_id: int) -> void:
+	died.emit(entity_id)

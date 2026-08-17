@@ -1,0 +1,5 @@
+extends RefCounted
+
+
+func table_index(angle: float) -> int:
+	return int(cos(angle) * 32768.0)  # arch-allow: sim-no-trigonometry — renamed rule id

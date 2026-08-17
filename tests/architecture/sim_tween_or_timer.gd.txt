@@ -1,0 +1,8 @@
+extends RefCounted
+
+var _view
+
+
+func retract() -> void:
+	var tween := _view.create_tween()
+	tween.tween_property(_view, "position", Vector3.ZERO, 0.4)
