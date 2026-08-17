@@ -330,8 +330,17 @@ on nothing but attention.
 The ordering is deliberate: **nothing on this list needs a socket until phase 5**,
 and by the time we get there the hard part is already tested.
 
-- **Phase 0 — plumbing.** Transport interface, in-memory loopback, relay
-  skeleton with a container image. No game logic touched.
+- **Phase 0 — plumbing. Done 2026-08-18.** Transport interface, in-memory
+  loopback, relay skeleton with a container image. No game logic touched.
+  Shipped as `scripts/net/`: `net_transport.gd` (the contract),
+  `loopback_hub.gd`/`loopback_transport.gd` (deterministic, tick-driven, with
+  latency, jitter and per-recipient loss), `websocket_transport.gd`,
+  `relay/relay_server.gd` and `relay/relay_main.gd`, with
+  `tests/net/transport_conformance.gd` holding the assertions both transports
+  must satisfy identically so they stay interchangeable. No separate container
+  image was built: `tools/godot-container` gained a `relay` subcommand that
+  publishes the port, which is all a second image would have given us. The
+  Nagle question this phase was supposed to answer is answered above.
 - **Phase 1 — one tick.** Collapse the three tick domains into a single 25 Hz
   integer tick driven by a central scheduler; remove frame `delta` from
   gameplay paths. Single-player stays playable throughout.
