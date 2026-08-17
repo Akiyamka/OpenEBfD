@@ -14,7 +14,7 @@ RELAY_MAX_ROOM_SIZE ?= 4
 RELAY_MAX_CONNECTIONS ?= 128
 RELAY_MAX_ROOMS ?= 16
 
-.PHONY: rules-editor rules-export voice-feedback voice-feedback-check unit-definitions unit-definitions-check lint install-hooks uninstall-hooks godot-image godot-check godot-test godot-perf godot-convert-map godot-convert-building godot-convert-all-buildings godot-convert-all-units godot-convert-projectiles godot-convert-placement godot-convert-cursors godot-convert-spice-mound godot-convert-audio godot-export-web godot-watch-export godot-shell godot-version relay
+.PHONY: rules-editor rules-export voice-feedback voice-feedback-check unit-definitions unit-definitions-check lint install-hooks uninstall-hooks godot-image godot-check godot-test godot-perf godot-convert-map godot-convert-building godot-convert-all-buildings godot-convert-all-units godot-convert-projectiles godot-convert-placement godot-convert-cursors godot-convert-spice-mound godot-convert-audio godot-export-web godot-watch-export godot-shell godot-version relay measure-nagle
 
 rules-editor:
 	cd $(RULES_EDITOR_DIR) && RULES_DB="$(RULES_DB)" npm start
@@ -117,3 +117,13 @@ godot-version:
 relay:
 	GODOT_RELAY_PORT=$(RELAY_PORT) $(GODOT_CONTAINER) relay \
 		--max-room-size $(RELAY_MAX_ROOM_SIZE) --max-connections $(RELAY_MAX_CONNECTIONS) --max-rooms $(RELAY_MAX_ROOMS)
+
+# Answers "is TCP_NODELAY set on the two links the netcode runs over" by
+# measuring both against deliberate positive and negative controls -- see
+# tools/measure_nagle.py's module doc comment. Deliberately outside
+# godot-test, like godot-perf: it needs real sockets and real wall-clock
+# timing, so it reports rather than asserts. Runs entirely inside the
+# container, the one place `godot` and `python3` share a loopback interface,
+# which is also why it needs no published port.
+measure-nagle:
+	$(GODOT_CONTAINER) shell -lc "python3 tools/measure_nagle.py $(NAGLE_ARGS)"

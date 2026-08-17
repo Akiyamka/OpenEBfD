@@ -35,10 +35,50 @@ const DEFAULT_MAX_ROOM_SIZE := 4
 const DEFAULT_MAX_CONNECTIONS := 128
 const DEFAULT_MAX_ROOMS := 16
 
+## How long the process may sleep between main-loop iterations, and with it
+## how long a frame can sit in the relay before being forwarded: poll() runs
+## once per iteration (see _on_process_frame), so this is the relay's own
+## contribution to end-to-end latency, paid on every frame of every turn.
+##
+## The default is not fit for a server, which is why this file overrides it.
+## Measured in the project's container with a standalone frame-period probe,
+## alongside what each setting cost end to end in tools/measure_nagle.py's
+## relay direction (median excess delay over the sender's own spacing):
+##
+##   as shipped (max_fps=60 from project.godot)   16.61 ms/iter   6.66 ms
+##   max_fps raised, engine default sleep          6.88 ms/iter   3.78 ms
+##   this setting                                  1.00 ms/iter   0.02 ms
+##
+## Both defaults come from the game, not from this server. project.godot sets
+## run/max_fps=60 -- right for a game that renders, meaningless for a process
+## that only pumps sockets, and it alone was costing up to 16.6 ms per
+## forwarded frame, over a third of a 40 ms tick at 25 Hz. Clearing max_fps
+## then exposes a second, lower floor: Godot sleeps
+## low_processor_usage_mode_sleep_usec between iterations, 6900 by default.
+## Note that it applies that sleep in a headless run even though
+## OS.low_processor_usage_mode itself reads back false, so clearing the flag
+## is not what removes it -- the sleep length has to be set directly, which is
+## what this constant does.
+##
+## 1 ms rather than 0: an uncapped loop would spin a core at 100% for a
+## process whose entire job is to wait for sockets, and the remaining
+## sub-millisecond has no value next to a 40 ms tick. The 1 ms loop is close
+## to free -- over ten idle seconds it burned 0.44 s of CPU against 0.33 s at
+## the engine default, so roughly one extra percent of one core buys back
+## 6.6 ms on every forwarded frame.
+const POLL_SLEEP_USEC := 1000
+
 var _server: RelayServerScript
 
 
 func _initialize() -> void:
+	# Both of these are game settings this server inherits and neither is
+	# right for it; see POLL_SLEEP_USEC for the measurements. max_fps is
+	# cleared rather than raised because the sleep below is what should pace
+	# this loop -- leaving both in play would just mean two limits to keep in
+	# agreement.
+	Engine.max_fps = 0
+	OS.low_processor_usage_mode_sleep_usec = POLL_SLEEP_USEC
 	var args := _parse_args(OS.get_cmdline_user_args())
 	_server = RelayServerScript.new()
 	_server.max_room_size = args.max_room_size

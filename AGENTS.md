@@ -217,3 +217,27 @@ no way to tell a hang from real progress. Instead:
 - On any hang, kill it, fix the reported error, and rerun — don't assume it
   will eventually finish.
 
+
+## Network latency measurement
+
+`make measure-nagle` (`tools/measure_nagle.py` plus
+`tests/net/nagle_probe_client.gd`) answers whether `TCP_NODELAY` is set on the
+two links the netcode runs over. Unlike the suites in `tools/run_godot_tests.sh`
+it reports rather than asserts, because it needs real sockets and real
+wall-clock timing. `docs/architecture/network-multiplayer.md`, decision 6, holds
+the answers it has produced so far.
+
+Two things about it generalise to any timing measurement here, and both were
+learned by getting them wrong first:
+
+- **A timing result means nothing without a control that fails.** Every
+  direction is measured three ways — a peer with the property deliberately
+  wrong, one with it deliberately right, and the real thing — and the script
+  reports `INCONCLUSIVE` rather than a verdict when the two controls do not
+  separate. On a machine where the effect does not reproduce, a broken harness
+  and a healthy transport print exactly the same reassuring output.
+- **Kernel behaviour is part of the experiment, not the background.** Nagle is
+  invisible against a receiver that only ever reads (Linux keeps such a socket
+  in quick-ack), and it fires only once per connection against a steady stream
+  (the delayed-ACK timer adapts). Both cost a rewrite of the harness: measure
+  per connection, and have the receiver behave like a real client.

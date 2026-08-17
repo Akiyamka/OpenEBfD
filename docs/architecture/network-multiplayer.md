@@ -159,6 +159,44 @@ One thing to **measure, not assume**: whether Godot's `WebSocketPeer` disables
 Nagle. An enabled Nagle adds up to 40 ms on every frame — larger than the entire
 ENet-vs-TCP gap on a healthy link, and the first thing to fix if it shows up.
 
+**Measured, 2026-08-18 — Nagle is off on both links.** `make measure-nagle`
+(`tools/measure_nagle.py`, with `tests/net/nagle_probe_client.gd`) reruns it.
+Both the client's `WebSocketPeer` and the stream the relay accepts from
+`TCPServer` matched a `TCP_NODELAY` control exactly — 0 stalled rounds out of
+15, median excess delay 0.37 ms and 0.00 ms respectively — while a control
+peer with Nagle deliberately enabled stalled in 15 rounds of 15 at ~30 ms.
+Nothing needs to be set in this project's code, and on the relay's accepted
+stream nothing *can* be: `set_no_delay(false)` was tried both before and after
+`accept_stream()` and changed neither run, so Godot's WebSocket layer owns
+that socket option. The measurement runs over loopback, where Nagle's cost is
+bounded by the receiver's delayed-ACK timer rather than by the round trip, so
+it answers "is `TCP_NODELAY` set" and not "how many milliseconds would Nagle
+cost in a real match".
+
+Two things that measurement turned up, which matter more than the answer:
+
+- **The relay's own poll cadence was the real latency, not Nagle.** It pumps
+  once per main-loop iteration, and it was inheriting the game's
+  `run/max_fps=60` from `project.godot` — up to 16.6 ms added to every
+  forwarded frame, over a third of a 40 ms tick. Clearing that exposes a
+  second floor, Godot's 6.9 ms `low_processor_usage_mode_sleep_usec`, applied
+  in headless runs even though `OS.low_processor_usage_mode` reads back
+  `false`. `relay_main.gd` now sets both (see its `POLL_SLEEP_USEC`); measured
+  end to end, the relay's added delay went from 6.66 ms median to 0.02 ms for
+  about one extra percent of one core.
+- **Clients pay the same tax and have not been fixed.** A client polls its
+  transport once per rendered frame, so at 60 fps it adds up to 16.6 ms on
+  send and again on receive. Unlike the relay, that cadence is the game's and
+  cannot simply be raised, so the turn scheduler in phase 5 has to account for
+  it rather than assume a frame costs nothing.
+
+A note for whoever reruns this: a receiver that only ever reads makes Nagle
+undetectable, because Linux leaves such a socket in quick-ack and it
+acknowledges instantly. The harness has its receiver send exactly one frame
+first, which is both what makes the effect visible (0 of 12 rounds detected
+before that change, 12 of 12 after) and what a real client does anyway, since
+every player sends a command frame every turn.
+
 ## 7. Relay hosting
 
 The relay is a first-class, self-hostable artifact: a small headless server
@@ -320,8 +358,12 @@ already play before it is trusted by the mode we cannot yet test.
 
 ## Open questions
 
-- Does Godot's `WebSocketPeer` set `TCP_NODELAY`? Measure before designing
-  around it (see decision 6).
+- ~~Does Godot's `WebSocketPeer` set `TCP_NODELAY`?~~ **Answered 2026-08-18:
+  yes, on both links, and the relay's poll cadence turned out to cost far more
+  than Nagle would have. See decision 6.**
+- How much of a turn the client's own frame rate eats, now that the relay no
+  longer eats any: a 60 fps client adds up to 16.6 ms on send and the same on
+  receive, which the phase 5 turn scheduler has to budget for (decision 6).
 - Original tick rate: 20 Hz per the rules-data anchors versus the 25 Hz the
   combat code is tuned to (see decision 4).
 - Snapshot size for reconnect, which cannot be estimated before the hot-state
