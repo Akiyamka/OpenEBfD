@@ -20,6 +20,18 @@ extends NetTransport
 ## `RefCounted` refcounting can never collect. The hub is only ever reached
 ## through its public `route()`/`discard_pending_for()` methods below, never
 ## through its underscore members.
+##
+## send() enforces RelayProtocol.MAX_INBOUND_FRAME_BYTES even though this
+## in-memory hub could technically carry a payload of any size: the frame
+## limit is a protocol invariant (see relay_protocol.gd), not a
+## WebSocketTransport implementation detail, and this transport exists to be
+## interchangeable with that one (docs/architecture/network-multiplayer.md,
+## decision 6; tests/net/transport_conformance.gd runs the identical suite
+## against both). A payload the loopback silently accepted but a real relay
+## refused would pass in CI and fail against a real socket — exactly the gap
+## the shared conformance suite exists to close.
+
+const RelayProtocolScript := preload("res://scripts/net/relay_protocol.gd")
 
 var _id: StringName
 var _hub_ref: WeakRef
@@ -54,10 +66,24 @@ func close() -> void:
 
 
 ## No-op once not CONNECTED (either never opened or already closed): records
-## why in last_error() instead of queuing anything with the hub.
+## why in last_error() instead of queuing anything with the hub. While
+## CONNECTED, a payload over RelayProtocol.MAX_INBOUND_FRAME_BYTES is
+## rejected up front, before the hub ever sees it (see the class doc comment
+## on why this loopback enforces the same limit a real relay would), and
+## moves this endpoint to FAILED rather than staying silently CONNECTED: a
+## frame that cannot actually be delivered on a live connection is exactly
+## the kind of drop lockstep cannot paper over (see
+## docs/architecture/network-multiplayer.md, decision 1).
 func send(payload: PackedByteArray) -> void:
 	if _state != State.CONNECTED:
 		_last_error = "cannot send: endpoint %s is not connected" % _id
+		return
+	if payload.size() > RelayProtocolScript.MAX_INBOUND_FRAME_BYTES:
+		_last_error = (
+			"cannot send: payload of %d bytes exceeds the %d-byte protocol frame limit"
+			% [payload.size(), RelayProtocolScript.MAX_INBOUND_FRAME_BYTES]
+		)
+		_state = State.FAILED
 		return
 	var hub = _hub_ref.get_ref()
 	if hub == null:

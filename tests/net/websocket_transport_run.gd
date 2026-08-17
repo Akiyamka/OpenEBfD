@@ -88,6 +88,18 @@ func _initialize() -> void:
 		"state() never leaves its documented progression: never CONNECTED before the handshake, never back to CONNECTING",
 		_test_state_progression_invariants
 	)
+	_run_case(
+		"a payload exactly at the protocol frame limit is still delivered",
+		_test_payload_at_frame_limit_is_delivered
+	)
+	_run_case(
+		"a payload one byte over the frame limit is refused locally, with a clear error, and never reaches the relay",
+		_test_payload_one_byte_over_limit_is_refused_locally
+	)
+	_run_case(
+		"a payload far above the local outbound buffer (65536) fails identically to one byte over the limit, not silently",
+		_test_payload_far_over_local_buffer_behaves_like_one_byte_over
+	)
 
 	_server.stop()
 	_finish("WebSocket transport tests")
@@ -295,6 +307,146 @@ func _test_state_progression_invariants() -> void:
 
 	_expect(reached_terminal, "a connection to a valid room must eventually reach CONNECTED within the pump bound")
 	t.close()
+
+
+## Regression coverage for the frame-size defect: a real relay caps inbound
+## frames at RelayProtocol.MAX_INBOUND_FRAME_BYTES (see relay_protocol.gd),
+## and a payload exactly at that cap is the boundary that must still go
+## through -- see websocket_transport.gd's send(), which only rejects
+## payloads strictly *larger* than the limit. Sent through a real relay and
+## read back via fan-out-to-self, byte for byte.
+func _test_payload_at_frame_limit_is_delivered() -> void:
+	var room_code := "frame-limit-room"
+	var a := WebSocketTransportScript.new()
+	a.open("ws://127.0.0.1:%d/%s" % [TEST_PORT, room_code])
+	_pump_until(
+		_server, "transport reaches CONNECTED for the at-limit payload case",
+		func() -> bool: return a.state() == NetTransportScript.State.CONNECTED,
+		func() -> void: a.poll()
+	)
+
+	var payload := PackedByteArray()
+	payload.resize(RelayProtocolScript.MAX_INBOUND_FRAME_BYTES)
+	for i in range(payload.size()):
+		payload[i] = i % 256
+	a.send(payload)
+
+	var received: Array[PackedByteArray] = []
+	_pump_until(
+		_server, "a payload exactly at the frame limit is delivered back to the sender",
+		func() -> bool: return not received.is_empty(),
+		func() -> void: received.append_array(a.poll())
+	)
+	_expect(
+		a.state() == NetTransportScript.State.CONNECTED,
+		"a payload exactly at the frame limit must not fail the transport"
+	)
+	_expect(
+		received.size() >= 1 and received[0] == payload,
+		"a payload exactly at the frame limit must arrive byte-for-byte"
+	)
+
+	a.close()
+
+
+## The defect this whole case-trio pins down, part 1: one byte over
+## RelayProtocol.MAX_INBOUND_FRAME_BYTES must be refused by
+## WebSocketTransport.send() itself, before the socket is ever touched --
+## see that method's doc comment. Verified two ways: the transport ends
+## FAILED with an error naming both the actual size and the limit (not
+## Godot's internal buffer wording), and the relay's own view of the room
+## never changes -- if the oversized frame had actually reached the wire, the
+## relay would have closed the connection itself (real RFC 6455 code 1009,
+## see tests/net/relay_run.gd's _test_oversized_frame_closes_sender_only),
+## dropping room occupancy to 0. It staying at 1 is proof the frame never
+## left this process.
+func _test_payload_one_byte_over_limit_is_refused_locally() -> void:
+	var room_code := "frame-over-room"
+	var a := WebSocketTransportScript.new()
+	a.open("ws://127.0.0.1:%d/%s" % [TEST_PORT, room_code])
+	_pump_until(
+		_server, "transport reaches CONNECTED for the one-byte-over-limit case",
+		func() -> bool: return a.state() == NetTransportScript.State.CONNECTED,
+		func() -> void: a.poll()
+	)
+
+	var over_limit := PackedByteArray()
+	over_limit.resize(RelayProtocolScript.MAX_INBOUND_FRAME_BYTES + 1)
+	a.send(over_limit)
+
+	_expect(
+		a.state() == NetTransportScript.State.FAILED,
+		"a payload one byte over the frame limit must move the transport to FAILED immediately, synchronously"
+	)
+	var error := a.last_error()
+	_expect(
+		error.contains(str(over_limit.size())) and error.contains(str(RelayProtocolScript.MAX_INBOUND_FRAME_BYTES)),
+		"last_error() must name both the actual payload size and the limit: got '%s'" % error
+	)
+
+	for i in range(30):
+		_server.poll()
+		OS.delay_msec(PUMP_SLEEP_MSEC)
+	_expect(
+		_server.room_client_count(StringName(room_code)) == 1,
+		"a locally refused oversized payload must never reach the relay -- the connection must stay seated"
+	)
+
+	a.close()
+
+
+## The defect this case-trio pins down, part 2: before this fix, a payload
+## far above WebSocketPeer's own local outbound buffer (65536 bytes) failed
+## silently -- state() stayed CONNECTED and last_error() read Godot's
+## internal "send failed: Out of memory", with the frame never reaching the
+## relay at all. This is the exact measurement from the defect report. After
+## the fix, this payload is caught by the same up-front size check as one
+## byte over the limit (65536 is already far past
+## RelayProtocol.MAX_INBOUND_FRAME_BYTES, so it never gets near
+## WebSocketPeer.send() to trip the local buffer at all) and must behave
+## identically: FAILED, a legible error naming size and limit, and the relay
+## never seeing the frame.
+func _test_payload_far_over_local_buffer_behaves_like_one_byte_over() -> void:
+	var room_code := "frame-huge-room"
+	var a := WebSocketTransportScript.new()
+	a.open("ws://127.0.0.1:%d/%s" % [TEST_PORT, room_code])
+	_pump_until(
+		_server, "transport reaches CONNECTED for the far-over-limit case",
+		func() -> bool: return a.state() == NetTransportScript.State.CONNECTED,
+		func() -> void: a.poll()
+	)
+
+	var huge := PackedByteArray()
+	huge.resize(65536)
+	a.send(huge)
+
+	_expect(
+		a.state() == NetTransportScript.State.FAILED,
+		(
+			"a payload far above the local outbound buffer must move the transport to FAILED, exactly like one byte "
+			+ "over the limit -- this used to be the silent case (state stayed CONNECTED, last_error() read Godot's "
+			+ "'Out of memory') where the frame vanished with no observable failure"
+		)
+	)
+	var error := a.last_error()
+	_expect(
+		error.contains(str(huge.size())) and error.contains(str(RelayProtocolScript.MAX_INBOUND_FRAME_BYTES)),
+		"last_error() must name both the actual payload size and the limit, not Godot's internal buffer wording: got '%s'" % error
+	)
+	_expect(
+		not error.to_lower().contains("out of memory"),
+		"Godot's internal buffer error must never be what the caller sees: got '%s'" % error
+	)
+
+	for i in range(30):
+		_server.poll()
+		OS.delay_msec(PUMP_SLEEP_MSEC)
+	_expect(
+		_server.room_client_count(StringName(room_code)) == 1,
+		"a payload far over the limit must never reach the relay either -- same local rejection path as one byte over"
+	)
+
+	a.close()
 
 
 ## The one place every wait in this suite goes through (see the suite doc

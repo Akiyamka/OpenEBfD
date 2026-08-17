@@ -8,6 +8,15 @@ GODOT_RELEASE="${GODOT_RELEASE:-stable}"
 PROJECT_DIR="${GODOT_PROJECT_DIR:-$(pwd)}"
 CONTAINERFILE="${GODOT_CONTAINERFILE:-${PROJECT_DIR}/Containerfile}"
 WEB_EXPORT_PATH="${GODOT_WEB_EXPORT_PATH:-exports/web/index.html}"
+# The relay is the one godot-* target that needs to actually be reached from
+# outside the container: every other command here is one-shot (a converter,
+# a test run, an export) and never needs a published port. Without -p, a
+# process inside the container listening on this port is unreachable from
+# the host -- verified directly (started the relay through the plain `godot`
+# passthrough with no publish, confirmed relay_main.gd's own startup log
+# line printed, then a host-side TCP connect attempt to the same port was
+# refused) rather than assumed.
+RELAY_PORT="${GODOT_RELAY_PORT:-8910}"
 
 
 usage() {
@@ -23,6 +32,9 @@ Commands:
   watch-export   Re-export Web when project files change.
   shell          Open a shell inside the mounted project container.
   godot [args]   Run arbitrary Godot arguments in the container.
+  relay [args]   Run the relay server, with its port published to the host.
+                 [args] are passed through to relay_main.gd after --port, so
+                 e.g. --max-connections 256 works. See GODOT_RELAY_PORT.
 
 Environment:
   GODOT_CONTAINER_IMAGE   Image tag. Default: openebfd-godot:4.7
@@ -30,6 +42,8 @@ Environment:
   GODOT_RELEASE           Godot release channel. Default: stable
   GODOT_PROJECT_DIR       Host project directory. Default: current directory
   GODOT_WEB_EXPORT_PATH   Export path. Default: exports/web/index.html
+  GODOT_RELAY_PORT        Relay port, both inside the container and
+                           published to the host. Default: 8910
 USAGE
 }
 
@@ -96,6 +110,14 @@ watch_export() {
 }
 
 
+run_relay() {
+	mapfile -t base_args < <(podman_base_args)
+	"${PODMAN_BIN}" run "${base_args[@]}" -p "${RELAY_PORT}:${RELAY_PORT}" "${IMAGE}" \
+		godot --headless --path /workspace --script res://scripts/net/relay/relay_main.gd \
+		-- --port "${RELAY_PORT}" "$@"
+}
+
+
 command="${1:-}"
 if [[ -n "${command}" ]]; then
 	shift
@@ -125,6 +147,9 @@ case "${command}" in
 		;;
 	godot)
 		run_godot "$@"
+		;;
+	relay)
+		run_relay "$@"
 		;;
 	""|help|--help|-h)
 		usage

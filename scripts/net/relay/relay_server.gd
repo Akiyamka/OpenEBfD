@@ -55,9 +55,27 @@ extends RefCounted
 ## reconnect, TLS, authentication, or any knowledge of what the forwarded
 ## bytes mean. A text frame is treated purely as a protocol error (binary
 ## frames only, see decision 6/"dumb pipe"), not as the start of some other
-## opcode scheme. Per-room and total connection *caps* beyond max_room_size
-## are a separate hardening step, not this one -- see _admit()'s only
-## capacity check.
+## opcode scheme.
+##
+## RESOURCE EXHAUSTION HARDENING (the total-connection and total-room caps,
+## the per-peer inbound buffer/queue limits below): a public, self-hostable
+## relay (decision 7) is a port anyone can point a flood at, by accident or
+## on purpose, and the failure mode without bounds is the whole host, not one
+## match. Three separate limits, each independently configurable and each
+## with its own close code so a rejected client learns why: max_connections
+## (see connection_count()), max_rooms (see room_count()), and
+## MAX_INBOUND_FRAME_BYTES / MAX_QUEUED_INBOUND_PACKETS on every accepted
+## peer. Deliberately NOT done here: an idle timeout on an *established*
+## (room-seated) connection. It looks like the same class of fix as
+## handshake_timeout_msec above, but it is not one -- a client sitting quietly
+## in a lobby waiting for the room to fill is legitimate, and there is no
+## application-level keepalive yet (that needs the turn-scheduler protocol,
+## not yet built) to tell that client apart from a zombie socket. Timing out
+## an idle room-seated connection today would drop real players; revisit once
+## the turn scheduler gives this layer something to distinguish "silent
+## because waiting" from "silent because gone". Also explicitly out of scope,
+## and a genuinely separate concern from resource exhaustion: TLS,
+## authentication, per-IP connection limits, and rate limiting.
 
 ## Max clients allowed in one room before the next joiner is rejected and
 ## closed rather than silently dropped. Defaults to the v0.4 player cap; see
@@ -79,6 +97,38 @@ var max_room_size := 4
 ## (observable on the other end as its raw TCP connection dropping) rather
 ## than leaving it dangling -- see _advance_handshakes().
 var handshake_timeout_msec := 5000
+
+## Total connections the relay will hold at once -- see connection_count()
+## for exactly what is counted (in-handshake, room-seated, still-closing).
+## Beyond this, a connection still completes its WebSocket handshake (so it
+## can be told why, with a close code, rather than its TCP connection just
+## being left unaccepted or silently reset -- see _admit()) but is then
+## rejected with CLOSE_SERVER_FULL. 128 is the default: comfortably above the
+## fully-seated ceiling of the *default* max_rooms * max_room_size (16 * 4 =
+## 64), leaving slack for connections mid-handshake or still finishing their
+## close handshake at the same time (each already bounded on its own --
+## handshake_timeout_msec above, and _advance_closing() drains the closing
+## bucket every poll), while still keeping a hard ceiling on how many
+## WebSocketPeer objects (and their MAX_INBOUND_FRAME_BYTES-sized buffers
+## below) this process will ever hold for a self-hoster who has not raised it
+## via --max-connections. This project expects to host a handful of matches
+## among friends, not a public arcade (decision 7); a self-hoster who wants
+## more raises this flag.
+var max_connections := 128
+
+## Total *rooms* the relay will hold at once -- see room_count(). A client
+## whose room code names a room that does not exist yet is rejected with
+## CLOSE_TOO_MANY_ROOMS once this many rooms already exist; a client joining
+## a room that already exists is never affected by this cap, no matter how
+## full the server's room table is (see _admit()). 16 is the default: a
+## "handful of concurrent matches among friends" (decision 7) is more like
+## 4-8 at once, so 16 gives headroom for several friend groups or a few
+## lingering rooms without approaching "unbounded" -- a room is cheap (an
+## array of up to max_room_size client references) but the *dictionary
+## entry itself*, keyed by attacker-controlled room code text, is exactly the
+## kind of unbounded growth this cap exists to prevent. Raisable via
+## --max-rooms for a self-hoster who wants more concurrent matches.
+var max_rooms := 16
 
 ## Room codes are the normalized request path (see the class doc comment)
 ## restricted to this charset: ASCII letters, digits, hyphen and underscore.
@@ -105,7 +155,62 @@ const RelayProtocolScript := preload("res://scripts/net/relay_protocol.gd")
 const CLOSE_NO_ROOM_CODE := RelayProtocolScript.CLOSE_NO_ROOM_CODE
 const CLOSE_INVALID_ROOM_CODE := RelayProtocolScript.CLOSE_INVALID_ROOM_CODE
 const CLOSE_ROOM_FULL := RelayProtocolScript.CLOSE_ROOM_FULL
+const CLOSE_SERVER_FULL := RelayProtocolScript.CLOSE_SERVER_FULL
+const CLOSE_TOO_MANY_ROOMS := RelayProtocolScript.CLOSE_TOO_MANY_ROOMS
 const CLOSE_PROTOCOL_ERROR := RelayProtocolScript.CLOSE_PROTOCOL_ERROR
+
+## WebSocketPeer's own RFC 6455 close code for "message too big", sent by the
+## *engine*, not by this file's _reject() -- see MAX_INBOUND_FRAME_BYTES for
+## why and how this arrives. Re-declared as a local alias to
+## RelayProtocolScript.CLOSE_MESSAGE_TOO_BIG (see that file for the full
+## account of why it is a protocol invariant, not a server implementation
+## detail, and for its own describe_close_code() case) so _pump_client()
+## below and existing call sites keep working unchanged.
+const WS_CLOSE_MESSAGE_TOO_BIG := RelayProtocolScript.CLOSE_MESSAGE_TOO_BIG
+
+## Inbound WebSocket frame size limit, in bytes, applied to every accepted
+## peer via WebSocketPeer.set_inbound_buffer_size() (see
+## _accept_new_connections()) instead of leaving it at whatever the engine
+## defaults to. Re-declared as a local alias to
+## RelayProtocolScript.MAX_INBOUND_FRAME_BYTES -- see that file for why this
+## lives there (both ends of the protocol must agree on the same number, so
+## it is not this server's implementation detail to own) and for the
+## reasoning behind the specific value.
+##
+## What happens when a peer sends more than this in one frame was established
+## by direct experiment (a throwaway probe: a real TCPServer/WebSocketPeer
+## accept_stream() with a small inbound_buffer_size, a real client-side
+## WebSocketPeer.send() of a frame well past it, both sides polled and
+## inspected) rather than assumed: WebSocketPeer itself -- not this file --
+## notices the oversized frame while parsing it and closes the connection
+## with real RFC 6455 code 1009 ("Message too big") before the payload is
+## ever exposed through get_packet(). Both ends settle to STATE_CLOSED within
+## a couple of poll() calls; nothing is left in a half-open state, and no
+## truncated or partial payload is ever delivered. 1009 falls inside the
+## 1007-1011 range relay_protocol.gd already established round-trips to the
+## client uncorrupted, so the client transport sees a real, legible close
+## code -- _pump_client() below only needs to recognize and log it, not force
+## the closure itself (by the time this side can observe STATE_CLOSED, the
+## close frame carrying 1009 has already gone out over the wire).
+const MAX_INBOUND_FRAME_BYTES := RelayProtocolScript.MAX_INBOUND_FRAME_BYTES
+
+## Cap on packets buffered per peer awaiting get_packet(), applied the same
+## way as MAX_INBOUND_FRAME_BYTES (WebSocketPeer.set_max_queued_packets() in
+## _accept_new_connections()). RelayServer drains every waiting packet on
+## every poll() (see _pump_client()'s while loop), so in normal operation
+## this never comes close to binding -- it exists only to backstop a burst
+## that arrives faster than a single poll() can drain, at the protocol's
+## 12.5 frames/sec/client design target (design doc, "Starting parameters").
+## Established by direct experiment that exceeding this does *not* close the
+## connection the way an oversized frame does: a probe sent far more packets
+## than the configured limit without draining in between, and
+## get_available_packet_count() simply stayed capped at the configured limit
+## -- WebSocketPeer silently drops packets past it rather than erroring or
+## closing. That makes this purely a memory backstop, not a rejection path a
+## client will ever observe; 32 is generous relative to a plausible burst
+## (a few frames coalesced by the OS into one read) while still bounding
+## worst-case queued memory per connection to 32 * MAX_INBOUND_FRAME_BYTES.
+const MAX_QUEUED_INBOUND_PACKETS := 32
 
 var _server: TCPServer
 ## Human-readable one-line descriptions of joins, leaves and rejections,
@@ -208,6 +313,14 @@ func _accept_new_connections() -> void:
 	while _server.is_connection_available():
 		var stream := _server.take_connection()
 		var peer := WebSocketPeer.new()
+		# Set before accept_stream(): both only take effect for a connection
+		# not yet established (verified empirically -- see
+		# MAX_INBOUND_FRAME_BYTES's doc comment), and every peer gets these
+		# regardless of whether it ever completes its handshake, so a flood
+		# of connections that never gets past _handshaking is bounded the
+		# same as a room-seated one.
+		peer.set_inbound_buffer_size(MAX_INBOUND_FRAME_BYTES)
+		peer.set_max_queued_packets(MAX_QUEUED_INBOUND_PACKETS)
 		var err := peer.accept_stream(stream)
 		if err != OK:
 			_events.append("rejected connection: accept_stream failed (%s)" % err)
@@ -218,12 +331,27 @@ func _accept_new_connections() -> void:
 		_handshaking.append(handshake)
 
 
+## Removes _handshaking's current contents into a local `pending` up front and
+## re-adds only the ones still waiting, one at a time as each is decided --
+## rather than the more obvious "build a separate still_handshaking list and
+## swap it in once the loop ends" -- so that _handshaking (the field) is
+## always accurate *during* this loop, not just after it. That matters
+## because _admit() (called below, for any handshake that just reached
+## STATE_OPEN) reads connection_count(), which sums _handshaking.size(): with
+## the swap-at-the-end shape, a second connection finishing its handshake in
+## the same poll() as a first would see the first *still* counted in
+## _handshaking (not yet moved out) on top of being newly counted in its
+## room, double-counting it and wrongly tripping max_connections one
+## connection early. Caught by _test_max_connections_rejects_and_survivors_ok
+## itself failing until this was fixed -- two connections made back to back
+## routinely finish their real-socket handshakes within the same poll().
 func _advance_handshakes() -> void:
 	if _handshaking.is_empty():
 		return
-	var still_handshaking: Array[_Handshake] = []
+	var pending := _handshaking
+	_handshaking = []
 	var now_msec := Time.get_ticks_msec()
-	for handshake in _handshaking:
+	for handshake in pending:
 		handshake.ws.poll()
 		var state := handshake.ws.get_ready_state()
 		if state == WebSocketPeer.STATE_OPEN:
@@ -237,16 +365,32 @@ func _advance_handshakes() -> void:
 			handshake.ws.close()
 			_closing.append(handshake.ws)
 		else:
-			still_handshaking.append(handshake)
-	_handshaking = still_handshaking
+			_handshaking.append(handshake)
 
 
-## A handshake just reached STATE_OPEN: read its room code from the request
-## path, normalize and validate it, and either seat the connection in that
-## room or reject it -- each of the three rejection reasons (no room code,
-## an invalid room code, or a full room) gets its own close code, see
-## CLOSE_NO_ROOM_CODE and friends above.
+## A handshake just reached STATE_OPEN: check the server isn't already at
+## capacity, read its room code from the request path, normalize and
+## validate it, and either seat the connection in that room or reject it --
+## each rejection reason gets its own close code, see CLOSE_NO_ROOM_CODE and
+## friends above. The capacity check runs first and unconditionally: a
+## server already at max_connections has no business spending effort
+## validating a room code for a connection it cannot hold, and a rejection
+## reason of "server full" is more useful to whoever is debugging this than
+## an incidental "no room code".
 func _admit(peer: WebSocketPeer) -> void:
+	# connection_count() does NOT count this connection at this point:
+	# _advance_handshakes() already removed it from _handshaking before
+	# calling here (see that function's doc comment for why that matters),
+	# and it is not yet in a room or in _closing either -- so ">=" (not ">")
+	# is correct: this fires when the server was already at max_connections
+	# *before* this one, i.e. this one would be the connection that pushes it
+	# over.
+	if connection_count() >= max_connections:
+		_events.append(
+			"rejected connection: server is at its connection limit (%d/%d)" % [connection_count(), max_connections]
+		)
+		_reject(peer, CLOSE_SERVER_FULL, "server full")
+		return
 	var raw_path := _path_from_url(peer.get_requested_url())
 	var room_code_text := _normalize_room_code(raw_path)
 	if room_code_text.is_empty():
@@ -258,6 +402,14 @@ func _admit(peer: WebSocketPeer) -> void:
 		_reject(peer, CLOSE_INVALID_ROOM_CODE, "invalid room code")
 		return
 	var room_code := StringName(room_code_text)
+	var room_exists := _rooms.has(room_code)
+	if not room_exists and _rooms.size() >= max_rooms:
+		_events.append(
+			"rejected connection: server is at its room limit (%d/%d), room '%s' does not exist yet"
+			% [_rooms.size(), max_rooms, room_code]
+		)
+		_reject(peer, CLOSE_TOO_MANY_ROOMS, "too many rooms")
+		return
 	var clients: Array = _rooms.get(room_code, [])
 	if clients.size() >= max_room_size:
 		_events.append("rejected connection: room '%s' is full (%d/%d)" % [room_code, clients.size(), max_room_size])
@@ -307,11 +459,25 @@ func _pump_rooms() -> void:
 ## not a place to grow an opcode scheme; do not read meaning into the bytes
 ## beyond "text or binary". 1003 is a real RFC 6455 code ("received data of
 ## a type it cannot accept") and round-trips correctly, see CLOSE_PROTOCOL_ERROR.
+##
+## A closed socket found here can also mean this peer just tripped
+## MAX_INBOUND_FRAME_BYTES: WebSocketPeer closes itself with
+## WS_CLOSE_MESSAGE_TOO_BIG before this file ever sees the oversized payload
+## (see that constant's doc comment), so by the time get_ready_state() reads
+## STATE_CLOSED here the close has already happened and cannot be
+## intercepted or given a different code -- only recognized and logged
+## distinctly from an ordinary "left", so an operator can tell "hit the
+## frame-size limit" apart from "disconnected".
 func _pump_client(client: _Client) -> bool:
 	var peer := client.ws
 	peer.poll()
 	if peer.get_ready_state() == WebSocketPeer.STATE_CLOSED:
-		_events.append("left: room '%s'" % client.room)
+		if peer.get_close_code() == WS_CLOSE_MESSAGE_TOO_BIG:
+			_events.append(
+				"closed: room '%s' client sent an oversized frame (over %d bytes)" % [client.room, MAX_INBOUND_FRAME_BYTES]
+			)
+		else:
+			_events.append("left: room '%s'" % client.room)
 		return false
 	while peer.get_available_packet_count() > 0:
 		var payload := peer.get_packet()
@@ -417,3 +583,28 @@ func room_codes() -> Array[StringName]:
 ## normal one is not held here any longer than its handshake takes.
 func handshaking_count() -> int:
 	return _handshaking.size()
+
+
+## Read-only observer: total connections the server currently holds across
+## every bucket it tracks -- mid-handshake (handshaking_count()),
+## room-seated (the sum of every room_client_count()), and still finishing
+## their close handshake (_closing). This is the live count max_connections
+## is compared against in _admit(), so it is a moment-in-time count, not a
+## high-water mark: it drops the instant a client's slot frees up (its
+## handshake resolves, it leaves a room, or _advance_closing() finishes
+## flushing its close frame), which is what lets a freed slot immediately
+## admit a new connection rather than staying reserved.
+func connection_count() -> int:
+	var total := _handshaking.size() + _closing.size()
+	for room_code in _rooms:
+		var clients: Array = _rooms[room_code]
+		total += clients.size()
+	return total
+
+
+## Read-only observer: how many rooms currently exist (i.e. have at least one
+## client seated -- same "a room exists only while non-empty" rule
+## room_codes() and room_client_count() already follow). This is the live
+## count max_rooms is compared against in _admit().
+func room_count() -> int:
+	return _rooms.size()

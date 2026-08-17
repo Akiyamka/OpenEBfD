@@ -5,8 +5,16 @@ PERF_FRAMES ?= 300
 PERF_WARMUP ?= 60
 PERF_BUDGET_MS ?= 0
 PERF_LABEL ?= $(shell git rev-parse --short HEAD)
+# Mirror relay_main.gd's own defaults (see that file's doc comment and
+# RelayServer's field doc comments for why these particular numbers) so
+# `make relay` with no overrides behaves exactly like running relay_main.gd
+# directly. Override per-invocation, e.g. `make relay RELAY_MAX_ROOMS=32`.
+RELAY_PORT ?= 8910
+RELAY_MAX_ROOM_SIZE ?= 4
+RELAY_MAX_CONNECTIONS ?= 128
+RELAY_MAX_ROOMS ?= 16
 
-.PHONY: rules-editor rules-export voice-feedback voice-feedback-check unit-definitions unit-definitions-check lint install-hooks uninstall-hooks godot-image godot-check godot-test godot-perf godot-convert-map godot-convert-building godot-convert-all-buildings godot-convert-all-units godot-convert-projectiles godot-convert-placement godot-convert-cursors godot-convert-spice-mound godot-convert-audio godot-export-web godot-watch-export godot-shell godot-version
+.PHONY: rules-editor rules-export voice-feedback voice-feedback-check unit-definitions unit-definitions-check lint install-hooks uninstall-hooks godot-image godot-check godot-test godot-perf godot-convert-map godot-convert-building godot-convert-all-buildings godot-convert-all-units godot-convert-projectiles godot-convert-placement godot-convert-cursors godot-convert-spice-mound godot-convert-audio godot-export-web godot-watch-export godot-shell godot-version relay
 
 rules-editor:
 	cd $(RULES_EDITOR_DIR) && RULES_DB="$(RULES_DB)" npm start
@@ -98,3 +106,14 @@ godot-shell:
 
 godot-version:
 	$(GODOT_CONTAINER) version
+
+# Runs the relay server (scripts/net/relay/relay_main.gd) in the same Godot
+# container every other godot-* target uses -- no separate image. Unlike
+# those, this one needs its port reachable from outside the container, so it
+# goes through tools/godot-container's own `relay` subcommand (not the
+# generic `godot` passthrough the other targets use), which publishes
+# RELAY_PORT to the host; see that script's doc comment for why the generic
+# passthrough alone is not enough.
+relay:
+	GODOT_RELAY_PORT=$(RELAY_PORT) $(GODOT_CONTAINER) relay \
+		--max-room-size $(RELAY_MAX_ROOM_SIZE) --max-connections $(RELAY_MAX_CONNECTIONS) --max-rooms $(RELAY_MAX_ROOMS)

@@ -42,6 +42,7 @@ extends RefCounted
 ## WebSocket run, not the client transport's own socket.
 
 const NetTransportScript := preload("res://scripts/net/net_transport.gd")
+const RelayProtocolScript := preload("res://scripts/net/relay_protocol.gd")
 
 const DEFAULT_MAX_PUMP_ITERATIONS := 2000
 
@@ -58,6 +59,7 @@ static func run(
 	_test_send_before_open_is_noop(expect, make_transport)
 	_test_close_moves_to_disconnected_and_is_idempotent(expect, make_transport, open_transport, pump, max_pump_iterations)
 	_test_send_after_close_is_noop(expect, make_transport, open_transport, pump, max_pump_iterations)
+	_test_oversized_send_while_connected_fails(expect, make_transport, open_transport, pump, max_pump_iterations)
 
 
 ## 1. A payload sent while CONNECTED comes back to the sender: fan-out-to-self
@@ -153,6 +155,44 @@ static func _test_send_after_close_is_noop(
 		transport.state() == NetTransportScript.State.DISCONNECTED, "send() after close() must not change state()"
 	)
 	expect.call(transport.last_error() != "", "send() after close() must record last_error()")
+
+
+## 6. A payload larger than the protocol's frame-size limit
+## (RelayProtocol.MAX_INBOUND_FRAME_BYTES -- see relay_protocol.gd), sent
+## while CONNECTED, is a frame that can never actually be delivered. Lockstep
+## cannot treat a silently dropped command frame as recoverable (see
+## docs/architecture/network-multiplayer.md, decision 1), so this must move
+## the transport to FAILED with a non-empty last_error(), not leave it
+## looking CONNECTED while the frame vanishes -- see websocket_transport.gd's
+## send() doc comment for the real defect this pins down (a payload larger
+## than the local outbound buffer used to fail *silently*: state() stayed
+## CONNECTED and last_error() read Godot's internal "Out of memory"). Both
+## LoopbackTransport and WebSocketTransport enforce the identical numeric
+## limit (see each file's own send()), so running this one case against both
+## is what guarantees a payload the loopback accepts is never one a real
+## socket would refuse -- the entire reason this suite is shared rather than
+## duplicated per implementation.
+static func _test_oversized_send_while_connected_fails(
+	expect: Callable, make_transport: Callable, open_transport: Callable, pump: Callable, max_pump_iterations: int
+) -> void:
+	var transport = make_transport.call()
+	open_transport.call(transport)
+	if not _await_connected(transport, pump, max_pump_iterations):
+		expect.call(false, "setup: transport must reach CONNECTED to test an oversized send")
+		return
+
+	var oversized := PackedByteArray()
+	oversized.resize(RelayProtocolScript.MAX_INBOUND_FRAME_BYTES + 1)
+	transport.send(oversized)
+	expect.call(
+		transport.state() == NetTransportScript.State.FAILED,
+		"a payload over the frame-size limit sent while CONNECTED must move state() to FAILED"
+	)
+	expect.call(
+		transport.last_error() != "",
+		"a payload over the frame-size limit sent while CONNECTED must record last_error()"
+	)
+	transport.close()
 
 
 ## Pumps both the transport's own poll() and the caller's `pump` until

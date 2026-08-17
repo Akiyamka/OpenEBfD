@@ -40,7 +40,14 @@ extends NetTransport
 ##                      they are never collapsed into one generic failure --
 ##                      and so does an abrupt drop or a refused TCP
 ##                      connection, which Godot reports as close code -1
-##                      ("not cleanly closed").
+##                      ("not cleanly closed"). Code 1009 ("message too big")
+##                      also gets its own relay_protocol.gd description here,
+##                      even though it is outside the 4000-4999 range and not
+##                      a code this relay's _reject() chooses to send -- see
+##                      send()'s doc comment: after this transport starts
+##                      rejecting an oversized payload locally, the only way a
+##                      1009 can still arrive from the relay is the two ends
+##                      disagreeing about the frame-size limit.
 ##
 ## Binary only, per decision 6 ("dumb pipe"): send() always writes
 ## WRITE_MODE_BINARY. An inbound *text* frame is a protocol error -- the relay
@@ -106,15 +113,47 @@ func close() -> void:
 
 
 ## Writes `payload` as a binary frame (see the class doc comment -- this
-## transport never sends text). A no-op outside CONNECTED, recording why in
-## last_error() rather than raising, per the base contract.
+## transport never sends text). Two distinct failure classes, per the base
+## contract:
+##  - not CONNECTED: a recorded no-op, state() unchanged. Pinned by
+##    tests/net/transport_conformance.gd cases 3 and 5.
+##  - CONNECTED but the frame cannot go out: moves state() to FAILED with a
+##    legible last_error(). Lockstep cannot treat a dropped command frame as
+##    recoverable (see docs/architecture/network-multiplayer.md, decision 1
+##    and this class's own doc comment) -- a caller that does not check
+##    last_error() after every send() must still be able to notice the loss
+##    by polling state(), which silently staying CONNECTED would defeat.
+##
+## The second class covers two different causes, both fatal the same way:
+##  - `payload` is larger than RelayProtocol.MAX_INBOUND_FRAME_BYTES. Checked
+##    up front, before the socket is ever touched, so this is deterministic
+##    and independent of WebSocketPeer's own outbound buffer size -- without
+##    this check, a payload larger than *this transport's own* outbound
+##    buffer (distinct from, and smaller than, the relay's inbound limit)
+##    fails inside _socket.send() with Godot's generic "Out of memory", which
+##    is not a caller-facing error, it is engine-internal wording for a
+##    buffer overflow. This check reads on the actual limit that matters
+##    (the relay's), not on whatever the local outbound buffer happens to be,
+##    so a payload right at the limit is unaffected by it.
+##  - `_socket.send()` itself reports an error for a payload already within
+##    the limit (e.g. a still-smaller local buffer condition). Same handling:
+##    FAILED, last_error() named from error_string(), and Godot's own wording
+##    is only ever the detail, never the whole story a caller sees.
 func send(payload: PackedByteArray) -> void:
 	if _state != State.CONNECTED or _socket == null:
 		_last_error = "cannot send: transport is not connected (state=%s)" % State.keys()[_state]
 		return
+	if payload.size() > RelayProtocolScript.MAX_INBOUND_FRAME_BYTES:
+		_last_error = (
+			"send failed: payload of %d bytes exceeds the %d-byte protocol frame limit"
+			% [payload.size(), RelayProtocolScript.MAX_INBOUND_FRAME_BYTES]
+		)
+		_state = State.FAILED
+		return
 	var err := _socket.send(payload, WebSocketPeer.WRITE_MODE_BINARY)
 	if err != OK:
 		_last_error = "send failed: %s" % error_string(err)
+		_state = State.FAILED
 
 
 ## Pumps the underlying socket and returns every binary payload received
@@ -181,7 +220,7 @@ func _handle_closed() -> void:
 	if code == RelayProtocolScript.CLOSE_NORMAL:
 		_state = State.DISCONNECTED
 		return
-	if code >= 4000 and code <= 4999:
+	if (code >= 4000 and code <= 4999) or code == RelayProtocolScript.CLOSE_MESSAGE_TOO_BIG:
 		_state = State.FAILED
 		_last_error = RelayProtocolScript.describe_close_code(code)
 		return
@@ -190,8 +229,9 @@ func _handle_closed() -> void:
 
 
 ## `code` is whatever WebSocketPeer.get_close_code() reports for a close this
-## transport did not itself request and that was neither a normal 1000 nor
-## one of the relay's own 4000-4999 rejection codes -- most commonly -1
+## transport did not itself request and that was neither a normal 1000, one
+## of the relay's own 4000-4999 rejection codes, nor 1009 ("message too big",
+## handled separately above via relay_protocol.gd) -- most commonly -1
 ## ("not cleanly closed": a refused or dropped TCP connection, most notably
 ## nothing listening on the target host/port at all) or 1002 ("protocol
 ## error", which is also what Godot 4.7 substitutes for any close code it

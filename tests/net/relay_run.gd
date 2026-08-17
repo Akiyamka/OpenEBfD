@@ -31,6 +31,15 @@ const FULL_ROOM_TEST_PORT := 18912
 ## handshake_timeout_msec, so the case does not have to wait out the real
 ## 5-second default.
 const STALLED_HANDSHAKE_TEST_PORT := 18913
+## The connection-cap rejection case needs its own server with a tiny
+## max_connections, so it gets its own port too.
+const MAX_CONNECTIONS_TEST_PORT := 18914
+## The freed-slot case needs a *separate* tiny-max_connections server from
+## the rejection case above -- sharing one would make the two cases order
+## -dependent on each other's leftover connection count.
+const MAX_CONNECTIONS_FREE_SLOT_TEST_PORT := 18915
+## The room-cap case needs its own server with a tiny max_rooms.
+const MAX_ROOMS_TEST_PORT := 18916
 
 const MAX_PUMP_ITERATIONS := 5000
 const MAX_PUMP_SECONDS := 5.0
@@ -81,6 +90,22 @@ func _initialize() -> void:
 	_run_case(
 		"a stalled handshake is dropped after its deadline; a healthy one is not disturbed",
 		_test_stalled_handshake_dropped
+	)
+	_run_case(
+		"connection cap: the connection past max_connections is rejected and closed, survivors keep working",
+		_test_max_connections_rejects_and_survivors_ok
+	)
+	_run_case(
+		"connection cap is a live count: closing a connection frees a slot for the next one",
+		_test_freed_connection_slot_admits_new_client
+	)
+	_run_case(
+		"room cap: a brand-new room past max_rooms is rejected, but joining an existing room still works",
+		_test_max_rooms_rejects_new_room_but_allows_existing
+	)
+	_run_case(
+		"an oversized frame closes only the client that sent it; the rest of its room is undisturbed",
+		_test_oversized_frame_closes_sender_only
 	)
 
 	_server.stop()
@@ -557,6 +582,226 @@ func _test_stalled_handshake_dropped() -> void:
 
 	healthy.close()
 	server.stop()
+
+
+## Resource-exhaustion hardening, part 1/2 of the connection cap: once the
+## server already holds max_connections connections, the *next* one still
+## completes its WebSocket handshake (so it can be told why -- see
+## RelayServer._admit()'s doc comment) and is then rejected with its own
+## close code, distinct from CLOSE_ROOM_FULL, rather than the TCP connection
+## being silently dropped or left to queue. The two already-seated
+## connections must be completely unaffected -- both still exchange frames
+## after the rejection.
+func _test_max_connections_rejects_and_survivors_ok() -> void:
+	var server := RelayServerScript.new()
+	server.max_connections = 2
+	var err := server.start(MAX_CONNECTIONS_TEST_PORT)
+	if err != OK:
+		_expect(
+			false,
+			(
+				"could not bind test port %d (%s) -- another process may already be listening on it"
+				% [MAX_CONNECTIONS_TEST_PORT, error_string(err)]
+			)
+		)
+		return
+
+	var room := &"conn-cap-room"
+	var a := _connect_client(MAX_CONNECTIONS_TEST_PORT, "conn-cap-room")
+	var b := _connect_client(MAX_CONNECTIONS_TEST_PORT, "conn-cap-room")
+	var clients: Array[WebSocketPeer] = [a, b]
+
+	_pump_until(
+		server, clients, "two connections fill the server's max_connections=2 cap",
+		func() -> bool: return server.connection_count() == 2
+	)
+
+	var c := _connect_client(MAX_CONNECTIONS_TEST_PORT, "conn-cap-room")
+	clients.append(c)
+	_pump_until(
+		server, clients, "the connection past max_connections is rejected and closed",
+		func() -> bool: return c.get_ready_state() == WebSocketPeer.STATE_CLOSED
+	)
+	_expect(
+		c.get_close_code() == RelayServerScript.CLOSE_SERVER_FULL,
+		"a connection past max_connections must observe RelayServer.CLOSE_SERVER_FULL, not a generic close"
+	)
+	_expect(
+		server.room_client_count(room) == 2,
+		"the room must stay at 2 -- the rejected connection was never seated and then evicted, it was never seated at all"
+	)
+
+	a.send("still-works".to_utf8_buffer(), WebSocketPeer.WRITE_MODE_BINARY)
+	_pump_until(
+		server, clients, "both already-seated connections keep exchanging frames after the rejection",
+		func() -> bool: return a.get_available_packet_count() > 0 and b.get_available_packet_count() > 0
+	)
+	_expect(a.get_packet().get_string_from_utf8() == "still-works", "the sender must still receive its own frame")
+	_expect(b.get_packet().get_string_from_utf8() == "still-works", "the other seated connection must still receive the frame")
+
+	a.close()
+	b.close()
+	server.stop()
+
+
+## Resource-exhaustion hardening, part 2/2 of the connection cap: the cap
+## must be enforced against a *live* count, not a high-water mark that only
+## ever goes up. Fills a max_connections=2 server, closes one connection to
+## free a slot, and confirms a subsequent connection is admitted rather than
+## rejected -- if the cap were a high-water mark, this connection would be
+## wrongly rejected forever after the server ever once reached capacity.
+func _test_freed_connection_slot_admits_new_client() -> void:
+	var server := RelayServerScript.new()
+	server.max_connections = 2
+	var err := server.start(MAX_CONNECTIONS_FREE_SLOT_TEST_PORT)
+	if err != OK:
+		_expect(
+			false,
+			(
+				"could not bind test port %d (%s) -- another process may already be listening on it"
+				% [MAX_CONNECTIONS_FREE_SLOT_TEST_PORT, error_string(err)]
+			)
+		)
+		return
+
+	var a := _connect_client(MAX_CONNECTIONS_FREE_SLOT_TEST_PORT, "free-slot-room")
+	var b := _connect_client(MAX_CONNECTIONS_FREE_SLOT_TEST_PORT, "free-slot-room")
+	var clients: Array[WebSocketPeer] = [a, b]
+
+	_pump_until(
+		server, clients, "two connections fill the server's max_connections=2 cap",
+		func() -> bool: return server.connection_count() == 2
+	)
+
+	a.close()
+	_pump_until(
+		server, clients, "closing one connection frees a slot -- the server's live count drops to 1",
+		func() -> bool: return server.connection_count() == 1
+	)
+
+	var c := _connect_client(MAX_CONNECTIONS_FREE_SLOT_TEST_PORT, "free-slot-room")
+	clients.append(c)
+	_pump_until(
+		server, clients, "a new connection is admitted into the freed slot rather than rejected",
+		func() -> bool: return c.get_ready_state() == WebSocketPeer.STATE_OPEN
+	)
+	_expect(
+		server.connection_count() == 2,
+		"the freed slot must be reusable -- the cap is a live count, not a high-water mark stuck at 2 forever"
+	)
+
+	b.close()
+	c.close()
+	server.stop()
+
+
+## Resource-exhaustion hardening for the room cap: a connection whose room
+## code names a room that does not exist yet is rejected once the server
+## already hosts max_rooms rooms, with its own close code distinct from
+## CLOSE_ROOM_FULL (that one is per-room; this one is server-wide). A
+## connection joining a room that *already exists* must succeed regardless --
+## the cap only ever stops a new room from being created, per the class doc
+## comment on RelayServer.max_rooms.
+func _test_max_rooms_rejects_new_room_but_allows_existing() -> void:
+	var server := RelayServerScript.new()
+	server.max_rooms = 2
+	var err := server.start(MAX_ROOMS_TEST_PORT)
+	if err != OK:
+		_expect(
+			false,
+			(
+				"could not bind test port %d (%s) -- another process may already be listening on it"
+				% [MAX_ROOMS_TEST_PORT, error_string(err)]
+			)
+		)
+		return
+
+	var a := _connect_client(MAX_ROOMS_TEST_PORT, "rooms-cap-a")
+	var b := _connect_client(MAX_ROOMS_TEST_PORT, "rooms-cap-b")
+	var clients: Array[WebSocketPeer] = [a, b]
+	_pump_until(
+		server, clients, "two distinct rooms fill the server's max_rooms=2 cap",
+		func() -> bool: return server.room_count() == 2
+	)
+
+	var c := _connect_client(MAX_ROOMS_TEST_PORT, "rooms-cap-c")
+	clients.append(c)
+	_pump_until(
+		server, clients, "a connection asking for a brand-new third room is rejected",
+		func() -> bool: return c.get_ready_state() == WebSocketPeer.STATE_CLOSED
+	)
+	_expect(
+		c.get_close_code() == RelayServerScript.CLOSE_TOO_MANY_ROOMS,
+		"a new room past max_rooms must observe RelayServer.CLOSE_TOO_MANY_ROOMS, not a generic close"
+	)
+	_expect(server.room_count() == 2, "the room count must not grow past max_rooms -- the rejected room was never created")
+
+	var d := _connect_client(MAX_ROOMS_TEST_PORT, "rooms-cap-a")
+	clients.append(d)
+	_pump_until(
+		server, clients, "a connection joining an EXISTING room succeeds even though the server is at its room cap",
+		func() -> bool: return server.room_client_count(&"rooms-cap-a") == 2
+	)
+	_expect(d.get_ready_state() == WebSocketPeer.STATE_OPEN, "joining an already-existing room must not be affected by max_rooms")
+
+	a.close()
+	b.close()
+	d.close()
+	server.stop()
+
+
+## Resource-exhaustion hardening for inbound frame size: a peer that sends a
+## single frame larger than MAX_INBOUND_FRAME_BYTES ends up closed with a
+## close code a client can read (WebSocketPeer's own RFC 6455 1009,
+## "message too big" -- see RelayServer.WS_CLOSE_MESSAGE_TOO_BIG's doc
+## comment for how this was established experimentally, not assumed), not
+## left half-open and not silently truncated. The rest of that client's room
+## must be completely undisturbed.
+func _test_oversized_frame_closes_sender_only() -> void:
+	var room := &"oversized-room"
+	var a := _connect_client(TEST_PORT, "oversized-room")
+	var b := _connect_client(TEST_PORT, "oversized-room")
+	var clients: Array[WebSocketPeer] = [a, b]
+
+	_pump_until(
+		_server, clients, "both clients seated in 'oversized-room'",
+		func() -> bool: return _server.room_client_count(room) == 2
+	)
+
+	var oversized := PackedByteArray()
+	oversized.resize(RelayServerScript.MAX_INBOUND_FRAME_BYTES * 4)
+	for i in range(oversized.size()):
+		oversized[i] = i % 256
+	a.send(oversized, WebSocketPeer.WRITE_MODE_BINARY)
+
+	_pump_until(
+		_server, clients, "the client that sent the oversized frame is closed by the server",
+		func() -> bool: return a.get_ready_state() == WebSocketPeer.STATE_CLOSED
+	)
+	_expect(
+		a.get_close_code() == RelayServerScript.WS_CLOSE_MESSAGE_TOO_BIG,
+		"an oversized frame must close with a real, legible close code (1009), not leave the client guessing"
+	)
+	_expect(
+		_server.room_client_count(room) == 1,
+		"the room must drop to 1 client after the oversized sender is closed"
+	)
+
+	b.send("still-fine".to_utf8_buffer(), WebSocketPeer.WRITE_MODE_BINARY)
+	_pump_until(
+		_server, clients, "the other client in the room is undisturbed and keeps exchanging frames",
+		func() -> bool: return b.get_available_packet_count() > 0
+	)
+	_expect(
+		b.get_packet().get_string_from_utf8() == "still-fine",
+		"the surviving client must still receive its own frame after the other was closed for sending an oversized one"
+	)
+
+	b.close()
+	_pump_until(
+		_server, _empty_clients(), "the room empties out after the surviving client closes",
+		func() -> bool: return _server.room_client_count(room) == 0
+	)
 
 
 ## Starts a fresh RelayServer on `port` with `room_size` as its max room
