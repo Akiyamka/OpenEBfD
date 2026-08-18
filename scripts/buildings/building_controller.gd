@@ -4,7 +4,6 @@ extends Node3D
 const AutoloadLookupScript := preload("res://scripts/players/autoload_lookup.gd")
 const TerrainProbeScript := preload("res://scripts/world/terrain_probe.gd")
 const AuthoredModelScript := preload("res://scripts/world/authored_model.gd")
-const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 const RuleBuildTimeScript := preload("res://scripts/rules/rule_build_time.gd")
 
 signal status_changed(status: String)
@@ -194,7 +193,7 @@ func process(_delta: float) -> void:
 ## controllers' advance_tick() run in a fixed order.
 func advance_tick() -> void:
 	_process_building_order()
-	_process_repairs(MatchClockScript.SECONDS_PER_TICK)
+	_process_repairs()
 
 
 func _exit_tree() -> void:
@@ -481,13 +480,13 @@ func _try_toggle_building_repair(screen_position: Vector2) -> void:
 	status_changed.emit("%s repair started" % _building_name(building))
 
 
-func _process_repairs(delta: float) -> void:
+func _process_repairs() -> void:
 	var settings := _game_settings_catalog.settings()
 	var repair_health := float(settings.building_repair_rate) if settings != null else 12.0
 	var buildings: Array[Node] = []
 	buildings.assign(get_tree().get_nodes_in_group("buildings"))
-	_repair_service.process(
-		delta, buildings, repair_health, _local_player(), Callable(self, "_config_of")
+	_repair_service.advance_tick(
+		buildings, repair_health, _local_player(), Callable(self, "_config_of")
 	)
 
 
