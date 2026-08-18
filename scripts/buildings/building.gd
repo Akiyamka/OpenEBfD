@@ -5,7 +5,6 @@ const FireRequestScript := preload("res://scripts/combat/fire_request.gd")
 const AutoloadLookupScript := preload("res://scripts/players/autoload_lookup.gd")
 const EntityQueryScript := preload("res://scripts/world/entity_query.gd")
 const TeamColorScript := preload("res://scripts/world/team_color.gd")
-const CombatRulesScript := preload("res://scripts/combat/combat_rules.gd")
 const DamagePolicyScript := preload("res://scripts/combat/damage_policy.gd")
 const CombatHullScript := preload("res://scripts/combat/combat_hull.gd")
 const AuthoredModelScript := preload("res://scripts/world/authored_model.gd")
@@ -41,7 +40,6 @@ const REPAIR_EFFECT_SCENE := preload("res://assets/converted/ui/cursor_models/re
 const COLLISION_OBJECT_NAME := "#~~0"
 const WALL_BUILDING_GROUP := "Wall"
 const REFINERY_DOCK_RELEASE_DELAY_SECONDS := 3.0
-const RULE_COMBAT_TICKS_PER_SECOND := CombatRulesScript.TICKS_PER_SECOND
 const MAX_COMBAT_HULL_VERTICES := CombatHullScript.MAX_VERTICES
 const RALLY_POINT_LINE_HEIGHT := BuildingRallyPointScript.LINE_HEIGHT
 
@@ -192,9 +190,17 @@ func _exit_tree() -> void:
 	_building_combat.dispose()
 
 
-func _process(delta: float) -> void:
+## This entity's simulation half: advances every turret's reload/burst
+## countdown by exactly one combat tick. Called once per simulation tick by
+## Match._advance_simulation_tick() -- see its doc comment for why the tick is
+## driven centrally instead of from this node's own _process(). Never call
+## this from Building itself.
+func sim_tick() -> void:
 	for turret in combat_turrets:
-		turret.advance_ticks(delta * RULE_COMBAT_TICKS_PER_SECOND)
+		turret.advance_tick()
+
+
+func _process(delta: float) -> void:
 	_building_combat.advance(delta)
 	_authored_fire_controller.advance(delta)
 	_building_combat.after_authored_advance()

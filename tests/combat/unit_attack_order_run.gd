@@ -3,6 +3,7 @@ extends "res://tests/support/suite.gd"
 const LegacyRulesFixture := preload("res://tests/support/legacy_rules_fixture.gd")
 const CombatTurretScript := preload("res://scripts/combat/combat_turret.gd")
 const FireRequestScript := preload("res://scripts/combat/fire_request.gd")
+const FrameTickDriverScript := preload("res://scripts/match/frame_tick_driver.gd")
 const Doubles := preload("res://tests/combat/support/combat_doubles.gd")
 const Assertions := preload("res://tests/combat/support/combat_assertions.gd")
 const UnitScript := preload("res://scripts/units/unit.gd")
@@ -48,6 +49,27 @@ class RejectingAttackNavigation extends RefCounted:
 
 	func stop(_unit: Node3D) -> void:
 		pass
+
+
+## Unit._process() no longer advances turret reload/burst countdowns itself --
+## Match's real loop does that centrally through Unit.sim_tick() now (see its
+## doc comment and match.gd::_advance_simulation_tick()). This suite drives
+## units by hand with no Match instance, so any loop whose assertions depend
+## on reload timing has to do the same frame-delta-to-tick conversion
+## Match._process() does. One FrameTickDriver per unit, reused across every
+## loop for that unit within a test, keeps its sub-tick remainder independent
+## of whatever other units the same test is also driving.
+##
+## Ticks run before _process() to match production ordering: Match is an
+## ancestor of every Unit node, and Godot processes a frame in scene-tree
+## order, so _advance_simulation_tick() (and with it every entity's
+## sim_tick()) already ran for this frame by the time a real Unit._process()
+## observes it.
+func _advance_unit(unit: Unit, delta: float, driver: FrameTickDriver) -> void:
+	for _tick in driver.pending_ticks(delta):
+		unit.sim_tick()
+	unit._process(delta)
+
 
 func _initialize() -> void:
 	LegacyRulesFixture.install(root)
@@ -158,8 +180,9 @@ func _test_unit_attack_order() -> void:
 		mongoose.combat_turrets[0].target_range(unit) == CombatTurretScript.TargetRange.TOO_FAR,
 		"the real-unit regression must begin outside the Mongoose weapon range"
 	)
+	var mongoose_driver := FrameTickDriverScript.new()
 	for frame in 240:
-		mongoose._process(1.0 / 60.0)
+		_advance_unit(mongoose, 1.0 / 60.0, mongoose_driver)
 		mongoose._physics_process(1.0 / 60.0)
 		if not mongoose_fired.is_empty():
 			break
@@ -185,14 +208,14 @@ func _test_unit_attack_order() -> void:
 	)
 	var mongoose_refire_elapsed := 0.0
 	for frame in 60:
-		mongoose._process(1.0 / 60.0)
+		_advance_unit(mongoose, 1.0 / 60.0, mongoose_driver)
 		mongoose_refire_elapsed += 1.0 / 60.0
 	_expect(
 		mongoose_fired.size() == 1,
 		"the Mongoose must not fire again while its first Fire_0 animation is active"
 	)
 	for frame in 60:
-		mongoose._process(1.0 / 60.0)
+		_advance_unit(mongoose, 1.0 / 60.0, mongoose_driver)
 		mongoose_refire_elapsed += 1.0 / 60.0
 		if mongoose_fired.size() >= 2:
 			break
@@ -219,8 +242,9 @@ func _test_unit_attack_order() -> void:
 		infantry.command_attack(infantry_target),
 		"Atreides Infantry must accept an in-range ground target"
 	)
+	var infantry_driver := FrameTickDriverScript.new()
 	for frame in 240:
-		infantry._process(1.0 / 60.0)
+		_advance_unit(infantry, 1.0 / 60.0, infantry_driver)
 		if not infantry_fired.is_empty():
 			break
 	_expect(not infantry_fired.is_empty(), "Atreides Infantry must emit its authored shot")
@@ -234,7 +258,7 @@ func _test_unit_attack_order() -> void:
 	)
 	var infantry_refire_elapsed := 0.0
 	for frame in 240:
-		infantry._process(1.0 / 60.0)
+		_advance_unit(infantry, 1.0 / 60.0, infantry_driver)
 		infantry_refire_elapsed += 1.0 / 60.0
 		if not infantry._fire_sequence_active:
 			break
@@ -243,7 +267,7 @@ func _test_unit_attack_order() -> void:
 		"infantry ReloadCount must begin after its full-body Fire_0 action"
 	)
 	for frame in 120:
-		infantry._process(1.0 / 60.0)
+		_advance_unit(infantry, 1.0 / 60.0, infantry_driver)
 		infantry_refire_elapsed += 1.0 / 60.0
 		if infantry_fired.size() >= 2:
 			break
@@ -278,8 +302,9 @@ func _test_unit_attack_order() -> void:
 		minotaurus.command_attack(unit),
 		"a Minotaurus must accept a real allied ground unit as a forced target"
 	)
+	var minotaurus_driver := FrameTickDriverScript.new()
 	for frame in 240:
-		minotaurus._process(1.0 / 60.0)
+		_advance_unit(minotaurus, 1.0 / 60.0, minotaurus_driver)
 		if not minotaurus_fired.is_empty():
 			break
 	_expect(
@@ -306,7 +331,7 @@ func _test_unit_attack_order() -> void:
 		"Minotaurus ReloadCount must advance during its four-shot Fire_0 animation"
 	)
 	for frame in 120:
-		minotaurus._process(1.0 / 60.0)
+		_advance_unit(minotaurus, 1.0 / 60.0, minotaurus_driver)
 		if not minotaurus._fire_sequence_active:
 			break
 	_expect(
@@ -372,8 +397,9 @@ func _test_ink_vine_refire() -> void:
 	)
 
 	_expect(ink_vine.command_attack(target), "the Ink Vine must accept an in-range target")
+	var ink_vine_driver := FrameTickDriverScript.new()
 	for frame in 1200:
-		ink_vine._process(1.0 / 60.0)
+		_advance_unit(ink_vine, 1.0 / 60.0, ink_vine_driver)
 		ink_vine._physics_process(1.0 / 60.0)
 		if fired.size() >= 2:
 			break
@@ -696,12 +722,13 @@ func _test_friendly_arriving_mid_clip_cancels_the_shot() -> void:
 			fired.append_array(projectiles)
 	)
 	var home: Vector3 = attacker.global_position
+	var attacker_driver := FrameTickDriverScript.new()
 	_expect(attacker.command_attack(target), "a clear line must accept the order")
 	# Run until the clip is under way but before its shot event, so the engage
 	# decision is already made and only the muzzle can still refuse.
 	var sequence_started := false
 	for frame in 240:
-		attacker._process(1.0 / 60.0)
+		_advance_unit(attacker, 1.0 / 60.0, attacker_driver)
 		attacker.global_position = home
 		if attacker._fire_sequence_active:
 			sequence_started = true
@@ -722,7 +749,7 @@ func _test_friendly_arriving_mid_clip_cancels_the_shot() -> void:
 		"the arriving squadmate must land on the muzzle line"
 	)
 	for frame in 240:
-		attacker._process(1.0 / 60.0)
+		_advance_unit(attacker, 1.0 / 60.0, attacker_driver)
 		attacker.global_position = home
 	_expect(
 		fired.is_empty(),
@@ -732,7 +759,7 @@ func _test_friendly_arriving_mid_clip_cancels_the_shot() -> void:
 	squadmate.free()
 	await physics_frame
 	for frame in 480:
-		attacker._process(1.0 / 60.0)
+		_advance_unit(attacker, 1.0 / 60.0, attacker_driver)
 		attacker.global_position = home
 		if not fired.is_empty():
 			break

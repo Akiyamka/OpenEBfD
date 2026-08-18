@@ -70,8 +70,13 @@ var fire_sound_volume := 100.0
 var fire_sound_exclusive := true
 var _fire_sound_players: Array[DeathSoundPlayer] = []
 var joint_configs: Array[Resource] = []
-var reload_ticks_remaining := 0.0
-var continuous_burst_ticks_remaining := 0.0
+## Whole combat ticks left before this weapon (or, for continuous_burst_ticks_
+## remaining, its burst window) is ready. Both already counted rule ticks --
+## the combat tick domain runs at MatchClock's 25 Hz -- so making them `int`
+## and decremented by advance_tick() is an integer-isation of an existing
+## count, not a rate conversion; no duration here changes.
+var reload_ticks_remaining := 0
+var continuous_burst_ticks_remaining := 0
 ## A continuous (stream) weapon replays its short authored Fire clip
 ## back-to-back for the whole burst window (see `begin_continuous_burst`),
 ## calling `try_fire_at` once per replay. Playing `fire_sound_paths` on every
@@ -144,7 +149,7 @@ func configure(turret_id: StringName) -> bool:
 	fire_sound_exclusive = true
 	_fire_sound_players.clear()
 	_continuous_fire_sound_pending = true
-	reload_ticks_remaining = 0.0
+	reload_ticks_remaining = 0
 	bullet_gravity = 1.0
 	if firing_config == null:
 		return false
@@ -771,12 +776,23 @@ func last_emissions() -> Array[Dictionary]:
 
 
 func is_ready() -> bool:
-	return is_configured() and reload_ticks_remaining <= 0.0
+	return is_configured() and reload_ticks_remaining <= 0
 
 
-func reload_count() -> float:
-	return maxf(float(firing_config.reload_count), 0.0) \
-		if firing_config != null else 0.0
+## Only caller today is this file's own begin_reload()/begin_continuous_burst()
+## below, both feeding a whole-tick counter -- so this returns `int` outright
+## rather than growing a parallel accessor. firing_config.reload_count itself
+## stays `float`: it is raw rules data (TurretDefinition), not a tick count.
+##
+## ceilf, not truncation: the float countdown this replaced only reached zero
+## after the fraction had been paid off too, so 30.5 rule ticks meant ready on
+## the 31st tick, not the 30th. Every reload_count in the shipped rules data
+## is a whole number today, so this rounds nothing in practice -- it is here
+## so that a later rules import producing a fractional value lengthens the
+## reload by under a tick instead of silently shortening it.
+func reload_count() -> int:
+	return maxi(int(ceilf(firing_config.reload_count)), 0) \
+		if firing_config != null else 0
 
 
 func maximum_range_world() -> float:
@@ -792,7 +808,7 @@ func begin_reload() -> void:
 ## True while a continuous-bullet turret is still within its authored burst
 ## window (see `begin_continuous_burst`). Ignored for non-continuous weapons.
 func continuous_burst_active() -> bool:
-	return continuous_burst_ticks_remaining > 0.0
+	return continuous_burst_ticks_remaining > 0
 
 
 ## Starts a fresh firing cycle for a `Continuous` bullet: always re-arms the
@@ -822,16 +838,15 @@ func _retire_fire_sounds() -> void:
 	_fire_sound_players.clear()
 
 
-func advance_ticks(ticks: float) -> void:
-	if ticks <= 0.0:
-		return
-	if reload_ticks_remaining > 0.0:
-		reload_ticks_remaining = maxf(reload_ticks_remaining - ticks, 0.0)
-	if continuous_burst_ticks_remaining > 0.0:
-		continuous_burst_ticks_remaining = maxf(
-			continuous_burst_ticks_remaining - ticks, 0.0
-		)
-		if continuous_burst_ticks_remaining <= 0.0:
+## Advances reload/burst countdowns by exactly one combat tick. Called once per
+## simulation tick, from the owning Unit/Building's sim_tick() -- see
+## match.gd::_advance_simulation_tick() -- never from a per-frame delta.
+func advance_tick() -> void:
+	if reload_ticks_remaining > 0:
+		reload_ticks_remaining = maxi(reload_ticks_remaining - 1, 0)
+	if continuous_burst_ticks_remaining > 0:
+		continuous_burst_ticks_remaining = maxi(continuous_burst_ticks_remaining - 1, 0)
+		if continuous_burst_ticks_remaining <= 0:
 			begin_reload()
 
 

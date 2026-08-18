@@ -245,9 +245,17 @@ func _exit_tree() -> void:
 		turret.cancel_authored_fire_fx()
 
 
-func _process(delta: float) -> void:
+## This entity's simulation half: advances every turret's reload/burst
+## countdown by exactly one combat tick. Called once per simulation tick by
+## Match._advance_simulation_tick() -- see its doc comment for why the tick is
+## driven centrally instead of from this node's own _process(). Never call
+## this from Unit itself.
+func sim_tick() -> void:
 	for turret in combat_turrets:
-		turret.advance_ticks(delta * RULE_COMBAT_TICKS_PER_SECOND)
+		turret.advance_tick()
+
+
+func _process(delta: float) -> void:
 	# Authored locomotion/fire overlays run before Unit (see
 	# _prioritize_animations_before_unit_logic()). Restore and advance the
 	# combat-owned servo first, then sample the muzzle for this frame's shots;

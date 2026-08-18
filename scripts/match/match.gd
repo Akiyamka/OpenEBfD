@@ -282,6 +282,32 @@ func _process(delta: float) -> void:
 ## that credit contention identically, or their simulations diverge.
 ## _unit_command_controller.process() is input handling, not simulation, and
 ## stays out of this function -- see its call in _process() instead.
+## After the three controllers above: units, then buildings, each entity's
+## own sim_tick() -- today just CombatTurret.advance_tick() for reload/burst
+## countdowns (see Unit.sim_tick()/Building.sim_tick()). What is centrally
+## maintained here is the list of *systems*, not of entities: group
+## membership maintains itself (Building.gd calls add_to_group("buildings")
+## in code; unit scenes declare "units" in their .tscn), so adding a new unit
+## or building type needs no change in this function.
+##
+## What this buys, stated honestly: the tick order is now these few lines in
+## one function instead of whatever order the scene tree happened to hand
+## out, so it is observable and changeable in one place. What it does not yet
+## buy: cross-machine determinism. There are no stable entity ids in this
+## codebase -- get_instance_id() differs per machine -- so
+## get_nodes_in_group() iteration order is not guaranteed to match across
+## clients; the flat id-indexed arrays that would fix that land in phase 3.
+## This is centralization, not determinism; the determinism gate is phase 4.
+##
+## Units before buildings is a deliberate fixed choice, not an accident:
+## reload countdowns are per-entity and share no resource, so today's
+## relative order changes no outcome -- but it stops being free the moment a
+## system with shared state joins this loop.
+##
+## is_instance_valid() guards both loops because queue_free() does not remove
+## a node from its groups until the frame ends: a unit that gave itself away
+## this frame (see Unit's set_process(false) call site) can still be listed
+## here as a freed instance and must not be ticked.
 func _advance_simulation_tick() -> void:
 	_clock.advance()
 	if _building_controller != null:
@@ -290,6 +316,12 @@ func _advance_simulation_tick() -> void:
 		_building_upgrade_controller.advance_tick()
 	if _unit_roster_controller != null:
 		_unit_roster_controller.advance_tick()
+	for unit in get_tree().get_nodes_in_group("units"):
+		if is_instance_valid(unit):
+			unit.sim_tick()
+	for building in get_tree().get_nodes_in_group("buildings"):
+		if is_instance_valid(building):
+			building.sim_tick()
 
 
 ## The simulation's current tick, for later slices and tests that need a way

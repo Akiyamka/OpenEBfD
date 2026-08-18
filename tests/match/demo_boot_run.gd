@@ -49,6 +49,10 @@ func _initialize() -> void:
 		"the match loop advances the simulation clock at the tick rate, not the frame rate",
 		_test_match_loop_drives_the_clock
 	)
+	await _run_case(
+		"a real unit's turret reload advances from the match loop alone",
+		_test_match_loop_drives_unit_turret_reload
+	)
 	await _run_case("roster controls leave arrow keys to the camera", _test_roster_controls_ignore_keyboard_focus)
 	await _run_case("F3 toggles every navigation debug layer", _test_unified_debug_shortcut)
 	await _run_case("rules art configs resolve every test panel icon", _test_match_panel_icons)
@@ -656,6 +660,65 @@ func _test_match_loop_drives_the_clock() -> void:
 		advanced < frames,
 		"the clock must advance less often than once per frame: %d ticks over %d frames" \
 			% [advanced, frames]
+	)
+
+	match_instance.queue_free()
+
+
+## The per-entity counterpart to _test_match_loop_drives_the_clock above.
+## Every other assertion of turret reload counting down (turret_mount_run.gd,
+## unit_attack_order_run.gd, and the fire-sequence cases in this file) calls
+## CombatTurret.advance_tick() directly or fires through the real fire
+## sequence -- all of it would keep passing even if Unit.sim_tick() were never
+## reached from Match._advance_simulation_tick(), because nothing here calls
+## sim_tick() itself. Forgetting to add a new per-entity system to that
+## central loop (see its doc comment) is exactly the failure mode this test
+## exists to catch, so it boots the real match scene and lets its own loop
+## run, the same way _test_match_loop_drives_the_clock does.
+##
+## ScoutA (scenes/units/unit.tscn) authors config_id="ATInfantry" with its
+## AT_inf_H0 model already instanced as a VisualRoot child, so its ATInfGun
+## turret is configured and bound by _ready() with no setup() call needed.
+## reload_ticks_remaining starts driven into a known state far above what a
+## short real-time window can exhaust, so the window's tick count can be read
+## straight off the counter's drop with no clamping to zero in the way.
+func _test_match_loop_drives_unit_turret_reload() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	get_root().add_child(match_instance)
+	for _warmup in 5:
+		await process_frame
+
+	var attacker := match_instance.get_node("Units/ScoutA") as Unit
+	_expect(
+		not attacker.combat_turrets.is_empty(),
+		"ScoutA must boot with its ATInfGun turret already configured and bound"
+	)
+	var turret = attacker.combat_turrets[0]
+	turret.reload_ticks_remaining = 1000
+	var started_msec := Time.get_ticks_msec()
+	var started_tick: int = match_instance.current_tick()
+	var started_reload: int = turret.reload_ticks_remaining
+
+	var frames := 0
+	while Time.get_ticks_msec() - started_msec < 200 and frames < 400:
+		await process_frame
+		frames += 1
+
+	var advanced_ticks: int = match_instance.current_tick() - started_tick
+	var advanced_reload: int = started_reload - turret.reload_ticks_remaining
+	_expect(
+		advanced_ticks >= 3,
+		"%d ms of the real match loop must advance the clock at least 3 ticks, got %d" \
+			% [Time.get_ticks_msec() - started_msec, advanced_ticks]
+	)
+	# Both counters are advanced from the same due-tick loop within the same
+	# frame (see match.gd::_advance_simulation_tick()), so -- as long as 1000
+	# ticks is nowhere near exhausted, which this bounded window guarantees --
+	# the drop is exact, not just approximate.
+	_expect(
+		advanced_reload == advanced_ticks,
+		"a real unit's turret reload must advance by exactly one tick per simulation tick from the match loop alone: reload dropped by %d against %d clock ticks" \
+			% [advanced_reload, advanced_ticks]
 	)
 
 	match_instance.queue_free()

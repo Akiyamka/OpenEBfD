@@ -2,6 +2,7 @@ extends "res://tests/support/suite.gd"
 
 const LegacyRulesFixture := preload("res://tests/support/legacy_rules_fixture.gd")
 const CombatTurretScript := preload("res://scripts/combat/combat_turret.gd")
+const FrameTickDriverScript := preload("res://scripts/match/frame_tick_driver.gd")
 const Doubles := preload("res://tests/combat/support/combat_doubles.gd")
 const Assertions := preload("res://tests/combat/support/combat_assertions.gd")
 const HKGunTurretScene := preload("res://assets/converted/buildings/HKGunTurret/HKGunTurret.scn")
@@ -50,6 +51,21 @@ func _initialize() -> void:
 	)
 	_run_case("building damage visuals use equal health bands", _test_building_damage_visual_states)
 	_finish("Defensive building tests")
+
+
+## Building._process() no longer advances turret reload/burst countdowns
+## itself -- Match's real loop does that centrally through Building.sim_tick()
+## now (see its doc comment and match.gd::_advance_simulation_tick()). This
+## suite drives buildings by hand with no Match instance, so a loop whose
+## assertions depend on reload timing has to do the same frame-delta-to-tick
+## conversion Match._process() does. Ticks run before _process() to match
+## production ordering: Match is an ancestor of every Building node and Godot
+## processes a frame in scene-tree order, so every entity's sim_tick() already
+## ran for this frame by the time a real Building._process() observes it.
+func _advance_building(building: Building, delta: float, driver: FrameTickDriver) -> void:
+	for _tick in driver.pending_ticks(delta):
+		building.sim_tick()
+	building._process(delta)
 
 func _test_building_turret_rebind() -> void:
 	var building = HKGunTurretScene.instantiate()
@@ -616,8 +632,9 @@ func _test_building_obstructed_targets() -> void:
 		building.command_attack(covered),
 		"a building must accept an order on a target it cannot currently see"
 	)
+	var building_driver := FrameTickDriverScript.new()
 	for frame in 600:
-		building._process(1.0 / 60.0)
+		_advance_building(building, 1.0 / 60.0, building_driver)
 		if not fired.is_empty():
 			break
 	_expect(
@@ -640,7 +657,7 @@ func _test_building_obstructed_targets() -> void:
 	# The committed authored Fire clip finishes on the target it started with;
 	# the ordered target takes over on the first shot chosen afterwards.
 	for frame in 600:
-		building._process(1.0 / 60.0)
+		_advance_building(building, 1.0 / 60.0, building_driver)
 	_expect(
 		not fired_targets.is_empty() and fired_targets.back() == covered,
 		"once the obstacle is gone the retained order must take the weapon back"

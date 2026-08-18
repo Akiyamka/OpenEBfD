@@ -32,6 +32,13 @@ func _initialize() -> void:
 	_run_case("limited turret turns its hull toward rear targets", _test_limited_turret_hull_turn)
 	_finish("Turret mount tests")
 
+## CombatTurret.advance_tick() moves reload/burst countdowns by exactly one
+## combat tick (see its doc comment) -- this suite's fixed counts of 29/30
+## ticks read clearer as a call count than as an unrolled loop at each site.
+func _advance_ticks(turret: CombatTurretScript, count: int) -> void:
+	for _tick in count:
+		turret.advance_tick()
+
 func _test_turret_reload() -> void:
 	var _rules = root.get_node("Rules")
 	var turret = CombatTurretScript.new()
@@ -43,9 +50,9 @@ func _test_turret_reload() -> void:
 	_expect(first_shot.size() == 1, "a normal turret must emit one bullet")
 	_expect(is_equal_approx(turret.reload_ticks_remaining, 30.0), "ATInfGun ReloadCount must be 30 ticks")
 	_expect(turret.try_fire().is_empty(), "a turret must not fire again during reload")
-	turret.advance_ticks(29.0)
+	_advance_ticks(turret, 29)
 	_expect(not turret.is_ready(), "the turret must remain locked one tick before reload completes")
-	turret.advance_ticks(1.0)
+	_advance_ticks(turret, 1)
 	_expect(turret.is_ready(), "the turret must become ready on the final reload tick")
 
 	var burst_turret = CombatTurretScript.new()
@@ -88,7 +95,7 @@ func _test_continuous_turret_burst_reload() -> void:
 		is_equal_approx(turret.continuous_burst_ticks_remaining, 30.0),
 		"the burst window must be sized to ReloadCount (30 ticks)"
 	)
-	turret.advance_ticks(29.0)
+	_advance_ticks(turret, 29)
 	_expect(
 		turret.continuous_burst_active(),
 		"the burst window must still be open one tick before it elapses"
@@ -98,7 +105,7 @@ func _test_continuous_turret_burst_reload() -> void:
 		"a turret mid-burst must not have started its post-burst reload yet"
 	)
 
-	turret.advance_ticks(1.0)
+	_advance_ticks(turret, 1)
 	_expect(
 		not turret.continuous_burst_active(),
 		"the burst window must close once its ReloadCount ticks elapse"
@@ -112,9 +119,9 @@ func _test_continuous_turret_burst_reload() -> void:
 		"the post-burst cooldown must last the same ReloadCount as the burst"
 	)
 
-	turret.advance_ticks(29.0)
+	_advance_ticks(turret, 29)
 	_expect(not turret.is_ready(), "the cooldown must remain locked one tick early")
-	turret.advance_ticks(1.0)
+	_advance_ticks(turret, 1)
 	_expect(turret.is_ready(), "the turret must become ready once the cooldown elapses")
 
 func _test_compound_turret() -> void:
