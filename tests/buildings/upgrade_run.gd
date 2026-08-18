@@ -110,7 +110,7 @@ func _test_start_rejects_invalid(token: int) -> int:
 	var queue := UpgradeQueueScript.new()
 	# Unit tests of the queue itself: build_time_ticks below is passed
 	# directly in simulation ticks (60 rule ticks == 25 sim ticks), not
-	# routed through RuleBuildTime -- that conversion has its own tests
+	# routed through RuleTicks -- that conversion has its own tests
 	# (tests/rules/run.gd).
 	_expect(not queue.start(&"", "Nothing", 100, 25), "an empty upgrade id must be rejected")
 	_expect(not queue.start(&"AT", "Negative cost", -1, 25), "a negative cost must be rejected")

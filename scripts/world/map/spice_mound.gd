@@ -2,11 +2,28 @@ class_name SpiceMound
 extends Area3D
 ## Runtime spice-bloom trigger. The visual is converted from the original
 ## Spicemound.xbf mesh; this Area3D owns contact activation and the Rules.txt
-## maturation timer.
+## maturation cycle.
+##
+## The maturation cycle used to run on a child Timer node (MaturityTimer,
+## still present in scenes/world/spice_mound.tscn). Phase 1
+## (docs/architecture/network-multiplayer.md, decision 4) bans Timer/_process
+## from driving simulation state -- a Timer advances on engine frame time, so
+## no snapshot or checksum can see it -- so maturity now runs on an integer
+## sim-tick countdown instead, the same design CombatLingerEffect uses for
+## its own countdown (see combat_linger_effect.gd). The scene node itself is
+## left alone: removing it means editing the .tscn, out of scope for this
+## slice. Nothing below reads or drives it any longer.
 
 signal activated(mound: SpiceMound, early_activation: bool, maturity_fraction: float)
 
-const RULE_TICKS_PER_SECOND := 60.0
+const RuleTicksScript := preload("res://scripts/rules/rule_ticks.gd")
+
+## Match._advance_simulation_tick() drives every live mound's sim_tick() by
+## walking this group, the same way it walks "units", "buildings" and
+## "sim_linger_effects" -- see _ready() below for why the mound joins it
+## itself.
+const SIM_SPICE_MOUND_GROUP := "sim_spice_mounds"
+
 const UNIT_COLLISION_LAYER := 2
 const MATURITY_DURATION_MULTIPLIER := 3.0
 const MIN_REPEAT_ACTIVATION_MATURITY := 0.3
@@ -27,14 +44,17 @@ static var _definition_catalog := SpiceDefinitionCatalogScript.new()
 @export var source_cell := Vector2i(-1, -1)
 
 var config: Resource
+## The maturity countdown, in simulation ticks (MatchClock.TICKS_PER_SECOND,
+## 25 Hz). Public like CombatLingerEffect.remaining_ticks, for the same
+## reason: tests drive and observe it directly instead of reaching for a
+## private field by name.
+var maturity_ticks_remaining := 0
 var _footprint := Vector2.ONE
 var _lifespan_random_fraction := -1.0
-var _cycle_duration_seconds := 0.0
+var _maturity_cycle_ticks := 0
 var _maturity_progress := 0.0
 var _activation_in_progress := false
 var _has_activated := false
-
-@onready var maturity_timer: Timer = $MaturityTimer
 
 
 func configure(
@@ -49,7 +69,7 @@ func configure(
 	_lifespan_random_fraction = lifespan_random_fraction
 	_has_activated = false
 	_apply_footprint()
-	_prepare_maturity_cycle()
+	restart_maturity_cycle()
 
 
 func _ready() -> void:
@@ -62,25 +82,67 @@ func _ready() -> void:
 		config = _definition_catalog.mound()
 	_apply_footprint()
 	body_entered.connect(_on_body_entered)
-	maturity_timer.timeout.connect(_on_maturity_timeout)
+	# The mound finds Match's central loop, not the other way around: it
+	# joins the sim group itself, right here, the same point CombatLingerEffect
+	# joins SIM_LINGER_GROUP in its own configure(). No matching registration
+	# call is needed at any spawn site (see map_spice_layer.gd's
+	# _spawn_spice_mound()). There is no matching remove_from_group() on
+	# teardown, unlike CombatLingerEffect: this mound never frees itself --
+	# only map_spice_layer.gd's _remove_spice_mound() does, the same as
+	# Building.gd never removes itself from "buildings" -- so
+	# is_instance_valid() in the central loop is what guards a freed mound
+	# still listed this frame, exactly as it already does for units and
+	# buildings.
+	add_to_group(SIM_SPICE_MOUND_GROUP)
 	restart_maturity_cycle()
 
 
-func _process(_delta: float) -> void:
-	if maturity_timer.is_stopped() or _cycle_duration_seconds <= 0.0:
+## This mound's simulation half: advances the maturity countdown by exactly
+## one simulation tick and fires _on_maturity_timeout() when it reaches zero
+## -- the same event the old MaturityTimer.timeout signal used to fire.
+## Called once per simulation tick by Match._advance_simulation_tick() via the
+## SIM_SPICE_MOUND_GROUP membership joined in _ready() above.
+##
+## Also folds in what _process() used to do every rendered frame: sampling
+## the countdown into the visible growth-animation progress. A maturity cycle
+## runs for minutes, so updating that progress once per 25 Hz sim tick instead
+## of once per rendered frame is not visibly different, and dropping
+## _process() removes the last reason this node needed a frame callback
+## purely to read simulation state -- the coupling phase 1 exists to remove.
+func sim_tick() -> void:
+	if maturity_ticks_remaining <= 0:
 		return
-	var progress := 1.0 - maturity_timer.time_left / _cycle_duration_seconds
-	_set_maturity_progress(progress)
+	maturity_ticks_remaining -= 1
+	_set_maturity_progress(maturity_progress())
+	if maturity_ticks_remaining <= 0:
+		_on_maturity_timeout()
 
 
-func maturity_duration_seconds(random_fraction := -1.0) -> float:
+## Converts this mound's authored maturity duration into whole simulation
+## ticks. maturity_minimum_ticks/maturity_random_ticks are rule ticks at
+## RuleTicks.RULE_TICKS_PER_SECOND (60 Hz, not this simulation's 25 Hz).
+## MATURITY_DURATION_MULTIPLIER stretches the mound's real-time lifespan 3x
+## beyond what those rule ticks alone would give -- applying it to the
+## rule-tick count before RuleTicks.to_sim_ticks() converts once, rather than
+## to the converted sim-tick count afterwards, keeps the rounding to that
+## function's single roundi() call instead of stacking a second one on top;
+## both orders agree to within that one rounding step, since to_sim_ticks()
+## is linear in its argument.
+##
+## Worked example, matching the fixture in tests/maps/run.gd: minimum=1000,
+## random=500, fraction=0.5 -> (1000 + 500*0.5) = 1250 rule ticks -> *3 =
+## 3750 rule ticks -> to_sim_ticks(3750) = roundi(3750 * 25 / 60) =
+## roundi(1562.5) = 1563 sim ticks = 62.52s -- against the pre-conversion
+## value of (1250 / 60) * 3 = 62.5s, a 20 ms difference from the one rounding
+## step above.
+func maturity_duration_ticks(random_fraction := -1.0) -> int:
 	if config == null:
-		return 0.0
+		return 0
 	var fraction := randf() if random_fraction < 0.0 else clampf(random_fraction, 0.0, 1.0)
 	var minimum_ticks := maxf(config.maturity_minimum_ticks, 0.0)
 	var random_ticks := maxf(config.maturity_random_ticks, 0.0)
-	return (minimum_ticks + random_ticks * fraction) / RULE_TICKS_PER_SECOND \
-		* MATURITY_DURATION_MULTIPLIER
+	var rule_ticks := (minimum_ticks + random_ticks * fraction) * MATURITY_DURATION_MULTIPLIER
+	return RuleTicksScript.to_sim_ticks(rule_ticks)
 
 
 func activate(early_activation := false) -> bool:
@@ -91,9 +153,10 @@ func activate(early_activation := false) -> bool:
 	and maturity_fraction < MIN_REPEAT_ACTIVATION_MATURITY:
 		return false
 	_activation_in_progress = true
-	var timer := get_node_or_null("MaturityTimer") as Timer
-	if timer != null:
-		timer.stop()
+	# Halts the countdown the same way timer.stop() used to: sim_tick()'s
+	# very first check (maturity_ticks_remaining <= 0) turns into a no-op
+	# until restart_maturity_cycle() below re-arms it.
+	maturity_ticks_remaining = 0
 	_set_maturity_progress(1.0)
 	activated.emit(self, early_activation, maturity_fraction)
 	_has_activated = true
@@ -102,11 +165,18 @@ func activate(early_activation := false) -> bool:
 	return true
 
 
+## (Re)arms the maturity countdown from this mound's config: (re)computes the
+## tick-domain duration (maturity_duration_ticks()) and resets both the
+## countdown and the visible growth progress to zero. Doubles as the pre-tree
+## setup configure() needs -- unlike the old timer.start(), a plain integer
+## assignment has no tree-membership precondition, so configure() (called
+## before this node is ever added to the tree; see map_spice_layer.gd's
+## _spawn_spice_mound()) can call this directly instead of going through a
+## separate "_prepare" helper.
 func restart_maturity_cycle() -> void:
-	_prepare_maturity_cycle()
-	var timer := get_node_or_null("MaturityTimer") as Timer
-	if timer != null and timer.is_inside_tree() and _cycle_duration_seconds > 0.0:
-		timer.start()
+	_set_maturity_progress(0.0)
+	_maturity_cycle_ticks = maturity_duration_ticks(_lifespan_random_fraction)
+	maturity_ticks_remaining = _maturity_cycle_ticks
 
 
 func growth_scale() -> float:
@@ -115,10 +185,9 @@ func growth_scale() -> float:
 
 
 func maturity_progress() -> float:
-	var timer := get_node_or_null("MaturityTimer") as Timer
-	if timer == null or timer.is_stopped() or _cycle_duration_seconds <= 0.0:
+	if _maturity_cycle_ticks <= 0:
 		return _maturity_progress
-	return clampf(1.0 - timer.time_left / _cycle_duration_seconds, 0.0, 1.0)
+	return clampf(1.0 - float(maturity_ticks_remaining) / float(_maturity_cycle_ticks), 0.0, 1.0)
 
 
 func _apply_footprint() -> void:
@@ -218,18 +287,6 @@ func stop_spread_hazard() -> void:
 		return
 	dust.emitting = false
 	dust.visible = false
-
-
-func _prepare_maturity_cycle() -> void:
-	_set_maturity_progress(0.0)
-	var timer := get_node_or_null("MaturityTimer") as Timer
-	if timer == null:
-		return
-	_cycle_duration_seconds = maturity_duration_seconds(_lifespan_random_fraction)
-	if _cycle_duration_seconds <= 0.0:
-		timer.stop()
-		return
-	timer.wait_time = _cycle_duration_seconds
 
 
 func _set_maturity_progress(progress: float) -> void:

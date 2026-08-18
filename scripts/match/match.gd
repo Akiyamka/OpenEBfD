@@ -283,17 +283,20 @@ func _process(delta: float) -> void:
 ## _unit_command_controller.process() is input handling, not simulation, and
 ## stays out of this function -- see its call in _process() instead.
 ## After the three controllers above: units, then buildings, then linger
-## effects -- each entity's or system's own sim_tick(). For units and
-## buildings that is today just CombatTurret.advance_tick() for reload/burst
-## countdowns (see Unit.sim_tick()/Building.sim_tick()); for linger effects it
-## is CombatLingerEffect.sim_tick() delivering one damage tick and decrementing
-## its own countdown (see combat_linger_effect.gd). What is centrally
-## maintained here is the list of *systems*, not of entities: group
+## effects, then spice mounds -- each entity's or system's own sim_tick().
+## For units and buildings that is today just CombatTurret.advance_tick() for
+## reload/burst countdowns (see Unit.sim_tick()/Building.sim_tick()); for
+## linger effects it is CombatLingerEffect.sim_tick() delivering one damage
+## tick and decrementing its own countdown (see combat_linger_effect.gd); for
+## spice mounds it is SpiceMound.sim_tick() decrementing the maturity
+## countdown that replaced its old MaturityTimer (see spice_mound.gd). What is
+## centrally maintained here is the list of *systems*, not of entities: group
 ## membership maintains itself (Building.gd calls add_to_group("buildings")
 ## in code; unit scenes declare "units" in their .tscn; CombatLingerEffect
-## adds itself to "sim_linger_effects" in its own configure()), so adding a
-## new unit or building type, or spawning another linger effect, needs no
-## change in this function.
+## adds itself to "sim_linger_effects" in its own configure(); SpiceMound adds
+## itself to "sim_spice_mounds" in its own _ready()), so adding a new unit or
+## building type, spawning another linger effect, or placing another mound
+## needs no change in this function.
 ##
 ## What this buys, stated honestly: the tick order is now these few lines in
 ## one function instead of whatever order the scene tree happened to hand
@@ -309,7 +312,7 @@ func _process(delta: float) -> void:
 ## relative order changes no outcome -- but it stops being free the moment a
 ## system with shared state joins this loop.
 ##
-## Linger effects go last, after both entity loops, for a sharper reason than
+## Linger effects go after both entity loops, for a sharper reason than
 ## "fixed and arbitrary": a linger effect's sim_tick() delivers damage to the
 ## very units and buildings the two loops above just ticked this same frame.
 ## Resolving effects after entities means a unit's reload advances before the
@@ -319,10 +322,22 @@ func _process(delta: float) -> void:
 ## would still be internally consistent, but it would be a different,
 ## silently-chosen simulation.
 ##
-## is_instance_valid() guards all three loops because queue_free() does not
+## Spice mounds go last, and unlike the loops above this really is "fixed and
+## arbitrary": a mound's maturity countdown reads and writes nothing any other
+## system in this function touches -- not a unit, not a building, not a
+## linger effect's damage, not a controller's credits -- so this loop could
+## sit anywhere among the six steps above it without changing a single
+## outcome. Appending it is simply the smallest diff, the one that leaves the
+## already-justified controller/unit/building/linger order untouched.
+## Recording that explicitly is the point: the next system to join this loop
+## should not have to guess whether "spice mounds are last" was load-bearing
+## or just where the diff happened to land.
+##
+## is_instance_valid() guards all four loops because queue_free() does not
 ## remove a node from its groups until the frame ends: a unit that gave itself
-## away this frame (see Unit's set_process(false) call site) or a linger
-## effect whose own countdown just ran out (see CombatLingerEffect._finish())
+## away this frame (see Unit's set_process(false) call site), a linger effect
+## whose own countdown just ran out (see CombatLingerEffect._finish()), or a
+## mound freed this same frame by map_spice_layer.gd's _remove_spice_mound()
 ## can still be listed here as a freed instance and must not be ticked.
 func _advance_simulation_tick() -> void:
 	_clock.advance()
@@ -341,6 +356,9 @@ func _advance_simulation_tick() -> void:
 	for linger_effect in get_tree().get_nodes_in_group("sim_linger_effects"):
 		if is_instance_valid(linger_effect):
 			linger_effect.sim_tick()
+	for spice_mound in get_tree().get_nodes_in_group("sim_spice_mounds"):
+		if is_instance_valid(spice_mound):
+			spice_mound.sim_tick()
 
 
 ## The simulation's current tick, for later slices and tests that need a way

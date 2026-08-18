@@ -4,7 +4,7 @@ extends RefCounted
 const BuildingDefinitionCatalogScript := preload(
 	"res://scripts/buildings/building_definition_catalog.gd"
 )
-const RuleBuildTimeScript := preload("res://scripts/rules/rule_build_time.gd")
+const RuleTicksScript := preload("res://scripts/rules/rule_ticks.gd")
 const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 
 var _catalog := BuildingDefinitionCatalogScript.shared()
@@ -116,8 +116,8 @@ func tooltip(building_id: StringName) -> String:
 		return display_name(building_id)
 	# Seconds from the actual simulation ticks the order will run for, not the
 	# pre-conversion rules-domain ideal -- this is the duration the player
-	# really waits, rounding included (RuleBuildTime.to_sim_ticks()).
-	var sim_ticks := RuleBuildTimeScript.to_sim_ticks(building_config.build_time_ticks)
+	# really waits, rounding included (RuleTicks.to_sim_ticks()).
+	var sim_ticks := RuleTicksScript.to_sim_ticks(building_config.build_time_ticks)
 	var seconds := float(sim_ticks) * MatchClockScript.SECONDS_PER_TICK
 	return "%s\nCost: %d\nBuild: %.1fs" % [
 		display_name(building_id), int(building_config.cost), seconds,

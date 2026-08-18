@@ -34,6 +34,7 @@ func _initialize() -> void:
 	_run_case("dynamic spice harvesting and replenishment", _test_dynamic_spice_harvesting_and_replenishment)
 	_run_case("spice mound source-grid mapping", _test_spice_mound_source_grid_mapping)
 	_run_case("spice mound runtime entity contract", _test_spice_mound_runtime_entity_contract)
+	_run_case("spice mound maturity ticks convert 60 Hz rule ticks to 25 Hz sim ticks", _test_spice_mound_maturity_tick_conversion)
 	_run_case("spice mound staged passable-sand spread", _test_spice_mound_staged_passable_sand_spread)
 	_run_case("malformed baked data is atomic", _test_malformed_baked_data_is_atomic)
 	_run_case("grid reload semantics", _test_grid_reload_semantics)
@@ -185,14 +186,18 @@ func _test_spice_mound_runtime_entity_contract(token: int) -> int:
 	var dust := mound.get_node("SpreadDust") as GPUParticles3D
 	var dust_material := dust.process_material as ParticleProcessMaterial
 	var dust_quad := dust.draw_pass_1 as QuadMesh
-	var timer := mound.get_node("MaturityTimer") as Timer
 	_expect(model_mesh.mesh.get_surface_count() == 1 and model_mesh.get_aabb().size.y > 0.0, "a mound must use the original three-dimensional XBF mesh")
 	_expect(is_equal_approx(visual.scale.x * 32.0, 2.0) and is_equal_approx(visual.scale.z * 32.0, 3.0), "the original mound mesh must match its source-cell world footprint")
 	_expect(box.size.x == 2.0 and box.size.z == 3.0, "a mound Area3D must own a collision region matching its mesh")
 	_expect(dust.one_shot and not dust.emitting and not dust.visible and dust.lifetime == 10.0, "a mound must own a dormant ten-second geyser emitter")
 	_expect(dust_material.direction == Vector3.UP and dust_material.gravity.y < 0.0, "hazard dust must launch upward and fall under downward gravity")
 	_expect(mound.collision_layer == 0 and mound.collision_mask == 2, "a mound must detect unit bodies without becoming a solid navigation obstacle")
-	_expect(is_equal_approx(timer.wait_time, 3750.0 / 60.0) and timer.one_shot, "the maturity multiplier must put the randomized Size plus Cost lifespan near one real minute")
+	# (1000 + 500*0.5) = 1250 rule ticks, * MATURITY_DURATION_MULTIPLIER(3) =
+	# 3750 rule ticks at 60 Hz -> RuleTicks.to_sim_ticks(3750) =
+	# roundi(3750 * 25 / 60) = roundi(1562.5) = 1563 simulation ticks, i.e.
+	# 1563/25 = 62.52s -- the same "near one real minute" duration the old
+	# real-seconds timer.wait_time assertion this replaces was pinning.
+	_expect(mound.maturity_duration_ticks(0.5) == 1563, "the maturity multiplier must put the randomized Size plus Cost lifespan near one real minute")
 	_expect(model_player.has_animation(&"timeline") and model_player.get_animation(&"timeline").track_get_key_count(0) == 31, "a mound must retain its original XBF growth animation")
 	_expect(is_equal_approx(mound.growth_scale(), 0.001), "a new maturity cycle must start at the authored initial scale")
 	mound.call("_set_maturity_progress", 0.5)
@@ -206,6 +211,15 @@ func _test_spice_mound_runtime_entity_contract(token: int) -> int:
 		early_activations.append(early)
 		activation_fractions.append(maturity_fraction)
 	)
+	# activate()'s reported fraction now comes from maturity_progress(), which
+	# reads the tick countdown -- the _set_maturity_progress() call above only
+	# ever drove the visual transform growth_scale() reads (see sim_tick()'s
+	# doc comment for why the two are separate now). Poke the countdown
+	# directly to an exact 50%: 500 remaining of 1000 is an exact 0.5, which
+	# sidesteps the rounding in the mound's own authored 1563-tick duration
+	# already pinned above.
+	mound._maturity_cycle_ticks = 1000
+	mound.maturity_ticks_remaining = 500
 	_expect(
 		mound.activate(true)
 			and activation_count[0] == 1
@@ -213,11 +227,18 @@ func _test_spice_mound_runtime_entity_contract(token: int) -> int:
 			and is_equal_approx(activation_fractions[0], 0.5),
 		"contact activation must report the elapsed fraction of the current cycle"
 	)
+	# The successful activate() above already called restart_maturity_cycle(),
+	# which reset the countdown to a fresh (1563-tick) cycle -- i.e. progress
+	# 0.0, well under the 30% repeat-activation floor, with no extra poke
+	# needed for this rejection to hold.
 	_expect(
 		not mound.activate(true) and activation_count[0] == 1,
 		"a recurring mound must reject another contact activation before reaching thirty-percent maturity"
 	)
-	mound.call("_set_maturity_progress", 0.3)
+	# 700 remaining of 1000 is an exact 0.3 -- exactly the repeat-activation
+	# floor, so this also pins that the floor is inclusive.
+	mound._maturity_cycle_ticks = 1000
+	mound.maturity_ticks_remaining = 700
 	_expect(
 		mound.activate(true)
 			and activation_count[0] == 2
@@ -256,6 +277,46 @@ func _test_spice_mound_runtime_entity_contract(token: int) -> int:
 		"timer activation must report a complete cycle and begin the next one"
 	)
 	_expect(is_equal_approx(mound.growth_scale(), 0.001), "timer activation must restart the recurring authored growth animation")
+	mound.free()
+	return token
+
+
+## Pins the 60 Hz -> 25 Hz conversion itself (RuleTicks.to_sim_ticks(), driven
+## through SpiceMound.maturity_duration_ticks()): a mound must not mature one
+## sim_tick() early, and must mature on the exact tick the conversion
+## predicts -- not "eventually" or "close enough". The runtime-entity-contract
+## case above already checks the converted duration's value; this one checks
+## that sim_tick() actually counts down to it.
+func _test_spice_mound_maturity_tick_conversion(token: int) -> int:
+	var config = SpiceMoundDefinitionScript.new()
+	config.maturity_minimum_ticks = 100
+	config.maturity_random_ticks = 0
+	var mound = SpiceMoundScene.instantiate()
+	# maturity_random_ticks is 0, so the random fraction below can never
+	# affect the result -- passing 0.0 explicitly keeps this case independent
+	# of randf() (see spice_mound.gd's maturity_duration_ticks(), which
+	# deliberately still calls randf() when no fraction is given; phase 4's
+	# concern, not this slice's).
+	mound.configure(Vector2i(0, 0), Vector2.ONE, config, 0.0)
+	# 100 rule ticks * MATURITY_DURATION_MULTIPLIER(3) = 300 rule ticks at
+	# RuleTicks.RULE_TICKS_PER_SECOND (60 Hz) -> to_sim_ticks(300) =
+	# roundi(300 * 25 / 60) = roundi(125.0) = 125 simulation ticks exactly --
+	# chosen so the conversion lands on a whole number and this case is not
+	# also silently pinning roundi()'s tie-breaking rule.
+	var expected_ticks := 125
+	_expect(
+		mound.maturity_duration_ticks(0.0) == expected_ticks,
+		"the fixture's own converted duration must match the worked arithmetic before the tick-count assertions below mean anything"
+	)
+	var activation_count := [0]
+	mound.activated.connect(func(_entity, _early: bool, _fraction: float) -> void:
+		activation_count[0] += 1
+	)
+	for _i in expected_ticks - 1:
+		mound.sim_tick()
+	_expect(activation_count[0] == 0, "a mound must not mature one simulation tick before its converted duration elapses")
+	mound.sim_tick()
+	_expect(activation_count[0] == 1, "a mound must mature after exactly its converted number of simulation ticks")
 	mound.free()
 	return token
 

@@ -10,6 +10,7 @@ const BuildingDefinitionCatalogScript := preload(
 	"res://scripts/buildings/building_definition_catalog.gd"
 )
 const MatchFixtureScene := preload("res://tests/fixtures/match_fixture.tscn")
+const SpiceMoundScene := preload("res://scenes/world/spice_mound.tscn")
 const HarvesterControllerScript := preload("res://scripts/units/harvester_controller.gd")
 const HarvesterScene := preload("res://scenes/units/harvester.tscn")
 const ATRefineryScene := preload("res://assets/converted/buildings/ATRefinery/ATRefinery.scn")
@@ -58,6 +59,10 @@ func _initialize() -> void:
 	await _run_case(
 		"a real linger effect's delivered ticks advance from the match loop alone",
 		_test_match_loop_drives_unit_linger_effect
+	)
+	await _run_case(
+		"a real spice mound's maturity countdown advances from the match loop alone",
+		_test_match_loop_drives_spice_mound_maturity
 	)
 	await _run_case("roster controls leave arrow keys to the camera", _test_roster_controls_ignore_keyboard_focus)
 	await _run_case("F3 toggles every navigation debug layer", _test_unified_debug_shortcut)
@@ -800,6 +805,63 @@ func _test_match_loop_drives_unit_linger_effect() -> void:
 	)
 
 	effect.queue_free()
+	match_instance.queue_free()
+
+
+func _test_match_loop_drives_spice_mound_maturity() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	get_root().add_child(match_instance)
+	for _warmup in 5:
+		await process_frame
+
+	# The fixture scene (tests/fixtures/match_fixture.tscn) carries no spice
+	# mound of its own -- nothing else in this suite needs one -- so this is
+	# the one place a real mound has to be wired into a real match, and this
+	# case adds it directly rather than skip the only coverage of that wiring.
+	var mound := SpiceMoundScene.instantiate()
+	mound.configure(Vector2i(0, 0), Vector2(4.0, 4.0))
+	match_instance.add_child(mound)
+	# _ready() (just run by add_child above) already armed the countdown from
+	# the default rules catalog, drawing an unseeded randf() in the process
+	# (see spice_mound.gd's maturity_duration_ticks() -- left alone
+	# deliberately, that's phase 4's determinism gate, not this slice's).
+	# Overwrite it with a fixed, generous countdown, the same way the
+	# linger-effect case above overwrites remaining_ticks: this case is only
+	# about whether the match loop drains the countdown at all, not about the
+	# authored duration.
+	mound.maturity_ticks_remaining = 1000
+
+	var started_msec := Time.get_ticks_msec()
+	var started_tick: int = match_instance.current_tick()
+	var started_remaining: int = mound.maturity_ticks_remaining
+
+	var frames := 0
+	while Time.get_ticks_msec() - started_msec < 200 and frames < 400:
+		await process_frame
+		frames += 1
+
+	var advanced_ticks: int = match_instance.current_tick() - started_tick
+	var advanced_countdown: int = started_remaining - mound.maturity_ticks_remaining
+	_expect(
+		advanced_ticks >= 3,
+		"%d ms of the real match loop must advance the clock at least 3 ticks, got %d" \
+			% [Time.get_ticks_msec() - started_msec, advanced_ticks]
+	)
+	# Same reasoning as the linger-effect case above: both counters are
+	# advanced from the same due-tick loop within the same frame (see
+	# match.gd::_advance_simulation_tick()), so -- as long as 1000 ticks is
+	# nowhere near exhausted, which this bounded window guarantees -- the
+	# drop is exact, not just approximate. Nothing in this test body calls
+	# sim_tick() or touches the countdown itself after the override above;
+	# only the match's own _process() loop does from here on, which is
+	# exactly the wiring this case exists to prove.
+	_expect(
+		advanced_countdown == advanced_ticks,
+		"a real spice mound must drop its maturity countdown by exactly one simulation tick per clock tick from the match loop alone: countdown dropped by %d against %d clock ticks" \
+			% [advanced_countdown, advanced_ticks]
+	)
+
+	mound.queue_free()
 	match_instance.queue_free()
 
 

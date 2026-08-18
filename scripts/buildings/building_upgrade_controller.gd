@@ -4,7 +4,7 @@ extends Node3D
 const AutoloadLookupScript := preload("res://scripts/players/autoload_lookup.gd")
 const EntityQueryScript := preload("res://scripts/world/entity_query.gd")
 const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
-const RuleBuildTimeScript := preload("res://scripts/rules/rule_build_time.gd")
+const RuleTicksScript := preload("res://scripts/rules/rule_ticks.gd")
 
 ## docs/mechanics/production.md section 4 "Upgrades". Deliberately a sibling
 ## of BuildingController rather than more code stuffed into it: it owns a
@@ -38,7 +38,7 @@ const UnitSceneCatalogScript := preload("res://scripts/units/unit_scene_catalog.
 
 const REFINERY_ROLE := "Refinery"
 ## Rules-shaped defaults, in rule ticks (60/sec) like every other build time
-## in the rules data -- both go through the same RuleBuildTime conversion as
+## in the rules data -- both go through the same RuleTicks conversion as
 ## a real config value on their way out of _upgrade_build_time_sim_ticks().
 const DEFAULT_GLOBAL_UPGRADE_BUILD_TIME_TICKS := 60.0
 ## Rules.txt defines this separately for all three refinery docks, but the
@@ -454,11 +454,11 @@ func _upgrade_tooltip(building_id: StringName) -> String:
 ## Renamed from _upgrade_build_time_ticks(): the old name kept returning a
 ## rules-domain float after every other build-time site in this slice moved
 ## to simulation ticks, which is exactly the silent-unit-change bug this slice
-## exists to avoid. Converts through RuleBuildTime on the way out; everything
+## exists to avoid. Converts through RuleTicks on the way out; everything
 ## above stays in the rules domain (rule ticks, 60/sec) like the resource data
 ## it reads.
 func _upgrade_build_time_sim_ticks(config: Resource, refinery_dock: bool) -> int:
-	return RuleBuildTimeScript.to_sim_ticks(_upgrade_build_time_rule_ticks(config, refinery_dock))
+	return RuleTicksScript.to_sim_ticks(_upgrade_build_time_rule_ticks(config, refinery_dock))
 
 
 func _upgrade_build_time_rule_ticks(config: Resource, refinery_dock: bool) -> float:

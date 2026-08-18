@@ -33,7 +33,7 @@ func lacks_funds() -> bool:
 
 
 ## build_time_ticks is already simulation-domain (MatchClock.TICKS_PER_SECOND
-## per second) -- convert a rules-domain value with RuleBuildTime.to_sim_ticks()
+## per second) -- convert a rules-domain value with RuleTicks.to_sim_ticks()
 ## before calling this, so a caller can never mistake it for the rules-domain
 ## number it used to be.
 func start(

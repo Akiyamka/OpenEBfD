@@ -4,7 +4,7 @@ extends Node3D
 const AutoloadLookupScript := preload("res://scripts/players/autoload_lookup.gd")
 const TerrainProbeScript := preload("res://scripts/world/terrain_probe.gd")
 const AuthoredModelScript := preload("res://scripts/world/authored_model.gd")
-const RuleBuildTimeScript := preload("res://scripts/rules/rule_build_time.gd")
+const RuleTicksScript := preload("res://scripts/rules/rule_ticks.gd")
 
 signal status_changed(status: String)
 signal building_option_state_changed(option_state: BuildingOptionState)
@@ -804,7 +804,7 @@ func _start_building_order(building_id: StringName) -> void:
 		building_id,
 		_building_display_name(building_id),
 		maxi(config.cost, 0),
-		RuleBuildTimeScript.order_sim_ticks(config.build_time_ticks)
+		RuleTicksScript.order_sim_ticks(config.build_time_ticks)
 	):
 		return
 	_building_placement.cancel()

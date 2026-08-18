@@ -4,7 +4,7 @@ extends Node
 const AutoloadLookupScript := preload("res://scripts/players/autoload_lookup.gd")
 const EntityQueryScript := preload("res://scripts/world/entity_query.gd")
 const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
-const RuleBuildTimeScript := preload("res://scripts/rules/rule_build_time.gd")
+const RuleTicksScript := preload("res://scripts/rules/rule_ticks.gd")
 
 ## docs/mechanics/production.md section 3 "unit production": the roster half
 ## only. The Infantry/Vehicles panel tabs list the units the technology tree
@@ -365,7 +365,7 @@ func _start_next_unit_order(production_building_id: StringName) -> void:
 		unit_id,
 		String(unit_id),
 		maxi(int(config.cost), 0),
-		RuleBuildTimeScript.order_sim_ticks(config.build_time_ticks)
+		RuleTicksScript.order_sim_ticks(config.build_time_ticks)
 	):
 		push_warning("Unit could not be started from production queue: %s" % String(unit_id))
 
@@ -446,7 +446,7 @@ func _unit_tooltip(unit_id: StringName) -> String:
 	var cost := int(config.cost)
 	# Seconds from the actual simulation ticks the order will run for, not the
 	# pre-conversion rules-domain ideal -- the duration the player really waits.
-	var sim_ticks := RuleBuildTimeScript.to_sim_ticks(config.build_time_ticks)
+	var sim_ticks := RuleTicksScript.to_sim_ticks(config.build_time_ticks)
 	var build_seconds := float(sim_ticks) * MatchClockScript.SECONDS_PER_TICK
 	return "%s\nCost: %d\nBuild: %.1fs" % [String(unit_id), cost, build_seconds]
 

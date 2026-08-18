@@ -92,7 +92,7 @@ func _test_paid_and_free_progress(token: int) -> int:
 	var credits = Credits.new(100)
 	var paid_queue = BuildingQueueScript.new()
 	# Unit tests of the queue itself: build_time_ticks below is passed
-	# directly in simulation ticks, not routed through RuleBuildTime -- that
+	# directly in simulation ticks, not routed through RuleTicks -- that
 	# conversion has its own tests (tests/rules/run.gd).
 	_expect(paid_queue.start(&"Paid", "Paid", 60, 20), "a valid paid order must start")
 	for _index in 10:

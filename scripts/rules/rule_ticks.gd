@@ -1,41 +1,46 @@
-class_name RuleBuildTime
+class_name RuleTicks
 extends RefCounted
 
-## Converts a build time out of the rules data into simulation ticks. This is
-## the one place decision 4 ("One integer tick at 25 Hz",
+## Converts a per-tick duration out of the rules data into simulation ticks.
+## This is the one place decision 4 ("One integer tick at 25 Hz",
 ## docs/architecture/network-multiplayer.md) puts the 60 Hz -> 25 Hz
 ## conversion: per-tick values stay unscaled in resources/**/*.tres, so a
 ## config value only becomes a simulation-domain number at the boundary where
 ## it turns into a queue order (BuildingQueue.start(), UpgradeQueue.start(),
-## WallChain's constructor).
+## WallChain's constructor) or a countdown (SpiceMound's maturity cycle).
+## Originally named for the first of those boundaries alone -- see git
+## history -- until the second one arrived and the construction-only name
+## started actively misleading.
 
 const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 
 ## The rate the *source* rules data was authored at, not a property of this
-## simulation -- MatchClock.TICKS_PER_SECOND owns that. Every build time in
-## resources/**/*.tres comes from the original game's Rules.txt, and this
-## codebase has always read those values at 60 per second (see
+## simulation -- MatchClock.TICKS_PER_SECOND owns that. Every per-tick
+## duration in resources/**/*.tres -- build times, upgrade times, spice mound
+## maturity -- comes from the original game's Rules.txt, and this codebase has
+## always read those values at 60 per second (see
 ## tools/generate_unit_definitions.py and the schema notes in
 ## assets/converted/schema.sql). It lives here, next to the rules, rather than
 ## on MatchClock, so that re-testing a different simulation tick rate (20 Hz
 ## is an open question -- see decision 4) never has to touch this constant.
-const RULE_BUILD_TICKS_PER_SECOND := 60
+const RULE_TICKS_PER_SECOND := 60
 
 
-## Converts a build time measured in rule ticks (60/sec) into whole
+## Converts a duration measured in rule ticks (60/sec) into whole
 ## simulation ticks (MatchClock.TICKS_PER_SECOND/sec), preserving wall-clock
 ## duration: 300 rule ticks was 5 seconds at 60 Hz, and roundi(300 * 25 / 60)
 ## is 125 sim ticks -- still 5 seconds. Rounding to the nearest whole tick
-## costs at most half a tick either way, well under 20 ms on a build measured
-## in seconds. A non-positive or non-finite input (no build time defined)
-## returns 0, but any genuinely positive input is floored at 1: a build that
-## rounded down to 0 ticks would both complete the instant it was adopted and
-## be rejected outright by ProductionQueue.adopt(), which treats
-## build_time_ticks <= 0 as "no order".
+## costs at most half a tick either way, well under 20 ms on a duration
+## measured in seconds. A non-positive or non-finite input (no duration
+## defined) returns 0, but any genuinely positive input is floored at 1: a
+## build that rounded down to 0 ticks would both complete the instant it was
+## adopted and be rejected outright by ProductionQueue.adopt(), which treats
+## build_time_ticks <= 0 as "no order" -- one of this function's callers, not
+## the only one.
 static func to_sim_ticks(rule_ticks: float) -> int:
 	if not is_finite(rule_ticks) or rule_ticks <= 0.0:
 		return 0
-	return maxi(1, roundi(rule_ticks * float(MatchClockScript.TICKS_PER_SECOND) / float(RULE_BUILD_TICKS_PER_SECOND)))
+	return maxi(1, roundi(rule_ticks * float(MatchClockScript.TICKS_PER_SECOND) / float(RULE_TICKS_PER_SECOND)))
 
 
 ## The form the order-creating call sites want: a config with no build time at
