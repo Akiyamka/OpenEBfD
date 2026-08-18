@@ -8,6 +8,8 @@ extends SceneTree
 
 const RulesCatalogScript := preload("res://scripts/rules/rules_catalog.gd")
 const RuleEntityConfigScript := preload("res://scripts/rules/rule_entity_config.gd")
+const RuleBuildTimeScript := preload("res://scripts/rules/rule_build_time.gd")
+const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 
 var _assertions := 0
 var _failures := 0
@@ -23,6 +25,7 @@ func _initialize() -> void:
 	)
 	_run_case("upgrade roster includes an upgradeable Construction Yard", _test_upgrade_roster)
 	_run_case("unit roster keeps producible units and shared house-less units", _test_unit_roster)
+	_run_case("RuleBuildTime.to_sim_ticks converts 60 Hz rule ticks to 25 Hz sim ticks", _test_rule_build_time_to_sim_ticks)
 
 	if _failures > 0:
 		printerr("Rules tests: %d failures after %d assertions" % [_failures, _assertions])
@@ -192,6 +195,59 @@ func _test_unit_roster() -> bool:
 	var fremen_subhouse: Array[StringName] = [&"Fremen"]
 	var with_subhouse: Array[StringName] = catalog.producible_unit_ids_for_house(&"Atreides", fremen_subhouse)
 	_expect(with_subhouse.has(&"FRFremen"), "a listed subhouse's unit must match")
+	return true
+
+
+## docs/architecture/network-multiplayer.md decision 4 ("One integer tick at
+## 25 Hz"): the property this conversion exists to preserve is wall-clock
+## duration, not the raw tick count, so that is what these cases assert.
+func _test_rule_build_time_to_sim_ticks() -> bool:
+	_expect(
+		RuleBuildTimeScript.to_sim_ticks(60.0) == 25,
+		"60 rule ticks (1 second at 60 Hz) must convert to 25 sim ticks (1 second at 25 Hz)"
+	)
+
+	# A longer duration must survive the round trip to within half a tick --
+	# rounding to the nearest whole sim tick can cost at most that much.
+	var rule_ticks := 300.0
+	var rule_seconds := rule_ticks / float(RuleBuildTimeScript.RULE_BUILD_TICKS_PER_SECOND)
+	var sim_ticks := RuleBuildTimeScript.to_sim_ticks(rule_ticks)
+	var sim_seconds := float(sim_ticks) * MatchClockScript.SECONDS_PER_TICK
+	_expect(sim_ticks == 125, "300 rule ticks (5 seconds at 60 Hz) must convert to 125 sim ticks")
+	_expect(
+		absf(sim_seconds - rule_seconds) <= 0.5 * MatchClockScript.SECONDS_PER_TICK,
+		"the converted duration must stay within half a sim tick of the original"
+	)
+
+	_expect(RuleBuildTimeScript.to_sim_ticks(0.0) == 0, "a zero build time must convert to 0 sim ticks")
+	_expect(RuleBuildTimeScript.to_sim_ticks(-10.0) == 0, "a negative build time must convert to 0 sim ticks")
+	_expect(RuleBuildTimeScript.to_sim_ticks(NAN) == 0, "NaN must convert to 0 sim ticks")
+	_expect(RuleBuildTimeScript.to_sim_ticks(INF) == 0, "positive infinity must convert to 0 sim ticks")
+	_expect(RuleBuildTimeScript.to_sim_ticks(-INF) == 0, "negative infinity must convert to 0 sim ticks")
+
+	_expect(
+		RuleBuildTimeScript.to_sim_ticks(1.0) == 1,
+		"a tiny positive build time must floor to 1 sim tick, not round down to 0"
+	)
+
+	# The order-creating form. Regression guard: 92 building definitions and 25
+	# unit definitions ship with build_time_ticks = 0, and every order-creating
+	# call site used to turn that into a buildable one-tick order via
+	# maxf(..., 1.0). Dropping that floor would have made all of them --
+	# ATConYard included -- fail ProductionQueue.adopt() and stop being
+	# buildable, which no amount of green queue tests would have caught.
+	_expect(
+		RuleBuildTimeScript.order_sim_ticks(0.0) == 1,
+		"an undefined build time must still yield a buildable one-tick order"
+	)
+	_expect(
+		RuleBuildTimeScript.order_sim_ticks(-5.0) == 1,
+		"a negative build time must still yield a buildable one-tick order"
+	)
+	_expect(
+		RuleBuildTimeScript.order_sim_ticks(60.0) == 25,
+		"a defined build time must convert identically through either entry point"
+	)
 	return true
 
 

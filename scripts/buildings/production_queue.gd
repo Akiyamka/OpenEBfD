@@ -3,8 +3,6 @@ extends RefCounted
 
 signal order_ready(order)
 
-const BUILD_TICKS_PER_SECOND := 60.0
-
 var _order
 var _lack_funds := false
 
@@ -22,19 +20,22 @@ func lacks_funds() -> bool:
 
 
 func adopt(order) -> bool:
-	if _order != null or order == null or order.cost < 0 or order.build_time_ticks <= 0.0:
+	if _order != null or order == null or order.cost < 0 or order.build_time_ticks <= 0:
 		return false
 	_order = order
 	_lack_funds = false
 	return true
 
 
-func tick(delta: float, available_credits: int, spend_credits: Callable = Callable()) -> bool:
+## Advances the current order by exactly one simulation tick. One call is one
+## tick -- callers no longer hand in a delta (see MatchClock and decision 4,
+## docs/architecture/network-multiplayer.md).
+func advance_tick(available_credits: int, spend_credits: Callable = Callable()) -> bool:
 	if _order == null or _order.ready or _order.manually_paused:
 		return false
 
 	if _order.cost <= 0:
-		_order.elapsed_ticks += delta * BUILD_TICKS_PER_SECOND
+		_order.elapsed_ticks += 1
 		if _order.elapsed_ticks >= _order.build_time_ticks:
 			_mark_ready()
 		return true
@@ -48,9 +49,13 @@ func tick(delta: float, available_credits: int, spend_credits: Callable = Callab
 		_mark_ready()
 		return true
 
-	var build_seconds: float = _order.build_time_ticks / BUILD_TICKS_PER_SECOND
-	var credits_per_second: float = float(_order.cost) / build_seconds
-	_order.charge_accumulator += delta * credits_per_second
+	# One tick's share of the total cost, spread evenly across build_time_ticks
+	# -- the direct per-tick analog of the old delta * cost / build_seconds,
+	# with delta fixed at exactly one tick. Summed over every tick of the
+	# build (build_time_ticks calls, each adding cost / build_time_ticks) this
+	# still totals exactly `cost`, just without round-tripping through seconds.
+	var credits_per_tick: float = float(_order.cost) / float(_order.build_time_ticks)
+	_order.charge_accumulator += credits_per_tick
 
 	var credits_due := mini(int(floor(_order.charge_accumulator)), remaining_cost)
 	if credits_due <= 0:

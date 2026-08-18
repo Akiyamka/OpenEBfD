@@ -108,18 +108,24 @@ func _expect(condition: bool, message: String) -> void:
 
 func _test_start_rejects_invalid(token: int) -> int:
 	var queue := UpgradeQueueScript.new()
-	_expect(not queue.start(&"", "Nothing", 100, 60.0), "an empty upgrade id must be rejected")
-	_expect(not queue.start(&"AT", "Negative cost", -1, 60.0), "a negative cost must be rejected")
-	_expect(not queue.start(&"AT", "Zero build time", 100, 0.0), "a non-positive build time must be rejected")
+	# Unit tests of the queue itself: build_time_ticks below is passed
+	# directly in simulation ticks (60 rule ticks == 25 sim ticks), not
+	# routed through RuleBuildTime -- that conversion has its own tests
+	# (tests/rules/run.gd).
+	_expect(not queue.start(&"", "Nothing", 100, 25), "an empty upgrade id must be rejected")
+	_expect(not queue.start(&"AT", "Negative cost", -1, 25), "a negative cost must be rejected")
+	_expect(not queue.start(&"AT", "Zero build time", 100, 0), "a non-positive build time must be rejected")
 	_expect(not queue.has_order(), "rejected starts must leave the queue empty")
-	_expect(queue.start(&"AT", "Valid", 100, 60.0), "a valid order must start")
-	_expect(not queue.start(&"AT2", "Second", 50, 30.0), "the queue is one order at a time, like BuildingQueue")
+	_expect(queue.start(&"AT", "Valid", 100, 25), "a valid order must start")
+	_expect(not queue.start(&"AT2", "Second", 50, 13), "the queue is one order at a time, like BuildingQueue")
 	return token
 
 
 func _test_tick_gradual_payment(token: int) -> int:
 	var queue := UpgradeQueueScript.new()
-	queue.start(&"ATBarracks", "Barracks upgrade", 600, 60.0)
+	# Unit test of the queue itself: 60 rule ticks == 25 sim ticks (see
+	# tests/rules/run.gd for the conversion's own tests).
+	queue.start(&"ATBarracks", "Barracks upgrade", 600, 25)
 	# GDScript lambdas capture outer locals by value, not by reference, so a
 	# plain int can't accumulate across calls -- box it in an Array (arrays
 	# are reference types) the way BuildingQueue's own tests do.
@@ -128,18 +134,17 @@ func _test_tick_gradual_payment(token: int) -> int:
 		spent_box[0] += amount
 		return true
 
-	# 600 credits over 60 "build ticks" of build time (60 ticks at
-	# BUILD_TICKS_PER_SECOND=60 == 1 real second) => 600/s while paying.
-	# tick()'s return value means "state changed for the UI", not "order
-	# complete" -- completion is read off current_order().ready.
-	queue.tick(0.5, 1000, spend)
+	# 600 credits over 25 sim ticks of build time => 24 credits per tick while
+	# paying. advance_tick()'s return value means "state changed for the UI",
+	# not "order complete" -- completion is read off current_order().ready.
+	queue.advance_tick(1000, spend)
 	_expect(not queue.current_order().ready, "a partial tick must not complete the order")
 	_expect(spent_box[0] > 0 and spent_box[0] < 600, "a partial tick must spend a partial amount")
 	_expect(queue.current_order().paid_cost == spent_box[0], "paid_cost must track what was actually spent")
 
 	var iterations := 0
-	while not queue.current_order().ready and iterations < 20:
-		queue.tick(0.5, 1000, spend)
+	while not queue.current_order().ready and iterations < 30:
+		queue.advance_tick(1000, spend)
 		iterations += 1
 
 	_expect(queue.current_order().ready, "enough ticks must complete the order")
@@ -149,13 +154,13 @@ func _test_tick_gradual_payment(token: int) -> int:
 
 func _test_tick_lacks_funds(token: int) -> int:
 	var queue := UpgradeQueueScript.new()
-	queue.start(&"AT", "Broke", 100, 60.0)
+	queue.start(&"AT", "Broke", 100, 25)
 	var spend_called := false
 	var spend := func(_amount: int) -> bool:
 		spend_called = true
 		return true
 
-	queue.tick(0.5, 0, spend)
+	queue.advance_tick(0, spend)
 	_expect(queue.lacks_funds(), "zero available credits must be reported as lacking funds")
 	_expect(not spend_called, "spend_credits must not be invoked with zero available credits")
 	_expect(queue.current_order().paid_cost == 0, "no credits must be paid while funds are lacking")
@@ -164,12 +169,12 @@ func _test_tick_lacks_funds(token: int) -> int:
 
 func _test_pause_resume(token: int) -> int:
 	var queue := UpgradeQueueScript.new()
-	queue.start(&"AT", "Pausable", 100, 60.0)
+	queue.start(&"AT", "Pausable", 100, 25)
 	_expect(queue.pause(), "pausing an active order must succeed")
 	_expect(queue.current_order().manually_paused, "pause must flag the order as manually paused")
 	var spend := func(_amount: int) -> bool:
 		return true
-	_expect(not queue.tick(0.5, 1000, spend), "a paused order must not tick")
+	_expect(not queue.advance_tick(1000, spend), "a paused order must not tick")
 	_expect(queue.resume(), "resuming a paused order must succeed")
 	_expect(not queue.current_order().manually_paused, "resume must clear the paused flag")
 	return token
@@ -177,10 +182,10 @@ func _test_pause_resume(token: int) -> int:
 
 func _test_cancel_refund(token: int) -> int:
 	var queue := UpgradeQueueScript.new()
-	queue.start(&"AT", "Cancellable", 100, 60.0)
+	queue.start(&"AT", "Cancellable", 100, 25)
 	var spend := func(_amount: int) -> bool:
 		return true
-	queue.tick(1.0, 1000, spend)
+	queue.advance_tick(1000, spend)
 	var paid := queue.current_order().paid_cost
 	_expect(paid > 0, "the setup tick must have paid something")
 	var refund := queue.cancel()
@@ -191,11 +196,13 @@ func _test_cancel_refund(token: int) -> int:
 
 func _test_free_upgrade_time_only(token: int) -> int:
 	var queue := UpgradeQueueScript.new()
-	# build_time_ticks=30 at BUILD_TICKS_PER_SECOND=60 is half a real second.
-	queue.start(&"AT", "Free", 0, 30.0)
-	queue.tick(0.2, 0)
-	_expect(not queue.current_order().ready, "an elapsed time under build_time_ticks must not finish a free upgrade")
-	queue.tick(0.4, 0)
+	# Unit test of the queue itself: 3 sim ticks stands in for a short free
+	# build (the rules -> sim conversion has its own tests).
+	queue.start(&"AT", "Free", 0, 3)
+	queue.advance_tick(0)
+	_expect(not queue.current_order().ready, "an elapsed tick under build_time_ticks must not finish a free upgrade")
+	queue.advance_tick(0)
+	queue.advance_tick(0)
 	_expect(queue.current_order().ready, "elapsed build time alone must finish a zero-cost upgrade")
 	return token
 
@@ -206,11 +213,11 @@ func _test_order_ready_signal(token: int) -> int:
 	queue.order_ready.connect(func(order: UpgradeOrder) -> void:
 		ready_orders.append(order)
 	)
-	queue.start(&"AT", "Signal", 0, 0.5)
+	queue.start(&"AT", "Signal", 0, 1)
 	var adopted_order := queue.current_order()
-	queue.tick(1.0, 0)
-	queue.tick(1.0, 0)
-	_expect(ready_orders.size() == 1, "order_ready must fire exactly once even if tick keeps being called")
+	queue.advance_tick(0)
+	queue.advance_tick(0)
+	_expect(ready_orders.size() == 1, "order_ready must fire exactly once even if advance_tick keeps being called")
 	_expect(
 		ready_orders.size() == 1 and ready_orders[0] == adopted_order,
 		"order_ready must retransmit the exact typed order adopted by the shared queue"
@@ -225,8 +232,8 @@ func _test_progress_percent(token: int) -> int:
 	_expect(is_equal_approx(costed.progress_percent(), 25.0), "cost-based progress must be paid/cost")
 
 	var timed := UpgradeOrderScript.new()
-	timed.build_time_ticks = 100.0
-	timed.elapsed_ticks = 40.0
+	timed.build_time_ticks = 100
+	timed.elapsed_ticks = 40
 	_expect(is_equal_approx(timed.progress_percent(), 40.0), "free upgrades must fall back to elapsed/build_time")
 
 	var done := UpgradeOrderScript.new()
@@ -469,9 +476,10 @@ func _test_dock_upgrade_build_time(token: int) -> int:
 	var no_ids: Array[StringName] = []
 	controller.setup(no_ids)
 	var dock_config: Resource = definitions.definition(&"ATRefineryDock")
+	# 720 rule ticks (DEFAULT_DOCK_UPGRADE_BUILD_TIME_TICKS) -> roundi(720 * 25 / 60) = 300 sim ticks.
 	_expect(
-		is_equal_approx(controller._upgrade_build_time_ticks(dock_config, true), 720.0),
-		"refinery docks must use Rules.txt UpgradeBuildTime instead of ordinary BuildTime"
+		controller._upgrade_build_time_sim_ticks(dock_config, true) == 300,
+		"refinery docks must use Rules.txt UpgradeBuildTime (720 rule ticks -> 300 sim ticks) instead of ordinary BuildTime"
 	)
 	controller.free()
 	return token
@@ -490,7 +498,11 @@ func _test_con_yard_upgrade_build_time(token: int, local_player: PlayerData) -> 
 	controller._start_global_upgrade_order(&"ATConYard")
 	var order: UpgradeOrder = controller._upgrade_queue.current_order()
 	_expect(order != null, "an owned Construction Yard must start its upgrade order")
-	_expect(order != null and is_equal_approx(order.build_time_ticks, 864.0), "Construction Yard upgrade must use the linked MCV's 864-tick build time")
+	# 864 rule ticks (the linked MCV's build time) -> roundi(864 * 25 / 60) = 360 sim ticks.
+	_expect(
+		order != null and order.build_time_ticks == 360,
+		"Construction Yard upgrade must use the linked MCV's 864-rule-tick build time (360 sim ticks)"
+	)
 
 	# 0.1 simulated seconds is roundi(0.1 / SECONDS_PER_TICK) ticks -- a short
 	# elapsed time, same intent as the old controller.process(0.1) call.

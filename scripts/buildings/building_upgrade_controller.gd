@@ -4,6 +4,7 @@ extends Node3D
 const AutoloadLookupScript := preload("res://scripts/players/autoload_lookup.gd")
 const EntityQueryScript := preload("res://scripts/world/entity_query.gd")
 const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
+const RuleBuildTimeScript := preload("res://scripts/rules/rule_build_time.gd")
 
 ## docs/mechanics/production.md section 4 "Upgrades". Deliberately a sibling
 ## of BuildingController rather than more code stuffed into it: it owns a
@@ -36,6 +37,9 @@ const BuildingDefinitionCatalogScript := preload("res://scripts/buildings/buildi
 const UnitSceneCatalogScript := preload("res://scripts/units/unit_scene_catalog.gd")
 
 const REFINERY_ROLE := "Refinery"
+## Rules-shaped defaults, in rule ticks (60/sec) like every other build time
+## in the rules data -- both go through the same RuleBuildTime conversion as
+## a real config value on their way out of _upgrade_build_time_sim_ticks().
 const DEFAULT_GLOBAL_UPGRADE_BUILD_TIME_TICKS := 60.0
 ## Rules.txt defines this separately for all three refinery docks, but the
 ## current generated rules database predates that column. Prefer the converted
@@ -76,7 +80,7 @@ func process(_delta: float) -> void:
 ## match.gd::_advance_simulation_tick() for why this and the sibling
 ## controllers' advance_tick() run in a fixed order.
 func advance_tick() -> void:
-	_process_upgrade_order(MatchClockScript.SECONDS_PER_TICK)
+	_process_upgrade_order()
 
 
 func handle_command(_command: StringName) -> bool:
@@ -115,7 +119,7 @@ func _try_start_dock_upgrade(refinery: Node3D, dock_building_id: StringName = &"
 		dock_building_id,
 		_upgrade_display_name(dock_building_id),
 		maxi(config.upgrade_cost, 0),
-		_upgrade_build_time_ticks(config, true),
+		_upgrade_build_time_sim_ticks(config, true),
 		UpgradeOrderScript.Kind.REFINERY_DOCK,
 		refinery
 	):
@@ -189,7 +193,7 @@ func _start_global_upgrade_order(building_id: StringName) -> void:
 		building_id,
 		_upgrade_display_name(building_id),
 		maxi(config.upgrade_cost, 0),
-		_upgrade_build_time_ticks(config, false)
+		_upgrade_build_time_sim_ticks(config, false)
 	):
 		return
 
@@ -211,7 +215,7 @@ func _cancel_upgrade_order() -> void:
 	_refresh_upgrade_option_states()
 
 
-func _process_upgrade_order(delta: float) -> void:
+func _process_upgrade_order() -> void:
 	var order := _upgrade_queue.current_order()
 	if order == null:
 		return
@@ -222,7 +226,7 @@ func _process_upgrade_order(delta: float) -> void:
 	var player := _local_player()
 	var available_credits: int = player.money if player != null else 0
 	var spend_credits: Callable = Callable(player, &"spend_money") if player != null else Callable()
-	if _upgrade_queue.tick(delta, available_credits, spend_credits):
+	if _upgrade_queue.advance_tick(available_credits, spend_credits):
 		_refresh_upgrade_option_states()
 
 
@@ -440,16 +444,28 @@ func _upgrade_tooltip(building_id: StringName) -> String:
 		return _upgrade_display_name(building_id)
 
 	var cost: int = int(config.upgrade_cost)
-	var build_time_ticks := _upgrade_build_time_ticks(config, _is_refinery_dock_id(building_id))
-	var build_seconds := build_time_ticks / UpgradeQueueScript.BUILD_TICKS_PER_SECOND
+	# Seconds from the actual simulation ticks the order will run for, not the
+	# pre-conversion rules-domain ideal -- the duration the player really waits.
+	var sim_ticks := _upgrade_build_time_sim_ticks(config, _is_refinery_dock_id(building_id))
+	var build_seconds := float(sim_ticks) * MatchClockScript.SECONDS_PER_TICK
 	return "%s\nCost: %d\nBuild: %.1fs" % [_upgrade_display_name(building_id), cost, build_seconds]
 
 
-func _upgrade_build_time_ticks(config: Resource, refinery_dock: bool) -> float:
+## Renamed from _upgrade_build_time_ticks(): the old name kept returning a
+## rules-domain float after every other build-time site in this slice moved
+## to simulation ticks, which is exactly the silent-unit-change bug this slice
+## exists to avoid. Converts through RuleBuildTime on the way out; everything
+## above stays in the rules domain (rule ticks, 60/sec) like the resource data
+## it reads.
+func _upgrade_build_time_sim_ticks(config: Resource, refinery_dock: bool) -> int:
+	return RuleBuildTimeScript.to_sim_ticks(_upgrade_build_time_rule_ticks(config, refinery_dock))
+
+
+func _upgrade_build_time_rule_ticks(config: Resource, refinery_dock: bool) -> float:
 	if config == null:
 		return DEFAULT_GLOBAL_UPGRADE_BUILD_TIME_TICKS
 	if refinery_dock:
-		return maxf(config.upgrade_build_time_ticks if config.upgrade_build_time_ticks > 0.0 else DEFAULT_DOCK_UPGRADE_BUILD_TIME_TICKS, 1.0)
+		return config.upgrade_build_time_ticks if config.upgrade_build_time_ticks > 0.0 else DEFAULT_DOCK_UPGRADE_BUILD_TIME_TICKS
 	var build_time: float = float(config.build_time_ticks)
 	if build_time > 0.0:
 		return build_time

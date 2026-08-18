@@ -11,7 +11,7 @@ extends RefCounted
 var building_id: StringName
 var display_name := ""
 var cost := 0
-var build_time_ticks := 0.0
+var build_time_ticks := 0
 var cells: Array[Vector2i] = []
 var owner_player_id
 
@@ -22,7 +22,7 @@ func _init(
 		chain_building_id: StringName,
 		chain_display_name: String,
 		chain_cost: int,
-		chain_build_time_ticks: float,
+		chain_build_time_ticks: int,
 		chain_cells: Array[Vector2i],
 		chain_owner_player_id = null
 	) -> void:

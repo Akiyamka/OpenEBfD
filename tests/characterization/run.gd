@@ -257,12 +257,12 @@ func _test_building_order_progress() -> bool:
 	_expect(is_equal_approx(order.progress_percent(), 100.0), "paid-order progress must clamp to 100")
 
 	order.cost = 0
-	order.build_time_ticks = 120.0
-	order.elapsed_ticks = 30.0
+	order.build_time_ticks = 120
+	order.elapsed_ticks = 30
 	order.manually_paused = false
 	_expect(is_equal_approx(order.progress_percent(), 25.0), "elapsed ticks must define free-order progress")
 	order.ready = true
-	order.elapsed_ticks = 0.0
+	order.elapsed_ticks = 0
 	_expect(is_equal_approx(order.progress_percent(), 100.0), "ready state must always report complete")
 	return true
 

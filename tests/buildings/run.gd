@@ -91,33 +91,39 @@ func _expect(condition: bool, message: String) -> void:
 func _test_paid_and_free_progress(token: int) -> int:
 	var credits = Credits.new(100)
 	var paid_queue = BuildingQueueScript.new()
-	_expect(paid_queue.start(&"Paid", "Paid", 60, 60.0), "a valid paid order must start")
-	paid_queue.tick(0.5, credits.money, credits.spend)
-	_expect(credits.money == 70, "paid construction must charge at 60 ticks per second")
+	# Unit tests of the queue itself: build_time_ticks below is passed
+	# directly in simulation ticks, not routed through RuleBuildTime -- that
+	# conversion has its own tests (tests/rules/run.gd).
+	_expect(paid_queue.start(&"Paid", "Paid", 60, 20), "a valid paid order must start")
+	for _index in 10:
+		paid_queue.advance_tick(credits.money, credits.spend)
+	_expect(credits.money == 70, "paid construction must charge proportionally across its ticks")
 	_expect(is_equal_approx(paid_queue.current_order().progress_percent(), 50.0), "paid progress must equal paid credits")
 
 	var free_queue = BuildingQueueScript.new()
-	_expect(free_queue.start(&"Free", "Free", 0, 120.0), "a valid free order must start")
-	free_queue.tick(1.0, 0)
+	_expect(free_queue.start(&"Free", "Free", 0, 4), "a valid free order must start")
+	free_queue.advance_tick(0)
+	free_queue.advance_tick(0)
 	_expect(is_equal_approx(free_queue.current_order().progress_percent(), 50.0), "free progress must use elapsed ticks")
-	free_queue.tick(1.0, 0)
+	free_queue.advance_tick(0)
+	free_queue.advance_tick(0)
 	_expect(free_queue.current_order().ready, "free construction must become ready at its tick duration")
 	return token
 
 
 func _test_incremental_charging(token: int) -> int:
-	var credits = Credits.new(25)
+	var credits = Credits.new(6)
 	var queue = BuildingQueueScript.new()
-	queue.start(&"Incremental", "Incremental", 100, 60.0)
-	queue.tick(0.5, credits.money, credits.spend)
-	_expect(queue.current_order().paid_cost == 25, "partial funds must pay only the available credits")
+	queue.start(&"Incremental", "Incremental", 20, 2)
+	queue.advance_tick(credits.money, credits.spend)
+	_expect(queue.current_order().paid_cost == 6, "partial funds must pay only the available credits")
 	_expect(credits.money == 0, "the payer must lose exactly the paid credits")
 	_expect(queue.lacks_funds(), "partial payment must leave the order waiting for credits")
 	_expect(is_equal_approx(queue.current_order().charge_accumulator, 0.0), "unpaid whole credits must not stay due")
-	credits.refund(75)
-	queue.tick(0.25, credits.money, credits.spend)
-	_expect(queue.current_order().paid_cost == 50, "charging must resume incrementally after funds return")
-	queue.tick(0.5, credits.money, credits.spend)
+	credits.refund(14)
+	queue.advance_tick(credits.money, credits.spend)
+	_expect(queue.current_order().paid_cost == 16, "charging must resume incrementally after funds return")
+	queue.advance_tick(credits.money, credits.spend)
 	_expect(queue.current_order().ready, "paying the full cost must make the order ready")
 	_expect(credits.money == 0, "all charged credits must be spent exactly once")
 	return token
@@ -126,14 +132,14 @@ func _test_incremental_charging(token: int) -> int:
 func _test_no_catch_up_without_credits(token: int) -> int:
 	var credits = Credits.new(0)
 	var queue = BuildingQueueScript.new()
-	_expect(queue.start(&"NoCatchUp", "NoCatchUp", 100, 60.0), "a paid order must start without credits")
-	queue.tick(0.75, credits.money, credits.spend)
+	_expect(queue.start(&"NoCatchUp", "NoCatchUp", 100, 4), "a paid order must start without credits")
+	queue.advance_tick(credits.money, credits.spend)
 	_expect(queue.lacks_funds(), "a zero-credit tick must enter the waiting-for-credits state")
 	_expect(is_equal_approx(queue.current_order().progress_percent(), 0.0), "absent credits must not advance paid progress")
 	credits.refund(100)
-	queue.tick(0.25, credits.money, credits.spend)
+	queue.advance_tick(credits.money, credits.spend)
 	_expect(queue.current_order().paid_cost == 25, "returning credits must charge only the current tick")
-	_expect(credits.money == 75, "the missed zero-credit duration must not be charged later")
+	_expect(credits.money == 75, "the missed zero-credit tick must not be charged later")
 	_expect(not queue.lacks_funds(), "a successful current charge must leave waiting-for-credits state")
 	_expect(is_equal_approx(queue.current_order().progress_percent(), 25.0), "progress must reflect only the current tick payment")
 	return token
@@ -142,12 +148,12 @@ func _test_no_catch_up_without_credits(token: int) -> int:
 func _test_pause_and_resume(token: int) -> int:
 	var credits = Credits.new(100)
 	var queue = BuildingQueueScript.new()
-	queue.start(&"Paused", "Paused", 0, 60.0)
+	queue.start(&"Paused", "Paused", 0, 1)
 	_expect(queue.pause(), "a running order must pause")
-	queue.tick(1.0, credits.money, credits.spend)
+	queue.advance_tick(credits.money, credits.spend)
 	_expect(is_equal_approx(queue.current_order().progress_percent(), 0.0), "paused construction must not advance")
 	_expect(queue.resume(), "a paused order must resume")
-	queue.tick(1.0, credits.money, credits.spend)
+	queue.advance_tick(credits.money, credits.spend)
 	_expect(queue.current_order().ready, "resumed construction must advance normally")
 	_expect(not queue.pause(), "a ready order must not pause")
 	return token
@@ -156,8 +162,8 @@ func _test_pause_and_resume(token: int) -> int:
 func _test_cancel_refund(token: int) -> int:
 	var credits = Credits.new(100)
 	var queue = BuildingQueueScript.new()
-	queue.start(&"Canceled", "Canceled", 100, 60.0)
-	queue.tick(0.25, credits.money, credits.spend)
+	queue.start(&"Canceled", "Canceled", 100, 4)
+	queue.advance_tick(credits.money, credits.spend)
 	var refund := queue.cancel()
 	credits.refund(refund)
 	_expect(refund == 25, "cancel must return exactly the paid amount")
@@ -175,10 +181,10 @@ func _test_ready_and_consume(token: int) -> int:
 		ready_events[0] += 1
 		emitted_orders.append(order)
 	)
-	queue.start(&"Ready", "Ready", 0, 60.0)
+	queue.start(&"Ready", "Ready", 0, 1)
 	var adopted_order := queue.current_order()
-	queue.tick(1.0, 0)
-	queue.tick(1.0, 0)
+	queue.advance_tick(0)
+	queue.advance_tick(0)
 	_expect(ready_events[0] == 1, "ready must emit exactly once")
 	_expect(
 		emitted_orders.size() == 1 and emitted_orders[0] == adopted_order,
@@ -194,11 +200,11 @@ func _test_ready_and_consume(token: int) -> int:
 
 func _test_start_contract(token: int) -> int:
 	var queue = BuildingQueueScript.new()
-	_expect(not queue.start(&"", "Missing id", 0, 60.0), "an empty building id must be rejected")
-	_expect(not queue.start(&"InvalidCost", "Invalid", -1, 60.0), "a negative cost must be rejected")
-	_expect(not queue.start(&"InvalidTime", "Invalid", 0, 0.0), "a non-positive build duration must be rejected")
-	_expect(queue.start(&"First", "First", 0, 60.0), "a valid order must start after rejected inputs")
-	_expect(not queue.start(&"Second", "Second", 0, 60.0), "a duplicate queue start must be rejected")
+	_expect(not queue.start(&"", "Missing id", 0, 25), "an empty building id must be rejected")
+	_expect(not queue.start(&"InvalidCost", "Invalid", -1, 25), "a negative cost must be rejected")
+	_expect(not queue.start(&"InvalidTime", "Invalid", 0, 0), "a non-positive build duration must be rejected")
+	_expect(queue.start(&"First", "First", 0, 25), "a valid order must start after rejected inputs")
+	_expect(not queue.start(&"Second", "Second", 0, 25), "a duplicate queue start must be rejected")
 	return token
 
 

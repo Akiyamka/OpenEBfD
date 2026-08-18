@@ -5,7 +5,6 @@ signal order_ready(order: BuildingOrder)
 
 const BuildingOrderScript := preload("res://scripts/buildings/building_order.gd")
 const ProductionQueueScript := preload("res://scripts/buildings/production_queue.gd")
-const BUILD_TICKS_PER_SECOND := ProductionQueueScript.BUILD_TICKS_PER_SECOND
 
 var _queue := ProductionQueueScript.new()
 
@@ -26,7 +25,11 @@ func lacks_funds() -> bool:
 	return _queue.lacks_funds()
 
 
-func start(building_id: StringName, display_name: String, cost: int, build_time_ticks: float) -> bool:
+## build_time_ticks is already simulation-domain (MatchClock.TICKS_PER_SECOND
+## per second) -- convert a rules-domain value with RuleBuildTime.to_sim_ticks()
+## before calling this, so a caller can never mistake it for the rules-domain
+## number it used to be.
+func start(building_id: StringName, display_name: String, cost: int, build_time_ticks: int) -> bool:
 	if building_id == &"":
 		return false
 	var order := BuildingOrderScript.new()
@@ -37,8 +40,8 @@ func start(building_id: StringName, display_name: String, cost: int, build_time_
 	return _queue.adopt(order)
 
 
-func tick(delta: float, available_credits: int, spend_credits: Callable = Callable()) -> bool:
-	return _queue.tick(delta, available_credits, spend_credits)
+func advance_tick(available_credits: int, spend_credits: Callable = Callable()) -> bool:
+	return _queue.advance_tick(available_credits, spend_credits)
 
 
 func pause() -> bool:

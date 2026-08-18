@@ -4,6 +4,7 @@ extends RefCounted
 const BuildingPlacementScript := preload("res://scripts/buildings/building_placement.gd")
 const WallLineScript := preload("res://scripts/buildings/wall_line.gd")
 const WallChainScript := preload("res://scripts/buildings/wall_chain.gd")
+const RuleBuildTimeScript := preload("res://scripts/rules/rule_build_time.gd")
 
 var _marker_parent: Node3D
 var _placement
@@ -180,7 +181,7 @@ func start_chain(
 	var owner_id = _owner_id_provider.call() if not _owner_id_provider.is_null() else null
 	_chain = WallChainScript.new(
 		order_building_id, _display_provider.call(order_building_id),
-		maxi(config.cost, 0), maxf(config.build_time_ticks, 1.0), cells, owner_id
+		maxi(config.cost, 0), RuleBuildTimeScript.order_sim_ticks(config.build_time_ticks), cells, owner_id
 	)
 	advance_chain()
 	# Played only now, after advance_chain(): _placement.begin()/.cancel() calls

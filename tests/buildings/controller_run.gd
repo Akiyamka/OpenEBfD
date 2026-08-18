@@ -287,7 +287,7 @@ func _test_wall_line_preview_only_during_selection(token: int) -> int:
 
 	controller._building_placement.cancel()
 	controller._wall_chain = WallChainScript.new(
-		&"ATWall", "Wall", 10, 60.0, [Vector2i(6, 8)]
+		&"ATWall", "Wall", 10, 25, [Vector2i(6, 8)]
 	)
 	controller._advance_wall_chain()
 	_expect(
@@ -311,7 +311,7 @@ func _test_wall_chain_skips_blocked_segment(token: int) -> int:
 		null, grid, null, null, null, null, null, Callable()
 	)
 	controller._wall_chain = WallChainScript.new(
-		&"ATWall", "Wall", 0, 1.0, [Vector2i(2, 4), Vector2i(4, 4)]
+		&"ATWall", "Wall", 0, 1, [Vector2i(2, 4), Vector2i(4, 4)]
 	)
 	controller._advance_wall_chain()
 	_expect(
@@ -335,11 +335,11 @@ func _test_wall_chain_continues_after_late_block(token: int) -> int:
 		null, grid, null, null, null, null, null, Callable()
 	)
 	controller._wall_chain = WallChainScript.new(
-		&"ATWall", "Wall", 0, 1.0, [Vector2i(2, 4), Vector2i(4, 4)]
+		&"ATWall", "Wall", 0, 1, [Vector2i(2, 4), Vector2i(4, 4)]
 	)
 	controller._advance_wall_chain()
 	grid.block_occupy_cell(Vector2i(2, 4))
-	controller._building_queue.tick(1.0, 0)
+	controller._building_queue.advance_tick(0)
 	_expect(
 		controller._building_queue.has_order(),
 		"a later segment must be ordered when the completed segment became blocked"
@@ -371,7 +371,7 @@ func _test_fixed_wall_line_ignores_world_right_click(token: int) -> int:
 	)
 
 	controller._wall_chain = WallChainScript.new(
-		&"ATWall", "Wall", 0, 60.0, [Vector2i(2, 4), Vector2i(4, 4)]
+		&"ATWall", "Wall", 0, 25, [Vector2i(2, 4), Vector2i(4, 4)]
 	)
 	controller._advance_wall_chain()
 
@@ -432,10 +432,10 @@ func _test_fixed_wall_marker_lifecycle(token: int) -> int:
 	)
 
 	controller._wall_chain = WallChainScript.new(
-		&"ATWall", "Wall", 0, 1.0, [Vector2i(2, 4), Vector2i(4, 4)]
+		&"ATWall", "Wall", 0, 1, [Vector2i(2, 4), Vector2i(4, 4)]
 	)
 	controller._advance_wall_chain()
-	controller._building_queue.tick(1.0, 0)
+	controller._building_queue.advance_tick(0)
 	_expect(
 		not controller._wall_session.markers().has(Vector2i(2, 4))
 		and controller._wall_session.markers().has(Vector2i(4, 4)),

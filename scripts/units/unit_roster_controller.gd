@@ -4,6 +4,7 @@ extends Node
 const AutoloadLookupScript := preload("res://scripts/players/autoload_lookup.gd")
 const EntityQueryScript := preload("res://scripts/world/entity_query.gd")
 const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
+const RuleBuildTimeScript := preload("res://scripts/rules/rule_build_time.gd")
 
 ## docs/mechanics/production.md section 3 "unit production": the roster half
 ## only. The Infantry/Vehicles panel tabs list the units the technology tree
@@ -75,7 +76,7 @@ func process(_delta: float) -> void:
 ## match.gd::_advance_simulation_tick() for why this and the sibling
 ## controllers' advance_tick() run in a fixed order.
 func advance_tick() -> void:
-	if _process_unit_orders(MatchClockScript.SECONDS_PER_TICK):
+	if _process_unit_orders():
 		_refresh_unit_option_states()
 
 
@@ -179,7 +180,7 @@ func _on_unit_slot_right_pressed(unit_id: StringName, quantity: int) -> void:
 	_refresh_unit_option_states()
 
 
-func _process_unit_orders(delta: float) -> bool:
+func _process_unit_orders() -> bool:
 	var player := _local_player()
 	if player == null:
 		return false
@@ -190,7 +191,7 @@ func _process_unit_orders(delta: float) -> bool:
 		if order == null:
 			continue
 		if not order.ready:
-			changed = queue.tick(delta, player.money, Callable(player, "spend_money")) or changed
+			changed = queue.advance_tick(player.money, Callable(player, "spend_money")) or changed
 			order = queue.current_order()
 		if order != null and order.ready and _spawn_completed_unit(order.building_id, StringName(production_building_id)):
 			queue.take_ready()
@@ -364,7 +365,7 @@ func _start_next_unit_order(production_building_id: StringName) -> void:
 		unit_id,
 		String(unit_id),
 		maxi(int(config.cost), 0),
-		maxf(float(config.build_time_ticks), 1.0)
+		RuleBuildTimeScript.order_sim_ticks(config.build_time_ticks)
 	):
 		push_warning("Unit could not be started from production queue: %s" % String(unit_id))
 
@@ -443,8 +444,10 @@ func _unit_tooltip(unit_id: StringName) -> String:
 		return String(unit_id)
 
 	var cost := int(config.cost)
-	var build_time_ticks := float(config.build_time_ticks)
-	var build_seconds := build_time_ticks / BuildingQueueScript.BUILD_TICKS_PER_SECOND
+	# Seconds from the actual simulation ticks the order will run for, not the
+	# pre-conversion rules-domain ideal -- the duration the player really waits.
+	var sim_ticks := RuleBuildTimeScript.to_sim_ticks(config.build_time_ticks)
+	var build_seconds := float(sim_ticks) * MatchClockScript.SECONDS_PER_TICK
 	return "%s\nCost: %d\nBuild: %.1fs" % [String(unit_id), cost, build_seconds]
 
 

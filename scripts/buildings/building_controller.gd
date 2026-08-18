@@ -5,6 +5,7 @@ const AutoloadLookupScript := preload("res://scripts/players/autoload_lookup.gd"
 const TerrainProbeScript := preload("res://scripts/world/terrain_probe.gd")
 const AuthoredModelScript := preload("res://scripts/world/authored_model.gd")
 const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
+const RuleBuildTimeScript := preload("res://scripts/rules/rule_build_time.gd")
 
 signal status_changed(status: String)
 signal building_option_state_changed(option_state: BuildingOptionState)
@@ -192,7 +193,7 @@ func process(_delta: float) -> void:
 ## match.gd::_advance_simulation_tick() for why this and the sibling
 ## controllers' advance_tick() run in a fixed order.
 func advance_tick() -> void:
-	_process_building_order(MatchClockScript.SECONDS_PER_TICK)
+	_process_building_order()
 	_process_repairs(MatchClockScript.SECONDS_PER_TICK)
 
 
@@ -804,7 +805,7 @@ func _start_building_order(building_id: StringName) -> void:
 		building_id,
 		_building_display_name(building_id),
 		maxi(config.cost, 0),
-		maxf(config.build_time_ticks, 1.0)
+		RuleBuildTimeScript.order_sim_ticks(config.build_time_ticks)
 	):
 		return
 	_building_placement.cancel()
@@ -813,7 +814,7 @@ func _start_building_order(building_id: StringName) -> void:
 	_refresh_building_option_states()
 
 
-func _process_building_order(delta: float) -> void:
+func _process_building_order() -> void:
 	var order := _building_queue.current_order()
 	if order == null:
 		return
@@ -823,7 +824,7 @@ func _process_building_order(delta: float) -> void:
 	var player = _local_player()
 	var available_credits: int = player.money if player != null else 0
 	var spend_credits: Callable = Callable(player, &"spend_money") if player != null else Callable()
-	if _building_queue.tick(delta, available_credits, spend_credits):
+	if _building_queue.advance_tick(available_credits, spend_credits):
 		_refresh_building_option_states()
 
 
