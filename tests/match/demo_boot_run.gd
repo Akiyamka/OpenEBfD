@@ -3,6 +3,7 @@ extends SceneTree
 const LegacyRulesFixture := preload("res://tests/support/legacy_rules_fixture.gd")
 
 const CombatTurretScript := preload("res://scripts/combat/combat_turret.gd")
+const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 const BuildingDefinitionCatalogScript := preload(
 	"res://scripts/buildings/building_definition_catalog.gd"
 )
@@ -44,6 +45,10 @@ func _initialize() -> void:
 	await _run_case("mechs follow authored gait speeds", _test_mech_gait_speeds)
 	await _run_case("mechs use authored locomotion transitions", _test_mech_locomotion_transitions)
 	await _run_case("test match roster is non-empty after boot", _test_match_roster_populated)
+	await _run_case(
+		"the match loop advances the simulation clock at the tick rate, not the frame rate",
+		_test_match_loop_drives_the_clock
+	)
 	await _run_case("roster controls leave arrow keys to the camera", _test_roster_controls_ignore_keyboard_focus)
 	await _run_case("F3 toggles every navigation debug layer", _test_unified_debug_shortcut)
 	await _run_case("rules art configs resolve every test panel icon", _test_match_panel_icons)
@@ -594,6 +599,68 @@ func _test_match_roster_populated() -> void:
 	match_instance.queue_free()
 
 
+## The one case that proves the wiring rather than the parts. Every other test
+## of tick-driven behaviour calls a controller's advance_tick() directly, so
+## all of them would still pass if Match._process() never reached
+## _advance_simulation_tick() at all -- the systems would simply stop running
+## in a real match while the suite stayed green. This boots the real match
+## scene and lets its own loop run.
+##
+## Two bounds, because a positive tick count on its own only proves that
+## something moves, not that it moves at the right rate. Driving the clock
+## once per frame instead -- the obvious way to get this wrong -- is caught by
+## both: it produces one tick per frame against a loop that runs frames far
+## faster than 25 Hz, and roughly 60 ticks a second against a wall-clock bound
+## of 25.
+func _test_match_loop_drives_the_clock() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	get_root().add_child(match_instance)
+	# Scene instantiation lands in the first frame's delta, which is far larger
+	# than any later one and would otherwise be charged to the sampling window
+	# as ticks without contributing its milliseconds. Let the loop settle into
+	# ordinary frames before anything is sampled.
+	for _warmup in 5:
+		await process_frame
+	var started_msec := Time.get_ticks_msec()
+	var started_tick: int = match_instance.current_tick()
+
+	# Long enough for several ticks even if every frame runs at the 60 fps cap,
+	# with a frame cap so a stalled loop fails the assertions below instead of
+	# hanging the suite.
+	var frames := 0
+	while Time.get_ticks_msec() - started_msec < 200 and frames < 400:
+		await process_frame
+		frames += 1
+
+	var elapsed_msec := Time.get_ticks_msec() - started_msec
+	var advanced: int = match_instance.current_tick() - started_tick
+	# Two ticks of slack: one for the sub-tick remainder the driver was already
+	# carrying when sampling started, and one for the frame boundary, since
+	# process_frame and the node's own _process do not fire at the same instant.
+	var upper_bound := roundi(
+		float(elapsed_msec) * float(MatchClockScript.TICKS_PER_SECOND) / 1000.0
+	) + 2
+	_expect(
+		advanced >= 3,
+		"%d ms of the real match loop must advance the clock at least 3 ticks, got %d" \
+			% [elapsed_msec, advanced]
+	)
+	_expect(
+		advanced <= upper_bound,
+		"the clock must advance at the tick rate, not once per frame: %d ticks in %d ms exceeds the %d the rate allows" \
+			% [advanced, elapsed_msec, upper_bound]
+	)
+	# The same property without a clock in it: this loop runs frames well above
+	# 25 Hz, so ticks must come out strictly rarer than frames.
+	_expect(
+		advanced < frames,
+		"the clock must advance less often than once per frame: %d ticks over %d frames" \
+			% [advanced, frames]
+	)
+
+	match_instance.queue_free()
+
+
 func _test_roster_controls_ignore_keyboard_focus() -> void:
 	var match_instance := MatchFixtureScene.instantiate()
 	get_root().add_child(match_instance)
@@ -1034,7 +1101,11 @@ func _test_unit_production_rally_and_primary() -> void:
 		infantry_queue != null and infantry_queue.current_order().manually_paused,
 		"right click must pause the active unit production order"
 	)
-	roster.process(2.0)
+	# process(delta) no longer drives simulation; advance_tick() does, one
+	# MatchClock.SECONDS_PER_TICK period per call. 2 simulated seconds is
+	# roundi(2.0 / SECONDS_PER_TICK) ticks at the fixed 25 Hz rate.
+	for _i in roundi(2.0 / MatchClockScript.SECONDS_PER_TICK):
+		roster.advance_tick()
 	_expect(
 		units.get_children().size() == units_before.size(),
 		"a paused unit order must not complete"
@@ -1054,7 +1125,9 @@ func _test_unit_production_rally_and_primary() -> void:
 		roster._unit_queue_size(&"ATBarracks") == 1 and not infantry_queue.current_order().manually_paused,
 		"left click on a paused unit order must resume it without adding another unit"
 	)
-	roster.process(2.0)
+	# Same 2-second-to-ticks conversion as above.
+	for _i in roundi(2.0 / MatchClockScript.SECONDS_PER_TICK):
+		roster.advance_tick()
 
 	var produced: Unit
 	for candidate in units.get_children():

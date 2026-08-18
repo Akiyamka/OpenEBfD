@@ -15,6 +15,7 @@ const BuildingOptionStateScript := preload("res://scripts/buildings/building_opt
 const BuildingSurvivorsScript := preload("res://scripts/buildings/building_survivors.gd")
 const TechnologyTreeScript := preload("res://scripts/buildings/technology_tree.gd")
 const BuildingDefinitionCatalogScript := preload("res://scripts/buildings/building_definition_catalog.gd")
+const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 
 var _assertions := 0
 var _failures := 0
@@ -426,12 +427,18 @@ func _test_automatic_refinery_upgrade(token: int, local_player: PlayerData) -> i
 	_expect(order != null and order.target_refinery == eligible_refinery, "automatic selection must skip a full refinery")
 
 	local_player.add_money(2400)
-	controller.process(20.0)
+	# process(delta) no longer drives simulation; advance_tick() does, one
+	# MatchClock.SECONDS_PER_TICK period per call. 20 simulated seconds is
+	# roundi(20.0 / SECONDS_PER_TICK) ticks at the fixed 25 Hz rate.
+	for _i in roundi(20.0 / MatchClockScript.SECONDS_PER_TICK):
+		controller.advance_tick()
 	_expect(eligible_refinery.refinery_upgrade_state == 1, "completion must advance the selected refinery to state 1")
 	_expect(get_nodes_in_group("buildings").size() == building_count_before, "completion must not add a RefineryDock building")
 
 	controller.handle_upgrade_intent(&"ATRefineryDock", MOUSE_BUTTON_LEFT)
-	controller.process(20.0)
+	# Same 20-second-to-ticks conversion as above.
+	for _i in roundi(20.0 / MatchClockScript.SECONDS_PER_TICK):
+		controller.advance_tick()
 	_expect(eligible_refinery.refinery_upgrade_state == 2, "the next order must advance the refinery to state 2")
 	_expect(get_nodes_in_group("buildings").size() == building_count_before, "the second completion must not add a building either")
 	_expect(
@@ -485,7 +492,10 @@ func _test_con_yard_upgrade_build_time(token: int, local_player: PlayerData) -> 
 	_expect(order != null, "an owned Construction Yard must start its upgrade order")
 	_expect(order != null and is_equal_approx(order.build_time_ticks, 864.0), "Construction Yard upgrade must use the linked MCV's 864-tick build time")
 
-	controller.process(0.1)
+	# 0.1 simulated seconds is roundi(0.1 / SECONDS_PER_TICK) ticks -- a short
+	# elapsed time, same intent as the old controller.process(0.1) call.
+	for _i in roundi(0.1 / MatchClockScript.SECONDS_PER_TICK):
+		controller.advance_tick()
 	_expect(not local_player.has_purchased_upgrade(&"ATConYard"), "Construction Yard upgrade must not complete on its first short tick")
 
 	controller.free()

@@ -4,6 +4,7 @@ extends Node3D
 const AutoloadLookupScript := preload("res://scripts/players/autoload_lookup.gd")
 const TerrainProbeScript := preload("res://scripts/world/terrain_probe.gd")
 const AuthoredModelScript := preload("res://scripts/world/authored_model.gd")
+const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 
 signal status_changed(status: String)
 signal building_option_state_changed(option_state: BuildingOptionState)
@@ -172,11 +173,9 @@ func setup(
 	interaction_mode_changed.emit(false)
 
 
-func process(delta: float) -> void:
+func process(_delta: float) -> void:
 	_update_mode_cursor()
 	_refresh_availability_if_dirty()
-	_process_building_order(delta)
-	_process_repairs(delta)
 	if _wall_line_mode:
 		_process_wall_line_preview(get_viewport().get_mouse_position())
 	elif _building_placement.is_active():
@@ -186,6 +185,15 @@ func process(delta: float) -> void:
 			else get_viewport().get_mouse_position()
 		)
 		_building_placement.process(pointer_position)
+
+
+## Simulation half of the old process(delta): construction-order progress and
+## building repair, both driven from MatchClock rather than frame delta. See
+## match.gd::_advance_simulation_tick() for why this and the sibling
+## controllers' advance_tick() run in a fixed order.
+func advance_tick() -> void:
+	_process_building_order(MatchClockScript.SECONDS_PER_TICK)
+	_process_repairs(MatchClockScript.SECONDS_PER_TICK)
 
 
 func _exit_tree() -> void:

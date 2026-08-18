@@ -3,6 +3,7 @@ extends Node3D
 
 const AutoloadLookupScript := preload("res://scripts/players/autoload_lookup.gd")
 const EntityQueryScript := preload("res://scripts/world/entity_query.gd")
+const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 
 ## docs/mechanics/production.md section 4 "Upgrades". Deliberately a sibling
 ## of BuildingController rather than more code stuffed into it: it owns a
@@ -66,9 +67,16 @@ func upgrade_option_ids() -> Array[StringName]:
 	return _upgrade_option_ids.duplicate()
 
 
-func process(delta: float) -> void:
+func process(_delta: float) -> void:
 	_poll_upgrade_availability()
-	_process_upgrade_order(delta)
+
+
+## Simulation half of the old process(delta): upgrade-order progress, driven
+## from MatchClock rather than frame delta. See
+## match.gd::_advance_simulation_tick() for why this and the sibling
+## controllers' advance_tick() run in a fixed order.
+func advance_tick() -> void:
+	_process_upgrade_order(MatchClockScript.SECONDS_PER_TICK)
 
 
 func handle_command(_command: StringName) -> bool:

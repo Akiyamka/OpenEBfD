@@ -267,11 +267,29 @@ func _process(delta: float) -> void:
 ## are added here is itself part of the simulation: every client's frame rate
 ## and stall pattern differs, but _process() always calls this once per due
 ## tick in the same sequence, so a fixed, deliberate order here is what keeps
-## every client's tick-by-tick history identical. Today it only advances the
-## clock; later slices attach sim systems here one at a time rather than
-## wherever happens to be convenient in the file.
+## every client's tick-by-tick history identical.
+##
+## _building_controller, then _building_upgrade_controller, then
+## _unit_roster_controller -- exactly the order these three appeared in
+## _process() before this slice split their simulation half out. Within a
+## single tick all three compete for the same player's credits (building
+## construction/repair, upgrades, and unit production all spend from the same
+## PlayerData), and whoever advances first spends first when funds are short:
+## reordering them would silently change who gets starved of credits on a
+## tight budget, without changing anything else about the simulation.
+## Preserving today's order keeps this slice a pure restructuring. In a
+## lockstep match this stops being a nice-to-have: every client must resolve
+## that credit contention identically, or their simulations diverge.
+## _unit_command_controller.process() is input handling, not simulation, and
+## stays out of this function -- see its call in _process() instead.
 func _advance_simulation_tick() -> void:
 	_clock.advance()
+	if _building_controller != null:
+		_building_controller.advance_tick()
+	if _building_upgrade_controller != null:
+		_building_upgrade_controller.advance_tick()
+	if _unit_roster_controller != null:
+		_unit_roster_controller.advance_tick()
 
 
 ## The simulation's current tick, for later slices and tests that need a way

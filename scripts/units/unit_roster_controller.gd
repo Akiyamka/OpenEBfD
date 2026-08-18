@@ -3,6 +3,7 @@ extends Node
 
 const AutoloadLookupScript := preload("res://scripts/players/autoload_lookup.gd")
 const EntityQueryScript := preload("res://scripts/world/entity_query.gd")
+const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 
 ## docs/mechanics/production.md section 3 "unit production": the roster half
 ## only. The Infantry/Vehicles panel tabs list the units the technology tree
@@ -65,9 +66,16 @@ func _exit_tree() -> void:
 
 
 func process(_delta: float) -> void:
-	var changed := _refresh_availability_if_dirty()
-	changed = _process_unit_orders(_delta) or changed
-	if changed:
+	if _refresh_availability_if_dirty():
+		_refresh_unit_option_states()
+
+
+## Simulation half of the old process(delta): production-order progress,
+## driven from MatchClock rather than frame delta. See
+## match.gd::_advance_simulation_tick() for why this and the sibling
+## controllers' advance_tick() run in a fixed order.
+func advance_tick() -> void:
+	if _process_unit_orders(MatchClockScript.SECONDS_PER_TICK):
 		_refresh_unit_option_states()
 
 
