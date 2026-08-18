@@ -3,6 +3,7 @@ extends "res://tests/support/suite.gd"
 const LegacyRulesFixture := preload("res://tests/support/legacy_rules_fixture.gd")
 const Doubles := preload("res://tests/combat/support/combat_doubles.gd")
 const Assertions := preload("res://tests/combat/support/combat_assertions.gd")
+const SimTickPumpScript := preload("res://tests/combat/support/sim_tick_pump.gd")
 const UnitScene := preload("res://scenes/units/unit.tscn")
 const ATAPCModelScene := preload("res://assets/converted/models/AT_APC_H0/AT_APC_H0.scn")
 const ATInfantryModelScene := preload("res://assets/converted/models/AT_inf_H0/AT_inf_H0.scn")
@@ -111,8 +112,14 @@ func _test_fire_while_moving_capability() -> void:
 		and mongoose.combat()._moving_fire_weapons.has(0),
 		"Move must replace pursuit and enable autonomous fire for its movable turret"
 	)
+	# Unit._process() no longer advances turret reload since phase 1 -- Match's
+	# central loop does, through Unit.sim_tick(). This suite has no Match, so
+	# the pump stands in for that half of a real frame; without it the
+	# autonomous-reacquisition assertion at the end of this case waits on a
+	# reload that never expires.
+	var mongoose_pump := SimTickPumpScript.new()
 	for frame in 180:
-		mongoose._process(1.0 / 60.0)
+		mongoose_pump.advance(mongoose, 1.0 / 60.0)
 		mongoose._physics_process(1.0 / 60.0)
 		if true in movement_samples:
 			break
@@ -132,7 +139,7 @@ func _test_fire_while_moving_capability() -> void:
 	)
 	target.global_position = mongoose.global_position + forward * 100.0
 	for frame in 180:
-		mongoose._process(1.0 / 60.0)
+		mongoose_pump.advance(mongoose, 1.0 / 60.0)
 		mongoose._physics_process(1.0 / 60.0)
 		if mongoose.combat()._weapon_fire_sequences.is_empty():
 			break
@@ -144,7 +151,7 @@ func _test_fire_while_moving_capability() -> void:
 	) as AnimationPlayer
 	if mongoose_player != null:
 		mongoose_player.advance(1.0 / 60.0)
-	mongoose._process(1.0 / 60.0)
+	mongoose_pump.advance(mongoose, 1.0 / 60.0)
 	var returning_yaw := absf(mongoose.combat_turrets[0].current_yaw_degrees())
 	_expect(
 		returning_yaw < out_of_range_yaw and returning_yaw > 0.0,
@@ -168,7 +175,7 @@ func _test_fire_while_moving_capability() -> void:
 	root.add_child(autonomous_target)
 	autonomous_target.add_to_group(&"units")
 	for frame in 600:
-		mongoose._process(1.0 / 60.0)
+		mongoose_pump.advance(mongoose, 1.0 / 60.0)
 		mongoose._physics_process(1.0 / 60.0)
 		if autonomous_target in fired_targets:
 			break
