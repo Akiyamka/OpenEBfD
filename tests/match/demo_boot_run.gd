@@ -1426,14 +1426,42 @@ func _test_unit_production_rally_and_primary() -> void:
 	# The navigation system registers the fresh unit deferred; the rally order
 	# from the spawn frame must survive that handoff instead of being reset to
 	# the unit's own position.
+	#
+	# The tolerance is derived, not chosen. This rally point sits about half a
+	# cell inside its own cell, and that cell is rejected as a stopping place:
+	# the unit's body disc overlaps the solid cliff row beneath it by roughly
+	# five centimetres (see GroundSlotAllocator.body_fits(), and
+	# approach_anchor() for how the replacement cell is picked). A rejected
+	# cell can only be escaped by a whole cell, so one cell pitch is the floor
+	# -- 1.125 m, with NAV_SIZE 256 over this map's 288 world units. Up to
+	# another pitch goes on top, because claim_anchor() resolves same-ring ties
+	# toward the ordering unit rather than toward the point, deliberately: that
+	# tie-break is also what decides which side of a building a unit approaches
+	# from, so the cell it returns can be a further member of the right ring.
+	# Two pitches is the honest bound. Nothing under 1.5 m is reachable here by
+	# any cell-selection rule, so the old threshold only ever pinned this map's
+	# geometry, not the behaviour named below.
+	const RALLY_CELL_PITCH := 288.0 / 256.0
+	const RALLY_TOLERANCE := RALLY_CELL_PITCH * 2.0
 	await process_frame
 	var navigation = match_instance.get_node("UnitNavigationSystem")
 	var agent: Dictionary = navigation.agent_debug(produced)
 	var destination: Vector3 = agent.get("destination", Vector3.INF)
 	destination.y = rally_point.y
+	var rally_distance := destination.distance_to(rally_point)
 	_expect(
-		not agent.is_empty() and destination.distance_to(rally_point) < 1.5,
-		"the rally order must survive the deferred navigation registration"
+		not agent.is_empty() and rally_distance < RALLY_TOLERANCE,
+		"the rally order must survive the deferred navigation registration (%.2f m from the rally point, tolerance %.2f)" \
+			% [rally_distance, RALLY_TOLERANCE]
+	)
+	# What the case above actually distinguishes, stated as its own assertion
+	# so a loosened tolerance cannot quietly stop distinguishing it: a lost
+	# rally order leaves the destination at the unit's own spawn position,
+	# which is metres away at the barracks, not one cell away.
+	_expect(
+		not agent.is_empty()
+		and rally_distance < produced.global_position.distance_to(rally_point) * 0.25,
+		"a surviving rally order must aim far nearer the rally point than the unit's own spawn position"
 	)
 	_expect(
 		not agent.is_empty() and bool(agent["route_ready"]),

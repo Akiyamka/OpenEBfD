@@ -330,11 +330,36 @@ func find_slot(preferred: Vector2i, agent: Dictionary, occupied: Array[Dictionar
 	return claim_anchor(preferred, agent, occupied, unit.global_position)
 
 
-## Initial FREE-move aim selection. Walks outward from a blocked target toward
-## the unit, so approaching a building does not send every unit to whichever
-## corner happens to occur on the first valid Chebyshev ring.
+## Initial FREE-move aim selection. Walks a straight line from the unit's own
+## cell back toward `preferred`, on the idea that a unit which cannot stand
+## exactly where it was sent should back off toward whoever sent it, not
+## wander off sideways looking for the technically-nearest open ground. That
+## walk takes the first stoppable cell it meets, so it has no way to notice a
+## much nearer cell lying in another direction -- and per-cell clearance used
+## to be coarse enough that this rarely mattered. Since destinations moved to
+## the exact body-disc check (see body_fits()), it does: a cell can be
+## rejected by a few centimetres of overlap with one neighbouring solid cell
+## along an otherwise-open edge, and if the unit approaches along that same
+## edge, the line walk stays a hair over it cell after cell before finding
+## daylight metres away, while a valid cell sat one ring to the side the whole
+## time.
+##
+## So the line walk's result now competes with claim_anchor()'s
+## inner-ring-first search around `preferred`: whichever block is closer to
+## `preferred` wins, with the line walk kept on an exact tie, since backing
+## off toward the orderer remains the intended behaviour whenever it does not
+## overshoot. The ring search exists only to correct the case where it does.
+##
+## Note what is deliberately *not* changed: claim_anchor() still resolves
+## same-ring ties toward `from`, not toward `preferred`. Making it prefer
+## `preferred` would return a marginally closer cell here, but it also decides
+## which side of a blocked target a unit approaches from, and a unit already
+## standing in front of a building must not be sent around it for a few
+## centimetres. Ring priority is the coarse distance rule; the side is the
+## tie-break.
 func approach_anchor(preferred: Vector2i, agent: Dictionary, from: Vector3) -> Vector2i:
 	var span := int(agent["footprint"])
+	var line_candidate := Vector2i(-1, -1)
 	var from_anchor := parking_anchor(from, span)
 	var delta := from_anchor - preferred
 	var length := maxi(absi(delta.x), absi(delta.y))
@@ -349,8 +374,17 @@ func approach_anchor(preferred: Vector2i, agent: Dictionary, from: Vector3) -> V
 			var candidate := preferred + offset
 			if block_stoppable(candidate, span, agent) \
 			and anchor_reachable(candidate, agent, from):
-				return candidate
-	return claim_anchor(preferred, agent, [], from)
+				line_candidate = candidate
+				break
+	var ring_candidate := claim_anchor(preferred, agent, [], from)
+	if line_candidate.x < 0:
+		return ring_candidate
+	if ring_candidate.x < 0:
+		return line_candidate
+	var preferred_center := block_center(preferred, span)
+	var line_distance := preferred_center.distance_to(block_center(line_candidate, span))
+	var ring_distance := preferred_center.distance_to(block_center(ring_candidate, span))
+	return ring_candidate if ring_distance < line_distance else line_candidate
 
 
 ## Ring search for a free grid-aligned footprint block: every cell of the

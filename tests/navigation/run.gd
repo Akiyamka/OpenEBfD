@@ -167,6 +167,7 @@ func _initialize() -> void:
 	_test_jagged_boundary_steering_stays_smooth(grid)
 	_test_slots_and_collision(grid)
 	_test_destination_uses_body_geometry(grid)
+	_test_approach_anchor_prefers_nearest_valid_block(grid)
 	_test_slide_around_stopped_friend(grid)
 	_test_turning_unit_arcs_around_stopped_friend(grid)
 	_test_turn_in_place_counts_as_blocked_and_triggers_yield(grid)
@@ -1634,6 +1635,55 @@ func _test_destination_uses_body_geometry(grid: MapNavigationGrid) -> void:
 	slim.queue_free()
 	wide.queue_free()
 	diagonal.queue_free()
+
+
+## Regression for approach_anchor(): a rally cell rejected by a hair of body
+## overlap next to an otherwise-open edge must fall back to the nearest legal
+## cell, not to whatever the approach line happens to hit first.
+##
+## Geometry: a single-row wall at z=50 spans x 90..150. The rally cell (100,49)
+## sits right under it -- its body disc (radius 0.55) pokes 0.05m into the
+## wall, just enough for the exact body-geometry check to refuse it, while
+## whole-cell clearance (0 cells at this radius) would have allowed it. A
+## valid cell sits one ring away at (99,48), clear of the wall by 0.7m. The
+## ordering unit stands due west at (50,49), on the same row as the rally
+## cell, so a plain walk back toward it stays under the wall's overlap for 11
+## cells (x 99..90 are all still inside the wall's span) before reaching open
+## ground at x=89 -- about 11m off target, versus ~1.4m for the ring cell.
+func _test_approach_anchor_prefers_nearest_valid_block(grid: MapNavigationGrid) -> void:
+	var navigation := NavigationSystemScript.new()
+	root.add_child(navigation)
+	navigation.set_physics_process(false)
+	_expect(navigation.setup(grid), "navigation system must initialize for approach-anchor competition")
+
+	var wall := {}
+	for x in range(90, 151):
+		wall[Vector2i(x, 50)] = true
+	navigation.runtime_map.replace_blocked_cells(wall)
+
+	var unit := FakeUnit.new()
+	unit.navigation_radius_override = 0.55
+	unit.navigation_rotation_radius_override = 0.55
+	root.add_child(unit)
+	unit.global_position = Vector3(50.5, 0.0, 49.5)
+
+	var target := Vector3(100.5, 0.0, 49.5)
+	var assignment := navigation.command_move([unit], target)[0] as Dictionary
+	var chosen: Vector3 = assignment["position"]
+	_expect(
+		chosen.distance_to(target) < 2.5,
+		"a hair of body overlap near an edge must not redirect the order metres off target (got %.2f, %.2f)" % [
+			chosen.x, chosen.z
+		]
+	)
+	_expect(
+		chosen.distance_to(Vector3(89.5, 0.0, 49.5)) > 2.0,
+		"the far line-walk cell along the same wall band must lose to the nearer ring cell"
+	)
+
+	navigation.runtime_map.replace_blocked_cells({})
+	navigation.queue_free()
+	unit.queue_free()
 
 
 ## A stationary friend sitting exactly on the route must be flowed around, not
