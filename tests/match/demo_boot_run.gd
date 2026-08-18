@@ -3,6 +3,8 @@ extends SceneTree
 const LegacyRulesFixture := preload("res://tests/support/legacy_rules_fixture.gd")
 
 const CombatTurretScript := preload("res://scripts/combat/combat_turret.gd")
+const CombatLingerEffectScript := preload("res://scripts/combat/combat_linger_effect.gd")
+const CombatBullets := preload("res://tests/combat/support/combat_bullets.gd")
 const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 const BuildingDefinitionCatalogScript := preload(
 	"res://scripts/buildings/building_definition_catalog.gd"
@@ -52,6 +54,10 @@ func _initialize() -> void:
 	await _run_case(
 		"a real unit's turret reload advances from the match loop alone",
 		_test_match_loop_drives_unit_turret_reload
+	)
+	await _run_case(
+		"a real linger effect's delivered ticks advance from the match loop alone",
+		_test_match_loop_drives_unit_linger_effect
 	)
 	await _run_case("roster controls leave arrow keys to the camera", _test_roster_controls_ignore_keyboard_focus)
 	await _run_case("F3 toggles every navigation debug layer", _test_unified_debug_shortcut)
@@ -721,6 +727,79 @@ func _test_match_loop_drives_unit_turret_reload() -> void:
 			% [advanced_reload, advanced_ticks]
 	)
 
+	match_instance.queue_free()
+
+
+## The linger-effect counterpart to _test_match_loop_drives_unit_turret_reload
+## above -- same failure mode, same shape. Every other lingering-damage
+## assertion (bullet_rules_run.gd's _test_lingering_gas_damage) drives the
+## effect with direct sim_tick() calls, so it would keep passing even if
+## CombatLingerEffect were never reached from
+## Match._advance_simulation_tick()'s "sim_linger_effects" loop, because
+## nothing here calls sim_tick() itself either. Forgetting to add a spawned
+## system to that central loop (see its doc comment, and the ordering
+## paragraph explaining why linger effects resolve after units and buildings)
+## is exactly the failure mode this test exists to catch, so it boots the
+## real match scene, configures a real CombatLingerEffect against a real unit
+## from that scene, and lets the match loop's own ticking discover and drive
+## it -- the same way the turret case discovers Unit.sim_tick().
+##
+## remaining_ticks starts driven into a known state far above what a short
+## real-time window can exhaust, the same reason turret_reload above sets
+## reload_ticks_remaining = 1000, so the window's tick count can be read
+## straight off delivered_ticks with no clamping in the way. The target's
+## health is likewise pushed far above what 50 authored GasInf_B linger ticks
+## could ever deliver, so the countdown is never cut short by
+## CombatLingerEffect.sim_tick()'s "target died" early-out.
+func _test_match_loop_drives_unit_linger_effect() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	get_root().add_child(match_instance)
+	for _warmup in 5:
+		await process_frame
+
+	var target := match_instance.get_node("Units/ScoutA") as Unit
+	target.max_health = 100000.0
+	target.health = target.max_health
+	target.max_shields = 0.0
+	target.shields = 0.0
+
+	var gas = CombatBullets.new().runtime_bullet(&"GasInf_B")
+	var effect := CombatLingerEffectScript.new()
+	match_instance.add_child(effect)
+	_expect(
+		effect.configure(gas, target, target.global_position),
+		"GasInf_B must create a target-bound lingering payload against a real match unit"
+	)
+	effect.remaining_ticks = 1000
+
+	var started_msec := Time.get_ticks_msec()
+	var started_tick: int = match_instance.current_tick()
+	var started_delivered: int = effect.delivered_ticks
+
+	var frames := 0
+	while Time.get_ticks_msec() - started_msec < 200 and frames < 400:
+		await process_frame
+		frames += 1
+
+	var advanced_ticks: int = match_instance.current_tick() - started_tick
+	var advanced_delivered: int = effect.delivered_ticks - started_delivered
+	_expect(
+		advanced_ticks >= 3,
+		"%d ms of the real match loop must advance the clock at least 3 ticks, got %d" \
+			% [Time.get_ticks_msec() - started_msec, advanced_ticks]
+	)
+	# Same reasoning as the turret reload case above: both counters are
+	# advanced from the same due-tick loop within the same frame (see
+	# match.gd::_advance_simulation_tick()), so -- as long as 1000 ticks is
+	# nowhere near exhausted, which this bounded window guarantees -- the
+	# drop is exact, not just approximate.
+	_expect(
+		advanced_delivered == advanced_ticks,
+		"a real linger effect must deliver exactly one damage tick per simulation tick from the match loop alone: delivered_ticks advanced by %d against %d clock ticks" \
+			% [advanced_delivered, advanced_ticks]
+	)
+
+	effect.queue_free()
 	match_instance.queue_free()
 
 

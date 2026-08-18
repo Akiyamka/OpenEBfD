@@ -217,25 +217,20 @@ func _test_lingering_gas_damage() -> void:
 		effect.configure(gas, target, Vector3.ZERO),
 		"GasInf_B must create a target-bound lingering payload"
 	)
-	effect.set_physics_process(false)
 	for tick in 49:
-		effect._physics_process(
-			1.0 / CombatLingerEffectScript.RULE_COMBAT_TICKS_PER_SECOND
-		)
+		effect.sim_tick()
 	_expect(
 		effect.delivered_ticks == 49
 		and is_equal_approx(target.damage_taken, 392.0)
 		and not effect.is_queued_for_deletion(),
 		"49 gas ticks must deliver 10 damage through Flame_W's 80% BPV multiplier"
 	)
-	effect._physics_process(
-		1.0 / CombatLingerEffectScript.RULE_COMBAT_TICKS_PER_SECOND
-	)
+	effect.sim_tick()
 	_expect(
 		effect.delivered_ticks == 50
 		and is_equal_approx(target.damage_taken, 400.0)
 		and effect.is_queued_for_deletion(),
-		"GasInf_B must stop after all 50 authored linger ticks"
+		"GasInf_B must stop after exactly 50 sim_tick() calls, matching all 50 authored linger ticks one for one"
 	)
 
 func _test_projectile_damage_scale_isolation() -> void:

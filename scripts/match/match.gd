@@ -282,13 +282,18 @@ func _process(delta: float) -> void:
 ## that credit contention identically, or their simulations diverge.
 ## _unit_command_controller.process() is input handling, not simulation, and
 ## stays out of this function -- see its call in _process() instead.
-## After the three controllers above: units, then buildings, each entity's
-## own sim_tick() -- today just CombatTurret.advance_tick() for reload/burst
-## countdowns (see Unit.sim_tick()/Building.sim_tick()). What is centrally
+## After the three controllers above: units, then buildings, then linger
+## effects -- each entity's or system's own sim_tick(). For units and
+## buildings that is today just CombatTurret.advance_tick() for reload/burst
+## countdowns (see Unit.sim_tick()/Building.sim_tick()); for linger effects it
+## is CombatLingerEffect.sim_tick() delivering one damage tick and decrementing
+## its own countdown (see combat_linger_effect.gd). What is centrally
 ## maintained here is the list of *systems*, not of entities: group
 ## membership maintains itself (Building.gd calls add_to_group("buildings")
-## in code; unit scenes declare "units" in their .tscn), so adding a new unit
-## or building type needs no change in this function.
+## in code; unit scenes declare "units" in their .tscn; CombatLingerEffect
+## adds itself to "sim_linger_effects" in its own configure()), so adding a
+## new unit or building type, or spawning another linger effect, needs no
+## change in this function.
 ##
 ## What this buys, stated honestly: the tick order is now these few lines in
 ## one function instead of whatever order the scene tree happened to hand
@@ -304,10 +309,21 @@ func _process(delta: float) -> void:
 ## relative order changes no outcome -- but it stops being free the moment a
 ## system with shared state joins this loop.
 ##
-## is_instance_valid() guards both loops because queue_free() does not remove
-## a node from its groups until the frame ends: a unit that gave itself away
-## this frame (see Unit's set_process(false) call site) can still be listed
-## here as a freed instance and must not be ticked.
+## Linger effects go last, after both entity loops, for a sharper reason than
+## "fixed and arbitrary": a linger effect's sim_tick() delivers damage to the
+## very units and buildings the two loops above just ticked this same frame.
+## Resolving effects after entities means a unit's reload advances before the
+## gas that may kill it lands, every tick, on every client -- an entity's own
+## countdown for this tick is never disturbed by damage that arrives on this
+## same tick. That is a real ordering decision, not a formality: reversing it
+## would still be internally consistent, but it would be a different,
+## silently-chosen simulation.
+##
+## is_instance_valid() guards all three loops because queue_free() does not
+## remove a node from its groups until the frame ends: a unit that gave itself
+## away this frame (see Unit's set_process(false) call site) or a linger
+## effect whose own countdown just ran out (see CombatLingerEffect._finish())
+## can still be listed here as a freed instance and must not be ticked.
 func _advance_simulation_tick() -> void:
 	_clock.advance()
 	if _building_controller != null:
@@ -322,6 +338,9 @@ func _advance_simulation_tick() -> void:
 	for building in get_tree().get_nodes_in_group("buildings"):
 		if is_instance_valid(building):
 			building.sim_tick()
+	for linger_effect in get_tree().get_nodes_in_group("sim_linger_effects"):
+		if is_instance_valid(linger_effect):
+			linger_effect.sim_tick()
 
 
 ## The simulation's current tick, for later slices and tests that need a way
