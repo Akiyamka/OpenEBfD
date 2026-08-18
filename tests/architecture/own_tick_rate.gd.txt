@@ -1,0 +1,12 @@
+extends RefCounted
+
+## A module that declares a tick rate of its own instead of reading the one
+## MatchClock owns -- the way a fourth tick domain gets added without anyone
+## deciding to add one.
+const TICKS_PER_SECOND := 30.0
+
+var _remaining := 0.0
+
+
+func advance(delta: float) -> void:
+	_remaining -= delta * TICKS_PER_SECOND

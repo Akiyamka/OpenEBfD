@@ -92,6 +92,9 @@ files by glob; a **rule** forbids something inside exactly one zone:
   trigonometry, no `Vector*` angle methods, no wall clock, no threads. See
   `docs/architecture/network-multiplayer.md`.
 
+Also enforced tree-wide: `own-tick-rate`, which forbids a module from
+declaring a tick rate of its own. See "The simulation tick" below for why.
+
 Only `scripts/` is scanned; `tests/` may still reach into internals.
 
 Adding a rule is a manifest entry plus a fixture — never a code change, unless
@@ -218,6 +221,35 @@ no way to tell a hang from real progress. Instead:
 - On any hang, kill it, fix the reported error, and rerun — don't assume it
   will eventually finish.
 
+
+## The simulation tick
+
+Gameplay advances on one integer tick at 25 Hz, never on frame `delta`.
+`MatchClock` (`scripts/sim/match_clock.gd`) is the only declaration of the
+rate and holds nothing but the counter; `FrameTickDriver` turns frame time
+into whole ticks and is the piece the netcode replaces later.
+`Match._advance_simulation_tick()` is the only caller of `MatchClock.advance()`
+and drives every system in a fixed order — read its doc comment before adding
+to it, because the order is part of the simulation, not a formality.
+
+A system joins the tick one of two ways. Controller-shaped singletons get an
+`advance_tick()` called directly. Per-entity systems join a group in their own
+`_ready()`/`configure()` and get a `sim_tick()` from a loop over that group, so
+spawning one needs no registration anywhere else — what the central function
+lists is systems, never entities.
+
+Two habits that this work paid for repeatedly:
+
+- **Continuous is not discrete.** Countdowns, queues and damage-over-time
+  belong to the tick; motion, aim and anything that visibly rides a moving
+  target stays on the frame until the view layer interpolates. Splitting a
+  method that does both is usually the whole task.
+- **Test the wiring, not just the part.** Every tick system has a case that
+  boots the real match and calls nothing itself. Unit tests of these systems
+  drive `sim_tick()` by hand and stay green even when the central loop never
+  reaches them — which is exactly the failure central iteration trades for, so
+  it needs its own test. Prove each one by removing the loop and watching it
+  fail.
 
 ## Network latency measurement
 

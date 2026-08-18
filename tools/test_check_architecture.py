@@ -118,6 +118,20 @@ CASES: tuple[Case, ...] = (
         EXIT_CLEAN,
     ),
     Case(
+        "module declares its own tick rate",
+        scripts("own_tick_rate"),
+        EXIT_FINDINGS,
+        expect_rules=("own-tick-rate",),
+    ),
+    Case(
+        # RuleTicks rather than MatchClock: the fixture's own advance(delta)
+        # would trip the sim zone's frame-delta rule if it were placed under
+        # scripts/sim/, which would prove nothing about this exemption.
+        "the tick rate is allowed where RuleTicks owns it",
+        {"scripts/rules/rule_ticks.gd": "own_tick_rate"},
+        EXIT_CLEAN,
+    ),
+    Case(
         "zone globs reach nested directories",
         {"scripts/units/navigation/ground/deep.gd": "private_owner_access"},
         EXIT_FINDINGS,

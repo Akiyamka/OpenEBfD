@@ -81,6 +81,20 @@ why = "a scattered hardcoded path breaks silently when an autoload is renamed or
 instead = "AutoloadLookup, which is the single place allowed to know these paths"
 
 [[rules]]
+id = "own-tick-rate"
+zone = "all"
+pattern = 'TICKS_PER_SECOND\s*:=\s*[0-9]'
+exempt = ["scripts/sim/match_clock.gd", "scripts/rules/rule_ticks.gd"]
+summary = "module declares its own tick rate"
+why = """
+Phase 1 spent itself collapsing five of these back into one. A literal rate \
+next to a countdown is how a fourth tick domain appears without anyone \
+deciding to add one, and decision 4 promises that re-testing a different rate \
+is a one-constant change.
+"""
+instead = "MatchClock.TICKS_PER_SECOND for simulation time, or RuleTicks for durations authored in the rules data's own 60 Hz"
+
+[[rules]]
 id = "bare-class-name-reference"
 zone = "all"
 kind = "require-preload"

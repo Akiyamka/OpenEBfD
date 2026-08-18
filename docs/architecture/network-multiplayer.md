@@ -99,6 +99,53 @@ All of them collapse into a **single integer tick counter at 25 Hz**, advanced
 by the turn scheduler and never by frame time. The 60-domain build times must be
 re-derived from the rules data at 25 Hz.
 
+**Done in phase 1, 2026-08-18.** `scripts/sim/match_clock.gd` holds the counter
+and nothing else; `scripts/match/frame_tick_driver.gd` turns frame time into
+whole ticks and is the piece phase 5 replaces with the turn scheduler.
+`Match._advance_simulation_tick()` is the only caller of `MatchClock.advance()`
+and drives every system in a fixed, documented order.
+
+The count of domains was five, not three. Beyond the three named above,
+`map_spice_spread.gd` and `spice_mound.gd` each held their own 60 Hz constant,
+and `map_spice_hazard.gd` ran at 4 Hz — and spice turned out not to be a rate
+problem at all but a `Timer` problem, which is worse: a Timer advances on
+engine frame time where no snapshot or checksum can see it. All of them are
+gone. `ballistics.gd`'s 20 Hz stays, correctly: it converts Rules.txt units,
+it is not a clock.
+
+Two conversions were not one-to-one and are recorded here because they changed
+the game, slightly and deliberately:
+
+- Rules build times are authored at 60 Hz and converted at the one boundary
+  where a config becomes a queue order (`scripts/rules/rule_ticks.gd`), which
+  costs at most half a tick of rounding. The conversion is **not** a drop-in
+  for the `maxf(build_time_ticks, 1.0)` guard it replaced: 92 building and 25
+  unit definitions ship with `build_time_ticks = 0`, `ATConYard` among them,
+  and converting that honestly to 0 ticks would have made
+  `ProductionQueue.adopt()` reject them outright.
+- The spice hazard pulsed 4 times a second, which is 6.25 ticks — not
+  expressible. It now pulses 5 times a second, which is exactly 5 ticks and
+  divides the 250-tick lifetime evenly. Total damage and total duration are
+  unchanged; only the granularity moved, and it moved finer.
+
+What phase 1 deliberately did **not** do: continuous motion — locomotion,
+navigation, flight, projectile flight and turret aim — still advances on frame
+`delta`. Moving it to 25 Hz without interpolation would make the game visibly
+steppy, and the view layer that interpolates between ticks is phase 3, which is
+where that motion moves with it.
+
+What it bought and what it did not: the tick order is now a handful of lines in
+one function instead of whatever order the scene tree handed out, so it is
+observable and changeable in one place. It is **not** yet cross-machine
+deterministic — there are no stable entity ids, so `get_nodes_in_group()`
+ordering is not guaranteed to match across clients. That is centralization, not
+determinism; the gate is phase 4.
+
+`tools/architecture_rules.toml` gained `own-tick-rate`, which forbids a module
+from declaring a tick rate of its own. Collapsing five domains was expensive
+enough that a sixth should not be able to appear without someone deciding to
+add one.
+
 Open fidelity question, recorded rather than resolved: two exact anchors in
 `assets/raw_original_content/MODEL/Rules.txt` suggest the original game ran at
 20 Hz — `TicksBetweenReinforcements = 6600 // 5.5 minutes` (6600 / 330 = 20) and
@@ -342,9 +389,17 @@ and by the time we get there the hard part is already tested.
   image was built: `tools/godot-container` gained a `relay` subcommand that
   publishes the port, which is all a second image would have given us. The
   Nagle question this phase was supposed to answer is answered above.
-- **Phase 1 — one tick.** Collapse the three tick domains into a single 25 Hz
-  integer tick driven by a central scheduler; remove frame `delta` from
-  gameplay paths. Single-player stays playable throughout.
+- **Phase 1 — one tick. Done 2026-08-18.** Five tick domains, not the three
+  this list originally named, collapsed into one 25 Hz integer tick driven by
+  `Match._advance_simulation_tick()`; every Godot `Timer` driving simulation
+  state retired. Discrete gameplay — production and upgrade queues, building
+  repair, turret reload and burst, linger damage, spice blooms and their
+  hazard — advances on the tick. Continuous motion stays on frame `delta` by
+  design until the view layer interpolates in phase 3; see decision 4 for what
+  that leaves owed. Single-player stayed playable throughout, and every system
+  attached to the tick has a test that boots the real match and touches
+  nothing, because a system silently dropped from the central loop is the
+  failure mode central iteration trades for.
 - **Phase 2 — command bus.** Route every player intent through serializable
   command structs with a scheduled execution tick.
   `scripts/match/unit_command_controller.gd` is the natural seam. Single-player
@@ -375,6 +430,8 @@ already play before it is trusted by the mode we cannot yet test.
   longer eats any: a 60 fps client adds up to 16.6 ms on send and the same on
   receive, which the phase 5 turn scheduler has to budget for (decision 6).
 - Original tick rate: 20 Hz per the rules-data anchors versus the 25 Hz the
-  combat code is tuned to (see decision 4).
+  combat code is tuned to (see decision 4). Phase 1 made this cheap to test:
+  `MatchClock.TICKS_PER_SECOND` is the only declaration of the rate, and
+  `own-tick-rate` in the checker keeps it that way.
 - Snapshot size for reconnect, which cannot be estimated before the hot-state
   layout exists (decision 3).
