@@ -295,7 +295,20 @@ def run_case(case: Case) -> list[str]:
     """Run one case; return a list of human-readable failures (empty when it passes)."""
     with tempfile.TemporaryDirectory() as raw_root:
         root = Path(raw_root)
-        for destination, fixture in case.files.items():
+        files = dict(case.files)
+        # The real manifest's [zones.sim] no longer carries `allow_empty`
+        # (scripts/sim/match_clock.gd is real code now), so every case that
+        # checks against the real manifest needs at least one file under
+        # scripts/sim/ or the checker errors out on an empty zone before it
+        # even gets to what the case is actually testing. Cases that already
+        # place a fixture there (the sim-rule cases below) or that swap in
+        # their own manifest (which may not declare a sim zone at all) don't
+        # need the filler.
+        if case.manifest is None and not any(
+            destination.startswith("scripts/sim/") for destination in files
+        ):
+            files["scripts/sim/_zone_filler.gd"] = "sim_clean"
+        for destination, fixture in files.items():
             target = root / destination
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(FIXTURES / f"{fixture}.gd.txt", target)

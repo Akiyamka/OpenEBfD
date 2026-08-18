@@ -4,6 +4,8 @@ const PlayerDataScript := preload("res://scripts/players/player_data.gd")
 const BuildingControllerScript := preload("res://scripts/buildings/building_controller.gd")
 const BuildingUpgradeControllerScript := preload("res://scripts/buildings/building_upgrade_controller.gd")
 const UnitCommandControllerScript := preload("res://scripts/match/unit_command_controller.gd")
+const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
+const FrameTickDriverScript := preload("res://scripts/match/frame_tick_driver.gd")
 const UnitDeploymentControllerScript := preload("res://scripts/units/unit_deployment_controller.gd")
 const UnitRosterControllerScript := preload("res://scripts/units/unit_roster_controller.gd")
 const UnitSceneCatalogScript := preload("res://scripts/units/unit_scene_catalog.gd")
@@ -34,6 +36,8 @@ const ENEMY_PLAYER_ID := 2
 @onready var ability_bar: AbilityBar = get_node_or_null("HUD/AbilityBar") as AbilityBar
 
 var _fps_update_time := 0.0
+var _clock: MatchClock
+var _tick_driver: FrameTickDriver
 var _building_controller: BuildingController
 var _building_upgrade_controller: BuildingUpgradeController
 var _unit_command_controller: UnitCommandController
@@ -71,6 +75,8 @@ func _enter_tree() -> void:
 
 
 func _ready() -> void:
+	_clock = MatchClockScript.new()
+	_tick_driver = FrameTickDriverScript.new()
 	_match_snapshot = MatchSnapshotScript.new(_snapshot_storage_path())
 	_restore_saved_startup_state()
 	_building_option_ids = _local_player_building_option_ids()
@@ -236,6 +242,10 @@ func _snap_to_ground(point: Vector3) -> Vector3:
 
 
 func _process(delta: float) -> void:
+	var due := _tick_driver.pending_ticks(delta)
+	for _i in due:
+		_advance_simulation_tick()
+
 	_refresh_sidebar_house_pages()
 	if _building_controller != null:
 		_building_controller.process(delta)
@@ -250,6 +260,24 @@ func _process(delta: float) -> void:
 	if _fps_update_time >= 0.25:
 		_fps_update_time = 0.0
 		_update_fps_label()
+
+
+## The single place a system gets attached to the simulation tick as phase 1
+## proceeds -- nothing else may call MatchClock.advance(). The order systems
+## are added here is itself part of the simulation: every client's frame rate
+## and stall pattern differs, but _process() always calls this once per due
+## tick in the same sequence, so a fixed, deliberate order here is what keeps
+## every client's tick-by-tick history identical. Today it only advances the
+## clock; later slices attach sim systems here one at a time rather than
+## wherever happens to be convenient in the file.
+func _advance_simulation_tick() -> void:
+	_clock.advance()
+
+
+## The simulation's current tick, for later slices and tests that need a way
+## to observe it without reaching into _clock directly.
+func current_tick() -> int:
+	return _clock.current_tick()
 
 
 func _unhandled_input(event: InputEvent) -> void:

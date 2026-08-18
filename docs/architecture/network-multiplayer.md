@@ -293,9 +293,10 @@ worse than a stopped match.
 
 These are the invariants that replace the structure a full ECS would have
 imposed. They are enforced by the `sim` zone in `tools/architecture_rules.toml`,
-checked by `tools/check_architecture.py`. The zone currently matches nothing and
-is marked `allow_empty = true`; it starts biting the moment the first file lands
-in `scripts/sim/`:
+checked by `tools/check_architecture.py`. The zone went live in phase 1 with
+`scripts/sim/match_clock.gd`, the simulation's tick counter; `allow_empty` came
+off with it, so a zone that matches nothing is an error again rather than a
+glob that enforces nothing while looking healthy:
 
 The manifest is the source of truth for the exact bans — it carries a `why` and
 an `instead` per rule and is not duplicated here. In summary, the sim layer may

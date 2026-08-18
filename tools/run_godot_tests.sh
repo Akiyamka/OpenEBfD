@@ -4,6 +4,7 @@ set -uo pipefail
 readonly SUITE_TIMEOUT_SECONDS="${GODOT_SUITE_TIMEOUT_SECONDS:-180}"
 readonly GODOT_CONTAINER="${GODOT_CONTAINER:-./tools/godot-container}"
 readonly SUITES=(
+	tests/sim/match_clock_run.gd
 	tests/characterization/run.gd tests/camera/run.gd tests/ui/cursor_run.gd
 	tests/ui/side_panel_pagination_run.gd tests/audio/voice_feedback_run.gd
 	tests/audio/movement_sounds_run.gd

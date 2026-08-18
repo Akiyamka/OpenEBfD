@@ -45,10 +45,6 @@ timing, the scene tree, unseeded randomness, wall-clock time, threads or \
 non-portable math. See docs/architecture/network-multiplayer.md.
 """
 include = ["scripts/sim/**/*.gd"]
-# Staged ahead of the phase 3 refactor: no simulation code has moved in yet.
-# Without this flag an empty zone is an error, because a mistyped glob enforces
-# nothing while looking perfectly healthy.
-allow_empty = true
 
 
 # ---------------------------------------------------------------------------

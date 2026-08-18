@@ -1,0 +1,10 @@
+extends RefCounted
+
+var _current_tick := 0
+
+func current_tick() -> int:
+	return _current_tick
+
+func advance() -> int:
+	_current_tick += 1
+	return _current_tick

@@ -84,9 +84,10 @@ files by glob; a **rule** forbids something inside exactly one zone:
   without a `preload` (see "Code rules" above for the failure this caused), and
   direct `/root/Players` autoload lookups outside
   `scripts/players/autoload_lookup.gd`.
-- **zone `sim`** — `scripts/sim/**`, currently empty and marked
-  `allow_empty = true` because the simulation layer has not moved in yet. Holds
-  the determinism rules for lockstep multiplayer: no scene tree API, no `await`,
+- **zone `sim`** — `scripts/sim/**`, live since `match_clock.gd` landed there;
+  `allow_empty` is gone, so an empty zone is now an error rather than a
+  silently toothless glob. Holds the determinism rules for lockstep
+  multiplayer: no scene tree API, no `await`,
   no tweens or timers, no signals, no frame `delta`, no unseeded RNG, no libm
   trigonometry, no `Vector*` angle methods, no wall clock, no threads. See
   `docs/architecture/network-multiplayer.md`.
