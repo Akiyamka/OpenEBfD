@@ -107,10 +107,16 @@ func _test_deviate_hit_impact_fx() -> void:
 	var bullet = _bullets.bullet_with_impact_scenes(&"Deviate_B")
 	var launch_position := Vector3(0.0, 1.0, 0.0)
 	var ground_position := Vector3(0.0, 0.0, -6.0)
+	# A yaw-only marker cannot encode the vertical component of an
+	# attack-ground shot; CombatTurret supplies target_direction for that case
+	# (see combat_turret.gd's try_fire_at), so a direct launch() call bypassing
+	# the turret must do the same or it flies its flat authored heading instead.
+	var emission := Bullets.emission(launch_position, Vector3.FORWARD)
+	emission["target_direction"] = launch_position.direction_to(ground_position)
 	var projectile = CombatProjectileScript.new()
 	root.add_child(projectile)
 	_expect(
-		projectile.launch(bullet, Bullets.emission(launch_position, Vector3.FORWARD), ground_position),
+		projectile.launch(bullet, emission, ground_position),
 		"Deviate_B must accept an in-range attack-ground point"
 	)
 	projectile.advance(2.0)
@@ -177,10 +183,15 @@ func _test_dev_impact_fx() -> void:
 	var bullet = _bullets.bullet_with_impact_scenes(&"DevPlasma_B")
 	var launch_position := Vector3(0.0, 1.0, 0.0)
 	var ground_position := Vector3(0.0, 0.0, -8.0)
+	# See _test_deviate_hit_impact_fx: launch() no longer derives an
+	# attack-ground direction on its own, so a direct call must supply the
+	# same target_direction CombatTurret would.
+	var emission := Bullets.emission(launch_position, Vector3.FORWARD)
+	emission["target_direction"] = launch_position.direction_to(ground_position)
 	var projectile = CombatProjectileScript.new()
 	root.add_child(projectile)
 	_expect(
-		projectile.launch(bullet, Bullets.emission(launch_position, Vector3.FORWARD), ground_position),
+		projectile.launch(bullet, emission, ground_position),
 		"DevPlasma_B must accept an in-range attack-ground point"
 	)
 	projectile.advance(2.0)
