@@ -322,6 +322,19 @@ func _process(delta: float) -> void:
 ## would still be internally consistent, but it would be a different,
 ## silently-chosen simulation.
 ##
+## The spice layer is the one step here that is not a group loop: unlike
+## units, buildings, linger effects and mounds, it is a single system this
+## match owns through its terrain (see map_loader.gd), so it is called
+## directly, the same way the three controllers above are. Both it and the
+## terrain are null-guarded because tests instantiate a match with no map
+## loaded at all.
+##
+## It runs *before* the mound loop, and that ordering is load-bearing in one
+## specific way: a mound that matures on this tick arms a fresh spread job and
+## hazard inside its own sim_tick(). Advancing the layer first means those
+## countdowns begin on the next tick with their full interval, instead of
+## being docked one tick for having been created late in the same one.
+##
 ## Spice mounds go last, and unlike the loops above this really is "fixed and
 ## arbitrary": a mound's maturity countdown reads and writes nothing any other
 ## system in this function touches -- not a unit, not a building, not a
@@ -333,7 +346,7 @@ func _process(delta: float) -> void:
 ## should not have to guess whether "spice mounds are last" was load-bearing
 ## or just where the diff happened to land.
 ##
-## is_instance_valid() guards all four loops because queue_free() does not
+## is_instance_valid() guards all four group loops because queue_free() does not
 ## remove a node from its groups until the frame ends: a unit that gave itself
 ## away this frame (see Unit's set_process(false) call site), a linger effect
 ## whose own countdown just ran out (see CombatLingerEffect._finish()), or a
@@ -356,6 +369,8 @@ func _advance_simulation_tick() -> void:
 	for linger_effect in get_tree().get_nodes_in_group("sim_linger_effects"):
 		if is_instance_valid(linger_effect):
 			linger_effect.sim_tick()
+	if terrain != null and terrain.spice_layer != null:
+		terrain.spice_layer.sim_tick()
 	for spice_mound in get_tree().get_nodes_in_group("sim_spice_mounds"):
 		if is_instance_valid(spice_mound):
 			spice_mound.sim_tick()

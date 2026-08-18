@@ -225,6 +225,21 @@ func spice_mound_mask_texture() -> ImageTexture:
 	return _render.mound_mask_texture()
 
 
+## Advances both timed spice systems by one simulation tick. Called from
+## Match._advance_simulation_tick() -- see its doc comment for why this is a
+## direct call on an owned system rather than a group loop like units,
+## buildings, linger effects and mounds.
+##
+## Spread before hazard, and that is a data dependency rather than a
+## preference: a spread ring seeds the very cells the hazard damages
+## (MapSpiceSpread.start() hands its planned cells straight to
+## MapSpiceHazard.start()), so releasing the ring first means the pulse that
+## covers it always sees this tick's ground, never the previous tick's.
+func sim_tick() -> void:
+	_spread.sim_tick()
+	_hazard.sim_tick()
+
+
 func detach_visuals() -> void:
 	_spread.cancel_all()
 	_hazard.cancel_all()

@@ -10,13 +10,16 @@ extends RefCounted
 ## early spread proportionally less spice without changing its shape, and lets
 ## the hazard know its full footprint before the first ring lands.
 ##
-## Owns the Timer nodes it parents under the layer's mounds root, so it follows
-## the detach protocol: cancel() and cancel_all() are idempotent.
+## Rings used to be released by a Timer node per active bloom, parented under
+## the layer's mounds root. Phase 1 (docs/architecture/network-multiplayer.md,
+## decision 4) bans Timers from driving simulation state -- one advances on
+## engine frame time, where no snapshot or checksum can see it -- so each job
+## now carries an integer tick countdown advanced by sim_tick(). cancel() and
+## cancel_all() stay idempotent; they simply have no nodes left to free.
 
 const MapNavigationGridScript := preload("res://scripts/world/map/map_navigation_grid.gd")
+const RuleTicksScript := preload("res://scripts/rules/rule_ticks.gd")
 
-const RULE_TICKS_PER_SECOND := 60.0
-const MIN_INTERVAL_SECONDS := 0.001
 ## Rings advance three times slower than the mound's own BuildTime cycle. The
 ## original game does not expose this rate; the multiplier is the value that
 ## matches its observed spread speed.
@@ -38,48 +41,75 @@ func start(source_cell: Vector2i, config: Resource, maturity_fraction := 1.0) ->
 	_layer.hazard().cancel(source_cell)
 	var spread := create_job(source_cell, config, maturity_fraction)
 	var cells := spread.get("cells", []) as Array
+	# mounds_root is no longer where a Timer gets parented, but the check
+	# stays: an absent visual root means the layer has detached, and a bloom
+	# must not start into a layer that is tearing down.
 	var mounds_root := _layer.mounds_root()
 	if cells.is_empty() or not is_instance_valid(mounds_root):
 		_layer.emit_spread_finished(source_cell)
 		return
 	_layer.hazard().start(source_cell, cells)
 
-	var timer := Timer.new()
-	timer.name = "SpiceSpread_%d_%d" % [source_cell.x, source_cell.y]
-	timer.one_shot = false
-	timer.wait_time = interval_seconds(config)
-	mounds_root.add_child(timer)
-	spread["timer"] = timer
+	var interval := interval_ticks(config)
+	spread["interval_ticks"] = interval
+	spread["ticks_remaining"] = interval
 	_active[source_cell] = spread
-	timer.timeout.connect(_advance.bind(source_cell))
-	timer.start()
+
+
+## Advances every active bloom by one simulation tick, releasing a ring from
+## any whose countdown reaches zero. Called from MapSpiceLayer.sim_tick().
+##
+## _active.keys() is a fresh Array in Godot 4, so this iterates a snapshot --
+## which it has to, because _advance() cancels a bloom that just laid its last
+## ring and that erases the entry mid-loop. The has() re-check covers the
+## other direction: one bloom's final ring can cancel a *different* bloom
+## through the layer, so an entry alive when the snapshot was taken may be
+## gone by the time the loop reaches it.
+func sim_tick() -> void:
+	for source_cell: Vector2i in _active.keys():
+		if not _active.has(source_cell):
+			continue
+		var spread := _active[source_cell] as Dictionary
+		var remaining := int(spread.get("ticks_remaining", 0)) - 1
+		if remaining > 0:
+			spread["ticks_remaining"] = remaining
+			_active[source_cell] = spread
+			continue
+		_advance(source_cell)
+		if not _active.has(source_cell):
+			continue
+		var advanced := _active[source_cell] as Dictionary
+		advanced["ticks_remaining"] = maxi(int(advanced.get("interval_ticks", 1)), 1)
+		_active[source_cell] = advanced
 
 
 func cancel(source_cell: Vector2i) -> void:
-	var spread := _active.get(source_cell, {}) as Dictionary
 	_active.erase(source_cell)
-	var timer := spread.get("timer") as Timer
-	if is_instance_valid(timer):
-		timer.stop()
-		timer.queue_free()
 
 
-## Frees the timers without stopping through cancel()'s per-entry bookkeeping;
-## the layer calls this when it drops every visual at once.
+## Drops every bloom at once, without cancel()'s per-entry bookkeeping; the
+## layer calls this when it detaches its visuals.
 func cancel_all() -> void:
-	for spread: Dictionary in _active.values():
-		var timer := spread.get("timer") as Timer
-		if is_instance_valid(timer):
-			timer.free()
 	_active.clear()
 
 
-func interval_seconds(config: Resource) -> float:
+## How many simulation ticks separate two rings of the same bloom.
+##
+## INTERVAL_MULTIPLIER is applied to the rule-tick count *before* the single
+## RuleTicks.to_sim_ticks() call rather than to the converted result, so the
+## whole interval passes through one rounding step instead of two -- the same
+## reasoning SpiceMound.maturity_duration_ticks() documents. A mound with
+## BuildTime 6 gives 6 * 3 = 18 rule ticks -> roundi(18 * 25 / 60) = 8 ticks,
+## 0.32s against the 0.30s the old real-seconds interval produced. The
+## multiplier itself is already an approximation of the original game's
+## unexposed spread rate (see its own comment), so a rounding step inside one
+## tick of it changes nothing anyone can observe.
+##
+## Floored at one tick: a zero-tick interval would release every ring of a
+## bloom on the same tick, which is not a faster bloom but no bloom at all.
+func interval_ticks(config: Resource) -> int:
 	var build_time_ticks: float = float(config.build_time_ticks) if config != null else 0.0
-	return maxf(
-		build_time_ticks / RULE_TICKS_PER_SECOND * INTERVAL_MULTIPLIER,
-		MIN_INTERVAL_SECONDS
-	)
+	return maxi(RuleTicksScript.to_sim_ticks(build_time_ticks * INTERVAL_MULTIPLIER), 1)
 
 
 ## Plans the whole bloom: every passable sand cell inside the blast radius, the

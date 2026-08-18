@@ -64,6 +64,10 @@ func _initialize() -> void:
 		"a real spice mound's maturity countdown advances from the match loop alone",
 		_test_match_loop_drives_spice_mound_maturity
 	)
+	await _run_case(
+		"a real spice layer's spread countdown advances from the match loop alone",
+		_test_match_loop_drives_spice_layer
+	)
 	await _run_case("roster controls leave arrow keys to the camera", _test_roster_controls_ignore_keyboard_focus)
 	await _run_case("F3 toggles every navigation debug layer", _test_unified_debug_shortcut)
 	await _run_case("rules art configs resolve every test panel icon", _test_match_panel_icons)
@@ -862,6 +866,67 @@ func _test_match_loop_drives_spice_mound_maturity() -> void:
 	)
 
 	mound.queue_free()
+	match_instance.queue_free()
+
+
+## The spice layer is the only step in Match._advance_simulation_tick() that is
+## not a group loop -- it is called directly through terrain.spice_layer -- so
+## it is also the only one a typo in that call chain could silently drop while
+## every spice unit test in tests/maps/run.gd stayed green, since those drive
+## MapSpiceLayer.sim_tick() themselves. Same shape and same reason as the
+## turret, linger and mound wiring cases above: boot the real match, touch
+## nothing, and require the countdown to move on its own.
+##
+## The job is placed straight into the spread's _active rather than started
+## through start(): a real bloom needs a matured mound, and waiting minutes of
+## simulated time for one is not what this case is measuring.
+func _test_match_loop_drives_spice_layer() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	get_root().add_child(match_instance)
+	for _warmup in 5:
+		await process_frame
+
+	var spice_layer: Variant = match_instance.terrain.spice_layer
+	_expect(spice_layer != null, "the match fixture's terrain must expose a loaded spice layer")
+	if spice_layer == null:
+		match_instance.queue_free()
+		return
+
+	# Far above what a 200 ms window can exhaust, so the countdown never
+	# reaches zero and releases a ring -- the drop is then a clean read of how
+	# many ticks the layer was advanced.
+	var source_cell := Vector2i(1, 1)
+	spice_layer.spread()._active[source_cell] = {
+		"source_cell": source_cell,
+		"stage": 0,
+		"stage_count": 1,
+		"cells": [],
+		"interval_ticks": 100000,
+		"ticks_remaining": 100000,
+	}
+	var started_msec := Time.get_ticks_msec()
+	var started_tick: int = match_instance.current_tick()
+
+	var frames := 0
+	while Time.get_ticks_msec() - started_msec < 200 and frames < 400:
+		await process_frame
+		frames += 1
+
+	var advanced_ticks: int = match_instance.current_tick() - started_tick
+	var job: Dictionary = spice_layer.spread()._active.get(source_cell, {})
+	var advanced_countdown: int = 100000 - int(job.get("ticks_remaining", 100000))
+	_expect(
+		advanced_ticks >= 3,
+		"%d ms of the real match loop must advance the clock at least 3 ticks, got %d" \
+			% [Time.get_ticks_msec() - started_msec, advanced_ticks]
+	)
+	_expect(
+		advanced_countdown == advanced_ticks,
+		"a spread job must lose exactly one tick per simulation tick from the match loop alone: countdown dropped by %d against %d clock ticks" \
+			% [advanced_countdown, advanced_ticks]
+	)
+
+	spice_layer.spread().cancel(source_cell)
 	match_instance.queue_free()
 
 

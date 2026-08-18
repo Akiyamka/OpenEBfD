@@ -2,21 +2,45 @@ class_name MapSpiceHazard
 extends RefCounted
 
 ## The damage field a spice bloom leaves behind when it goes off. For
-## DURATION_SECONDS the cells the bloom seeded hurt any infantry standing in
-## them, on a fixed tick; vehicles are unaffected.
+## HAZARD_DURATION_TICKS the cells the bloom seeded hurt any infantry standing
+## in them, on a fixed pulse; vehicles are unaffected.
 ##
 ## The rate is authored data, not a constant here: it is the damage of the
 ## SpicePuff bullet in the rules catalog.
 ##
-## Owns the Timer nodes it parents under the layer's mounds root, so it follows
-## the detach protocol -- cancel() and cancel_all() are idempotent, and the
-## layer calls cancel_all() when it drops its visuals.
+## Both the pulse timer and the lifetime timer used to be Timer nodes parented
+## under the layer's mounds root. Phase 1 (docs/architecture/network-multiplayer.md,
+## decision 4) bans Timers from driving simulation state -- one advances on
+## engine frame time, where no snapshot or checksum can see it -- so each job
+## now carries integer tick countdowns advanced by sim_tick(). cancel() and
+## cancel_all() stay idempotent; the layer still calls cancel_all() when it
+## drops its visuals.
 
 const CombatDefinitionCatalogScript := preload("res://scripts/combat/combat_definition_catalog.gd")
+const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 
-const DURATION_SECONDS := 10.0
-const TICK_SECONDS := 0.25
-const TICK_COUNT := int(DURATION_SECONDS / TICK_SECONDS)
+## The hazard's whole lifetime, in simulation ticks: 250 at MatchClock's 25 Hz
+## is exactly the ten seconds this always lasted.
+const HAZARD_DURATION_TICKS := 250
+## The pulse cadence had to change, and this is the one number in this file
+## that is not a straight translation.
+##
+## It used to be four pulses a second (TICK_SECONDS = 0.25). At 25 Hz that is
+## 6.25 simulation ticks -- not a whole number, so it cannot survive the move
+## to an integer tick at all. Five a second is exactly five ticks, and 250
+## divides by it evenly, so the entire schedule comes out in whole numbers
+## with nothing rounded anywhere.
+##
+## What that costs and what it does not: the damage now arrives in 50 smaller
+## helpings instead of 40 larger ones, but the total over a full hazard is
+## damage_per_second() * 50 * 0.2s == damage_per_second() * 10s, identical to
+## the old 40 * 0.25s, and the hazard still lasts exactly ten seconds. The two
+## things a player experiences -- how long it hurts and how much it takes off
+## -- are unchanged; only the granularity of the ticking moved, and it moved
+## finer. tests/maps/run.gd pins that equality rather than leaving it as a
+## claim in this comment.
+const TICKS_PER_HAZARD_PULSE := 5
+const HAZARD_PULSE_COUNT := HAZARD_DURATION_TICKS / TICKS_PER_HAZARD_PULSE
 const SPICE_PUFF_ID := &"SpicePuff"
 const DEFAULT_DAMAGE := 10.0
 
@@ -56,38 +80,20 @@ func start(source_cell: Vector2i, spread_cells: Array) -> void:
 
 	var cell_size := navigation_grid.cell_size()
 	mound.start_spread_hazard(local_points, maxf(minf(cell_size.x, cell_size.y) * 1.35, 0.25))
-	var damage_timer := Timer.new()
-	damage_timer.name = "SpiceHazardDamage_%d_%d" % [source_cell.x, source_cell.y]
-	damage_timer.wait_time = TICK_SECONDS
-	var end_timer := Timer.new()
-	end_timer.name = "SpiceHazardEnd_%d_%d" % [source_cell.x, source_cell.y]
-	end_timer.one_shot = true
-	end_timer.wait_time = DURATION_SECONDS
-	mounds_root.add_child(damage_timer)
-	mounds_root.add_child(end_timer)
 	_active[source_cell] = {
 		"cells": affected_cells,
-		"damage": damage_per_second() * TICK_SECONDS,
-		"damage_timer": damage_timer,
-		"end_timer": end_timer,
-		"remaining_delayed_ticks": TICK_COUNT - 1,
+		"damage": pulse_damage(),
+		"pulse_ticks_remaining": TICKS_PER_HAZARD_PULSE,
+		"end_ticks_remaining": HAZARD_DURATION_TICKS,
+		"remaining_delayed_pulses": HAZARD_PULSE_COUNT - 1,
 	}
-	damage_timer.timeout.connect(_on_damage_timeout.bind(source_cell))
-	end_timer.timeout.connect(cancel.bind(source_cell))
-	# The first tick lands with the bloom rather than a quarter second later.
+	# The first pulse lands with the bloom rather than one interval later,
+	# which is why the delayed count above is one short of the total.
 	_apply_damage(source_cell)
-	damage_timer.start()
-	end_timer.start()
 
 
 func cancel(source_cell: Vector2i) -> void:
-	var hazard := _active.get(source_cell, {}) as Dictionary
 	_active.erase(source_cell)
-	for key in [&"damage_timer", &"end_timer"]:
-		var timer := hazard.get(key) as Timer
-		if is_instance_valid(timer):
-			timer.stop()
-			timer.queue_free()
 	var mound: Variant = _layer.mound_node(source_cell)
 	if is_instance_valid(mound):
 		mound.stop_spread_hazard()
@@ -129,21 +135,40 @@ func damage_infantry_in_cells(cells: Dictionary, damage: float, units: Array) ->
 	return damaged
 
 
-func _on_damage_timeout(source_cell: Vector2i) -> void:
-	var hazard := _active.get(source_cell, {}) as Dictionary
-	if hazard.is_empty():
-		return
-	var remaining := int(hazard.get("remaining_delayed_ticks", 0))
-	if remaining <= 0:
-		return
-	_apply_damage(source_cell)
-	remaining -= 1
-	hazard["remaining_delayed_ticks"] = remaining
-	_active[source_cell] = hazard
-	if remaining == 0:
-		var damage_timer := hazard.get("damage_timer") as Timer
-		if is_instance_valid(damage_timer):
-			damage_timer.stop()
+## Damage delivered by one pulse: the authored per-second rate spread over the
+## real time one pulse interval covers, so the rate itself is what the rules
+## data controls and the cadence above only decides how it is parcelled out.
+func pulse_damage() -> float:
+	return damage_per_second() * float(TICKS_PER_HAZARD_PULSE) * MatchClockScript.SECONDS_PER_TICK
+
+
+## Advances every active hazard by one simulation tick: one step of its
+## lifetime countdown, and one of its pulse countdown. Called from
+## MapSpiceLayer.sim_tick().
+##
+## Same snapshot-and-re-check shape as MapSpiceSpread.sim_tick(), and for the
+## same reason: cancel() erases from _active, so a job that expires here would
+## otherwise be mutating the dictionary this loop is walking.
+func sim_tick() -> void:
+	for source_cell: Vector2i in _active.keys():
+		if not _active.has(source_cell):
+			continue
+		var hazard := _active[source_cell] as Dictionary
+		var end_remaining := int(hazard.get("end_ticks_remaining", 0)) - 1
+		if end_remaining <= 0:
+			cancel(source_cell)
+			continue
+		hazard["end_ticks_remaining"] = end_remaining
+		var pulse_remaining := int(hazard.get("pulse_ticks_remaining", 0)) - 1
+		var delayed := int(hazard.get("remaining_delayed_pulses", 0))
+		if pulse_remaining > 0 or delayed <= 0:
+			hazard["pulse_ticks_remaining"] = maxi(pulse_remaining, 0)
+			_active[source_cell] = hazard
+			continue
+		hazard["pulse_ticks_remaining"] = TICKS_PER_HAZARD_PULSE
+		hazard["remaining_delayed_pulses"] = delayed - 1
+		_active[source_cell] = hazard
+		_apply_damage(source_cell)
 
 
 func _apply_damage(source_cell: Vector2i) -> int:
@@ -155,6 +180,9 @@ func _apply_damage(source_cell: Vector2i) -> int:
 		return 0
 	return damage_infantry_in_cells(
 		hazard.get("cells", {}) as Dictionary,
-		float(hazard.get("damage", DEFAULT_DAMAGE * TICK_SECONDS)),
+		float(hazard.get(
+			"damage",
+			DEFAULT_DAMAGE * float(TICKS_PER_HAZARD_PULSE) * MatchClockScript.SECONDS_PER_TICK
+		)),
 		tree.get_nodes_in_group(&"units")
 	)

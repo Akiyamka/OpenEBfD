@@ -36,6 +36,8 @@ func _initialize() -> void:
 	_run_case("spice mound runtime entity contract", _test_spice_mound_runtime_entity_contract)
 	_run_case("spice mound maturity ticks convert 60 Hz rule ticks to 25 Hz sim ticks", _test_spice_mound_maturity_tick_conversion)
 	_run_case("spice mound staged passable-sand spread", _test_spice_mound_staged_passable_sand_spread)
+	_run_case("spice hazard preserves its total damage across the new pulse cadence", _test_spice_hazard_preserves_total_damage)
+	_run_case("spice spread releases a ring on the interval tick, not before", _test_spice_spread_releases_a_ring_on_the_interval_tick)
 	_run_case("malformed baked data is atomic", _test_malformed_baked_data_is_atomic)
 	_run_case("grid reload semantics", _test_grid_reload_semantics)
 	_run_case("map loader failed replacement is atomic", _test_map_loader_failed_replacement_is_atomic)
@@ -345,7 +347,12 @@ func _test_spice_mound_staged_passable_sand_spread(token: int) -> int:
 	config.blast_radius = 3.0
 	config.spice_capacity = 800
 	config.build_time_ticks = 6
-	_expect(is_equal_approx(layer.spread().interval_seconds(config), 0.3), "spice rings must advance three times slower than the Rules BuildTime interval")
+	# BuildTime 6 * INTERVAL_MULTIPLIER(3) = 18 rule ticks at 60 Hz ->
+	# RuleTicks.to_sim_ticks(18) = roundi(18 * 25 / 60) = roundi(7.5) = 8
+	# simulation ticks, i.e. 0.32s against the 0.30s the old real-seconds
+	# interval produced -- one rounding step inside an interval the multiplier
+	# itself only approximates (see MapSpiceSpread.interval_ticks()).
+	_expect(layer.spread().interval_ticks(config) == 8, "spice rings must advance three times slower than the Rules BuildTime interval")
 	var job: Dictionary = layer.spread().create_job(center, config)
 	_expect(job.get("stage_count") == 3 and (job.get("cells", []) as Array).size() == 4, "BlastRadius must produce one outward ring per tile and select only eligible cells")
 	var early_job: Dictionary = layer.spread().create_job(center, config, 0.5)
@@ -353,7 +360,17 @@ func _test_spice_mound_staged_passable_sand_spread(token: int) -> int:
 	for entry: Dictionary in early_job.get("cells", []):
 		early_spice_total += int(entry.get("amount", 0))
 	_expect(early_spice_total == 400, "activation halfway through a mound cycle must spread half of its full spice capacity")
-	_expect(MapSpiceHazardScript.DURATION_SECONDS == 10.0 and MapSpiceHazardScript.TICK_COUNT == 40, "the damaging visual hazard must remain active for ten seconds at four checks per second")
+	# 250 ticks at MatchClock's 25 Hz is exactly ten seconds, and 250 / 5 is
+	# exactly 50 pulses -- the whole schedule in whole numbers. The pulse rate
+	# moved from four a second to five because 0.25s is 6.25 ticks and cannot
+	# be expressed at all; _test_spice_hazard_preserves_total_damage() below
+	# pins what that did and did not cost.
+	_expect(
+		MapSpiceHazardScript.HAZARD_DURATION_TICKS == 250
+			and MapSpiceHazardScript.TICKS_PER_HAZARD_PULSE == 5
+			and MapSpiceHazardScript.HAZARD_PULSE_COUNT == 50,
+		"the damaging visual hazard must remain active for ten seconds at five checks per second"
+	)
 	_expect(is_equal_approx(layer.hazard().damage_per_second(), 10.0), "the hazard damage rate must use SpicePuff Damage from the rules catalog")
 
 	var infantry := HazardUnit.new()
@@ -388,6 +405,92 @@ func _test_spice_mound_staged_passable_sand_spread(token: int) -> int:
 	_expect(grid.spice_value[(center.y * MapNavigationGridScript.NAV_SIZE) + center.x] == 200, "staged spread must keep navigation spice state synchronized")
 	return token
 
+
+## The whole justification for moving the hazard from four pulses a second to
+## five is that nothing a player experiences changes: same ten seconds, same
+## total damage, only finer helpings. That is an arithmetic claim, so it is
+## pinned here rather than left as a comment in map_spice_hazard.gd.
+func _test_spice_hazard_preserves_total_damage(token: int) -> int:
+	var layer = MapSpiceLayerScript.new()
+	var hazard = layer.hazard()
+	var rate: float = hazard.damage_per_second()
+	_expect(rate > 0.0, "the fixture must resolve a positive SpicePuff damage rate before the totals below mean anything")
+
+	# One pulse covers TICKS_PER_HAZARD_PULSE(5) * SECONDS_PER_TICK(0.04) =
+	# 0.2s of the authored per-second rate.
+	_expect(
+		is_equal_approx(hazard.pulse_damage(), rate * 0.2),
+		"one hazard pulse must deliver exactly the per-second rate over the real time the pulse interval covers"
+	)
+	# 50 pulses * 0.2s == 10s. The pre-conversion schedule was 40 * 0.25s,
+	# which is the same 10s: the cadence changed, the total did not.
+	_expect(
+		is_equal_approx(
+			float(MapSpiceHazardScript.HAZARD_PULSE_COUNT) * hazard.pulse_damage(),
+			rate * 10.0
+		),
+		"a full hazard must deliver exactly ten seconds of the authored rate, the same total the old four-per-second schedule did"
+	)
+	_expect(
+		MapSpiceHazardScript.HAZARD_PULSE_COUNT * MapSpiceHazardScript.TICKS_PER_HAZARD_PULSE
+			== MapSpiceHazardScript.HAZARD_DURATION_TICKS,
+		"the pulse schedule must divide the hazard lifetime exactly, with no tick left over"
+	)
+	return token
+
+
+## Pins that a ring lands on the interval tick and not one tick earlier.
+##
+## MapSpiceSpread.start() cannot run in this fixture: it bails out unless the
+## layer has a mounds root, and that needs a terrain mesh a bare baked-data
+## layer has none of. So the job goes straight into _active the way start()
+## would have left it -- tests may reach into internals here (see AGENTS.md;
+## only scripts/ is scanned for module boundaries).
+func _test_spice_spread_releases_a_ring_on_the_interval_tick(token: int) -> int:
+	var data = _valid_data("spice-ring-cadence", AABB(Vector3.ZERO, Vector3(256.0, 1.0, 256.0)))
+	data.nav_report["source_grid_size"] = Vector2i(256, 256)
+	data.nav_report["source_spice_grid_size"] = Vector2i(256, 256)
+	var center := Vector2i(20, 20)
+	# Sand is the default terrain type in _valid_data(), so marking these
+	# cells ground-passable is what makes them the passable sand a bloom
+	# spreads over -- same setup as the staged-spread case above.
+	for offset in [Vector2i.ZERO, Vector2i.RIGHT, Vector2i(2, 0), Vector2i(3, 0)]:
+		var cell: Vector2i = center + offset
+		data.nav_pass_mask[cell.y * MapNavigationGridScript.NAV_SIZE + cell.x] = \
+			MapNavigationGridScript.PASS_GROUND
+
+	var grid = MapNavigationGridScript.new()
+	_expect(grid.load_baked(data), "the ring-cadence fixture must load its navigation grid")
+	var layer = MapSpiceLayerScript.new()
+	_expect(layer.load_baked(data, grid), "the ring-cadence fixture must load its spice layer")
+
+	var config = SpiceMoundDefinitionScript.new()
+	config.blast_radius = 3.0
+	config.spice_capacity = 800
+	config.build_time_ticks = 6
+	var interval: int = layer.spread().interval_ticks(config)
+	_expect(interval == 8, "the fixture's interval must be the 8 ticks the conversion above already pinned")
+
+	var stages: Array[int] = []
+	layer.spice_spread_stage.connect(
+		func(_source: Vector2i, stage: int, _stage_count: int, _changed: int) -> void:
+			stages.append(stage)
+	)
+	var job: Dictionary = layer.spread().create_job(center, config)
+	job["interval_ticks"] = interval
+	job["ticks_remaining"] = interval
+	layer.spread()._active[center] = job
+
+	for _tick in interval - 1:
+		layer.sim_tick()
+	_expect(stages.is_empty(), "no ring may land before the interval elapses")
+	layer.sim_tick()
+	_expect(stages == [1], "the first ring must land on exactly the interval tick")
+
+	for _tick in interval:
+		layer.sim_tick()
+	_expect(stages == [1, 2], "the second ring must land one whole interval after the first")
+	return token
 
 func _test_malformed_baked_data_is_atomic(token: int) -> int:
 	var grid = MapNavigationGridScript.new()
