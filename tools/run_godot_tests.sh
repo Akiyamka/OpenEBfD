@@ -4,7 +4,7 @@ set -uo pipefail
 readonly SUITE_TIMEOUT_SECONDS="${GODOT_SUITE_TIMEOUT_SECONDS:-180}"
 readonly GODOT_CONTAINER="${GODOT_CONTAINER:-./tools/godot-container}"
 readonly SUITES=(
-	tests/sim/match_clock_run.gd
+	tests/sim/match_clock_run.gd tests/sim/entity_registry_run.gd
 	tests/characterization/run.gd tests/camera/run.gd tests/ui/cursor_run.gd
 	tests/ui/side_panel_pagination_run.gd tests/audio/voice_feedback_run.gd
 	tests/audio/movement_sounds_run.gd
@@ -31,7 +31,7 @@ readonly SUITES=(
 	tests/units/advanced_carryall_e2e_run.gd tests/units/death_strategy_run.gd
 	tests/units/death_animation_run.gd tests/units/authored_death_voice_run.gd
 	tests/effects/death_corpse_run.gd
-	tests/match/demo_boot_run.gd tests/match/snapshot_run.gd tests/maps/run.gd
+	tests/match/demo_boot_run.gd tests/match/snapshot_run.gd tests/match/entity_id_run.gd tests/maps/run.gd
 	tests/navigation/run.gd
 	tests/net/loopback_run.gd
 	tests/net/relay_run.gd

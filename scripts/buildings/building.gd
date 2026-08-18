@@ -4,6 +4,8 @@ extends Node3D
 const FireRequestScript := preload("res://scripts/combat/fire_request.gd")
 const AutoloadLookupScript := preload("res://scripts/players/autoload_lookup.gd")
 const EntityQueryScript := preload("res://scripts/world/entity_query.gd")
+const MatchLookupScript := preload("res://scripts/match/match_lookup.gd")
+const SimEntityRegistryScript := preload("res://scripts/sim/entity_registry.gd")
 const TeamColorScript := preload("res://scripts/world/team_color.gd")
 const DamagePolicyScript := preload("res://scripts/combat/damage_policy.gd")
 const CombatHullScript := preload("res://scripts/combat/combat_hull.gd")
@@ -128,6 +130,16 @@ var _authored_fire_controller = AuthoredFireControllerScript.new()
 var _popup_turret_state: int:
 	get:
 		return _building_combat.popup_state()
+## Stable id from the running match's EntityNodeIndex (scripts/sim/entity_registry.gd),
+## independent of get_instance_id(). Read-only from outside: bound once by
+## _register_entity_id() in _ready() and cleared by _release_entity_id() in
+## _exit_tree(). Stays 0 for the lifetime of a building built with no Match in
+## the tree -- most building/combat tests instantiate a Building directly --
+## which is deliberate and must not change building behaviour.
+var _entity_id := 0
+var entity_id: int:
+	get:
+		return _entity_id
 
 
 func _init() -> void:
@@ -142,6 +154,7 @@ func _init() -> void:
 
 func _ready() -> void:
 	add_to_group("buildings")
+	_register_entity_id()
 	# The three model-facing modules were already configured in _init() -- see
 	# the comment there. Only _rally and _combat_hull are configured below,
 	# because they need the scene tree (child creation / model metadata).
@@ -188,6 +201,26 @@ func _exit_tree() -> void:
 	# Last: dispose() drops the module's back reference to this node, so
 	# everything above that still needs a live facade has already run.
 	_building_combat.dispose()
+	_release_entity_id()
+
+
+## Self-registration, alongside the "buildings" group add_to_group() above:
+## see MatchLookupScript's doc comment for why this must run from _ready()
+## rather than anywhere in Match. Leaves entity_id at 0, unchanged, when
+## there is no Match in the tree.
+func _register_entity_id() -> void:
+	var index = MatchLookupScript.entity_index(self)
+	if index != null:
+		_entity_id = index.register(self, SimEntityRegistryScript.Kind.BUILDING)
+
+
+func _release_entity_id() -> void:
+	if _entity_id == 0:
+		return
+	var index = MatchLookupScript.entity_index(self)
+	if index != null:
+		index.release_id(_entity_id)
+	_entity_id = 0
 
 
 ## This entity's simulation half: advances every turret's reload/burst

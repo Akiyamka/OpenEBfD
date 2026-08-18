@@ -16,6 +16,8 @@ const MatchSnapshotScript := preload("res://scripts/match/match_snapshot.gd")
 const AutoloadLookupScript := preload("res://scripts/players/autoload_lookup.gd")
 const TerrainProbeScript := preload("res://scripts/world/terrain_probe.gd")
 const EntityQueryScript := preload("res://scripts/world/entity_query.gd")
+const MatchLookupScript := preload("res://scripts/match/match_lookup.gd")
+const EntityNodeIndexScript := preload("res://scripts/match/entity_node_index.gd")
 const AbilityBarScript := preload("res://scripts/ui/ability_bar.gd")
 const AdvancedCarryallAbilityScript := preload("res://scripts/match/advanced_carryall_ability.gd")
 const PLACEMENT_ARROW_SCENE := preload("res://assets/converted/placement/build_arrow.scn")
@@ -62,9 +64,25 @@ var _sidebar_house_pages: Array[StringName] = []
 static var _unit_definition_catalog := UnitSceneCatalogScript.shared()
 static var _building_definition_catalog := BuildingDefinitionCatalogScript.shared()
 var _match_snapshot
+## Binds stable entity ids (scripts/sim/entity_registry.gd) to the units and
+## buildings that carry them. Created in _enter_tree(), not _ready(): the
+## engine runs _enter_tree() top-down for a whole freshly-added subtree
+## before any node in it reaches _ready(), and every Unit/Building looks
+## itself up (via MatchLookupScript.entity_index()) from its own _ready() --
+## see that comment below.
+var _entity_index: EntityNodeIndex
 
 
 func _enter_tree() -> void:
+	# Both of these must exist before any child's _ready() runs: units and
+	# buildings self-register into _entity_index from their own _ready(), and
+	# they find this Match through MatchLookupScript.entity_index(), which
+	# looks up MatchLookupScript.GROUP. _enter_tree() fires top-down for the
+	# whole freshly-added subtree before any node in it reaches _ready(), so
+	# both are set up here rather than there -- see the same reasoning below
+	# for why _configure_demo_players() also cannot wait for _ready().
+	add_to_group(MatchLookupScript.GROUP)
+	_entity_index = EntityNodeIndexScript.new()
 	# Children initialize their owner visuals in _ready(), so the player
 	# roster must exist before buildings and units enter the scene tree.
 	# The Rules autoload's catalog, in contrast, only loads in its own
@@ -380,6 +398,14 @@ func _advance_simulation_tick() -> void:
 ## to observe it without reaching into _clock directly.
 func current_tick() -> int:
 	return _clock.current_tick()
+
+
+## The id<->Node binding every Unit and Building self-registers into. Exposed
+## so MatchLookupScript.entity_index() (which entities call, duck-typed
+## through has_method()/call() to avoid this script preloading unit.gd or
+## building.gd) can reach it without a hardcoded path.
+func entity_index() -> EntityNodeIndex:
+	return _entity_index
 
 
 func _unhandled_input(event: InputEvent) -> void:
