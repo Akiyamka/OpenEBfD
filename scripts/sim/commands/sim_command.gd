@@ -129,3 +129,28 @@ func _read_string_name(buffer: StreamPeerBuffer) -> Variant:
 		return null
 	var bytes: PackedByteArray = buffer.get_data(length)[1]
 	return StringName(bytes.get_string_from_utf8())
+
+
+## Shared payload helper: writes a Vector2i as two signed 32-bit values, x
+## then y. Grid cells (SimPlaceBuildingCommand.nav_cell,
+## scripts/sim/commands/place_building_command.gd, and the wall-line command
+## the next slice adds) are integer nav-grid coordinates, not world positions
+## -- SimMoveCommand.target is a Vector3 resolved by the local raycast at
+## issue time (see that field's doc comment for why a view-resolved position
+## still travels as plain data), while a nav cell is already the integer grid
+## coordinate that raycast resolves down to, so it round-trips exactly with
+## no float precision to lose and needs none of put_double()'s 8-byte cost
+## per component.
+func _write_cell(buffer: StreamPeerBuffer, value: Vector2i) -> void:
+	buffer.put_32(value.x)
+	buffer.put_32(value.y)
+
+
+## The inverse of _write_cell(). Returns a Vector2i on success. Returns null
+## -- checked for by every read_payload() override that calls this, exactly
+## as _read_entity_ids() and _read_string_name() callers do -- when the
+## buffer does not hold both 32-bit components.
+func _read_cell(buffer: StreamPeerBuffer) -> Variant:
+	if buffer.get_available_bytes() < 8:
+		return null
+	return Vector2i(buffer.get_32(), buffer.get_32())

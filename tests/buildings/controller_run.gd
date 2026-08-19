@@ -75,6 +75,23 @@ class SaleController extends BuildingController:
 		return raycast_hit
 
 
+## Stub for the click-side pointer raycast
+## (BuildingPlacement.hover_cell_from_pointer()): the real path needs a
+## Camera3D and a TerrainProbe hit against real geometry, neither of which
+## these controller tests set up (see _setup_controller_placement()'s own
+## camera-less pattern, shared with every other case in this file).
+## Overriding only this one public entry point -- not the private
+## _hover_cell_from_pointer() that process()/face_toward_pointer() also use --
+## leaves begin()/try_place_at_hover_cell()/etc. real, so the rest of the
+## placement pipeline (occupancy, footprint, spawn) is exercised unmodified;
+## only "where did the click land" is faked.
+class HoverCellPlacement extends BuildingPlacement:
+	var stub_cell: Variant = null
+
+	func hover_cell_from_pointer(_pointer_position: Vector2):
+		return stub_cell
+
+
 class FakeGrid extends RefCounted:
 	func is_loaded() -> bool:
 		return true
@@ -129,6 +146,22 @@ func _initialize() -> void:
 	_run_case(
 		"a repair click defers the toggle to the tick the command executes on, reading the direction then",
 		_test_repair_click_defers_and_reads_toggle_at_execution.bind(local_player)
+	)
+	_run_case(
+		"a place click submits a command and defers instantiating the building to the tick it executes on",
+		_test_place_click_defers_placement_to_the_tick
+	)
+	_run_case(
+		"a place click whose pointer resolves to no cell submits nothing and still emits its status",
+		_test_place_click_with_no_cell_submits_nothing
+	)
+	_run_case(
+		"execution ignores a place command whose order changed underneath it before the tick it executes on",
+		_test_place_execution_ignores_a_stale_command
+	)
+	_run_case(
+		"the drag-rotation recorded at the click survives the round trip to the placed building",
+		_test_place_click_rotation_survives_round_trip
 	)
 	_run_case(
 		"losing and restoring a prerequisite building toggles menu availability",
@@ -677,6 +710,200 @@ func _test_repair_click_defers_and_reads_toggle_at_execution(token: int, local_p
 	pump.uninstall_match_lookup_stub()
 	controller.free()
 	building.free()
+	return token
+
+
+## Place's command-bus counterpart to the sell/repair deferral cases above:
+## the click must not instantiate anything until its command executes. Uses a
+## HoverCellPlacement stub so the click-side raycast (which needs a real
+## Camera3D none of these controller tests set up) resolves to a fixed cell
+## instead of failing closed -- see that class's own doc comment.
+func _test_place_click_defers_placement_to_the_tick(token: int) -> int:
+	var buildings_root := Node3D.new()
+	root.add_child(buildings_root)
+	var controller := _new_controller()
+	var stub := HoverCellPlacement.new()
+	stub.stub_cell = Vector2i(5, 7)
+	controller._building_placement.free()
+	controller._building_placement = stub
+	var building_ids: Array[StringName] = [&"ATBarracks"]
+	controller.setup(null, null, null, building_ids, null, null, null, null)
+	_setup_controller_placement(controller,
+		null, FakeGrid.new(), buildings_root, null, null, null, null, Callable()
+	)
+	var pump := CommandPumpScript.new()
+	pump.configure_queue_controllers(controller)
+	controller._command_bus = pump.bus()
+	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
+
+	# cost 0, build_time_ticks 1: one advance_tick(0) call marks the order
+	# ready immediately, the same shortcut the wall-chain cases in this file
+	# already use (see WallChainScript.new() call sites above).
+	controller._building_queue.start(&"ATBarracks", "Barracks", 0, 1)
+	controller._building_queue.advance_tick(0)
+	controller._begin_ready_building_placement()
+
+	controller._try_place_ready_building(Vector2.ZERO)
+	_expect(pump.bus().pending_count() == 1, "a place click must submit exactly one command")
+	_expect(
+		buildings_root.get_child_count() == 0,
+		"a place click must not instantiate anything before its command executes"
+	)
+	_expect(
+		controller._building_queue.current_order() != null,
+		"a place click must not consume the ready order before its command executes"
+	)
+
+	pump.pump()
+	_expect(
+		buildings_root.get_child_count() == 1,
+		"the placement command must instantiate the building once it executes"
+	)
+	_expect(
+		controller._building_queue.current_order() == null,
+		"executing the placement command must consume the queue's ready order"
+	)
+
+	controller.free()
+	buildings_root.free()
+	return token
+
+
+## A place click that resolves to no cell must not put anything on the bus --
+## the same reason a sell click on no building submits nothing (see
+## _test_sell_click_on_no_building_submits_nothing()'s doc comment). No
+## HoverCellPlacement stub here: the real hover_cell_from_pointer() already
+## returns null with no camera wired in, which is exactly the case under test.
+func _test_place_click_with_no_cell_submits_nothing(token: int) -> int:
+	var buildings_root := Node3D.new()
+	root.add_child(buildings_root)
+	var controller := _new_controller()
+	var building_ids: Array[StringName] = [&"ATBarracks"]
+	controller.setup(null, null, null, building_ids, null, null, null, null)
+	_setup_controller_placement(controller,
+		null, FakeGrid.new(), buildings_root, null, null, null, null, Callable()
+	)
+	var pump := CommandPumpScript.new()
+	pump.configure_queue_controllers(controller)
+	controller._command_bus = pump.bus()
+	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
+
+	controller._building_queue.start(&"ATBarracks", "Barracks", 0, 1)
+	controller._building_queue.advance_tick(0)
+	controller._begin_ready_building_placement()
+
+	var statuses: Array[String] = []
+	controller.status_changed.connect(func(status: String) -> void: statuses.append(status))
+	controller._try_place_ready_building(Vector2.ZERO)
+	_expect(
+		statuses.has("Barracks placement needs terrain"),
+		"a click that resolves to no cell must still emit the existing status"
+	)
+	_expect(
+		pump.bus().pending_count() == 0,
+		"a click that resolves to no cell must put nothing on the command bus"
+	)
+
+	controller.free()
+	buildings_root.free()
+	return token
+
+
+## Binds execute_place_building_command()'s identity check: if
+## order.building_id != command.building_id is deleted, this case fails,
+## because the queue's real ATSmWindtrap order would then get placed at the
+## stale ATBarracks command's cell instead of being left alone -- see that
+## method's doc comment for why a mismatched id means the command is stale.
+func _test_place_execution_ignores_a_stale_command(token: int) -> int:
+	var buildings_root := Node3D.new()
+	root.add_child(buildings_root)
+	var controller := _new_controller()
+	var stub := HoverCellPlacement.new()
+	stub.stub_cell = Vector2i(5, 7)
+	controller._building_placement.free()
+	controller._building_placement = stub
+	var building_ids: Array[StringName] = [&"ATBarracks", &"ATSmWindtrap"]
+	controller.setup(null, null, null, building_ids, null, null, null, null)
+	_setup_controller_placement(controller,
+		null, FakeGrid.new(), buildings_root, null, null, null, null, Callable()
+	)
+	var pump := CommandPumpScript.new()
+	pump.configure_queue_controllers(controller)
+	controller._command_bus = pump.bus()
+	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
+
+	controller._building_queue.start(&"ATBarracks", "Barracks", 0, 1)
+	controller._building_queue.advance_tick(0)
+	controller._begin_ready_building_placement()
+	controller._try_place_ready_building(Vector2.ZERO)
+	_expect(pump.bus().pending_count() == 1, "setup: the place click must submit a command")
+
+	# The order changes underneath the in-flight command, exactly the way a
+	# clicked entity can die between a click and its command's execution tick
+	# (see CommandExecutor._execute_stop()'s doc comment for the identical
+	# reasoning applied to an entity id instead of a queue order).
+	controller._building_queue.take_ready()
+	controller._building_queue.start(&"ATSmWindtrap", "Windtrap", 0, 1)
+	controller._building_queue.advance_tick(0)
+
+	pump.pump()
+	_expect(
+		buildings_root.get_child_count() == 0,
+		"a stale place command naming a building the queue no longer has ready must place nothing"
+	)
+	_expect(
+		controller._building_queue.current_order() != null
+		and controller._building_queue.current_order().building_id == &"ATSmWindtrap"
+		and controller._building_queue.current_order().ready,
+		"a stale place command must leave the queue's real ready order untouched"
+	)
+
+	controller.free()
+	buildings_root.free()
+	return token
+
+
+## The drag-rotation gesture (PlacementPointerGesture, scripts/buildings/
+## placement_pointer_gesture.gd) is read off BuildingPlacement at click time
+## and must reach the placed building unchanged, exactly as an immediate
+## (pre-command-bus) placement would have produced -- see
+## _test_rotated_placement in tests/buildings/placement_run.gd for the same
+## PI * 0.5 assertion against a direct try_place_at_hover_cell() call.
+func _test_place_click_rotation_survives_round_trip(token: int) -> int:
+	var buildings_root := Node3D.new()
+	root.add_child(buildings_root)
+	var controller := _new_controller()
+	var stub := HoverCellPlacement.new()
+	stub.stub_cell = Vector2i(5, 7)
+	controller._building_placement.free()
+	controller._building_placement = stub
+	var building_ids: Array[StringName] = [&"ATBarracks"]
+	controller.setup(null, null, null, building_ids, null, null, null, null)
+	_setup_controller_placement(controller,
+		null, FakeGrid.new(), buildings_root, null, null, null, null, Callable()
+	)
+	var pump := CommandPumpScript.new()
+	pump.configure_queue_controllers(controller)
+	controller._command_bus = pump.bus()
+	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
+
+	controller._building_queue.start(&"ATBarracks", "Barracks", 0, 1)
+	controller._building_queue.advance_tick(0)
+	controller._begin_ready_building_placement()
+	controller._building_placement.set_rotation_quarter_turns(1)
+
+	controller._try_place_ready_building(Vector2.ZERO)
+	pump.pump()
+
+	_expect(buildings_root.get_child_count() == 1, "setup: the rotated placement must still succeed")
+	var spawned := buildings_root.get_child(0) as Node3D
+	_expect(
+		spawned != null and is_equal_approx(spawned.rotation.y, PI * 0.5),
+		"the drag-rotation quarter turn recorded at the click must survive to the placed building"
+	)
+
+	controller.free()
+	buildings_root.free()
 	return token
 
 

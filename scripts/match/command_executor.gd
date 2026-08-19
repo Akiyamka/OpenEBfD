@@ -26,6 +26,7 @@ const SimUnitOrderCommandScript := preload("res://scripts/sim/commands/unit_orde
 const SimUpgradeOrderCommandScript := preload("res://scripts/sim/commands/upgrade_order_command.gd")
 const SimSellBuildingCommandScript := preload("res://scripts/sim/commands/sell_building_command.gd")
 const SimRepairBuildingCommandScript := preload("res://scripts/sim/commands/repair_building_command.gd")
+const SimPlaceBuildingCommandScript := preload("res://scripts/sim/commands/place_building_command.gd")
 const SelectionClassifierScript := preload("res://scripts/match/selection_classifier.gd")
 const SelectionTargetAbilityControllerScript := preload(
 	"res://scripts/match/selection_target_ability_controller.gd"
@@ -131,6 +132,10 @@ func execute(command: SimCommand) -> Dictionary:
 			return _execute_sell_building(command as SimSellBuildingCommand)
 		SimRepairBuildingCommandScript.TYPE_ID:
 			return _execute_repair_building(command as SimRepairBuildingCommand)
+		SimPlaceBuildingCommandScript.TYPE_ID:
+			if _building_controller != null:
+				_building_controller.execute_place_building_command(command as SimPlaceBuildingCommand)
+			return {}
 		_:
 			# A command the bus scheduled, the codec can carry, and nothing
 			# here knows how to run. Silence would drop it without a trace --

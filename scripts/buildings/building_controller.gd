@@ -8,6 +8,7 @@ const RuleTicksScript := preload("res://scripts/rules/rule_ticks.gd")
 const SimBuildOrderCommandScript := preload("res://scripts/sim/commands/build_order_command.gd")
 const SimSellBuildingCommandScript := preload("res://scripts/sim/commands/sell_building_command.gd")
 const SimRepairBuildingCommandScript := preload("res://scripts/sim/commands/repair_building_command.gd")
+const SimPlaceBuildingCommandScript := preload("res://scripts/sim/commands/place_building_command.gd")
 
 signal status_changed(status: String)
 signal building_option_state_changed(option_state: BuildingOptionState)
@@ -1097,14 +1098,105 @@ func _place_wall_chain_segment() -> void:
 func _refund_completed_wall_segment(order: BuildingOrder) -> void:
 	_wall_session.refund_order(order)
 
+## The command-bus seam for the left click that drops a ready building order
+## onto the map (see docs/architecture/network-multiplayer.md, "Layering" --
+## "commands" vs "simulation"). Only what cannot be recomputed later stays
+## here -- see _try_toggle_building_repair()'s doc comment for why the same
+## split applies: the "no active preview" guard is view state (you can only
+## click-to-place while the preview is up), and resolving the pointer to a
+## nav cell is a raycast against local geometry, the same treatment
+## SimMoveCommand.target gets (see its doc comment). A click that resolves to
+## no cell is not a game action and must not put anything on the wire, the
+## same reason a move click onto no terrain submits nothing. Everything else
+## -- can this go here, does the scene exist, actually spawning the building
+## -- moves to execute_place_building_command(), which reads BuildingPlacement's
+## verdict at execution time, not here.
 func _try_place_ready_building(screen_position: Vector2) -> void:
 	var order := _building_queue.current_order()
 	if order == null or not _building_placement.is_active():
 		return
 
+	var hover_cell = _building_placement.hover_cell_from_pointer(screen_position)
+	if hover_cell == null:
+		status_changed.emit("%s placement needs terrain" % order.display_name)
+		return
+
+	_submit_place_building_command(
+		order.building_id, hover_cell, _building_placement.rotation_quarter_turns()
+	)
+
+
+## Mirrors _submit_sell_building_command()'s shape exactly, including its
+## push_error when no command bus is wired in -- see that method's doc
+## comment and the _command_bus field comment for why a missing bus is a
+## wiring mistake, not a supported mode.
+func _submit_place_building_command(
+		building_id: StringName, nav_cell: Vector2i, rotation_quarter_turns: int
+	) -> void:
+	if _command_bus == null or not _submit_tick_provider.is_valid():
+		push_error(
+			"BuildingController._submit_place_building_command(): no command bus wired in -- " +
+			"call setup() with a SimCommandBus and a submit-tick provider before issuing " +
+			"orders (see Match._setup_building_controller() or, in tests, " +
+			"tests/match/support/command_pump.gd)."
+		)
+		return
+	var command := SimPlaceBuildingCommandScript.new()
+	var players = _players()
+	if players != null:
+		command.player_id = players.local_player_id
+	command.building_id = building_id
+	command.nav_cell = nav_cell
+	command.rotation_quarter_turns = rotation_quarter_turns
+	_command_bus.submit(command, _submit_tick_provider.call())
+
+
+## The execution side of a place click: CommandExecutor.execute()
+## (scripts/match/command_executor.gd) calls this with the
+## SimPlaceBuildingCommand it just drained, on the tick the bus scheduled it
+## for. Must not depend on the local placement preview being active -- on
+## every client but the issuer it is not, since _begin_ready_building_placement()
+## only ever ran on the clicking player's own client -- so this rebuilds the
+## preview from the queue's own order first, the same recipe
+## WallLineSession.place_ready_segment() already uses to place a building at
+## an explicit cell with no pointer and no active preview
+## (scripts/buildings/wall_line_session.gd:227).
+##
+## Verifies identity before doing anything else: order.building_id must still
+## match command.building_id, or this command is stale -- the order changed
+## between the click and this tick -- and placing whatever happens to be
+## ready now would hand the player a building they never chose. A stale
+## command is discarded silently, the same treatment a dead entity id gets in
+## CommandExecutor._execute_stop()'s identical reasoning.
+##
+## The rest is _try_place_ready_building()'s old body, unchanged except that
+## command.nav_cell replaces the pointer position. The two try_place_at_hover_cell()
+## calls look redundant, but each reaches a different set of PlaceResult
+## branches and every one of those emits a distinct status string that must
+## stay reachable -- see try_place_at_hover_cell()'s own doc comment for why
+## the second call is cheap now that it no longer draws a preview.
+func execute_place_building_command(command: SimPlaceBuildingCommand) -> void:
+	var order := _building_queue.current_order()
+	if order == null or not order.ready:
+		return
+	if order.building_id != command.building_id:
+		return
+
+	var config := _building_config(order.building_id)
+	var occupy_rows := _building_occupy_rows(config)
+	if not _building_placement.begin(order.building_id, order.display_name, occupy_rows, _is_wall_building_id(order.building_id)):
+		status_changed.emit("%s has no occupy_rows" % order.display_name)
+		return
+	_building_placement.set_rotation_quarter_turns(command.rotation_quarter_turns)
+
+	# owner_player_id keeps coming from the local roster, not command.player_id:
+	# a match has exactly one BuildingController today, always the local
+	# player's (see the _command_bus field comment), so the two are
+	# identical -- which player's roster a placement should own once more
+	# than one client's commands reach this controller is phase 5's problem.
 	var players = _players()
 	var owner_player_id = players.local_player_id if players != null else null
-	match _building_placement.try_place(screen_position, null, owner_player_id):
+	match _building_placement.try_place_at_hover_cell(command.nav_cell, null, owner_player_id):
 		BuildingPlacementScript.PlaceResult.NEEDS_TERRAIN:
 			status_changed.emit("%s placement needs terrain" % order.display_name)
 			return
@@ -1121,7 +1213,7 @@ func _try_place_ready_building(screen_position: Vector2) -> void:
 		)
 		return
 	var scene := load(scene_path) as PackedScene
-	match _building_placement.try_place(screen_position, scene, owner_player_id):
+	match _building_placement.try_place_at_hover_cell(command.nav_cell, scene, owner_player_id):
 		BuildingPlacementScript.PlaceResult.PLACED:
 			_building_queue.take_ready()
 			status_changed.emit("%s placed" % order.display_name)
