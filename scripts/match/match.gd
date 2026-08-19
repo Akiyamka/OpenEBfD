@@ -6,6 +6,8 @@ const BuildingUpgradeControllerScript := preload("res://scripts/buildings/buildi
 const UnitCommandControllerScript := preload("res://scripts/match/unit_command_controller.gd")
 const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 const FrameTickDriverScript := preload("res://scripts/match/frame_tick_driver.gd")
+const SimCommandBusScript := preload("res://scripts/sim/command_bus.gd")
+const CommandExecutorScript := preload("res://scripts/match/command_executor.gd")
 const UnitDeploymentControllerScript := preload("res://scripts/units/unit_deployment_controller.gd")
 const UnitRosterControllerScript := preload("res://scripts/units/unit_roster_controller.gd")
 const UnitSceneCatalogScript := preload("res://scripts/units/unit_scene_catalog.gd")
@@ -40,6 +42,13 @@ const ENEMY_PLAYER_ID := 2
 var _fps_update_time := 0.0
 var _clock: MatchClock
 var _tick_driver: FrameTickDriver
+## Owned alongside _entity_index (see that field's comment) for the same
+## reason: this is the phase 2 spine everything else in the command path is
+## built on. _command_executor is constructed with _entity_index because
+## resolving a command's entity ids to Nodes is the one thing the sim-zone
+## bus itself may never do -- see scripts/match/command_executor.gd.
+var _command_bus: SimCommandBus
+var _command_executor: CommandExecutor
 var _building_controller: BuildingController
 var _building_upgrade_controller: BuildingUpgradeController
 var _unit_command_controller: UnitCommandController
@@ -95,6 +104,8 @@ func _enter_tree() -> void:
 func _ready() -> void:
 	_clock = MatchClockScript.new()
 	_tick_driver = FrameTickDriverScript.new()
+	_command_bus = SimCommandBusScript.new()
+	_command_executor = CommandExecutorScript.new(_entity_index)
 	_match_snapshot = MatchSnapshotScript.new(_snapshot_storage_path())
 	_restore_saved_startup_state()
 	_building_option_ids = _local_player_building_option_ids()
@@ -207,7 +218,9 @@ func _setup_unit_command_controller() -> void:
 		selection_rectangle,
 		_unit_deployment_controller,
 		ability_bar,
-		[AdvancedCarryallAbilityScript.new()]
+		[AdvancedCarryallAbilityScript.new()],
+		_command_bus,
+		Callable(self, "next_orderable_tick")
 	)
 
 
@@ -287,6 +300,18 @@ func _process(delta: float) -> void:
 ## tick in the same sequence, so a fixed, deliberate order here is what keeps
 ## every client's tick-by-tick history identical.
 ##
+## Draining and executing due commands (see scripts/sim/command_bus.gd and
+## scripts/match/command_executor.gd) is now the first thing this function
+## does, before _clock.advance() has given any system below a chance to
+## move. A command scheduled for tick T must see the world exactly as it
+## stood at the *start* of T -- not as it stands after production queues,
+## turret reloads or repair have already advanced that same tick -- or its
+## outcome would depend on where in this function the drain happened to be
+## called from, which is exactly the kind of order-dependent result lockstep
+## cannot let two clients disagree about. This is "commands, then systems",
+## and it has to be the same everywhere a tick runs, which is why it is the
+## very first line here and not folded into any one system's own advance_tick().
+##
 ## _building_controller, then _building_upgrade_controller, then
 ## _unit_roster_controller -- exactly the order these three appeared in
 ## _process() before this slice split their simulation half out. Within a
@@ -299,7 +324,12 @@ func _process(delta: float) -> void:
 ## lockstep match this stops being a nice-to-have: every client must resolve
 ## that credit contention identically, or their simulations diverge.
 ## _unit_command_controller.process() is input handling, not simulation, and
-## stays out of this function -- see its call in _process() instead.
+## stays out of this function -- see its call in _process() instead. Its
+## on_command_executed() is different and does belong here: the command
+## drain above calls it once per executed command, purely to hand back a
+## result (e.g. how many entities actually stopped) for the status label --
+## reporting, not deciding, and no more "simulation" than
+## _building_controller.status_changed already was before this slice.
 ## After the three controllers above: units, then buildings, then linger
 ## effects, then spice mounds -- each entity's or system's own sim_tick().
 ## For units and buildings that is today just CombatTurret.advance_tick() for
@@ -371,7 +401,11 @@ func _process(delta: float) -> void:
 ## mound freed this same frame by map_spice_layer.gd's _remove_spice_mound()
 ## can still be listed here as a freed instance and must not be ticked.
 func _advance_simulation_tick() -> void:
-	_clock.advance()
+	var tick := _clock.advance()
+	for command in _command_bus.drain(tick):
+		var result: Dictionary = _command_executor.execute(command)
+		if _unit_command_controller != null:
+			_unit_command_controller.on_command_executed(command, result)
 	if _building_controller != null:
 		_building_controller.advance_tick()
 	if _building_upgrade_controller != null:
@@ -398,6 +432,27 @@ func _advance_simulation_tick() -> void:
 ## to observe it without reaching into _clock directly.
 func current_tick() -> int:
 	return _clock.current_tick()
+
+
+## The earliest tick a command submitted right now can still legally target.
+## _advance_simulation_tick() drains tick T as the first thing it does after
+## advancing the clock to T -- see that function's doc comment. So the drain
+## for T has already happened by the moment anyone anywhere can observe
+## current_tick() == T: the two are set in consecutive statements, and
+## nothing outside this function runs between them. A command aimed at
+## current_tick() is therefore late by construction rather than by unlucky
+## timing, and SimCommandBus.submit() would count it in dropped_late_count()
+## every single time. That argument needs no claim about where input
+## handling falls relative to _process() within a frame, which is the
+## tempting way to reason about this and the wrong one: it would make the
+## answer depend on engine callback order, and this does not. +1 is what
+## makes "submit a command right now" and "the earliest tick it can run"
+## agree. Handed to
+## UnitCommandController as a Callable (see
+## _setup_unit_command_controller()) so this reasoning lives in the one
+## place that owns _clock, instead of being re-derived by every issuer.
+func next_orderable_tick() -> int:
+	return _clock.current_tick() + 1
 
 
 ## The id<->Node binding every Unit and Building self-registers into. Exposed

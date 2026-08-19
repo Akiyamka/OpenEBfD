@@ -15,12 +15,23 @@ const SelectionPartitionScript := preload("res://scripts/match/selection_partiti
 const SelectionTargetAbilityControllerScript := preload(
 	"res://scripts/match/selection_target_ability_controller.gd"
 )
+const SimStopCommandScript := preload("res://scripts/sim/commands/stop_command.gd")
 
 var _camera: Camera3D
 var _terrain: MapLoader
 var _selection_rectangle = null
 var _navigation
 var _deployment_controller
+## The command bus this controller submits SimCommands to, and a matching
+## way to ask "what tick would a command submitted right now target" --
+## injected together by Match._setup_unit_command_controller(), the same way
+## camera/terrain/navigation are. Both are null in every suite that builds
+## this controller directly with no Match in the tree (see
+## tests/match/unit_command_run.gd), which is exactly the case
+## _stop_selected_entities() falls back to its pre-command-bus behaviour
+## for -- see that method.
+var _command_bus: SimCommandBus
+var _submit_tick_provider: Callable
 # Units and buildings are protocol-compatible group members in runtime and
 # tests, not one concrete class. Both expose ownership and selection methods.
 var _selected_entities: Array[Node] = []
@@ -59,13 +70,17 @@ func setup(
 		selection_rectangle = null,
 		deployment_controller = null,
 		ability_bar = null,
-		target_ability_handlers: Array = []
+		target_ability_handlers: Array = [],
+		command_bus: SimCommandBus = null,
+		submit_tick_provider: Callable = Callable()
 	) -> void:
 	_camera = command_camera
 	_terrain = command_terrain
 	_navigation = navigation
 	_selection_rectangle = selection_rectangle
 	_deployment_controller = deployment_controller
+	_command_bus = command_bus
+	_submit_tick_provider = submit_tick_provider
 	_target_abilities.configure(ability_bar, target_ability_handlers)
 	if not _target_abilities.status_changed.is_connected(_on_target_ability_status_changed):
 		_target_abilities.status_changed.connect(_on_target_ability_status_changed)
@@ -259,20 +274,89 @@ func _is_stop_key(event: InputEventKey) -> bool:
 	return event.keycode == KEY_S or event.physical_keycode == KEY_S
 
 
-## Cancels movement/attack orders on every selected controllable entity through
-## its shared order contract. A building implements this as attack cancellation
-## only, so its rally point and production state remain untouched.
+## The issue side of Stop: immediate, and split from execution on purpose
+## (see docs/architecture/network-multiplayer.md, "Layering" -- "commands"
+## vs "simulation"). With a command bus wired in (the real game, via
+## Match._setup_unit_command_controller()) this only resolves the current
+## selection to stable entity ids and submits one SimStopCommand; cancelling
+## the orders themselves, and therefore knowing how many actually stopped,
+## only happens once CommandExecutor._execute_stop() runs on the tick this
+## command is scheduled for (see on_command_executed() for how that result
+## finds its way back to status_changed).
+##
+## Without a bus -- every suite that builds this controller directly, with
+## no Match anywhere in the tree, see tests/match/unit_command_run.gd --
+## this falls back to the old immediate behaviour unchanged: cancel orders
+## right here and report the count synchronously. Those fixtures' fake
+## entities have no entity_id at all, so this is not merely a convenience
+## fallback, it is the only path that does not reach for a property they do
+## not have.
 func _stop_selected_entities() -> void:
+	if _command_bus == null:
+		_emit_stop_status(_cancel_orders_immediately())
+		return
+	var entity_ids := PackedInt32Array()
+	for entity in _controllable_entities():
+		# entity_id == 0 -- including "this entity type has no such
+		# property at all" -- means "never registered with a Match" (see
+		# scripts/sim/entity_registry.gd): skip it rather than submit a
+		# command CommandExecutor could never resolve back to this entity.
+		if not &"entity_id" in entity:
+			continue
+		var id := int(entity.get(&"entity_id"))
+		if id != 0:
+			entity_ids.append(id)
+	if entity_ids.is_empty():
+		return
+	var command := SimStopCommandScript.new()
+	var players = _players()
+	if players != null:
+		command.player_id = players.local_player_id
+	command.entity_ids = entity_ids
+	_command_bus.submit(command, _submit_tick_provider.call())
+
+
+## The pre-command-bus behaviour, preserved verbatim as the fallback
+## _stop_selected_entities() uses when no bus is wired in, and reused as
+## CommandExecutor._execute_stop()'s model for what "cancelling" means on
+## the execution side -- see that method.
+func _cancel_orders_immediately() -> int:
 	var stopped := 0
 	for entity in _controllable_entities():
 		if not entity.has_method("cancel_all_orders"):
 			continue
 		if bool(entity.call("cancel_all_orders")):
 			stopped += 1
+	return stopped
+
+
+func _emit_stop_status(stopped: int) -> void:
 	if stopped == 1:
 		status_changed.emit("Stopped")
 	elif stopped > 1:
 		status_changed.emit("%d orders stopped" % stopped)
+
+
+## The feedback half of the Stop split (see _stop_selected_entities()):
+## Match._advance_simulation_tick() calls this with the command it just
+## drained and executed, plus the result CommandExecutor computed, so the
+## "N orders stopped" status this controller used to emit synchronously can
+## still be emitted -- just no longer on the same frame as the click.
+##
+## With input_delay_ticks == 0 (phase 2's single-player default, see
+## SimCommandBus) that lag is at most one tick, effectively invisible. Once
+## phase 5 raises the delay for real network play, this necessarily arrives
+## noticeably late relative to the click that caused it, and hiding that gap
+## behind an optimistic guess of the outcome is phase 6's job, not this
+## method's -- see decision 8 and "Layering" in
+## docs/architecture/network-multiplayer.md ("the acknowledgement is
+## cosmetic and immediate ... while the order itself executes on its
+## scheduled tick"). Nothing here may guess ahead of the tick; it only
+## reports what CommandExecutor already found to be true.
+func on_command_executed(command: SimCommand, result: Dictionary) -> void:
+	match command.type_id():
+		SimStopCommandScript.TYPE_ID:
+			_emit_stop_status(int(result.get("stopped", 0)))
 
 
 ## The first `D` binding in the project. Applies to every selected
