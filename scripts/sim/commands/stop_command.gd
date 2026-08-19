@@ -9,10 +9,10 @@ extends SimCommand
 ## CommandExecutor._execute_stop() (scripts/match/command_executor.gd) on
 ## the tick the bus schedules it for.
 
-## Dispatch id for CommandExecutor.execute() and, later, the wire codec.
-## 1 is arbitrary -- it only has to be stable and unique among command
-## types -- and is claimed here first because Stop is this slice's only
-## concrete command.
+## Dispatch id for CommandExecutor.execute() and SimCommandCodec
+## (scripts/sim/command_codec.gd). 1 is arbitrary -- it only has to be
+## stable and unique among command types -- and is claimed here first
+## because Stop is this slice's only concrete command.
 const TYPE_ID := 1
 
 var entity_ids: PackedInt32Array = PackedInt32Array()
@@ -20,3 +20,17 @@ var entity_ids: PackedInt32Array = PackedInt32Array()
 
 func type_id() -> int:
 	return TYPE_ID
+
+
+## Payload is just entity_ids -- see SimCommand._write_entity_ids() for the
+## shared count-prefixed layout every entity-id-carrying command uses.
+func write_payload(buffer: StreamPeerBuffer) -> void:
+	_write_entity_ids(buffer, entity_ids)
+
+
+func read_payload(buffer: StreamPeerBuffer) -> bool:
+	var ids: Variant = _read_entity_ids(buffer)
+	if ids == null:
+		return false
+	entity_ids = ids
+	return true

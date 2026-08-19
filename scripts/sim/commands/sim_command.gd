@@ -27,9 +27,64 @@ var player_id: int = 0
 
 
 ## Identifies the concrete command type for dispatch. CommandExecutor.execute()
-## matches on this today; slice 3's wire codec will decode a command's
-## remaining fields by matching on the same number. Returns 0 in the base,
-## which no concrete command ever returns -- every subclass overrides this to
-## return its own TYPE_ID constant instead.
+## matches on this today; SimCommandCodec (scripts/sim/command_codec.gd)
+## decodes a command's remaining fields by matching on the same number.
+## Returns 0 in the base, which no concrete command ever returns -- every
+## subclass overrides this to return its own TYPE_ID constant instead.
 func type_id() -> int:
 	return 0
+
+
+## Writes this command's own fields -- everything beyond player_id, which
+## SimCommandCodec's envelope carries directly -- onto `buffer` in whatever
+## order read_payload() below expects them back. Every concrete command
+## overrides both this and read_payload(); the two must stay exact inverses
+## of each other, since SimCommandCodec.decode() calls this pair with no
+## other way to know it got the order wrong. The base implementation writes
+## nothing, matching type_id() == 0: no concrete command is ever this class
+## directly, so this body never actually runs through the codec.
+func write_payload(_buffer: StreamPeerBuffer) -> void:
+	pass
+
+
+## Reads this command's own fields from `buffer`, in the exact order
+## write_payload() wrote them, and returns true on success. Returns false --
+## never raises and never leaves this command half-populated -- on anything
+## that does not look like this command's own payload, a truncated buffer
+## being the case that matters most: decode() is the boundary a later phase
+## exposes directly to a real network transport, and hostile or corrupt
+## bytes have to fail closed here rather than produce a command with some
+## fields written and others left at their defaults.
+func read_payload(_buffer: StreamPeerBuffer) -> bool:
+	return true
+
+
+## Shared payload helper: writes a PackedInt32Array as a u32 count followed
+## by that many signed 32-bit values. Every concrete command that carries a
+## list of entity ids (SimStopCommand.entity_ids, SimMoveCommand.entity_ids,
+## and, per docs/architecture/network-multiplayer.md phase 2, most of the
+## dozen still to come) uses this identical layout, so it lives here once
+## instead of being re-typed by hand in every override.
+func _write_entity_ids(buffer: StreamPeerBuffer, ids: PackedInt32Array) -> void:
+	buffer.put_u32(ids.size())
+	for id in ids:
+		buffer.put_32(id)
+
+
+## The inverse of _write_entity_ids(). Returns a PackedInt32Array on success.
+## Returns null -- checked for by every read_payload() override that calls
+## this -- when the buffer does not hold as many ids as its own count prefix
+## claims, which is the truncated/corrupt case this exists to fail closed on
+## rather than let a runaway count prefix drive reads past the end of the
+## buffer.
+func _read_entity_ids(buffer: StreamPeerBuffer) -> Variant:
+	if buffer.get_available_bytes() < 4:
+		return null
+	var count := buffer.get_u32()
+	if buffer.get_available_bytes() < count * 4:
+		return null
+	var ids := PackedInt32Array()
+	ids.resize(count)
+	for i in count:
+		ids[i] = buffer.get_32()
+	return ids

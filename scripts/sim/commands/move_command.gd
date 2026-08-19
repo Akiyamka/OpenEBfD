@@ -21,8 +21,9 @@ extends SimCommand
 ## once input delay is nonzero (see UnitCommandController._command_move()'s
 ## doc comment).
 
-## Dispatch id for CommandExecutor.execute() and, later, the wire codec.
-## 1 is SimStopCommand's; this is the next one claimed.
+## Dispatch id for CommandExecutor.execute() and SimCommandCodec
+## (scripts/sim/command_codec.gd). 1 is SimStopCommand's; this is the next
+## one claimed.
 const TYPE_ID := 2
 
 var entity_ids: PackedInt32Array = PackedInt32Array()
@@ -52,3 +53,30 @@ var move_mode: int = 0
 
 func type_id() -> int:
 	return TYPE_ID
+
+
+## Payload order: entity_ids (see SimCommand._write_entity_ids()), then
+## target.x/y/z as float64 each (decision 5 -- no narrowing to float32 on
+## the wire), then target_entity_id, then move_mode. read_payload() below
+## must read these back in this exact order.
+func write_payload(buffer: StreamPeerBuffer) -> void:
+	_write_entity_ids(buffer, entity_ids)
+	buffer.put_double(target.x)
+	buffer.put_double(target.y)
+	buffer.put_double(target.z)
+	buffer.put_32(target_entity_id)
+	buffer.put_32(move_mode)
+
+
+func read_payload(buffer: StreamPeerBuffer) -> bool:
+	var ids: Variant = _read_entity_ids(buffer)
+	if ids == null:
+		return false
+	# 3 float64 + 2 signed 32-bit fields = 24 + 4 + 4 bytes.
+	if buffer.get_available_bytes() < 32:
+		return false
+	entity_ids = ids
+	target = Vector3(buffer.get_double(), buffer.get_double(), buffer.get_double())
+	target_entity_id = buffer.get_32()
+	move_mode = buffer.get_32()
+	return true
