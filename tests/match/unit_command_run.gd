@@ -325,6 +325,10 @@ func _initialize() -> void:
 	_run_case("rectangle unit selection", _test_rectangle_unit_selection.bind(local_player, enemy_player))
 	_run_case("J modifies movement formation", _test_formation_modifier.bind(local_player))
 	_run_case("S stops all selected units", _test_stop_shortcut.bind(local_player))
+	_run_case(
+		"a selection this player cannot command explains itself instead of going silent",
+		_test_uncommandable_selection_explains_itself.bind(enemy_player)
+	)
 	_run_case("spice click issues harvester order", _test_harvester_order.bind(local_player))
 	_run_case("owned refinery click issues unload order", _test_unload_order.bind(local_player, enemy_player))
 	_run_case("building selection", _test_building_selection.bind(local_player))
@@ -1212,6 +1216,61 @@ func _test_formation_modifier(token: int, local_player) -> int:
 
 	commands.queue_free()
 	unit.queue_free()
+	return token
+
+
+## Regression test for feedback that went missing without a single assertion
+## noticing. Before the move and attack orders went onto the command bus,
+## both aborted with "Cannot command this player" when the selection held an
+## entity this player does not control; both guards disappeared in that
+## conversion, leaving a selected enemy unit answering a right-click with
+## complete silence. The string was never asserted anywhere, so the suite
+## stayed green through the loss -- which is the whole reason this case
+## exists rather than a comment.
+func _test_uncommandable_selection_explains_itself(token: int, enemy_player) -> int:
+	var pump := CommandPumpScript.new()
+	var commands := FakeUnitCommandController.new()
+	commands.setup(
+		null, null, null, null, null, null, [], pump.bus(), Callable(pump, "next_orderable_tick")
+	)
+	var statuses: Array[String] = []
+	commands.status_changed.connect(func(status: String) -> void: statuses.append(status))
+	root.add_child(commands)
+	var hostile := _make_unit("HostileScout", enemy_player)
+	root.add_child(hostile)
+	hostile.entity_id = pump.register(hostile, SimEntityRegistryScript.Kind.UNIT)
+	commands._set_selection([hostile])
+
+	# _command_at() raycasts twice per click -- entities first, then terrain --
+	# so the empty hit here is the "clicked nothing selectable" answer and the
+	# second is the ground the click landed on.
+	commands.raycast_hits.append({})
+	commands.raycast_hits.append({"position": Vector3(4.0, 0.0, 4.0)})
+	commands.handle_unhandled_input(_mouse_event(MOUSE_BUTTON_RIGHT, true, Vector2(10.0, 10.0)))
+	_expect(
+		statuses.has("Cannot command this player"),
+		"a move click on a selection this player does not control must say so"
+	)
+	_expect(
+		hostile.move_targets.is_empty(),
+		"the uncommandable entity must not receive an order either"
+	)
+
+	statuses.clear()
+	commands.handle_unhandled_input(_key_event(KEY_S, true))
+	_expect(
+		statuses.has("Cannot command this player"),
+		"Stop must explain itself the same way rather than doing nothing in silence"
+	)
+
+	pump.pump(commands)
+	_expect(
+		hostile.move_targets.is_empty() and hostile.stop_commands == 0,
+		"nothing must reach the entity on the tick either -- no command was ever submitted"
+	)
+
+	hostile.queue_free()
+	commands.queue_free()
 	return token
 
 

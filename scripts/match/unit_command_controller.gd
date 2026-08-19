@@ -302,17 +302,7 @@ func _stop_selected_entities() -> void:
 			"tests/match/support/command_pump.gd)."
 		)
 		return
-	var entity_ids := PackedInt32Array()
-	for entity in _controllable_entities():
-		# entity_id == 0 -- including "this entity type has no such
-		# property at all" -- means "never registered with a Match" (see
-		# scripts/sim/entity_registry.gd): skip it rather than submit a
-		# command CommandExecutor could never resolve back to this entity.
-		if not &"entity_id" in entity:
-			continue
-		var id := int(entity.get(&"entity_id"))
-		if id != 0:
-			entity_ids.append(id)
+	var entity_ids := _commandable_entity_ids()
 	if entity_ids.is_empty():
 		return
 	var command := SimStopCommandScript.new()
@@ -559,17 +549,7 @@ func _issue_attack_order(target_entity, position: Vector3) -> void:
 			"tests/match/support/command_pump.gd)."
 		)
 		return
-	var entity_ids := PackedInt32Array()
-	for entity in _controllable_entities():
-		# entity_id == 0 -- including "this entity type has no such
-		# property at all" -- means "never registered with a Match" (see
-		# scripts/sim/entity_registry.gd): skip it rather than submit a
-		# command CommandExecutor could never resolve back to this entity.
-		if not &"entity_id" in entity:
-			continue
-		var id := int(entity.get(&"entity_id"))
-		if id != 0:
-			entity_ids.append(id)
+	var entity_ids := _commandable_entity_ids()
 	if entity_ids.is_empty():
 		return
 	var command := SimAttackCommandScript.new()
@@ -635,17 +615,7 @@ func _command_move(screen_position: Vector2, target_entity = null) -> void:
 	var hit := _raycast(screen_position, TERRAIN_COLLISION_MASK)
 	if hit.is_empty():
 		return
-	var entity_ids := PackedInt32Array()
-	for entity in _controllable_entities():
-		# entity_id == 0 -- including "this entity type has no such
-		# property at all" -- means "never registered with a Match" (see
-		# scripts/sim/entity_registry.gd): skip it rather than submit a
-		# command CommandExecutor could never resolve back to this entity.
-		if not &"entity_id" in entity:
-			continue
-		var id := int(entity.get(&"entity_id"))
-		if id != 0:
-			entity_ids.append(id)
+	var entity_ids := _commandable_entity_ids()
 	if entity_ids.is_empty():
 		return
 
@@ -736,6 +706,47 @@ func _partition_selection() -> SelectionPartition:
 ## classifier built once in setup() would silently go stale against that.
 func _classifier() -> SelectionClassifier:
 	return SelectionClassifierScript.new(_deployment_controller, _navigation)
+
+
+## The selection reduced to the stable entity ids a command may name, and the
+## one place that answers "the player asked for something they control none
+## of". Was three identical loops, one per order, before Attack made it three.
+##
+## entity_id == 0 -- including "this entity type has no such property at all"
+## -- means the entity never registered with a Match (see
+## scripts/sim/entity_registry.gd). Skipping it is not the same condition as
+## the message below: a controllable entity with no id is a controller built
+## without a Match, which is a wiring fact, while an uncontrollable selection
+## is a player fact and the only one worth telling them about.
+##
+## That message is a restoration. _command_move() used to abort the whole
+## order with it whenever _partition_selection() flagged a foreign entity,
+## and _issue_attack_order() did the same on its first uncontrollable
+## entity; both vanished when those orders moved onto the command bus,
+## unnoticed because no assertion covered the string. What is restored is
+## the feedback, not the abort-everything: an order now filters out what the
+## player does not control and carries out the rest, which is what every
+## other order already did.
+##
+## Stop did not previously emit this and now does. The old split was not a
+## decision -- Stop was simply written against _controllable_entities() from
+## the start while the other two grew their own guards -- and leaving one
+## order silently doing nothing where its neighbours explain themselves is
+## the kind of inconsistency that gets rediscovered as a bug later.
+func _commandable_entity_ids() -> PackedInt32Array:
+	var entity_ids := PackedInt32Array()
+	var controllable := _controllable_entities()
+	if controllable.is_empty():
+		if not _selected_entities.is_empty():
+			status_changed.emit("Cannot command this player")
+		return entity_ids
+	for entity in controllable:
+		if not &"entity_id" in entity:
+			continue
+		var id := int(entity.get(&"entity_id"))
+		if id != 0:
+			entity_ids.append(id)
+	return entity_ids
 
 
 ## The selection reduced to what this player may actually command. Seven guards
