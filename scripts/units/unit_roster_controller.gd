@@ -5,6 +5,7 @@ const AutoloadLookupScript := preload("res://scripts/players/autoload_lookup.gd"
 const EntityQueryScript := preload("res://scripts/world/entity_query.gd")
 const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 const RuleTicksScript := preload("res://scripts/rules/rule_ticks.gd")
+const SimUnitOrderCommandScript := preload("res://scripts/sim/commands/unit_order_command.gd")
 
 ## docs/mechanics/production.md section 3 "unit production": the roster half
 ## only. The Infantry/Vehicles panel tabs list the units the technology tree
@@ -36,6 +37,17 @@ const UNIT_QUEUE_CAPACITY := 100
 ## Same extension point as BuildingController.max_tech_level -- a future
 ## map/mission tech-level cap (see TechnologyTree.UNLIMITED_TECH_LEVEL).
 var max_tech_level: int = TechnologyTreeScript.UNLIMITED_TECH_LEVEL
+## The command bus handle_unit_intent() submits SimUnitOrderCommands to, and a
+## matching way to ask "what tick would a command submitted right now
+## target" -- injected together by setup(), in production by Match.
+## _setup_unit_roster_controller() and in tests by
+## tests/match/support/command_pump.gd, the same way UnitCommandController's
+## are (see that class's own _command_bus field comment). Unlike
+## BuildingController, every left/right click on a unit slot needs one -- see
+## handle_unit_intent()'s doc comment for why there is no local interaction-
+## mode branch to peel off first.
+var _command_bus: SimCommandBus
+var _submit_tick_provider: Callable
 
 var _unit_ids: Array[StringName] = []
 var _unit_definitions: Dictionary = {}
@@ -54,8 +66,14 @@ static var _unit_scene_catalog := UnitSceneCatalogScript.shared()
 static var _building_definition_catalog := BuildingDefinitionCatalogScript.shared()
 
 
-func setup(unit_ids: Array[StringName]) -> void:
+func setup(
+		unit_ids: Array[StringName],
+		command_bus: SimCommandBus = null,
+		submit_tick_provider: Callable = Callable()
+) -> void:
 	_unit_ids = unit_ids.duplicate()
+	_command_bus = command_bus
+	_submit_tick_provider = submit_tick_provider
 	_load_unit_definitions()
 	_availability_tracker.bind(self)
 	_refresh_availability_if_dirty()
@@ -116,15 +134,55 @@ func _recompute_availability(player, buildings: Array[Node]) -> bool:
 	return changed
 
 
+## The command-bus seam for the sidebar's unit slots (see
+## docs/architecture/network-multiplayer.md, "Layering" -- "commands" vs
+## "simulation"). Unlike BuildingController's build order, no click here ever
+## opens an interaction mode of its own -- a finished unit order just spawns,
+## with no placement step to preview -- so every left/right click on a unit
+## slot becomes a SimUnitOrderCommand; execute_unit_order_command() replays
+## the same _on_unit_slot_left_pressed()/_on_unit_slot_right_pressed() logic
+## that used to run synchronously here, against the queue as it stands on the
+## tick the bus schedules it for. See SimUnitOrderCommand's doc comment.
 func handle_unit_intent(unit_id: StringName, button_index: int, quantity := 1) -> bool:
 	if not _unit_ids.has(unit_id):
 		return false
-	match button_index:
-		MOUSE_BUTTON_LEFT:
-			_on_unit_slot_left_pressed(unit_id, quantity)
-		MOUSE_BUTTON_RIGHT:
-			_on_unit_slot_right_pressed(unit_id, quantity)
+	if button_index == MOUSE_BUTTON_LEFT or button_index == MOUSE_BUTTON_RIGHT:
+		_submit_unit_order_command(unit_id, button_index, quantity)
 	return true
+
+
+## The issue side of a unit-order click: immediate, and split from execution
+## on purpose, exactly as every other command (see SimUnitOrderCommand's doc
+## comment). A controller with no command bus wired in is a wiring mistake,
+## not a supported mode -- see the _command_bus field comment.
+func _submit_unit_order_command(unit_id: StringName, button_index: int, quantity: int) -> void:
+	if _command_bus == null or not _submit_tick_provider.is_valid():
+		push_error(
+			"UnitRosterController._submit_unit_order_command(): no command bus wired in -- " +
+			"call setup() with a SimCommandBus and a submit-tick provider before issuing " +
+			"orders (see Match._setup_unit_roster_controller() or, in tests, " +
+			"tests/match/support/command_pump.gd)."
+		)
+		return
+	var command := SimUnitOrderCommandScript.new()
+	var players = AutoloadLookupScript.roster(self)
+	if players != null:
+		command.player_id = players.local_player_id
+	command.unit_id = unit_id
+	command.button_index = button_index
+	command.quantity = quantity
+	_command_bus.submit(command, _submit_tick_provider.call())
+
+
+## The execution side of a unit-order click: Match._advance_simulation_tick()
+## calls this with the SimUnitOrderCommand it just drained, on the tick the
+## bus scheduled it for.
+func execute_unit_order_command(command: SimUnitOrderCommand) -> void:
+	match command.button_index:
+		MOUSE_BUTTON_LEFT:
+			_on_unit_slot_left_pressed(command.unit_id, command.quantity)
+		MOUSE_BUTTON_RIGHT:
+			_on_unit_slot_right_pressed(command.unit_id, command.quantity)
 
 
 func _on_unit_slot_left_pressed(unit_id: StringName, quantity: int) -> void:

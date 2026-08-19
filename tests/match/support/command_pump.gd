@@ -21,13 +21,17 @@ extends RefCounted
 ##
 ## Written for reuse across every command type this phase and the next add --
 ## move, attack, deploy, target abilities and the panel intents all submit
-## through the same bus and drain through the same executor -- but it exposes
+## through the same bus, drained in the same call to pump() -- but it exposes
 ## only what those command types need today; a command type that does not
 ## exist yet gets no surface here. configure_move() is the one addition Move
 ## needed that Stop did not: a way to hand this pump's CommandExecutor the
 ## navigation system, the deployment controller and (for target abilities)
 ## the ability handler list, none of which Stop's executor ever had to
-## resolve anything against.
+## resolve anything against. The panel intents' three commands (build/unit/
+## upgrade order) are the other kind of addition: they never reach
+## CommandExecutor at all, since they name a production queue rather than an
+## entity id, so pump() dispatches them straight to whichever controller a
+## case wires in -- see pump()'s own doc comment.
 
 const EntityNodeIndexScript := preload("res://scripts/match/entity_node_index.gd")
 const SimCommandBusScript := preload("res://scripts/sim/command_bus.gd")
@@ -36,6 +40,13 @@ const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 
 var _entities := EntityNodeIndexScript.new()
 var _bus := SimCommandBusScript.new()
+var _navigation = null
+var _deployment_controller = null
+var _terrain: MapLoader = null
+var _target_ability_handlers: Array = []
+var _building_controller = null
+var _unit_roster_controller = null
+var _building_upgrade_controller = null
 var _executor := CommandExecutorScript.new(_entities)
 var _clock := MatchClockScript.new()
 
@@ -74,8 +85,43 @@ func configure_move(
 		terrain: MapLoader = null,
 		target_ability_handlers: Array = []
 	) -> void:
+	_navigation = navigation
+	_deployment_controller = deployment_controller
+	_terrain = terrain
+	_target_ability_handlers = target_ability_handlers
+	_rebuild_executor()
+
+
+## The panel intents' counterpart to configure_move(): the controllers that
+## own the production and upgrade queues a build/unit/upgrade order command
+## is addressed to. They are handed to the CommandExecutor, exactly as Match
+## hands them to its own, rather than being dispatched to from pump() --
+## a harness that answers "which command is this" in its own match statement
+## would be testing a dispatch the game does not have.
+func configure_queue_controllers(
+		building_controller = null,
+		unit_roster_controller = null,
+		building_upgrade_controller = null
+	) -> void:
+	_building_controller = building_controller
+	_unit_roster_controller = unit_roster_controller
+	_building_upgrade_controller = building_upgrade_controller
+	_rebuild_executor()
+
+
+## CommandExecutor takes every collaborator at construction, so each
+## configure_* call rebuilds it from the fields rather than mutating one in
+## place. Cases call the two configure_* methods in either order, or neither.
+func _rebuild_executor() -> void:
 	_executor = CommandExecutorScript.new(
-		_entities, navigation, deployment_controller, terrain, target_ability_handlers
+		_entities,
+		_navigation,
+		_deployment_controller,
+		_terrain,
+		_target_ability_handlers,
+		_building_controller,
+		_unit_roster_controller,
+		_building_upgrade_controller
 	)
 
 
@@ -95,8 +141,13 @@ func next_orderable_tick() -> int:
 ## Match._advance_simulation_tick(): commands are drained and executed before
 ## anything else in a tick gets a chance to move, and each result is reported
 ## back the moment its command runs.
-func pump(controller: UnitCommandController) -> void:
+##
+## `controller` is optional because a case exercising only the panel intents
+## has no UnitCommandController to report back to -- those controllers emit
+## their own status signals directly.
+func pump(controller: UnitCommandController = null) -> void:
 	var tick := _clock.advance()
 	for command in _bus.drain(tick):
 		var result: Dictionary = _executor.execute(command)
-		controller.on_command_executed(command, result)
+		if controller != null:
+			controller.on_command_executed(command, result)

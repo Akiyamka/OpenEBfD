@@ -11,6 +11,7 @@ const UpgradeOrderScript := preload("res://scripts/buildings/upgrade_order.gd")
 const UpgradeEffectsScript := preload("res://scripts/buildings/upgrade_effects.gd")
 const BuildingScript := preload("res://scripts/buildings/building.gd")
 const BuildingUpgradeControllerScript := preload("res://scripts/buildings/building_upgrade_controller.gd")
+const CommandPumpScript := preload("res://tests/match/support/command_pump.gd")
 const BuildingOptionStateScript := preload("res://scripts/buildings/building_option_state.gd")
 const BuildingSurvivorsScript := preload("res://scripts/buildings/building_survivors.gd")
 const TechnologyTreeScript := preload("res://scripts/buildings/technology_tree.gd")
@@ -420,8 +421,10 @@ func _test_automatic_refinery_upgrade(token: int, local_player: PlayerData) -> i
 		if state.building_id == &"ATRefineryDock":
 			option_states.append(state)
 	)
+	var pump := CommandPumpScript.new()
+	pump.configure_queue_controllers(null, null, controller)
 	var upgrade_ids: Array[StringName] = [&"ATRefineryDock"]
-	controller.setup(upgrade_ids)
+	controller.setup(upgrade_ids, pump.bus(), Callable(pump, "next_orderable_tick"))
 	_expect(
 		not option_states.is_empty() and option_states.back().state == BuildingOptionStateScript.State.AVAILABLE,
 		"the dock option must be visible while any compatible refinery can upgrade"
@@ -429,8 +432,13 @@ func _test_automatic_refinery_upgrade(token: int, local_player: PlayerData) -> i
 
 	var building_count_before := get_nodes_in_group("buildings").size()
 	controller.handle_upgrade_intent(&"ATRefineryDock", MOUSE_BUTTON_LEFT)
+	_expect(
+		controller._upgrade_queue.current_order() == null,
+		"a queue command must not start an order before its scheduled tick executes"
+	)
+	pump.pump()
 	var order: UpgradeOrder = controller._upgrade_queue.current_order()
-	_expect(order != null, "clicking the dock option must start an order immediately")
+	_expect(order != null, "clicking the dock option must start an order once its command executes")
 	_expect(order != null and order.target_refinery == eligible_refinery, "automatic selection must skip a full refinery")
 
 	local_player.add_money(2400)
@@ -443,6 +451,7 @@ func _test_automatic_refinery_upgrade(token: int, local_player: PlayerData) -> i
 	_expect(get_nodes_in_group("buildings").size() == building_count_before, "completion must not add a RefineryDock building")
 
 	controller.handle_upgrade_intent(&"ATRefineryDock", MOUSE_BUTTON_LEFT)
+	pump.pump()
 	# Same 20-second-to-ticks conversion as above.
 	for _i in roundi(20.0 / MatchClockScript.SECONDS_PER_TICK):
 		controller.advance_tick()

@@ -5,6 +5,7 @@ const AutoloadLookupScript := preload("res://scripts/players/autoload_lookup.gd"
 const TerrainProbeScript := preload("res://scripts/world/terrain_probe.gd")
 const AuthoredModelScript := preload("res://scripts/world/authored_model.gd")
 const RuleTicksScript := preload("res://scripts/rules/rule_ticks.gd")
+const SimBuildOrderCommandScript := preload("res://scripts/sim/commands/build_order_command.gd")
 
 signal status_changed(status: String)
 signal building_option_state_changed(option_state: BuildingOptionState)
@@ -48,6 +49,19 @@ var camera: Camera3D
 ## TECH_LEVEL for why it defaults to unlimited -- no map data source exists
 ## yet to set this from).
 var max_tech_level: int = TechnologyTreeScript.UNLIMITED_TECH_LEVEL
+## The command bus handle_building_intent() submits SimBuildOrderCommands to,
+## and a matching way to ask "what tick would a command submitted right now
+## target" -- injected together by setup(), production by Match.
+## _setup_building_controller() and in tests by
+## tests/match/support/command_pump.gd, the same way UnitCommandController's
+## are (see that class's own _command_bus field comment). A controller built
+## with neither wired in still handles Sell/Repair and the two interaction-
+## mode branches handle_building_intent() peels off before ever needing a
+## command bus (see that method's doc comment); only a click that would
+## mutate the production queue needs one, and _submit_build_order_command()
+## fails loudly rather than silently if it is missing.
+var _command_bus: SimCommandBus
+var _submit_tick_provider: Callable
 
 var _catalog_view = BuildingCatalogViewScript.new()
 var _technology_tree: TechnologyTree = TechnologyTreeScript.new()
@@ -127,9 +141,13 @@ func setup(
 		building_preview_scene: PackedScene,
 		cant_build_preview_scene: PackedScene,
 		skirt_preview_scene: PackedScene,
-		wall_marker_scene: PackedScene = null
+		wall_marker_scene: PackedScene = null,
+		command_bus: SimCommandBus = null,
+		submit_tick_provider: Callable = Callable()
 ) -> void:
 	camera = placement_camera
+	_command_bus = command_bus
+	_submit_tick_provider = submit_tick_provider
 	_catalog_view.configure(building_ids)
 	_availability_tracker.mark_dirty()
 	_wall_session.configure(
@@ -344,17 +362,114 @@ func handle_command(command: StringName) -> bool:
 	return false
 
 
+## The command-bus seam for the sidebar's building slots (see
+## docs/architecture/network-multiplayer.md, "Layering" -- "commands" vs
+## "simulation"). Two branches never reach the bus at all, because they are
+## interaction-mode changes rather than production-queue mutations -- exactly
+## the same distinction that keeps Sell/Repair (handle_command()) local, just
+## reached from a different entry point:
+##
+## - left-clicking a wall slot with no order or chain in flight for it opens
+##   wall-line picking (_on_wall_slot_left_pressed()'s own entry condition);
+## - left-clicking a slot whose order is already ready opens the interactive
+##   placement preview, and right-clicking a slot while that preview is open
+##   for it cancels the preview, not the order.
+##
+## Both change what the player's next click means, not the state of any
+## queue, so both still run immediately through the existing (unchanged)
+## _on_building_slot_left_pressed()/_on_building_slot_right_pressed() --
+## nothing another client would ever need to agree on. Every other click is a
+## real queue mutation -- start, resume, pause, cancel, or the "busy"/"waiting
+## for credits" feedback for a click that cannot do any of those right now --
+## and is deferred through a SimBuildOrderCommand instead, so every client
+## reaches the same verdict from the same queue state on the tick it actually
+## executes; see execute_build_order_command() and SimBuildOrderCommand's own
+## doc comment.
 func handle_building_intent(building_id: StringName, button_index: int) -> bool:
 	if not _catalog_view.has(building_id):
 		return false
 	match button_index:
 		MOUSE_BUTTON_LEFT:
-			_on_building_slot_left_pressed(building_id)
+			if _left_building_intent_is_mode_action(building_id):
+				_on_building_slot_left_pressed(building_id)
+			else:
+				_submit_build_order_command(building_id, button_index)
 			return true
 		MOUSE_BUTTON_RIGHT:
-			_on_building_slot_right_pressed(building_id)
+			if _right_building_intent_is_mode_action(building_id):
+				_on_building_slot_right_pressed(building_id)
+			else:
+				_submit_build_order_command(building_id, button_index)
 			return true
 	return false
+
+
+## Mirrors the two local branches _on_building_slot_left_pressed()/
+## _on_wall_slot_left_pressed() short-circuit on before ever touching
+## _building_queue -- see handle_building_intent()'s doc comment. Read-only:
+## deciding whether *this* click is a mode action must not itself mutate
+## anything, since the mutating branch still needs an untouched queue to
+## classify against if this returns false.
+func _left_building_intent_is_mode_action(building_id: StringName) -> bool:
+	var order := _building_queue.current_order()
+	if order != null and order.building_id == building_id and order.ready:
+		return true
+	if not _is_wall_building_id(building_id):
+		return false
+	var chain_active := _wall_chain != null and _wall_chain.building_id == building_id
+	return order == null and not chain_active
+
+
+## Mirrors _on_building_slot_right_pressed()'s two local branches -- see
+## _left_building_intent_is_mode_action()'s doc comment for why this must stay
+## read-only.
+func _right_building_intent_is_mode_action(building_id: StringName) -> bool:
+	if _is_wall_building_id(building_id) and _wall_line_mode and _wall_line_building_id == building_id:
+		return true
+	var order := _building_queue.current_order()
+	return order != null and order.building_id == building_id and _building_placement.is_active()
+
+
+## The issue side of a build-order click, once handle_building_intent() has
+## already established this is not an interaction-mode change: immediate, and
+## split from execution on purpose, exactly as every other command (see
+## SimBuildOrderCommand's doc comment). A controller with no command bus
+## wired in is a wiring mistake, not a supported mode -- see the
+## _command_bus field comment.
+func _submit_build_order_command(building_id: StringName, button_index: int) -> void:
+	if _command_bus == null or not _submit_tick_provider.is_valid():
+		push_error(
+			"BuildingController._submit_build_order_command(): no command bus wired in -- " +
+			"call setup() with a SimCommandBus and a submit-tick provider before issuing " +
+			"orders (see Match._setup_building_controller() or, in tests, " +
+			"tests/match/support/command_pump.gd)."
+		)
+		return
+	var command := SimBuildOrderCommandScript.new()
+	var players = _players()
+	if players != null:
+		command.player_id = players.local_player_id
+	command.building_id = building_id
+	command.button_index = button_index
+	_command_bus.submit(command, _submit_tick_provider.call())
+
+
+## The execution side of a build-order click: Match._advance_simulation_tick()
+## calls this with the SimBuildOrderCommand it just drained, on the tick the
+## bus scheduled it for. Simply re-dispatches to the same left/right handlers
+## _on_building_slot_left_pressed()/_on_building_slot_right_pressed() already
+## used to run synchronously at click time -- their own mode-branch guards
+## (order.ready, the wall-line/placement checks) still run here too, and
+## normally find nothing to do, since handle_building_intent() already
+## filtered those clicks out before ever building a command; see that
+## method's doc comment for why a mode action must never be decided from
+## inside a deferred command instead of at the click that caused it.
+func execute_build_order_command(command: SimBuildOrderCommand) -> void:
+	match command.button_index:
+		MOUSE_BUTTON_LEFT:
+			_on_building_slot_left_pressed(command.building_id)
+		MOUSE_BUTTON_RIGHT:
+			_on_building_slot_right_pressed(command.building_id)
 
 
 ## _sell_mode/_repair_mode/_wall_line_mode are property shims over the single

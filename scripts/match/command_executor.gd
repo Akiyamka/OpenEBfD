@@ -21,6 +21,9 @@ const SimMoveCommandScript := preload("res://scripts/sim/commands/move_command.g
 const SimAttackCommandScript := preload("res://scripts/sim/commands/attack_command.gd")
 const SimDeployCommandScript := preload("res://scripts/sim/commands/deploy_command.gd")
 const SimTargetAbilityCommandScript := preload("res://scripts/sim/commands/target_ability_command.gd")
+const SimBuildOrderCommandScript := preload("res://scripts/sim/commands/build_order_command.gd")
+const SimUnitOrderCommandScript := preload("res://scripts/sim/commands/unit_order_command.gd")
+const SimUpgradeOrderCommandScript := preload("res://scripts/sim/commands/upgrade_order_command.gd")
 const SelectionClassifierScript := preload("res://scripts/match/selection_classifier.gd")
 const SelectionTargetAbilityControllerScript := preload(
 	"res://scripts/match/selection_target_ability_controller.gd"
@@ -57,20 +60,40 @@ var _classifier: SelectionClassifier
 ## SelectionTargetAbilityController instance, so both sides resolve a given
 ## ability id to the same handler. See _execute_target_ability().
 var _target_ability_handlers: Array = []
+## Owners of the production and upgrade queues -- see _init()'s doc comment
+## for why they live here rather than being dispatched to from Match.
+var _building_controller
+var _unit_roster_controller
+var _building_upgrade_controller
 
 
+## The three queue controllers are the collaborators for command types that
+## name no entity at all -- a production or upgrade order is addressed to a
+## player's queue, so there is nothing here for EntityNodeIndex to resolve.
+## They are constructor arguments rather than a second dispatch point in
+## Match for a reason worth stating: this class is where "which command is
+## this" gets answered, and it has to stay the only place that answers it.
+## A second match statement elsewhere would mean a new command type could be
+## registered in one dispatcher and forgotten in the other, and the symptom
+## would be the command vanishing without an error.
 func _init(
 		entities: EntityNodeIndex,
 		navigation = null,
 		deployment_controller = null,
 		terrain: MapLoader = null,
-		target_ability_handlers: Array = []
+		target_ability_handlers: Array = [],
+		building_controller = null,
+		unit_roster_controller = null,
+		building_upgrade_controller = null
 	) -> void:
 	_entities = entities
 	_navigation = navigation
 	_terrain = terrain
 	_classifier = SelectionClassifierScript.new(deployment_controller, navigation)
 	_target_ability_handlers = target_ability_handlers.duplicate()
+	_building_controller = building_controller
+	_unit_roster_controller = unit_roster_controller
+	_building_upgrade_controller = building_upgrade_controller
 
 
 ## Returns a small result Dictionary the caller can render as status text --
@@ -88,7 +111,32 @@ func execute(command: SimCommand) -> Dictionary:
 			return _execute_deploy(command as SimDeployCommand)
 		SimTargetAbilityCommandScript.TYPE_ID:
 			return _execute_target_ability(command as SimTargetAbilityCommand)
+		SimBuildOrderCommandScript.TYPE_ID:
+			if _building_controller != null:
+				_building_controller.execute_build_order_command(command as SimBuildOrderCommand)
+			return {}
+		SimUnitOrderCommandScript.TYPE_ID:
+			if _unit_roster_controller != null:
+				_unit_roster_controller.execute_unit_order_command(command as SimUnitOrderCommand)
+			return {}
+		SimUpgradeOrderCommandScript.TYPE_ID:
+			if _building_upgrade_controller != null:
+				_building_upgrade_controller.execute_upgrade_order_command(
+					command as SimUpgradeOrderCommand
+				)
+			return {}
 		_:
+			# A command the bus scheduled, the codec can carry, and nothing
+			# here knows how to run. Silence would drop it without a trace --
+			# the same loss SimCommandBus refuses to absorb for a late
+			# command and FrameTickDriver refuses to absorb for a dropped
+			# tick, and for the same reason: in lockstep a command that ran
+			# on some clients and not others is a divergence, not a hiccup.
+			push_error(
+				"CommandExecutor.execute(): no handler for command type_id %d -- " % command.type_id()
+				+ "a new SimCommand subclass must be added to this match statement, "
+				+ "not only to SimCommandCodec's table."
+			)
 			return {}
 
 

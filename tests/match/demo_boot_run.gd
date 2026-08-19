@@ -1264,7 +1264,18 @@ func _test_unit_roster_availability() -> void:
 	roster.handle_unit_intent(&"ATInfantry", MOUSE_BUTTON_LEFT)
 	_expect(
 		roster._unit_queue_size(&"ATBarracks") == 0,
-		"a direct unit intent must not bypass an unfinished production building"
+		"a unit intent must not add to the queue before its command executes"
+	)
+	# handle_unit_intent() now only submits a SimUnitOrderCommand; the
+	# availability check that used to run synchronously runs again at
+	# execution, against the world as it stands on the tick Match's own
+	# command bus schedules -- see UnitRosterController.execute_unit_order_
+	# command(). Drive that one tick directly, the same way every other
+	# command-bus suite pumps a tick, instead of waiting on real frame time.
+	match_instance._advance_simulation_tick()
+	_expect(
+		roster._unit_queue_size(&"ATBarracks") == 0,
+		"a unit intent's command must not bypass an unfinished production building once it executes"
 	)
 
 	barracks.call("finish_construction")
@@ -1361,14 +1372,29 @@ func _test_unit_production_rally_and_primary() -> void:
 	roster.handle_unit_intent(&"ATInfantry", MOUSE_BUTTON_LEFT, 10)
 	roster.handle_unit_intent(&"ATInfantry", MOUSE_BUTTON_LEFT)
 	_expect(
+		roster._unit_queue_size(&"ATBarracks") == 0,
+		"a burst of unit intents must not add to the queue before their commands execute"
+	)
+	# handle_unit_intent() now only submits a SimUnitOrderCommand per click;
+	# all three above target the same not-yet-drained tick (no tick has
+	# advanced between them), so one pump executes all three in click order --
+	# see UnitRosterController.execute_unit_order_command(). Every following
+	# click gets its own pump the same way.
+	match_instance._advance_simulation_tick()
+	_expect(
 		roster._unit_queue_size(&"ATBarracks") == 12,
-		"left click must add units, while shift+left click adds ten more"
+		"left click must add units, while shift+left click adds ten more, once their commands execute"
 	)
 	var infantry_queue: BuildingQueue = roster._production_queues.get(&"ATBarracks")
 	roster.handle_unit_intent(&"ATInfantry", MOUSE_BUTTON_RIGHT)
 	_expect(
+		infantry_queue != null and not infantry_queue.current_order().manually_paused,
+		"a pause command must not take effect before it executes"
+	)
+	match_instance._advance_simulation_tick()
+	_expect(
 		infantry_queue != null and infantry_queue.current_order().manually_paused,
-		"right click must pause the active unit production order"
+		"right click must pause the active unit production order once its command executes"
 	)
 	# process(delta) no longer drives simulation; advance_tick() does, one
 	# MatchClock.SECONDS_PER_TICK period per call. 2 simulated seconds is
@@ -1380,16 +1406,19 @@ func _test_unit_production_rally_and_primary() -> void:
 		"a paused unit order must not complete"
 	)
 	roster.handle_unit_intent(&"ATInfantry", MOUSE_BUTTON_RIGHT)
+	match_instance._advance_simulation_tick()
 	_expect(
 		roster._unit_queue_size(&"ATBarracks") == 11 and infantry_queue.current_order().manually_paused,
 		"a second right click must remove one queued unit without resuming production"
 	)
 	roster.handle_unit_intent(&"ATInfantry", MOUSE_BUTTON_RIGHT, 10)
+	match_instance._advance_simulation_tick()
 	_expect(
 		roster._unit_queue_size(&"ATBarracks") == 1 and infantry_queue.current_order().manually_paused,
 		"shift+right click must remove ten queued units without resuming production"
 	)
 	roster.handle_unit_intent(&"ATInfantry", MOUSE_BUTTON_LEFT)
+	match_instance._advance_simulation_tick()
 	_expect(
 		roster._unit_queue_size(&"ATBarracks") == 1 and not infantry_queue.current_order().manually_paused,
 		"left click on a paused unit order must resume it without adding another unit"
@@ -1471,6 +1500,7 @@ func _test_unit_production_rally_and_primary() -> void:
 	roster.handle_unit_intent(&"ATInfantry", MOUSE_BUTTON_LEFT)
 	roster.handle_unit_intent(&"ATInfantry", MOUSE_BUTTON_RIGHT)
 	roster.handle_unit_intent(&"ATInfantry", MOUSE_BUTTON_RIGHT, 10)
+	match_instance._advance_simulation_tick()
 	_expect(
 		roster._unit_queue_size(&"ATBarracks") == 0,
 		"shift+right click must not reduce the unit queue below zero"

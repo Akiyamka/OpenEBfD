@@ -14,6 +14,9 @@ const SimMoveCommandScript := preload("res://scripts/sim/commands/move_command.g
 const SimAttackCommandScript := preload("res://scripts/sim/commands/attack_command.gd")
 const SimDeployCommandScript := preload("res://scripts/sim/commands/deploy_command.gd")
 const SimTargetAbilityCommandScript := preload("res://scripts/sim/commands/target_ability_command.gd")
+const SimBuildOrderCommandScript := preload("res://scripts/sim/commands/build_order_command.gd")
+const SimUnitOrderCommandScript := preload("res://scripts/sim/commands/unit_order_command.gd")
+const SimUpgradeOrderCommandScript := preload("res://scripts/sim/commands/upgrade_order_command.gd")
 
 
 func _initialize() -> void:
@@ -60,6 +63,22 @@ func _initialize() -> void:
 	_run_case(
 		"encode() spends 1 byte per UTF-8 code unit of ability_id, not per character",
 		_test_target_ability_id_is_encoded_as_utf8_byte_length
+	)
+	_run_case(
+		"SimBuildOrderCommand round-trips a left-click building_id and button_index",
+		_test_build_order_round_trip_left
+	)
+	_run_case(
+		"SimBuildOrderCommand round-trips a right-click button_index",
+		_test_build_order_round_trip_right
+	)
+	_run_case(
+		"SimUnitOrderCommand round-trips unit_id, button_index and a multi-unit quantity",
+		_test_unit_order_round_trip_quantity
+	)
+	_run_case(
+		"SimUpgradeOrderCommand round-trips upgrade_id and button_index",
+		_test_upgrade_order_round_trip
 	)
 	_run_case("decode() returns null on empty bytes", _test_decode_empty_bytes)
 	_run_case("decode() returns null on a buffer shorter than the envelope", _test_decode_truncated_envelope)
@@ -367,6 +386,73 @@ func _test_target_ability_id_is_encoded_as_utf8_byte_length() -> void:
 		bytes.size() == 47,
 		"encode() must spend one byte per UTF-8 byte of ability_id, not per character; got %d total bytes" % bytes.size()
 	)
+
+
+func _test_build_order_round_trip_left() -> void:
+	var command := SimBuildOrderCommandScript.new()
+	command.player_id = 1
+	command.building_id = &"ATBarracks"
+	command.button_index = MOUSE_BUTTON_LEFT
+
+	var decoded := SimCommandCodecScript.decode(
+		SimCommandCodecScript.encode(command)
+	) as SimBuildOrderCommand
+	_expect(decoded != null, "a well-formed build-order command must decode")
+	_expect(decoded.type_id() == SimBuildOrderCommandScript.TYPE_ID, "decoded command must be a SimBuildOrderCommand")
+	_expect(decoded.player_id == 1, "player_id must round-trip")
+	_expect(decoded.building_id == &"ATBarracks", "building_id must round-trip")
+	_expect(decoded.button_index == MOUSE_BUTTON_LEFT, "a left-click button_index must round-trip")
+
+
+## Distinct from the left-click case above so a codec that hard-coded
+## MOUSE_BUTTON_LEFT instead of actually writing the field could not hide
+## behind an otherwise-passing round trip.
+func _test_build_order_round_trip_right() -> void:
+	var command := SimBuildOrderCommandScript.new()
+	command.player_id = 2
+	command.building_id = &"ATWall"
+	command.button_index = MOUSE_BUTTON_RIGHT
+
+	var decoded := SimCommandCodecScript.decode(
+		SimCommandCodecScript.encode(command)
+	) as SimBuildOrderCommand
+	_expect(decoded != null, "a well-formed build-order command must decode")
+	_expect(decoded.building_id == &"ATWall", "building_id must round-trip")
+	_expect(decoded.button_index == MOUSE_BUTTON_RIGHT, "a right-click button_index must round-trip")
+
+
+func _test_unit_order_round_trip_quantity() -> void:
+	var command := SimUnitOrderCommandScript.new()
+	command.player_id = 3
+	command.unit_id = &"ATInfantry"
+	command.button_index = MOUSE_BUTTON_LEFT
+	command.quantity = 11
+
+	var decoded := SimCommandCodecScript.decode(
+		SimCommandCodecScript.encode(command)
+	) as SimUnitOrderCommand
+	_expect(decoded != null, "a well-formed unit-order command must decode")
+	_expect(decoded.type_id() == SimUnitOrderCommandScript.TYPE_ID, "decoded command must be a SimUnitOrderCommand")
+	_expect(decoded.player_id == 3, "player_id must round-trip")
+	_expect(decoded.unit_id == &"ATInfantry", "unit_id must round-trip")
+	_expect(decoded.button_index == MOUSE_BUTTON_LEFT, "button_index must round-trip")
+	_expect(decoded.quantity == 11, "a shift-click quantity greater than one must round-trip exactly")
+
+
+func _test_upgrade_order_round_trip() -> void:
+	var command := SimUpgradeOrderCommandScript.new()
+	command.player_id = 4
+	command.upgrade_id = &"ATRefineryDock"
+	command.button_index = MOUSE_BUTTON_RIGHT
+
+	var decoded := SimCommandCodecScript.decode(
+		SimCommandCodecScript.encode(command)
+	) as SimUpgradeOrderCommand
+	_expect(decoded != null, "a well-formed upgrade-order command must decode")
+	_expect(decoded.type_id() == SimUpgradeOrderCommandScript.TYPE_ID, "decoded command must be a SimUpgradeOrderCommand")
+	_expect(decoded.player_id == 4, "player_id must round-trip")
+	_expect(decoded.upgrade_id == &"ATRefineryDock", "upgrade_id must round-trip")
+	_expect(decoded.button_index == MOUSE_BUTTON_RIGHT, "button_index must round-trip")
 
 
 func _test_decode_truncated_ability_id() -> void:

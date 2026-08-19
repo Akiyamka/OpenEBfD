@@ -9,6 +9,7 @@ const ATConYardScene := preload("res://assets/converted/buildings/ATConYard/ATCo
 const PlacementBuildingScene := preload("res://assets/converted/placement/build_building.scn")
 const PlacementWallScene := preload("res://assets/converted/placement/build_wall.scn")
 const PlacementContextScript := preload("res://scripts/buildings/placement_context.gd")
+const CommandPumpScript := preload("res://tests/match/support/command_pump.gd")
 
 ## Status line each mode emits on its way out, keyed the same as _enter_mode().
 const MODE_CANCEL_STATUS := {
@@ -148,6 +149,18 @@ func _initialize() -> void:
 	_run_case(
 		"a stale available cache does not survive leaving the tree",
 		_test_availability_forces_false_when_leaving_tree.bind(local_player)
+	)
+	_run_case(
+		"a build-order left click submits a command and defers starting the order to its execution",
+		_test_handle_building_intent_defers_start.bind(local_player)
+	)
+	_run_case(
+		"a build-order right click submits a command and defers pausing the order to its execution",
+		_test_handle_building_intent_defers_pause.bind(local_player)
+	)
+	_run_case(
+		"entering wall-line mode from a slot click stays local and needs no command bus",
+		_test_handle_building_intent_wall_entry_stays_local
 	)
 
 	players.reset_for_match()
@@ -809,6 +822,108 @@ func _test_unrelated_node_removal_keeps_availability_cache(token: int, _local_pl
 		"a node that was never a tracked building must not invalidate availability"
 	)
 	scratch.free()
+	controller.free()
+	return token
+
+
+## handle_building_intent() now only submits a SimBuildOrderCommand for a
+## click that mutates the production queue (see that method's doc comment) --
+## reuses the ATBarracks/ATConYard/ATSmWindtrap availability setup from
+## _test_availability_reacts_to_prerequisite_loss() above, since starting an
+## order re-checks availability at execution exactly as it used to at click
+## time.
+func _test_handle_building_intent_defers_start(token: int, local_player: PlayerData) -> int:
+	var controller := _new_controller()
+	var building_ids: Array[StringName] = [&"ATBarracks"]
+	controller.setup(null, null, null, building_ids, null, null, null, null)
+	var con_yard := BuildingStub.new(&"ATConYard", local_player.player_id)
+	var windtrap := BuildingStub.new(&"ATSmWindtrap", local_player.player_id)
+	root.add_child(con_yard)
+	root.add_child(windtrap)
+	controller.process(0.0)
+
+	var pump := CommandPumpScript.new()
+	pump.configure_queue_controllers(controller)
+	controller._command_bus = pump.bus()
+	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
+
+	_expect(
+		controller.handle_building_intent(&"ATBarracks", MOUSE_BUTTON_LEFT),
+		"a catalog member must be handled"
+	)
+	_expect(
+		not controller._building_queue.has_order(),
+		"a build-order click must not start an order before its command executes"
+	)
+	pump.pump()
+	_expect(
+		controller._building_queue.has_order()
+		and controller._building_queue.current_order().building_id == &"ATBarracks",
+		"a build-order click must start an order once its command executes"
+	)
+
+	con_yard.free()
+	windtrap.free()
+	controller.free()
+	return token
+
+
+func _test_handle_building_intent_defers_pause(token: int, local_player: PlayerData) -> int:
+	var controller := _new_controller()
+	var building_ids: Array[StringName] = [&"ATBarracks"]
+	controller.setup(null, null, null, building_ids, null, null, null, null)
+	var con_yard := BuildingStub.new(&"ATConYard", local_player.player_id)
+	var windtrap := BuildingStub.new(&"ATSmWindtrap", local_player.player_id)
+	root.add_child(con_yard)
+	root.add_child(windtrap)
+	controller.process(0.0)
+
+	var pump := CommandPumpScript.new()
+	pump.configure_queue_controllers(controller)
+	controller._command_bus = pump.bus()
+	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
+
+	controller.handle_building_intent(&"ATBarracks", MOUSE_BUTTON_LEFT)
+	pump.pump()
+	_expect(
+		controller._building_queue.has_order(),
+		"setup: an order must be running before testing pause deferral"
+	)
+
+	controller.handle_building_intent(&"ATBarracks", MOUSE_BUTTON_RIGHT)
+	_expect(
+		not controller._building_queue.current_order().manually_paused,
+		"a pause click must not take effect before its command executes"
+	)
+	pump.pump()
+	_expect(
+		controller._building_queue.current_order().manually_paused,
+		"a pause click must pause the active order once its command executes"
+	)
+
+	con_yard.free()
+	windtrap.free()
+	controller.free()
+	return token
+
+
+## The other half of handle_building_intent()'s split (see its doc comment):
+## left-clicking an idle wall slot changes what the player's next click means,
+## not the state of any queue, so it must run immediately with no command bus
+## involved at all -- this controller never has one wired in here.
+func _test_handle_building_intent_wall_entry_stays_local(token: int) -> int:
+	var controller := _new_controller()
+	var building_ids: Array[StringName] = [&"ATWall"]
+	controller.setup(null, null, null, building_ids, null, null, null, null)
+
+	_expect(
+		controller.handle_building_intent(&"ATWall", MOUSE_BUTTON_LEFT),
+		"a catalog member must be handled"
+	)
+	_expect(
+		controller._wall_line_mode,
+		"left-clicking an idle wall slot must enter wall-line mode immediately, with no command bus needed"
+	)
 	controller.free()
 	return token
 

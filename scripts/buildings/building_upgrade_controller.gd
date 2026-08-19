@@ -5,6 +5,7 @@ const AutoloadLookupScript := preload("res://scripts/players/autoload_lookup.gd"
 const EntityQueryScript := preload("res://scripts/world/entity_query.gd")
 const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 const RuleTicksScript := preload("res://scripts/rules/rule_ticks.gd")
+const SimUpgradeOrderCommandScript := preload("res://scripts/sim/commands/upgrade_order_command.gd")
 
 ## docs/mechanics/production.md section 4 "Upgrades". Deliberately a sibling
 ## of BuildingController rather than more code stuffed into it: it owns a
@@ -52,12 +53,28 @@ var _upgrade_queue: UpgradeQueue = UpgradeQueueScript.new()
 var _upgrade_availability: Dictionary = {}
 static var _building_definition_catalog := BuildingDefinitionCatalogScript.shared()
 static var _unit_definition_catalog := UnitSceneCatalogScript.shared()
+## The command bus handle_upgrade_intent() submits SimUpgradeOrderCommands to,
+## and a matching way to ask "what tick would a command submitted right now
+## target" -- injected together by setup(), in production by Match.
+## _setup_building_upgrade_controller() and in tests by
+## tests/match/support/command_pump.gd, the same way UnitCommandController's
+## are (see that class's own _command_bus field comment). Neither upgrade
+## shape opens an interaction mode of its own (see handle_upgrade_intent()'s
+## doc comment), so every left/right click on an upgrade slot needs one.
+var _command_bus: SimCommandBus
+var _submit_tick_provider: Callable
 
 
-func setup(building_ids: Array[StringName]) -> void:
+func setup(
+		building_ids: Array[StringName],
+		command_bus: SimCommandBus = null,
+		submit_tick_provider: Callable = Callable()
+) -> void:
 	if not _upgrade_queue.order_ready.is_connected(_on_upgrade_queue_ready):
 		_upgrade_queue.order_ready.connect(_on_upgrade_queue_ready)
 
+	_command_bus = command_bus
+	_submit_tick_provider = submit_tick_provider
 	_load_building_configs(building_ids)
 	_refresh_upgrade_option_states()
 
@@ -91,13 +108,60 @@ func handle_unhandled_input(_event: InputEvent) -> bool:
 	return false
 
 
+## The command-bus seam for the sidebar's upgrade slots (see
+## docs/architecture/network-multiplayer.md, "Layering" -- "commands" vs
+## "simulation"). Unlike BuildingController's build order, no click here ever
+## opens an interaction mode of its own -- a global-type upgrade applies
+## instantly to every owned building of that type, and a refinery-dock
+## upgrade advances an already-owned refinery's built-in dock state, neither
+## with a placement step to preview -- so every left/right click on an
+## upgrade slot becomes a SimUpgradeOrderCommand; execute_upgrade_order_
+## command() replays the same _on_slot_pressed() logic that used to run
+## synchronously here, against the queue (and, for a dock, the owned
+## refineries) as they stand on the tick the bus schedules it for. See
+## SimUpgradeOrderCommand's doc comment. `kind` is recomputed at execution
+## from upgrade_id alone (_is_refinery_dock_id() is a static catalog lookup,
+## not world state), so it does not need to travel on the command.
 func handle_upgrade_intent(building_id: StringName, button_index: int) -> bool:
 	if not _upgrade_option_ids.has(building_id):
 		return false
+	if button_index != MOUSE_BUTTON_LEFT and button_index != MOUSE_BUTTON_RIGHT:
+		return false
+	_submit_upgrade_order_command(building_id, button_index)
+	return true
+
+
+## The issue side of an upgrade-order click: immediate, and split from
+## execution on purpose, exactly as every other command (see
+## SimUpgradeOrderCommand's doc comment). A controller with no command bus
+## wired in is a wiring mistake, not a supported mode -- see the
+## _command_bus field comment.
+func _submit_upgrade_order_command(building_id: StringName, button_index: int) -> void:
+	if _command_bus == null or not _submit_tick_provider.is_valid():
+		push_error(
+			"BuildingUpgradeController._submit_upgrade_order_command(): no command bus wired in -- " +
+			"call setup() with a SimCommandBus and a submit-tick provider before issuing " +
+			"orders (see Match._setup_building_upgrade_controller() or, in tests, " +
+			"tests/match/support/command_pump.gd)."
+		)
+		return
+	var command := SimUpgradeOrderCommandScript.new()
+	var players = _players()
+	if players != null:
+		command.player_id = players.local_player_id
+	command.upgrade_id = building_id
+	command.button_index = button_index
+	_command_bus.submit(command, _submit_tick_provider.call())
+
+
+## The execution side of an upgrade-order click: Match._advance_simulation_
+## tick() calls this with the SimUpgradeOrderCommand it just drained, on the
+## tick the bus scheduled it for.
+func execute_upgrade_order_command(command: SimUpgradeOrderCommand) -> void:
 	var kind := UpgradeOrderScript.Kind.REFINERY_DOCK \
-		if _is_refinery_dock_id(building_id) \
+		if _is_refinery_dock_id(command.upgrade_id) \
 		else UpgradeOrderScript.Kind.GLOBAL_TYPE
-	return _on_slot_pressed(building_id, button_index, kind)
+	_on_slot_pressed(command.upgrade_id, command.button_index, kind)
 
 
 func _try_start_dock_upgrade(refinery: Node3D, dock_building_id: StringName = &"") -> void:

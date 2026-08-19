@@ -132,18 +132,26 @@ func _ready() -> void:
 	_setup_unit_navigation_system()
 	_setup_navigation_grid_debug()
 	_setup_unit_deployment_controller()
-	# Deferred until here, rather than sitting next to _command_bus above,
-	# because Move needs _unit_navigation_system and _unit_deployment_controller
-	# (see _command_bus's field comment) and neither exists yet at the top of
-	# this function.
-	_command_executor = CommandExecutorScript.new(
-		_entity_index, _unit_navigation_system, _unit_deployment_controller, terrain,
-		_target_ability_handlers
-	)
 	_setup_unit_command_controller()
 	_setup_building_controller()
 	_setup_building_upgrade_controller()
 	_setup_unit_roster_controller()
+	# Built last, once every collaborator it dispatches to exists: Move needs
+	# the navigation system and the deployment controller, and the three queue
+	# order types need the controllers that own those queues. It is only ever
+	# used from _advance_simulation_tick(), so nothing above needs it earlier,
+	# and one construction with everything present beats a setter someone can
+	# forget to call.
+	_command_executor = CommandExecutorScript.new(
+		_entity_index,
+		_unit_navigation_system,
+		_unit_deployment_controller,
+		terrain,
+		_target_ability_handlers,
+		_building_controller,
+		_unit_roster_controller,
+		_building_upgrade_controller
+	)
 	_update_selection_label()
 	_update_fps_label()
 	_place_on_map()
@@ -200,7 +208,9 @@ func _setup_building_controller() -> void:
 		PLACEMENT_BUILDING_SCENE,
 		PLACEMENT_CANT_BUILD_SCENE,
 		PLACEMENT_SKIRT_SCENE,
-		PLACEMENT_WALL_SCENE
+		PLACEMENT_WALL_SCENE,
+		_command_bus,
+		Callable(self, "next_orderable_tick")
 	)
 	_building_controller.interaction_mode_changed.connect(_on_building_interaction_mode_changed)
 
@@ -212,7 +222,7 @@ func _setup_building_upgrade_controller() -> void:
 	side_panel.upgrade_intent_pressed.connect(_on_panel_upgrade_intent)
 	_building_upgrade_controller.status_changed.connect(_update_selection_label)
 	_building_upgrade_controller.upgrade_option_state_changed.connect(side_panel.set_upgrade_option_state)
-	_building_upgrade_controller.setup(_upgrade_option_ids)
+	_building_upgrade_controller.setup(_upgrade_option_ids, _command_bus, Callable(self, "next_orderable_tick"))
 	# setup() filters upgrade_grid_ids down to buildings that actually have
 	# an upgrade defined (see BuildingUpgradeController.upgrade_option_ids());
 	# the panel grid must be built from that filtered set, not the raw roster,
@@ -226,7 +236,7 @@ func _setup_unit_roster_controller() -> void:
 	add_child(_unit_roster_controller)
 	_unit_roster_controller.status_changed.connect(_update_selection_label)
 	_unit_roster_controller.unit_option_state_changed.connect(side_panel.set_building_option_state)
-	_unit_roster_controller.setup(_unit_option_ids)
+	_unit_roster_controller.setup(_unit_option_ids, _command_bus, Callable(self, "next_orderable_tick"))
 
 
 func _setup_unit_command_controller() -> void:
@@ -335,6 +345,17 @@ func _process(delta: float) -> void:
 ## cannot let two clients disagree about. This is "commands, then systems",
 ## and it has to be the same everywhere a tick runs, which is why it is the
 ## very first line here and not folded into any one system's own advance_tick().
+##
+## Every command type goes through CommandExecutor, the three that name a
+## production or upgrade queue included. Those have nothing for its
+## EntityNodeIndex to resolve and are forwarded straight to the controller
+## that owns the queue -- but they are dispatched in the same single place as
+## the rest, because two match statements on type_id() would let a new
+## command type be registered in one and forgotten in the other, and the
+## symptom of that is the command quietly never running at all.
+##
+## They execute here, before any controller's own advance_tick() below, for
+## the same reason every other command does: commands, then systems.
 ##
 ## _building_controller, then _building_upgrade_controller, then
 ## _unit_roster_controller -- exactly the order these three appeared in
