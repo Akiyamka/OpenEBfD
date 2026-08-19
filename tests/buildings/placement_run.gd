@@ -64,6 +64,15 @@ func _initialize() -> void:
 	_run_case("resolver fallback occupancy", _test_resolver_fallback_occupancy)
 	_run_case("out-of-radius cells preview as blocked", _test_out_of_radius_preview_is_blocked)
 	_run_case("enemy buildings do not extend build radius", _test_enemy_building_does_not_extend_radius)
+	_run_case("evaluate_at_hover_cell creates no preview nodes", _test_evaluate_at_hover_cell_creates_no_preview_nodes)
+	_run_case(
+		"try_place_at_hover_cell on a blocked cell creates no preview nodes",
+		_test_try_place_at_hover_cell_on_blocked_cell_creates_no_preview_nodes
+	)
+	_run_case(
+		"evaluate_at_hover_cell agrees with the interactive preview verdict",
+		_test_evaluate_at_hover_cell_matches_interactive_path
+	)
 
 	if _failures > 0:
 		printerr("BuildingPlacement tests: %d failures after %d assertions" % [_failures, _assertions])
@@ -372,6 +381,11 @@ func _test_unmaterialed_preview_mesh_gets_fallback_material(token: int) -> int:
 	get_root().add_child(placement)
 	_setup_placement(placement, null, FakeGrid.new(), buildings_root, null, preview_scene, preview_scene, null, Callable())
 	placement.begin(&"Preview", "Preview", _rows(["X"]))
+	# try_place_at_hover_cell() no longer draws a preview itself (see
+	# building_placement.gd evaluate_at_hover_cell()'s doc comment on why); the
+	# interactive path is what draws, so trigger it explicitly to exercise the
+	# same preview-mesh material handling this test is about.
+	placement.preview_at_hover_cells([Vector2i.ZERO])
 	placement.try_place_at_hover_cell(Vector2i.ZERO, null)
 	var preview_root := placement.get_child(0) as Node3D
 	var configured_mesh := preview_root.get_child(0) as MeshInstance3D if preview_root != null else null
@@ -575,6 +589,11 @@ func _test_out_of_radius_preview_is_blocked(token: int) -> int:
 	)
 
 	placement.begin(&"Valid", "Valid", _rows(["X"]))
+	# try_place_at_hover_cell() no longer draws a preview itself; the
+	# interactive path is what draws (see evaluate_at_hover_cell()'s doc
+	# comment in building_placement.gd), so trigger it explicitly to exercise
+	# the per-cell material this test is a regression test for.
+	placement.preview_at_hover_cells([Vector2i(2, 4)])
 	var result = placement.try_place_at_hover_cell(Vector2i(2, 4), null)
 	_expect(result == BuildingPlacementScript.PlaceResult.CANNOT_BUILD, "an out-of-radius footprint must reject placement")
 
@@ -657,4 +676,160 @@ func _test_resolver_fallback_occupancy(token: int) -> int:
 	_expect(placement.is_active(), "resolver occupancy rejection must preserve active placement")
 	placement.cancel()
 	_free_pair(pair)
+	return token
+
+
+## evaluate_at_hover_cell() must answer the placement question (see its doc
+## comment in building_placement.gd) without building, freeing, or revealing a
+## single preview node -- it runs on the simulation tick, on every client,
+## including clients whose player has no cursor anywhere near this placement.
+## Real (packable) preview scenes are used here, not null, so that a
+## regression which routes this call back through the drawing path would
+## actually instantiate a node and fail these assertions.
+func _test_evaluate_at_hover_cell_creates_no_preview_nodes(token: int) -> int:
+	var buildings_root := Node3D.new()
+	get_root().add_child(buildings_root)
+	var preview_template := Node3D.new()
+	var preview_scene := PackedScene.new()
+	_expect(preview_scene.pack(preview_template) == OK, "preview template must pack")
+	preview_template.free()
+
+	var placement = BuildingPlacementScript.new()
+	get_root().add_child(placement)
+	_setup_placement(
+		placement, null, PartiallyBlockedGrid.new(), buildings_root, null,
+		preview_scene, preview_scene, null, Callable()
+	)
+	placement.begin(&"Pure", "Pure", _rows(["X"]))
+
+	# PartiallyBlockedGrid blocks nav cells with x >= 4, so an anchor at x=2 is
+	# fully buildable and one at x=4 is fully blocked.
+	var count_before_available := placement.get_child_count()
+	var visible_before_available: bool = placement.visible
+	_expect(
+		placement.evaluate_at_hover_cell(Vector2i(2, 4)) == BuildingPlacementScript.PlaceResult.AVAILABLE,
+		"the buildable-half cell must evaluate as available"
+	)
+	_expect(
+		placement.get_child_count() == count_before_available,
+		"evaluate_at_hover_cell must not create a preview node for an available cell"
+	)
+	_expect(
+		placement.visible == visible_before_available,
+		"evaluate_at_hover_cell must not change visibility for an available cell"
+	)
+
+	var count_before_blocked := placement.get_child_count()
+	var visible_before_blocked: bool = placement.visible
+	_expect(
+		placement.evaluate_at_hover_cell(Vector2i(4, 4)) == BuildingPlacementScript.PlaceResult.CANNOT_BUILD,
+		"the blocked-half cell must evaluate as unbuildable"
+	)
+	_expect(
+		placement.get_child_count() == count_before_blocked,
+		"evaluate_at_hover_cell must not create a preview node for a blocked cell"
+	)
+	_expect(
+		placement.visible == visible_before_blocked,
+		"evaluate_at_hover_cell must not change visibility for a blocked cell"
+	)
+
+	placement.cancel()
+	placement.queue_free()
+	buildings_root.queue_free()
+	return token
+
+
+## try_place_at_hover_cell() rejecting a cell must not leave a preview node
+## behind either -- it now uses the same pure evaluation as
+## evaluate_at_hover_cell() for its NEEDS_TERRAIN/CANNOT_BUILD guards instead
+## of rebuilding the preview it is about to discard. Real preview scenes are
+## used for the same reason as above: a regression would actually instantiate
+## a node here.
+func _test_try_place_at_hover_cell_on_blocked_cell_creates_no_preview_nodes(token: int) -> int:
+	var buildings_root := Node3D.new()
+	get_root().add_child(buildings_root)
+	var preview_template := Node3D.new()
+	var preview_scene := PackedScene.new()
+	_expect(preview_scene.pack(preview_template) == OK, "preview template must pack")
+	preview_template.free()
+
+	var placement = BuildingPlacementScript.new()
+	get_root().add_child(placement)
+	_setup_placement(
+		placement, null, PartiallyBlockedGrid.new(), buildings_root, null,
+		preview_scene, preview_scene, null, Callable()
+	)
+	placement.begin(&"PureClick", "PureClick", _rows(["X"]))
+
+	var count_before := placement.get_child_count()
+	var result := placement.try_place_at_hover_cell(Vector2i(4, 4), null)
+	_expect(result == BuildingPlacementScript.PlaceResult.CANNOT_BUILD, "a blocked cell must still reject placement")
+	_expect(
+		placement.get_child_count() == count_before,
+		"try_place_at_hover_cell must not create a preview node for a blocked cell"
+	)
+
+	placement.cancel()
+	placement.queue_free()
+	buildings_root.queue_free()
+	return token
+
+
+## The whole point of splitting the verdict out of the drawing is that both
+## keep answering the same question. This compares evaluate_at_hover_cell()'s
+## verdict against the interactive preview path's own _can_build (set by
+## _rebuild_preview_for_anchors(), which preview_at_hover_cells() drives) for
+## the same cell, rather than asserting a hardcoded AVAILABLE/CANNOT_BUILD --
+## that is what would actually catch the two paths drifting apart.
+func _test_evaluate_at_hover_cell_matches_interactive_path(token: int) -> int:
+	var buildings_root := Node3D.new()
+	get_root().add_child(buildings_root)
+	var preview_template := Node3D.new()
+	var preview_scene := PackedScene.new()
+	_expect(preview_scene.pack(preview_template) == OK, "preview template must pack")
+	preview_template.free()
+
+	var placement = BuildingPlacementScript.new()
+	get_root().add_child(placement)
+	_setup_placement(
+		placement, null, PartiallyBlockedGrid.new(), buildings_root, null,
+		preview_scene, preview_scene, null, Callable()
+	)
+	placement.begin(&"Compare", "Compare", _rows(["X"]))
+
+	# A footprint anchored at x=2 sits entirely inside the buildable half of
+	# the grid (PartiallyBlockedGrid blocks x >= 4); one anchored at x=4 sits
+	# entirely outside it.
+	placement.preview_at_hover_cells([Vector2i(2, 4)])
+	var interactive_buildable: bool = placement._can_build
+	var pure_buildable := (
+		placement.evaluate_at_hover_cell(Vector2i(2, 4)) == BuildingPlacementScript.PlaceResult.AVAILABLE
+	)
+	_expect(
+		pure_buildable == interactive_buildable,
+		"evaluate_at_hover_cell must agree with the interactive preview's verdict for a buildable cell"
+	)
+	_expect(
+		interactive_buildable,
+		"the buildable-half cell must actually be buildable for this comparison to mean anything"
+	)
+
+	placement.preview_at_hover_cells([Vector2i(4, 4)])
+	var interactive_blocked: bool = placement._can_build
+	var pure_blocked := (
+		placement.evaluate_at_hover_cell(Vector2i(4, 4)) == BuildingPlacementScript.PlaceResult.AVAILABLE
+	)
+	_expect(
+		pure_blocked == interactive_blocked,
+		"evaluate_at_hover_cell must agree with the interactive preview's verdict for a blocked cell"
+	)
+	_expect(
+		not interactive_blocked,
+		"the blocked-half cell must actually be unbuildable for this comparison to mean anything"
+	)
+
+	placement.cancel()
+	placement.queue_free()
+	buildings_root.queue_free()
 	return token

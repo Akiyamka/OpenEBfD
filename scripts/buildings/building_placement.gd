@@ -220,13 +220,25 @@ func set_rotation_quarter_turns(value: int) -> void:
 ## Performs the same terrain/footprint/occupancy check as try_place without
 ## spawning anything. MCV deployment uses this before committing the unit to
 ## its animation, then rechecks at the handoff in case the site changed.
+##
+## Pure: builds, frees, or reveals no preview node. WallLineSession
+## (scripts/buildings/wall_line_session.gd:293 _segment_availability) calls
+## this on the simulation tick, once per wall segment, on every client -- most
+## of which have no cursor anywhere near this placement -- so it cannot pay
+## for drawing a preview no one will see. See _evaluate_anchor() below for the
+## verdict logic this and the drawing path (_rebuild_preview_for_anchors())
+## both read from.
 func evaluate_at_hover_cell(hover_cell: Vector2i) -> PlaceResult:
 	if not is_active():
 		return PlaceResult.INACTIVE
-	_update_for_hover_cell(hover_cell)
-	if not _has_anchor:
+	# The only source of NEEDS_TERRAIN: _update_for_hover_cell() reaches
+	# _hide_preview() (which clears _has_anchor) solely for this condition --
+	# every other path it takes funnels into _can_build instead.
+	if _navigation_grid == null or not _navigation_grid.is_loaded():
 		return PlaceResult.NEEDS_TERRAIN
-	return PlaceResult.AVAILABLE if _can_build else PlaceResult.CANNOT_BUILD
+	var anchor_cell := _anchor_for_hover_cell(hover_cell)
+	var evaluation := _evaluate_anchor_at(anchor_cell)
+	return PlaceResult.AVAILABLE if bool(evaluation["can_build"]) else PlaceResult.CANNOT_BUILD
 
 
 func try_place(pointer_position: Vector2, building_scene: PackedScene, owner_player_id = null) -> PlaceResult:
@@ -247,9 +259,24 @@ func try_place_at_hover_cell(
 	) -> PlaceResult:
 	if not is_active():
 		return PlaceResult.INACTIVE
-	_update_for_hover_cell(hover_cell)
-	if not _has_anchor:
+	# Uses the pure evaluation rather than _update_for_hover_cell(): a click
+	# does not need a preview built for the cell it is about to leave (on
+	# PLACED, _clear() below removes it anyway) or bail out of (below) -- see
+	# _evaluate_anchor()'s doc comment. NEEDS_TERRAIN replicates
+	# _update_for_hover_cell()'s _hide_preview() call for the same condition
+	# exactly, so an early return here leaves the object in the same state.
+	if _navigation_grid == null or not _navigation_grid.is_loaded():
+		_hide_preview()
 		return PlaceResult.NEEDS_TERRAIN
+	var anchor_cell := _anchor_for_hover_cell(hover_cell)
+	var evaluation := _evaluate_anchor_at(anchor_cell)
+	# Matches the bookkeeping _update_for_hover_cell() would have set for this
+	# anchor; only the preview nodes it would also have built are skipped.
+	visible = true
+	_anchor_cell = anchor_cell
+	_preview_anchor_cells.assign([anchor_cell])
+	_has_anchor = true
+	_can_build = bool(evaluation["can_build"])
 	if not _can_build:
 		return PlaceResult.CANNOT_BUILD
 	if building_scene == null:
@@ -354,56 +381,114 @@ func _rebuild_preview(anchor_cell: Vector2i) -> void:
 	_rebuild_preview_for_anchors([anchor_cell])
 
 
-func _rebuild_preview_for_anchors(anchor_cells: Array[Vector2i]) -> void:
-	var has_cells := false
-	var can_build := true
-	var occupied_cells := _occupied_building_nav_cells()
+## The inputs _evaluate_anchor() needs beyond the anchor cell itself, gathered
+## once per call site rather than once per anchor. Building footprints are
+## map-wide input shared by every segment of a wall-line preview or every
+## per-tick availability check; scanning them per anchor made long wall lines
+## increasingly expensive as the cursor moved.
+func _current_build_radius_inputs() -> Dictionary:
 	var radius_tiles := 0
 	var existing_footprints: Array = []
 	if not _skip_build_radius_check and not _build_radius_provider.is_null():
 		radius_tiles = int(_build_radius_provider.call())
 		if radius_tiles > 0:
-			# Building footprints are map-wide input shared by every segment in
-			# this preview. Scanning them once per segment made long wall lines
-			# increasingly expensive as the cursor moved.
 			existing_footprints = _existing_building_footprints()
+	return {
+		"occupied_cells": _occupied_building_nav_cells(),
+		"radius_tiles": radius_tiles,
+		"existing_footprints": existing_footprints,
+	}
+
+
+## Convenience for the single-anchor verdict callers (evaluate_at_hover_cell,
+## try_place_at_hover_cell): gathers this call's shared inputs once and
+## evaluates the one anchor they care about.
+func _evaluate_anchor_at(anchor_cell: Vector2i) -> Dictionary:
+	var inputs := _current_build_radius_inputs()
+	return _evaluate_anchor(
+		anchor_cell, inputs["occupied_cells"], inputs["radius_tiles"], inputs["existing_footprints"]
+	)
+
+
+## Pure verdict for one anchor cell: whether its footprint has any occupy
+## cells at all, whether every one of them is available, and the per-cell
+## availability the drawing path needs to pick a red or green preview scene.
+## Creates, frees, colours, and reparents nothing, and never touches
+## visible/_preview_cells_by_grid_cell/_available_preview_anchor_cells/
+## _can_build/_has_anchor/_anchor_cell/_preview_anchor_cells -- callers decide
+## what, if anything, to draw from the verdict. This is what lets
+## evaluate_at_hover_cell() run on the simulation tick without paying for a
+## preview no one will see (see its doc comment).
+func _evaluate_anchor(
+		anchor_cell: Vector2i,
+		occupied_cells: Dictionary,
+		radius_tiles: int,
+		existing_footprints: Array
+	) -> Dictionary:
+	var has_cells := false
+	var can_build := true
+	var available_by_grid_cell: Dictionary = {}
+	# Checked once per anchor rather than per cell: it does not depend on the
+	# individual occupy cell, and every cell's preview material must reflect
+	# it, not just the aggregate can_build result.
+	var within_radius := (
+		_skip_build_radius_check
+		or radius_tiles <= 0
+		or BuildRadiusScript.is_within_radius(
+			_footprint_nav_cells(anchor_cell),
+			_is_wall_candidate,
+			existing_footprints,
+			radius_tiles
+		)
+	)
+	for row_index in _occupy_rows.size():
+		for column_index in _occupy_rows[row_index].length():
+			var marker := _occupy_rows[row_index].substr(column_index, 1)
+			if _is_empty_occupy_marker(marker):
+				continue
+			var grid_cell := anchor_cell + _occupy_offset_to_nav_cell(column_index, row_index)
+			var available := _is_occupy_cell_buildable(grid_cell) \
+				and _is_occupy_cell_unoccupied(grid_cell, occupied_cells) and within_radius
+			has_cells = true
+			can_build = can_build and available
+			available_by_grid_cell[grid_cell] = available
+	return {
+		"has_cells": has_cells,
+		"can_build": has_cells and can_build,
+		"available_by_grid_cell": available_by_grid_cell,
+	}
+
+
+func _rebuild_preview_for_anchors(anchor_cells: Array[Vector2i]) -> void:
+	var has_cells := false
+	var can_build := true
+	var inputs := _current_build_radius_inputs()
+	var occupied_cells: Dictionary = inputs["occupied_cells"]
+	var radius_tiles: int = inputs["radius_tiles"]
+	var existing_footprints: Array = inputs["existing_footprints"]
 	var next_preview_cells: Dictionary = {}
 	var available_anchor_cells: Array[Vector2i] = []
 	for anchor_index in anchor_cells.size():
 		var anchor_cell := anchor_cells[anchor_index]
-		var anchor_has_cells := false
-		var anchor_can_build := true
-		# Checked once per anchor rather than per cell: it does not depend on
-		# the individual occupy cell, and every cell's preview material must
-		# reflect it, not just the aggregate _can_build result.
-		var within_radius := (
-			_skip_build_radius_check
-			or radius_tiles <= 0
-			or BuildRadiusScript.is_within_radius(
-				_footprint_nav_cells(anchor_cell),
-				_is_wall_candidate,
-				existing_footprints,
-				radius_tiles
-			)
-		)
+		var evaluation := _evaluate_anchor(anchor_cell, occupied_cells, radius_tiles, existing_footprints)
+		var anchor_has_cells: bool = evaluation["has_cells"]
+		var anchor_can_build: bool = evaluation["can_build"]
+		var available_by_grid_cell: Dictionary = evaluation["available_by_grid_cell"]
 		for row_index in _occupy_rows.size():
 			for column_index in _occupy_rows[row_index].length():
 				var cell := _preview_cell_for(
 					anchor_cell, anchor_index, row_index, column_index,
-					occupied_cells, next_preview_cells, within_radius
+					available_by_grid_cell, next_preview_cells
 				)
 				if not bool(cell.get("has_cell", false)):
 					continue
 				has_cells = true
-				anchor_has_cells = true
 				var grid_cell: Vector2i = cell["grid_cell"]
-				var cell_available := bool(cell["available"])
-				can_build = can_build and cell_available
-				anchor_can_build = anchor_can_build and cell_available
 				var entry: Dictionary = cell.get("entry", {})
 				if not entry.is_empty():
 					if not next_preview_cells.has(grid_cell):
 						next_preview_cells[grid_cell] = entry
+		can_build = can_build and anchor_can_build
 		if anchor_has_cells and anchor_can_build:
 			available_anchor_cells.append(anchor_cell)
 
@@ -426,23 +511,20 @@ func _preview_cell_for(
 		anchor_index: int,
 		row_index: int,
 		column_index: int,
-		occupied_cells: Dictionary,
-		next_preview_cells: Dictionary,
-		within_radius: bool
+		available_by_grid_cell: Dictionary,
+		next_preview_cells: Dictionary
 ) -> Dictionary:
 	var marker := _occupy_rows[row_index].substr(column_index, 1)
 	if _is_empty_occupy_marker(marker):
 		return {"has_cell": false}
 	var grid_cell := anchor_cell + _occupy_offset_to_nav_cell(column_index, row_index)
-	var available := _is_occupy_cell_buildable(grid_cell) \
-		and _is_occupy_cell_unoccupied(grid_cell, occupied_cells) and within_radius
 	if next_preview_cells.has(grid_cell):
 		return {
 			"has_cell": true,
 			"grid_cell": grid_cell,
-			"available": available,
 			"entry": next_preview_cells[grid_cell],
 		}
+	var available := bool(available_by_grid_cell.get(grid_cell, false))
 	var preview_scene := _preview_scene_for_marker(marker, available)
 	var entry: Dictionary = _preview_cells_by_grid_cell.get(grid_cell, {})
 	if preview_scene != null and entry.get("scene") != preview_scene:
@@ -455,7 +537,6 @@ func _preview_cell_for(
 	return {
 		"has_cell": true,
 		"grid_cell": grid_cell,
-		"available": available,
 		"entry": entry if preview_scene != null else {},
 	}
 
