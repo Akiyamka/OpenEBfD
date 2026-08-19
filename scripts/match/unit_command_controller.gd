@@ -24,12 +24,13 @@ var _navigation
 var _deployment_controller
 ## The command bus this controller submits SimCommands to, and a matching
 ## way to ask "what tick would a command submitted right now target" --
-## injected together by Match._setup_unit_command_controller(), the same way
-## camera/terrain/navigation are. Both are null in every suite that builds
-## this controller directly with no Match in the tree (see
-## tests/match/unit_command_run.gd), which is exactly the case
-## _stop_selected_entities() falls back to its pre-command-bus behaviour
-## for -- see that method.
+## injected together, in production by Match._setup_unit_command_controller()
+## and in tests by tests/match/support/command_pump.gd (see CommandPump.bus()
+## and .next_orderable_tick()), the same way camera/terrain/navigation are.
+## A controller built with neither wired in may still be driven for
+## selection/hover/cursor cases -- most of tests/match/unit_command_run.gd
+## never issues a command -- but asking it to issue one is a wiring mistake,
+## not a supported mode; see _stop_selected_entities()'s guard.
 var _command_bus: SimCommandBus
 var _submit_tick_provider: Callable
 # Units and buildings are protocol-compatible group members in runtime and
@@ -276,24 +277,27 @@ func _is_stop_key(event: InputEventKey) -> bool:
 
 ## The issue side of Stop: immediate, and split from execution on purpose
 ## (see docs/architecture/network-multiplayer.md, "Layering" -- "commands"
-## vs "simulation"). With a command bus wired in (the real game, via
-## Match._setup_unit_command_controller()) this only resolves the current
-## selection to stable entity ids and submits one SimStopCommand; cancelling
-## the orders themselves, and therefore knowing how many actually stopped,
-## only happens once CommandExecutor._execute_stop() runs on the tick this
-## command is scheduled for (see on_command_executed() for how that result
-## finds its way back to status_changed).
+## vs "simulation"). This only resolves the current selection to stable
+## entity ids and submits one SimStopCommand; cancelling the orders
+## themselves, and therefore knowing how many actually stopped, only happens
+## once CommandExecutor._execute_stop() runs on the tick this command is
+## scheduled for (see on_command_executed() for how that result finds its way
+## back to status_changed).
 ##
-## Without a bus -- every suite that builds this controller directly, with
-## no Match anywhere in the tree, see tests/match/unit_command_run.gd --
-## this falls back to the old immediate behaviour unchanged: cancel orders
-## right here and report the count synchronously. Those fixtures' fake
-## entities have no entity_id at all, so this is not merely a convenience
-## fallback, it is the only path that does not reach for a property they do
-## not have.
+## A controller with no command bus wired in is a wiring mistake, not a
+## supported mode -- see the _command_bus field comment. Every suite that
+## exercises this method wires one in via tests/match/support/command_pump.gd;
+## the loud failure below is what would have caught the alternative (silently
+## dropping the order, or silently reviving the pre-command-bus immediate
+## cancel this method used to fall back to).
 func _stop_selected_entities() -> void:
-	if _command_bus == null:
-		_emit_stop_status(_cancel_orders_immediately())
+	if _command_bus == null or not _submit_tick_provider.is_valid():
+		push_error(
+			"UnitCommandController._stop_selected_entities(): no command bus wired in -- " +
+			"call setup() with a SimCommandBus and a submit-tick provider before issuing " +
+			"orders (see Match._setup_unit_command_controller() or, in tests, " +
+			"tests/match/support/command_pump.gd)."
+		)
 		return
 	var entity_ids := PackedInt32Array()
 	for entity in _controllable_entities():
@@ -314,20 +318,6 @@ func _stop_selected_entities() -> void:
 		command.player_id = players.local_player_id
 	command.entity_ids = entity_ids
 	_command_bus.submit(command, _submit_tick_provider.call())
-
-
-## The pre-command-bus behaviour, preserved verbatim as the fallback
-## _stop_selected_entities() uses when no bus is wired in, and reused as
-## CommandExecutor._execute_stop()'s model for what "cancelling" means on
-## the execution side -- see that method.
-func _cancel_orders_immediately() -> int:
-	var stopped := 0
-	for entity in _controllable_entities():
-		if not entity.has_method("cancel_all_orders"):
-			continue
-		if bool(entity.call("cancel_all_orders")):
-			stopped += 1
-	return stopped
 
 
 func _emit_stop_status(stopped: int) -> void:

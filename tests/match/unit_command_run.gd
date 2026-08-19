@@ -3,6 +3,8 @@ extends SceneTree
 const UnitCommandControllerScript := preload("res://scripts/match/unit_command_controller.gd")
 const NavConstantsScript := preload("res://scripts/units/navigation/shared/nav_constants.gd")
 const CursorManagerScript := preload("res://scripts/ui/cursor_manager.gd")
+const CommandPumpScript := preload("res://tests/match/support/command_pump.gd")
+const SimEntityRegistryScript := preload("res://scripts/sim/entity_registry.gd")
 
 var _assertions := 0
 var _failures := 0
@@ -20,6 +22,13 @@ class FakeUnit extends Node3D:
 	var attack_capable := true
 	var active_order := false
 	var stop_commands := 0
+	## 0 until a case registers this fixture with a CommandPump (see
+	## tests/match/support/command_pump.gd) -- the id the real
+	## EntityNodeIndex allocated, never one this fixture invents. Present on
+	## every FakeUnit, not just the ones a case registers, so
+	## UnitCommandController's `&"entity_id" in entity` duck-typing check
+	## behaves the same as it does against a real Unit.
+	var entity_id: int = 0
 
 	func set_selected(active: bool) -> void:
 		selected = active
@@ -120,6 +129,8 @@ class FakeBuilding extends Node3D:
 	var attack_targets: Array = []
 	var active_order := false
 	var stop_commands := 0
+	## See FakeUnit.entity_id -- same contract, same reason.
+	var entity_id: int = 0
 
 	func set_selected(active: bool) -> void:
 		selected = active
@@ -1034,7 +1045,15 @@ func _test_formation_modifier(token: int, local_player) -> int:
 
 
 func _test_stop_shortcut(token: int, local_player) -> int:
+	# Stop is issued through the real command bus, via the same CommandPump
+	# every future command-issuing case wires in -- see
+	# tests/match/support/command_pump.gd. Fixtures' entity_id is whatever
+	# the pump's own registry allocated, never a number this case invents.
+	var pump := CommandPumpScript.new()
 	var commands := FakeUnitCommandController.new()
+	commands.setup(
+		null, null, null, null, null, null, [], pump.bus(), Callable(pump, "next_orderable_tick")
+	)
 	var statuses: Array[String] = []
 	commands.status_changed.connect(func(status: String) -> void: statuses.append(status))
 	root.add_child(commands)
@@ -1042,12 +1061,19 @@ func _test_stop_shortcut(token: int, local_player) -> int:
 	var tank := _make_unit("StopTank", local_player)
 	root.add_child(scout)
 	root.add_child(tank)
+	scout.entity_id = pump.register(scout, SimEntityRegistryScript.Kind.UNIT)
+	tank.entity_id = pump.register(tank, SimEntityRegistryScript.Kind.UNIT)
 	scout.active_order = true
 	tank.active_order = true
 	commands._set_selection([scout, tank])
 
 	var stop_event := _key_event(KEY_S, true)
 	_expect(commands.handle_unhandled_input(stop_event), "S press must be consumed as a unit command")
+	_expect(
+		scout.stop_commands == 0 and tank.stop_commands == 0,
+		"Stop must not cancel orders before its scheduled tick is pumped"
+	)
+	pump.pump(commands)
 	_expect(
 		scout.stop_commands == 1 and tank.stop_commands == 1,
 		"S must cancel every selected unit's orders"
@@ -1069,11 +1095,17 @@ func _test_stop_shortcut(token: int, local_player) -> int:
 	physical_stop.physical_keycode = KEY_S
 	commands.handle_unhandled_input(physical_stop)
 	_expect(
+		scout.stop_commands == 1 and tank.stop_commands == 1,
+		"the physical S press must not cancel orders before its scheduled tick is pumped"
+	)
+	pump.pump(commands)
+	_expect(
 		scout.stop_commands == 2 and tank.stop_commands == 2,
 		"the physical S key must work independently of the keyboard layout"
 	)
 	var status_count := statuses.size()
 	commands.handle_unhandled_input(physical_stop)
+	pump.pump(commands)
 	_expect(
 		scout.stop_commands == 2 and tank.stop_commands == 2 \
 		and statuses.size() == status_count,
@@ -1087,8 +1119,14 @@ func _test_stop_shortcut(token: int, local_player) -> int:
 	building.rally_points.append(Vector3(9.0, 0.0, 12.0))
 	building.add_to_group("buildings")
 	root.add_child(building)
+	building.entity_id = pump.register(building, SimEntityRegistryScript.Kind.BUILDING)
 	commands._set_selection([building])
 	commands.handle_unhandled_input(_key_event(KEY_S, true))
+	_expect(
+		building.stop_commands == 0 and building.active_order,
+		"a building Stop must not cancel its order before its scheduled tick is pumped"
+	)
+	pump.pump(commands)
 	_expect(
 		building.stop_commands == 1 and not building.active_order,
 		"Stop must cancel a selected building's attack order"
