@@ -164,6 +164,18 @@ func _initialize() -> void:
 		_test_place_click_rotation_survives_round_trip
 	)
 	_run_case(
+		"a wall line's first click submits nothing and still emits its existing status",
+		_test_wall_line_first_click_submits_nothing
+	)
+	_run_case(
+		"a wall line's second click submits a command and defers starting the chain and locking markers to the tick it executes",
+		_test_wall_line_second_click_defers_chain_to_the_tick
+	)
+	_run_case(
+		"the wall-line command recomputes its buildable cells at execution, not from the click-time preview",
+		_test_wall_line_command_recomputes_buildable_cells_at_execution
+	)
+	_run_case(
 		"losing and restoring a prerequisite building toggles menu availability",
 		_test_availability_reacts_to_prerequisite_loss.bind(local_player)
 	)
@@ -907,6 +919,153 @@ func _test_place_click_rotation_survives_round_trip(token: int) -> int:
 	return token
 
 
+## Wall's command-bus counterpart to _test_sell_click_on_no_building_submits_nothing()
+## and _test_place_click_with_no_cell_submits_nothing(): the first wall click
+## only records a start cell and changes what the player's next click means --
+## it names no game action, so WallLineSession.click() must put nothing on the
+## bus for it (see that method's own doc comment).
+func _test_wall_line_first_click_submits_nothing(token: int) -> int:
+	var controller := _new_controller()
+	var stub := HoverCellPlacement.new()
+	controller._building_placement.free()
+	controller._building_placement = stub
+	var building_ids: Array[StringName] = [&"ATWall"]
+	controller.setup(null, null, null, building_ids, null, null, null, null, PlacementWallScene)
+	_setup_controller_placement(controller,
+		null, FakeGrid.new(), null, null, null, null, null, Callable()
+	)
+	var pump := CommandPumpScript.new()
+	controller._command_bus = pump.bus()
+	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
+
+	controller._set_wall_line_mode(true, &"ATWall")
+	stub.stub_cell = Vector2i(2, 4)
+
+	var statuses: Array[String] = []
+	controller.status_changed.connect(func(status: String) -> void: statuses.append(status))
+	controller._on_wall_line_click(Vector2.ZERO)
+
+	_expect(
+		statuses.has("Wall start set; click the line end"),
+		"the first wall click must still emit the existing status"
+	)
+	_expect(pump.bus().pending_count() == 0, "the first wall click must put nothing on the command bus")
+
+	controller.free()
+	return token
+
+
+## Wall's command-bus counterpart to _test_place_click_defers_placement_to_the_tick():
+## the second click must not start a chain or lock any markers until its
+## SimWallLineCommand executes -- see _submit_wall_line_command()'s and
+## execute_wall_line_command()'s doc comments. Uses a HoverCellPlacement stub
+## (see that class's own doc comment) so the click-side raycast resolves to a
+## fixed cell without a real Camera3D, exactly as the place-command cases do,
+## with a different stub_cell per click to name the line's two ends.
+func _test_wall_line_second_click_defers_chain_to_the_tick(token: int) -> int:
+	var buildings_root := Node3D.new()
+	root.add_child(buildings_root)
+	var controller := _new_controller()
+	var stub := HoverCellPlacement.new()
+	controller._building_placement.free()
+	controller._building_placement = stub
+	var building_ids: Array[StringName] = [&"ATWall"]
+	controller.setup(null, null, null, building_ids, null, null, null, null, PlacementWallScene)
+	_setup_controller_placement(controller,
+		null, FakeGrid.new(), buildings_root, null, null, null, null, Callable()
+	)
+	var pump := CommandPumpScript.new()
+	pump.configure_queue_controllers(controller)
+	controller._command_bus = pump.bus()
+	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
+
+	controller._set_wall_line_mode(true, &"ATWall")
+	stub.stub_cell = Vector2i(2, 4)
+	controller._on_wall_line_click(Vector2.ZERO)
+	stub.stub_cell = Vector2i(4, 4)
+	controller._on_wall_line_click(Vector2.ZERO)
+
+	_expect(pump.bus().pending_count() == 1, "a second wall click must submit exactly one command")
+	_expect(
+		controller._wall_chain == null,
+		"a second wall click must not start a chain before its command executes"
+	)
+	_expect(
+		controller._wall_session.markers().is_empty(),
+		"a second wall click must not lock any markers before its command executes"
+	)
+
+	pump.pump()
+	_expect(
+		controller._wall_chain != null,
+		"the wall-line command must start a chain once it executes"
+	)
+	_expect(
+		not controller._wall_session.markers().is_empty(),
+		"the wall-line command must lock markers once it executes"
+	)
+
+	controller.free()
+	buildings_root.free()
+	return token
+
+
+## Binds the whole point of this slice (see SimWallLineCommand's doc comment
+## and WallLineSession.start_chain()'s own): the buildable-cell set is
+## computed when the command executes, not carried from the click-time
+## preview. A cell buildable at both clicks is blocked afterward, before the
+## pump -- if the command still carried a click-time snapshot (the design this
+## slice replaces), that stale snapshot would still say the cell was fine, and
+## this case would fail.
+func _test_wall_line_command_recomputes_buildable_cells_at_execution(token: int) -> int:
+	var buildings_root := Node3D.new()
+	root.add_child(buildings_root)
+	var controller := _new_controller()
+	var stub := HoverCellPlacement.new()
+	controller._building_placement.free()
+	controller._building_placement = stub
+	var building_ids: Array[StringName] = [&"ATWall"]
+	controller.setup(null, null, null, building_ids, null, null, null, null, PlacementWallScene)
+	var grid := MutableGrid.new()
+	_setup_controller_placement(controller,
+		null, grid, buildings_root, null, null, null, null, Callable()
+	)
+	var pump := CommandPumpScript.new()
+	pump.configure_queue_controllers(controller)
+	controller._command_bus = pump.bus()
+	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
+
+	controller._set_wall_line_mode(true, &"ATWall")
+	stub.stub_cell = Vector2i(2, 4)
+	controller._on_wall_line_click(Vector2.ZERO)
+	stub.stub_cell = Vector2i(6, 4)
+	controller._on_wall_line_click(Vector2.ZERO)
+	_expect(pump.bus().pending_count() == 1, "setup: the second wall click must submit exactly one command")
+
+	# Blocked after the click, before the command executes.
+	grid.block_occupy_cell(Vector2i(4, 4))
+
+	pump.pump()
+	_expect(
+		controller._wall_chain != null,
+		"the line's still-buildable cells must still produce a chain"
+	)
+	if controller._wall_chain != null:
+		_expect(
+			not controller._wall_chain.cells.has(Vector2i(4, 4)),
+			"a cell blocked between the click and the command's execution tick must not enter the chain"
+		)
+		_expect(
+			controller._wall_chain.cells.has(Vector2i(2, 4))
+			and controller._wall_chain.cells.has(Vector2i(6, 4)),
+			"cells that stayed buildable must still enter the chain"
+		)
+
+	controller.free()
+	buildings_root.free()
+	return token
+
+
 ## _sell_mode/_repair_mode/_wall_line_mode are property shims over a single
 ## Mode enum. Activating one mode must deactivate whichever of the other two
 ## was previously active -- emitting its own *_changed(false) exactly once,
@@ -1158,14 +1317,20 @@ func _enter_mode(controller: BuildingController, mode: StringName) -> void:
 ## start_chain() itself -- where the chain is stamped with its owner. That owner
 ## is the roster's local_player_id, not the local PlayerData's player_id, and
 ## reading the wrong one crashed the moment a player finished a wall line.
+##
+## start_chain() no longer takes an explicit buildable-cell array (see
+## WallLineSession.start_chain()'s doc comment): it evaluates
+## Vector2i(2, 4)/Vector2i(4, 4) for real, through BuildingPlacement, so this
+## case leans on the same FakeGrid (every cell "valid"/"buildable") the other
+## wall cases in this file already use, with no buildings anywhere to occupy
+## either cell -- there is nothing here for the evaluation to reject.
 func _test_wall_chain_owner_comes_from_roster(token: int, local_player: PlayerData) -> int:
 	var controller := _new_controller()
 	_setup_without_assets(controller)
 	_setup_controller_placement(controller,
 		null, FakeGrid.new(), null, null, null, null, null, Callable()
 	)
-	var cells: Array[Vector2i] = [Vector2i(2, 4), Vector2i(4, 4)]
-	controller._start_wall_chain(Vector2i(2, 4), Vector2i(4, 4), &"ATWall", cells)
+	controller._start_wall_chain(Vector2i(2, 4), Vector2i(4, 4), &"ATWall")
 	_expect(
 		controller._wall_chain != null,
 		"a wall line over buildable cells must produce a chain"

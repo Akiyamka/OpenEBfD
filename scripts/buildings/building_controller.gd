@@ -9,6 +9,7 @@ const SimBuildOrderCommandScript := preload("res://scripts/sim/commands/build_or
 const SimSellBuildingCommandScript := preload("res://scripts/sim/commands/sell_building_command.gd")
 const SimRepairBuildingCommandScript := preload("res://scripts/sim/commands/repair_building_command.gd")
 const SimPlaceBuildingCommandScript := preload("res://scripts/sim/commands/place_building_command.gd")
+const SimWallLineCommandScript := preload("res://scripts/sim/commands/wall_line_command.gd")
 
 signal status_changed(status: String)
 signal building_option_state_changed(option_state: BuildingOptionState)
@@ -668,14 +669,24 @@ func _on_wall_line_click(screen_position: Vector2) -> void:
 	_refresh_building_option_states()
 
 
+## The command-bus seam for the wall line's second click (see
+## docs/architecture/network-multiplayer.md, "Layering" -- "commands" vs
+## "simulation"). Only leaving wall mode stays here, local and immediate: the
+## player's second click ends the aiming mode whether or not the line turns
+## out buildable on the tick this command executes, the same reasoning
+## _try_place_ready_building()'s doc comment gives for its own "no active
+## preview" guard staying local. Everything else -- which cells are buildable,
+## locking markers on them, and ordering the first segment -- moves to
+## execute_wall_line_command(), which recomputes the buildable set against the
+## map as it stands at execution time; see SimWallLineCommand's own doc
+## comment for why the preview's snapshot must not travel on the wire.
 func _finish_wall_selection(
 		start_cell: Vector2i,
 		end_cell: Vector2i,
-		building_id: StringName,
-		buildable_cells: Array[Vector2i]
+		building_id: StringName
 ) -> void:
 	_set_wall_line_mode(false)
-	_start_wall_chain(start_cell, end_cell, building_id, buildable_cells)
+	_submit_wall_line_command(start_cell, end_cell, building_id)
 
 
 func _begin_wall_line_preview(building_id: StringName) -> void:
@@ -1073,12 +1084,9 @@ func _begin_ready_building_placement() -> void:
 func _start_wall_chain(
 		from_nav_cell: Vector2i,
 		to_nav_cell: Vector2i,
-		building_id: StringName,
-		selected_buildable_cells: Array[Vector2i]
+		building_id: StringName
 ) -> void:
-	_wall_session.start_chain(
-		from_nav_cell, to_nav_cell, building_id, selected_buildable_cells
-	)
+	_wall_session.start_chain(from_nav_cell, to_nav_cell, building_id)
 
 
 func _wall_nav_cells_between(
@@ -1222,6 +1230,43 @@ func execute_place_building_command(command: SimPlaceBuildingCommand) -> void:
 			status_changed.emit("%s scene is not a Node3D" % order.display_name)
 		BuildingPlacementScript.PlaceResult.MISSING_BUILDINGS_ROOT:
 			status_changed.emit("Buildings root is missing")
+
+
+## Mirrors _submit_place_building_command()'s shape exactly, including its
+## push_error when no command bus is wired in -- see that method's doc comment
+## and the _command_bus field comment for why a missing bus is a wiring
+## mistake, not a supported mode.
+func _submit_wall_line_command(
+		start_cell: Vector2i, end_cell: Vector2i, building_id: StringName
+	) -> void:
+	if _command_bus == null or not _submit_tick_provider.is_valid():
+		push_error(
+			"BuildingController._submit_wall_line_command(): no command bus wired in -- " +
+			"call setup() with a SimCommandBus and a submit-tick provider before issuing " +
+			"orders (see Match._setup_building_controller() or, in tests, " +
+			"tests/match/support/command_pump.gd)."
+		)
+		return
+	var command := SimWallLineCommandScript.new()
+	var players = _players()
+	if players != null:
+		command.player_id = players.local_player_id
+	command.building_id = building_id
+	command.start_cell = start_cell
+	command.end_cell = end_cell
+	_command_bus.submit(command, _submit_tick_provider.call())
+
+
+## The execution side of the wall line's second click: CommandExecutor.execute()
+## (scripts/match/command_executor.gd) calls this with the SimWallLineCommand
+## it just drained, on the tick the bus scheduled it for. Forwards straight to
+## WallLineSession.start_chain() (scripts/buildings/wall_line_session.gd),
+## which recomputes the buildable-cell set against the map as it stands on
+## this tick, locks markers on the result, and orders the first segment -- see
+## that method's own doc comment and SimWallLineCommand's for why the
+## buildable set is not part of the command.
+func execute_wall_line_command(command: SimWallLineCommand) -> void:
+	_start_wall_chain(command.start_cell, command.end_cell, command.building_id)
 
 
 func _cancel_building_placement() -> void:

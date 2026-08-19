@@ -62,6 +62,7 @@ const SimUpgradeOrderCommandScript := preload("res://scripts/sim/commands/upgrad
 const SimSellBuildingCommandScript := preload("res://scripts/sim/commands/sell_building_command.gd")
 const SimRepairBuildingCommandScript := preload("res://scripts/sim/commands/repair_building_command.gd")
 const SimPlaceBuildingCommandScript := preload("res://scripts/sim/commands/place_building_command.gd")
+const SimWallLineCommandScript := preload("res://scripts/sim/commands/wall_line_command.gd")
 
 ## Every concrete command type, by its TYPE_ID. Add an entry here in the same
 ## change that adds a new SimCommand subclass under scripts/sim/commands/ --
@@ -80,6 +81,7 @@ const _COMMAND_SCRIPTS := {
 	SimSellBuildingCommandScript.TYPE_ID: SimSellBuildingCommandScript,
 	SimRepairBuildingCommandScript.TYPE_ID: SimRepairBuildingCommandScript,
 	SimPlaceBuildingCommandScript.TYPE_ID: SimPlaceBuildingCommandScript,
+	SimWallLineCommandScript.TYPE_ID: SimWallLineCommandScript,
 }
 
 const _ENVELOPE_SIZE := 6  ## u16 type_id (2 bytes) + s32 player_id (4 bytes)

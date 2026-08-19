@@ -20,6 +20,7 @@ const SimUpgradeOrderCommandScript := preload("res://scripts/sim/commands/upgrad
 const SimSellBuildingCommandScript := preload("res://scripts/sim/commands/sell_building_command.gd")
 const SimRepairBuildingCommandScript := preload("res://scripts/sim/commands/repair_building_command.gd")
 const SimPlaceBuildingCommandScript := preload("res://scripts/sim/commands/place_building_command.gd")
+const SimWallLineCommandScript := preload("res://scripts/sim/commands/wall_line_command.gd")
 
 
 func _initialize() -> void:
@@ -98,6 +99,14 @@ func _initialize() -> void:
 	_run_case(
 		"SimPlaceBuildingCommand round-trips a nav_cell with negative components",
 		_test_place_building_round_trip_negative_cell
+	)
+	_run_case(
+		"SimWallLineCommand round-trips building_id, start_cell and end_cell",
+		_test_wall_line_round_trip
+	)
+	_run_case(
+		"SimWallLineCommand round-trips start_cell/end_cell with negative components",
+		_test_wall_line_round_trip_negative_cells
 	)
 	_run_case("decode() returns null on empty bytes", _test_decode_empty_bytes)
 	_run_case("decode() returns null on a buffer shorter than the envelope", _test_decode_truncated_envelope)
@@ -536,6 +545,46 @@ func _test_place_building_round_trip_negative_cell() -> void:
 	) as SimPlaceBuildingCommand
 	_expect(decoded != null, "a well-formed place-building command with a negative cell must decode")
 	_expect(decoded.nav_cell == Vector2i(-5, -1), "a nav_cell with negative components must round-trip exactly")
+
+
+func _test_wall_line_round_trip() -> void:
+	var command := SimWallLineCommandScript.new()
+	command.player_id = 1
+	command.building_id = &"ATWall"
+	command.start_cell = Vector2i(2, 4)
+	command.end_cell = Vector2i(10, 4)
+
+	var decoded := SimCommandCodecScript.decode(
+		SimCommandCodecScript.encode(command)
+	) as SimWallLineCommand
+	_expect(decoded != null, "a well-formed wall-line command must decode")
+	_expect(decoded.type_id() == SimWallLineCommandScript.TYPE_ID, "decoded command must be a SimWallLineCommand")
+	_expect(decoded.player_id == 1, "player_id must round-trip")
+	_expect(decoded.building_id == &"ATWall", "building_id must round-trip")
+	_expect(decoded.start_cell == Vector2i(2, 4), "start_cell must round-trip exactly")
+	_expect(decoded.end_cell == Vector2i(10, 4), "end_cell must round-trip exactly")
+
+
+## Distinct from the case above so a codec that wrote either cell's components
+## as unsigned values could not hide behind an otherwise-passing round trip --
+## the same reasoning _test_place_building_round_trip_negative_cell() gives for
+## its own negative nav_cell case: a line drawn west or north of the nav-grid
+## origin is ordinary, not an edge case the wire format gets to assume away.
+func _test_wall_line_round_trip_negative_cells() -> void:
+	var command := SimWallLineCommandScript.new()
+	command.player_id = 2
+	command.building_id = &"HKWall"
+	command.start_cell = Vector2i(-5, -1)
+	command.end_cell = Vector2i(-5, 7)
+
+	var decoded := SimCommandCodecScript.decode(
+		SimCommandCodecScript.encode(command)
+	) as SimWallLineCommand
+	_expect(decoded != null, "a well-formed wall-line command with negative cells must decode")
+	_expect(
+		decoded.start_cell == Vector2i(-5, -1), "start_cell with negative components must round-trip exactly"
+	)
+	_expect(decoded.end_cell == Vector2i(-5, 7), "end_cell with negative components must round-trip exactly")
 
 
 func _test_decode_truncated_ability_id() -> void:

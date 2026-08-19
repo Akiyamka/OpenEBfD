@@ -27,6 +27,7 @@ const SimUpgradeOrderCommandScript := preload("res://scripts/sim/commands/upgrad
 const SimSellBuildingCommandScript := preload("res://scripts/sim/commands/sell_building_command.gd")
 const SimRepairBuildingCommandScript := preload("res://scripts/sim/commands/repair_building_command.gd")
 const SimPlaceBuildingCommandScript := preload("res://scripts/sim/commands/place_building_command.gd")
+const SimWallLineCommandScript := preload("res://scripts/sim/commands/wall_line_command.gd")
 const SelectionClassifierScript := preload("res://scripts/match/selection_classifier.gd")
 const SelectionTargetAbilityControllerScript := preload(
 	"res://scripts/match/selection_target_ability_controller.gd"
@@ -135,6 +136,10 @@ func execute(command: SimCommand) -> Dictionary:
 		SimPlaceBuildingCommandScript.TYPE_ID:
 			if _building_controller != null:
 				_building_controller.execute_place_building_command(command as SimPlaceBuildingCommand)
+			return {}
+		SimWallLineCommandScript.TYPE_ID:
+			if _building_controller != null:
+				_building_controller.execute_wall_line_command(command as SimWallLineCommand)
 			return {}
 		_:
 			# A command the bus scheduled, the codec can carry, and nothing

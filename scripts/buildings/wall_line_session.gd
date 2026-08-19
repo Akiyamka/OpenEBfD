@@ -63,6 +63,14 @@ func end() -> void:
 	_building_id = &""
 
 
+## The second click no longer previews, reads the preview's anchor cells, or
+## locks markers -- see this file's header comment and SimWallLineCommand's
+## doc comment (scripts/sim/commands/wall_line_command.gd) for why the
+## buildable set must not be captured here, at click time, and carried on the
+## wire. start_chain_callback now receives only (start_cell, end_cell,
+## building_id): BuildingController._finish_wall_selection() submits those
+## three as a SimWallLineCommand, and start_chain() below recomputes the
+## buildable set itself when that command executes.
 func click(
 		screen_position: Vector2, status: Callable, start_chain_callback: Callable
 ) -> void:
@@ -75,10 +83,7 @@ func click(
 		status.call("Wall start set; click the line end")
 		return
 	var start: Vector2i = _start_cell
-	preview_to(cell)
-	var buildable: Array[Vector2i] = _placement.available_preview_anchor_cells()
-	lock_markers(buildable)
-	start_chain_callback.call(start, cell, _building_id, buildable)
+	start_chain_callback.call(start, cell, _building_id)
 
 
 func process_preview(screen_position: Vector2) -> void:
@@ -145,11 +150,20 @@ func clear_markers() -> void:
 		remove_marker(anchor_cell)
 
 
+## No longer takes the preview's buildable-cell snapshot: it computes the set
+## itself, right here, against the map as it stands on the tick this runs --
+## see this file's header comment and SimWallLineCommand's doc comment
+## (scripts/sim/commands/wall_line_command.gd) for why a click-time snapshot
+## is stale by construction (segments are ordered one at a time over many
+## seconds) and must not be authoritative. The filter below runs every
+## candidate cell through _evaluate_cell_availability() -- the same
+## begin() -> evaluate_at_hover_cell() -> cancel() bracket
+## _segment_availability() uses per segment -- so "is this cell buildable" has
+## exactly one answer anywhere in this file.
 func start_chain(
 		from_nav_cell: Vector2i,
 		to_nav_cell: Vector2i,
-		order_building_id: StringName,
-		selected_buildable_cells: Array[Vector2i]
+		order_building_id: StringName
 ) -> void:
 	# Callers that never went through begin() (a direct start_chain, e.g. from
 	# a test) can arrive without an id; the Atreides wall is the default the
@@ -165,14 +179,17 @@ func start_chain(
 		_status.call("Wall rules are not loaded")
 		clear_markers()
 		return
+	var display_name: String = _display_provider.call(order_building_id)
 	var cells: Array[Vector2i] = []
 	for cell in nav_cells_between(from_nav_cell, to_nav_cell):
-		if selected_buildable_cells.has(cell):
+		var availability := _evaluate_cell_availability(order_building_id, display_name, cell)
+		if availability == BuildingPlacementScript.PlaceResult.AVAILABLE:
 			cells.append(cell)
 	if cells.is_empty():
 		_status.call("Wall line has no buildable segments")
 		_end_chain()
 		return
+	lock_markers(cells)
 	var line_start_world_position: Vector3 = _placement.wall_marker_world_position(cells[0])
 	# Two different owners are in play here and they are not interchangeable:
 	# _player_provider answers the local PlayerData (what _refund() spends from),
@@ -180,7 +197,7 @@ func start_chain(
 	# provider is what crashed -- PlayerData has player_id, not local_player_id.
 	var owner_id = _owner_id_provider.call() if not _owner_id_provider.is_null() else null
 	_chain = WallChainScript.new(
-		order_building_id, _display_provider.call(order_building_id),
+		order_building_id, display_name,
 		maxi(config.cost, 0), RuleTicksScript.order_sim_ticks(config.build_time_ticks), cells, owner_id
 	)
 	advance_chain()
@@ -291,13 +308,26 @@ func cancel_chain() -> void:
 
 
 func _segment_availability(active_chain) -> int:
-	var config: Resource = _config_provider.call(active_chain.building_id)
+	return _evaluate_cell_availability(
+		active_chain.building_id, active_chain.display_name, active_chain.current_cell()
+	)
+
+
+## The one begin() -> evaluate_at_hover_cell() -> cancel() bracket that
+## answers "is `cell` buildable for `building_id` right now" -- shared by
+## _segment_availability() above (the per-segment recheck advance_chain() does
+## before ordering each cell) and start_chain()'s own line filter (the
+## whole-line recheck done once, at execution, before committing to a chain).
+## See BuildingPlacement.evaluate_at_hover_cell()'s doc comment for why this
+## is cheap enough to call once per candidate cell: it draws nothing.
+func _evaluate_cell_availability(
+		building_id: StringName, display_name: String, cell: Vector2i
+) -> int:
+	var config: Resource = _config_provider.call(building_id)
 	var rows: Array[String] = _rows_provider.call(config)
-	if not _placement.begin(
-		active_chain.building_id, active_chain.display_name, rows, true
-	):
+	if not _placement.begin(building_id, display_name, rows, true):
 		return BuildingPlacementScript.PlaceResult.INACTIVE
-	var result: int = _placement.evaluate_at_hover_cell(active_chain.current_cell())
+	var result: int = _placement.evaluate_at_hover_cell(cell)
 	_placement.cancel()
 	return result
 
