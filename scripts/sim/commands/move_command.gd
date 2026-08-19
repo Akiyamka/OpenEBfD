@@ -1,0 +1,54 @@
+class_name SimMoveCommand
+extends SimCommand
+
+## "Move": the busiest player intent in the game, and the one that fans out
+## the furthest -- one click here can resolve, per acting entity, to a plain
+## move, a harvest order, an unload order, or (for a building) a rally point
+## or an undeployment request. Named by stable entity id
+## (scripts/sim/entity_registry.gd) rather than by Node, since sim-zone code
+## may never hold a Node reference -- see docs/architecture/network-multiplayer.md,
+## decision 3, and the sim-no-node-api rule in tools/architecture_rules.toml.
+##
+## Issued by UnitCommandController._command_move() (the entity ids are
+## snapshotted from the current selection at click time, exactly as
+## SimStopCommand's are) and executed by CommandExecutor._execute_move()
+## (scripts/match/command_executor.gd) on the tick the bus schedules it for.
+## Every classification decision -- who moves, who rallies, who harvests, who
+## unloads, who is still immobilized by deployment -- is deliberately absent
+## from this struct and recomputed by CommandExecutor against the world as it
+## stands on the execution tick, not the world as it stood at the click: a
+## check run at click time would let two clients reach different verdicts
+## once input delay is nonzero (see UnitCommandController._command_move()'s
+## doc comment).
+
+## Dispatch id for CommandExecutor.execute() and, later, the wire codec.
+## 1 is SimStopCommand's; this is the next one claimed.
+const TYPE_ID := 2
+
+var entity_ids: PackedInt32Array = PackedInt32Array()
+
+## Where the player clicked, already resolved from screen space to a world
+## position by the terrain raycast at issue time -- see SimCommand's doc
+## comment for why the click-to-world resolution itself stays out of the
+## command's execution (it is a view fact, not a simulation input) even
+## though the resulting Vector3 travels as plain data.
+var target: Vector3 = Vector3.ZERO
+
+## The stable id of the entity under the cursor at click time, or 0 when
+## nothing was there. This is what drives the unload path: CommandExecutor
+## resolves it back to a Node and, if that Node still exists and accepts an
+## unload from one of the acting entities, routes to command_unload() instead
+## of a plain move. An id that no longer resolves by execution time (the
+## entity died in between) simply falls through to plain movement -- see
+## CommandExecutor._execute_move()'s comment on that path.
+var target_entity_id: int = 0
+
+## NavConstants.MoveMode (scripts/units/navigation/shared/nav_constants.gd),
+## carried as a plain int rather than the enum type itself so this command
+## does not need to preload a non-sim script for a constant it only ever
+## passes through unexamined.
+var move_mode: int = 0
+
+
+func type_id() -> int:
+	return TYPE_ID

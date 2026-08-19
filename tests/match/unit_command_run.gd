@@ -361,7 +361,14 @@ func _run_case(case_name: String, test: Callable) -> void:
 
 
 func _test_selection_ownership_and_movement(token: int, local_player, enemy_player) -> int:
+	# Movement is issued through the real command bus, via CommandPump -- see
+	# tests/match/support/command_pump.gd and _test_stop_shortcut(). Fixtures'
+	# entity_id is whatever the pump's own registry allocated.
+	var pump := CommandPumpScript.new()
 	var commands := FakeUnitCommandController.new()
+	commands.setup(
+		null, null, null, null, null, null, [], pump.bus(), Callable(pump, "next_orderable_tick")
+	)
 	var statuses: Array[String] = []
 	commands.status_changed.connect(func(status: String) -> void: statuses.append(status))
 	root.add_child(commands)
@@ -370,6 +377,7 @@ func _test_selection_ownership_and_movement(token: int, local_player, enemy_play
 	var enemy_unit := _make_unit("Raider", enemy_player)
 	root.add_child(local_unit)
 	root.add_child(enemy_unit)
+	local_unit.entity_id = pump.register(local_unit, SimEntityRegistryScript.Kind.UNIT)
 	var local_collider := Node.new()
 	local_unit.add_child(local_collider)
 	var enemy_collider := Node.new()
@@ -393,8 +401,13 @@ func _test_selection_ownership_and_movement(token: int, local_player, enemy_play
 	commands.raycast_hits.append({})
 	commands.raycast_hits.append({"position": Vector3(3.0, 7.0, 4.0)})
 	commands.handle_unhandled_input(_mouse_event(MOUSE_BUTTON_RIGHT))
-	_expect(enemy_unit.selected == false and local_unit.move_targets == [Vector3(3.0, 7.0, 4.0)], "owned unit moves to terrain hit")
 	_expect(commands.raycast_masks.back() == 1, "movement uses terrain mask one")
+	_expect(
+		local_unit.move_targets.is_empty(),
+		"movement must not happen before its scheduled tick is pumped"
+	)
+	pump.pump(commands)
+	_expect(enemy_unit.selected == false and local_unit.move_targets == [Vector3(3.0, 7.0, 4.0)], "owned unit moves to terrain hit")
 	_expect(statuses.back() == "Moving to 3.0, 4.0", "movement status keeps legacy text without nav grid")
 	commands._refresh_idle_status()
 	_expect(statuses.back() == "Moving to 3.0, 4.0", "movement status remains while the order is active")
@@ -521,7 +534,15 @@ func _test_target_hotkey_input_dispatch(local_player) -> void:
 
 
 func _test_attack_orders(token: int, local_player, enemy_player, neutral_player) -> int:
+	# Only the two allied/neutral-click-without-Ctrl assertions below actually
+	# fall through to a move order -- see _command_move() -- so this needs the
+	# same CommandPump wiring as _test_stop_shortcut(), even though the rest
+	# of this case is attack, which is untouched by this slice.
+	var pump := CommandPumpScript.new()
 	var commands := FakeUnitCommandController.new()
+	commands.setup(
+		null, null, null, null, null, null, [], pump.bus(), Callable(pump, "next_orderable_tick")
+	)
 	var statuses: Array[String] = []
 	commands.status_changed.connect(func(status: String) -> void: statuses.append(status))
 	root.add_child(commands)
@@ -535,6 +556,8 @@ func _test_attack_orders(token: int, local_player, enemy_player, neutral_player)
 	var neutral := _make_unit("Neutral", neutral_player)
 	for unit in [attacker, unable, ally, enemy, neutral]:
 		root.add_child(unit)
+	attacker.entity_id = pump.register(attacker, SimEntityRegistryScript.Kind.UNIT)
+	unable.entity_id = pump.register(unable, SimEntityRegistryScript.Kind.UNIT)
 	var ally_collider := Node.new()
 	var enemy_collider := Node.new()
 	var neutral_collider := Node.new()
@@ -554,12 +577,22 @@ func _test_attack_orders(token: int, local_player, enemy_player, neutral_player)
 	commands.raycast_hits.append({"position": Vector3(4.0, 0.0, 6.0)})
 	commands.handle_unhandled_input(_mouse_event(MOUSE_BUTTON_RIGHT))
 	_expect(attacker.attack_targets == [enemy], "ordinary right click must not attack an allied entity")
+	_expect(
+		attacker.move_targets.is_empty(),
+		"the allied click's movement must not happen before its scheduled tick is pumped"
+	)
+	pump.pump(commands)
 	_expect(attacker.move_targets.back() == Vector3(4.0, 0.0, 6.0), "an allied click without Ctrl remains movement")
 
 	commands.raycast_hits.append({"collider": neutral_collider})
 	commands.raycast_hits.append({"position": Vector3(8.0, 0.0, 10.0)})
 	commands.handle_unhandled_input(_mouse_event(MOUSE_BUTTON_RIGHT))
 	_expect(attacker.attack_targets == [enemy], "ordinary right click must not attack a neutral entity")
+	_expect(
+		attacker.move_targets.size() == 1,
+		"the neutral click's movement must not happen before its scheduled tick is pumped"
+	)
+	pump.pump(commands)
 	_expect(attacker.move_targets.back() == Vector3(8.0, 0.0, 10.0), "a neutral click without Ctrl remains movement")
 
 	commands.raycast_hits.append({"collider": ally_collider})
@@ -643,7 +676,11 @@ func _test_repeated_click_deployment(token: int, local_player) -> int:
 
 
 func _test_building_selection(token: int, local_player) -> int:
+	var pump := CommandPumpScript.new()
 	var commands := FakeUnitCommandController.new()
+	commands.setup(
+		null, null, null, null, null, null, [], pump.bus(), Callable(pump, "next_orderable_tick")
+	)
 	root.add_child(commands)
 
 	var building := FakeBuilding.new()
@@ -651,6 +688,7 @@ func _test_building_selection(token: int, local_player) -> int:
 	building.player = local_player
 	building.add_to_group("buildings")
 	root.add_child(building)
+	building.entity_id = pump.register(building, SimEntityRegistryScript.Kind.BUILDING)
 	var collider := Node.new()
 	building.add_child(collider)
 
@@ -663,8 +701,13 @@ func _test_building_selection(token: int, local_player) -> int:
 	commands.raycast_hits.append({"position": Vector3(6.0, 0.0, 9.0)})
 	commands.handle_unhandled_input(_mouse_event(MOUSE_BUTTON_RIGHT))
 	_expect(building.selected, "right click must not clear a stationary building selection")
-	_expect(building.rally_points == [Vector3(6.0, 0.0, 9.0)], "right click on a building must set its rally point")
 	_expect(commands.raycast_masks == [0xffffffff, 2, 1], "building rally points must separate entity and terrain raycasts")
+	_expect(
+		building.rally_points.is_empty(),
+		"the rally point must not be set before its scheduled tick is pumped"
+	)
+	pump.pump(commands)
+	_expect(building.rally_points == [Vector3(6.0, 0.0, 9.0)], "right click on a building must set its rally point")
 
 	commands.queue_free()
 	building.queue_free()
@@ -740,8 +783,12 @@ func _test_building_attack_order(
 
 func _test_building_move_undeployment(token: int, local_player) -> int:
 	var deployment := FakeDeploymentController.new()
+	var pump := CommandPumpScript.new()
+	pump.configure_move(null, deployment)
 	var commands := FakeUnitCommandController.new()
-	commands.setup(null, null, null, null, deployment)
+	commands.setup(
+		null, null, null, null, deployment, null, [], pump.bus(), Callable(pump, "next_orderable_tick")
+	)
 	var statuses: Array[String] = []
 	commands.status_changed.connect(func(status: String) -> void: statuses.append(status))
 	root.add_child(commands)
@@ -754,6 +801,7 @@ func _test_building_move_undeployment(token: int, local_player) -> int:
 	con_yard.ai_manufacturing = false
 	con_yard.add_to_group("buildings")
 	root.add_child(con_yard)
+	con_yard.entity_id = pump.register(con_yard, SimEntityRegistryScript.Kind.BUILDING)
 	deployment.undeployable_entities.append(con_yard)
 	var collider := Node.new()
 	con_yard.add_child(collider)
@@ -764,6 +812,11 @@ func _test_building_move_undeployment(token: int, local_player) -> int:
 	commands.raycast_hits.append({"position": Vector3(24.0, 0.0, 30.0)})
 	commands.handle_unhandled_input(_mouse_event(MOUSE_BUTTON_RIGHT))
 
+	_expect(
+		deployment.undeployment_calls.is_empty(),
+		"the undeployment request must not happen before its scheduled tick is pumped"
+	)
+	pump.pump(commands)
 	_expect(deployment.undeployment_calls.size() == 1, "a selected Construction Yard must route its move command through undeployment")
 	if not deployment.undeployment_calls.is_empty():
 		var request: Dictionary = deployment.undeployment_calls[0]
@@ -784,8 +837,17 @@ func _test_context_cursors(token: int, local_player, enemy_player) -> int:
 	var terrain := MapLoader.new()
 	terrain.navigation_grid = FakeNavigationGrid.new()
 	terrain.spice_layer = FakeSpiceLayer.new()
+	# This case is almost entirely cursor probing (_command_cursor_at()),
+	# which _command_move() never touches -- but its last two right-clicks
+	# still route through _command_move(), which now refuses to issue
+	# anything without a wired command bus (see that method's guard).
+	var pump := CommandPumpScript.new()
+	pump.configure_move(navigation, deployment, terrain)
 	var commands := FakeUnitCommandController.new()
-	commands.setup(null, terrain, navigation, null, deployment)
+	commands.setup(
+		null, terrain, navigation, null, deployment, null, [],
+		pump.bus(), Callable(pump, "next_orderable_tick")
+	)
 	root.add_child(commands)
 
 	var scout := _make_unit("Scout", local_player)
@@ -796,6 +858,10 @@ func _test_context_cursors(token: int, local_player, enemy_player) -> int:
 	root.add_child(tank)
 	root.add_child(mcv)
 	root.add_child(enemy)
+	# Only scout's move actually reaches CommandExecutor below (the row-four
+	# rejection case at the very end); every other selection here only ever
+	# drives cursor probes, which never submit a command.
+	scout.entity_id = pump.register(scout, SimEntityRegistryScript.Kind.UNIT)
 	var scout_collider := Node.new()
 	var tank_collider := Node.new()
 	var mcv_collider := Node.new()
@@ -835,6 +901,13 @@ func _test_context_cursors(token: int, local_player, enemy_player) -> int:
 		commands._command_cursor_at(Vector2.ZERO) == UnitCommandControllerScript.NO_CURSOR_OVERRIDE,
 		"a building without AiManufacturing must not expose a rally-point cursor"
 	)
+	# windtrap is never registered with the pump, so _command_move()'s
+	# entity_ids ends up empty and no command is ever submitted -- but not
+	# before it raycasts terrain unconditionally first (see that method's doc
+	# comment on why the raycast no longer waits on a partition result), one
+	# more raycast than the old partition-gated code ever issued here. That
+	# extra "1" is why the mask list below has 27 entries where the pre-Move
+	# conversion test had 26.
 	commands.raycast_hits.append({})
 	commands.handle_unhandled_input(_mouse_event(MOUSE_BUTTON_RIGHT))
 	_expect(
@@ -962,10 +1035,17 @@ func _test_context_cursors(token: int, local_player, enemy_player) -> int:
 	commands.handle_unhandled_input(_mouse_event(MOUSE_BUTTON_RIGHT))
 	_expect(
 		navigation.commands.is_empty(),
+		"the row-four destination's rejection must not need its scheduled tick pumped to be silent"
+	)
+	pump.pump(commands)
+	_expect(
+		navigation.commands.is_empty(),
 		"a row-four destination must reject the movement order itself"
 	)
 	_expect(
-		commands.raycast_masks == [2, 1, 2, 1, 2, 2, 2, 2, 2, 2, 2, 2, 1, 2, 2, 1, 2, 1, 2, 1, 2, 2, 1, 2, 2, 1],
+		commands.raycast_masks == [
+			2, 1, 2, 1, 2, 2, 1, 2, 2, 2, 2, 2, 2, 1, 2, 2, 1, 2, 1, 2, 1, 2, 2, 1, 2, 2, 1
+		],
 		"cursor context must keep entity and terrain raycasts on their dedicated layers"
 	)
 
@@ -983,7 +1063,11 @@ func _test_context_cursors(token: int, local_player, enemy_player) -> int:
 
 
 func _test_rectangle_unit_selection(token: int, local_player, enemy_player) -> int:
+	var pump := CommandPumpScript.new()
 	var commands := FakeUnitCommandController.new()
+	commands.setup(
+		null, null, null, null, null, null, [], pump.bus(), Callable(pump, "next_orderable_tick")
+	)
 	root.add_child(commands)
 	var scout := _make_unit("Scout", local_player)
 	var tank := _make_unit("Tank", local_player)
@@ -991,6 +1075,8 @@ func _test_rectangle_unit_selection(token: int, local_player, enemy_player) -> i
 	root.add_child(scout)
 	root.add_child(tank)
 	root.add_child(enemy)
+	scout.entity_id = pump.register(scout, SimEntityRegistryScript.Kind.UNIT)
+	tank.entity_id = pump.register(tank, SimEntityRegistryScript.Kind.UNIT)
 	commands.screen_positions = {
 		scout: Vector2(20.0, 20.0),
 		tank: Vector2(70.0, 60.0),
@@ -1005,6 +1091,11 @@ func _test_rectangle_unit_selection(token: int, local_player, enemy_player) -> i
 	commands.raycast_hits.append({})
 	commands.raycast_hits.append({"position": Vector3(4.0, 5.0, 6.0)})
 	commands.handle_unhandled_input(_mouse_event(MOUSE_BUTTON_RIGHT))
+	_expect(
+		scout.move_targets.is_empty() and tank.move_targets.is_empty(),
+		"the rectangle's movement must not happen before its scheduled tick is pumped"
+	)
+	pump.pump(commands)
 	_expect(scout.move_targets == [Vector3(4.0, 5.0, 6.0)] and tank.move_targets == [Vector3(4.0, 5.0, 6.0)], "right click commands every selected unit")
 
 	commands.queue_free()
@@ -1016,11 +1107,19 @@ func _test_rectangle_unit_selection(token: int, local_player, enemy_player) -> i
 
 func _test_formation_modifier(token: int, local_player) -> int:
 	var navigation := FakeNavigation.new()
+	var pump := CommandPumpScript.new()
+	# The same FakeNavigation instance goes to both: UnitCommandController's
+	# copy is unused by the move path now (it only ever read the formation
+	# modifier), but CommandExecutor's is what actually calls command_move().
+	pump.configure_move(navigation)
 	var commands := FakeUnitCommandController.new()
-	commands.setup(null, null, navigation)
+	commands.setup(
+		null, null, navigation, null, null, null, [], pump.bus(), Callable(pump, "next_orderable_tick")
+	)
 	root.add_child(commands)
 	var unit := _make_unit("FormationScout", local_player)
 	root.add_child(unit)
+	unit.entity_id = pump.register(unit, SimEntityRegistryScript.Kind.UNIT)
 	var collider := Node.new()
 	unit.add_child(collider)
 
@@ -1030,6 +1129,11 @@ func _test_formation_modifier(token: int, local_player) -> int:
 	commands.raycast_hits.append({})
 	commands.raycast_hits.append({"position": Vector3(12.0, 0.0, 14.0)})
 	commands.handle_unhandled_input(_mouse_event(MOUSE_BUTTON_RIGHT))
+	_expect(
+		navigation.commands.is_empty(),
+		"J plus right click's navigation command must not happen before its scheduled tick is pumped"
+	)
+	pump.pump(commands)
 	_expect(navigation.commands.size() == 1, "J plus right click must issue one navigation command")
 	_expect(navigation.commands[0]["mode"] == NavConstantsScript.MoveMode.FORMATION, "held J must select formation movement")
 
@@ -1037,6 +1141,11 @@ func _test_formation_modifier(token: int, local_player) -> int:
 	commands.raycast_hits.append({})
 	commands.raycast_hits.append({"position": Vector3(16.0, 0.0, 18.0)})
 	commands.handle_unhandled_input(_mouse_event(MOUSE_BUTTON_RIGHT))
+	_expect(
+		navigation.commands.size() == 1,
+		"releasing J's navigation command must not happen before its scheduled tick is pumped"
+	)
+	pump.pump(commands)
 	_expect(navigation.commands[1]["mode"] == NavConstantsScript.MoveMode.FREE, "releasing J must restore free movement")
 
 	commands.queue_free()
@@ -1150,8 +1259,12 @@ func _test_harvester_order(token: int, local_player) -> int:
 	terrain.navigation_grid = FakeNavigationGrid.new()
 	terrain.spice_layer = FakeSpiceLayer.new()
 	terrain.spice_layer.spice_cells[Vector2i(12, 14)] = 200
+	var pump := CommandPumpScript.new()
+	pump.configure_move(navigation, null, terrain)
 	var commands := FakeUnitCommandController.new()
-	commands.setup(null, terrain, navigation)
+	commands.setup(
+		null, terrain, navigation, null, null, null, [], pump.bus(), Callable(pump, "next_orderable_tick")
+	)
 	var statuses: Array[String] = []
 	commands.status_changed.connect(func(status: String) -> void: statuses.append(status))
 	root.add_child(commands)
@@ -1161,6 +1274,7 @@ func _test_harvester_order(token: int, local_player) -> int:
 	harvester.player = local_player
 	harvester.add_to_group("units")
 	root.add_child(harvester)
+	harvester.entity_id = pump.register(harvester, SimEntityRegistryScript.Kind.UNIT)
 	var collider := Node.new()
 	harvester.add_child(collider)
 	commands.raycast_hits.append({"collider": collider})
@@ -1169,6 +1283,11 @@ func _test_harvester_order(token: int, local_player) -> int:
 	commands.raycast_hits.append({})
 	commands.raycast_hits.append({"position": Vector3(12.4, 0.0, 14.8)})
 	commands.handle_unhandled_input(_mouse_event(MOUSE_BUTTON_RIGHT))
+	_expect(
+		harvester.harvest_commands.is_empty(),
+		"the harvesting order must not happen before its scheduled tick is pumped"
+	)
+	pump.pump(commands)
 	_expect(harvester.harvest_commands.size() == 1, "a spice-cell click must issue the dedicated harvesting order")
 	_expect(harvester.harvest_commands[0]["cell"] == Vector2i(12, 14), "the harvesting order must retain the clicked navigation cell")
 	_expect(navigation.commands.is_empty() and harvester.move_targets.is_empty(), "a harvester spice order must not also become a generic move")
@@ -1177,6 +1296,11 @@ func _test_harvester_order(token: int, local_player) -> int:
 	commands.raycast_hits.append({})
 	commands.raycast_hits.append({"position": Vector3(20.0, 0.0, 21.0)})
 	commands.handle_unhandled_input(_mouse_event(MOUSE_BUTTON_RIGHT))
+	_expect(
+		harvester.cancelled_harvest_orders == 0,
+		"the later ordinary move must not cancel the harvesting order before its scheduled tick is pumped"
+	)
+	pump.pump(commands)
 	_expect(harvester.cancelled_harvest_orders == 1, "a later ordinary move must cancel the harvesting order")
 	_expect(navigation.commands.size() == 1 and navigation.commands[0]["units"] == [harvester], "an empty-cell click must retain ordinary movement")
 
@@ -1191,8 +1315,12 @@ func _test_unload_order(token: int, local_player, enemy_player) -> int:
 	var terrain := MapLoader.new()
 	terrain.navigation_grid = FakeNavigationGrid.new()
 	terrain.spice_layer = FakeSpiceLayer.new()
+	var pump := CommandPumpScript.new()
+	pump.configure_move(navigation, null, terrain)
 	var commands := FakeUnitCommandController.new()
-	commands.setup(null, terrain, navigation)
+	commands.setup(
+		null, terrain, navigation, null, null, null, [], pump.bus(), Callable(pump, "next_orderable_tick")
+	)
 	var statuses: Array[String] = []
 	commands.status_changed.connect(func(status: String) -> void: statuses.append(status))
 	root.add_child(commands)
@@ -1202,6 +1330,7 @@ func _test_unload_order(token: int, local_player, enemy_player) -> int:
 	harvester.player = local_player
 	harvester.add_to_group("units")
 	root.add_child(harvester)
+	harvester.entity_id = pump.register(harvester, SimEntityRegistryScript.Kind.UNIT)
 	var harvester_collider := Node.new()
 	harvester.add_child(harvester_collider)
 	commands.raycast_hits.append({"collider": harvester_collider})
@@ -1213,22 +1342,33 @@ func _test_unload_order(token: int, local_player, enemy_player) -> int:
 	owned_refinery.refinery = true
 	owned_refinery.add_to_group("buildings")
 	root.add_child(owned_refinery)
+	owned_refinery.entity_id = pump.register(owned_refinery, SimEntityRegistryScript.Kind.BUILDING)
 	var owned_collider := Node.new()
 	owned_refinery.add_child(owned_collider)
 	commands.raycast_hits.append({"collider": owned_collider})
 	commands.raycast_hits.append({"position": Vector3(8.0, 0.0, 9.0)})
 	commands.handle_unhandled_input(_mouse_event(MOUSE_BUTTON_RIGHT))
+	_expect(commands.raycast_masks.slice(-2) == [2, 1], "an unload click must resolve the layer-two refinery separately from layer-one terrain")
+	_expect(
+		harvester.unload_commands.is_empty(),
+		"the unloading order must not happen before its scheduled tick is pumped"
+	)
+	pump.pump(commands)
 	_expect(harvester.unload_commands.size() == 1, "an owned refinery click must issue the dedicated unloading order")
 	_expect(harvester.unload_commands[0]["refinery"] == owned_refinery, "the unloading order must retain the clicked refinery")
 	_expect(harvester.unload_commands[0]["spice_layer"] == terrain.spice_layer, "manual unloading must retain the spice layer needed to resume the cycle")
 	_expect(navigation.commands.is_empty(), "a valid unloading click must not also become generic movement")
 	_expect(statuses.back().begins_with("Unloading at ATRefinery"), "the command status must identify the refinery")
-	_expect(commands.raycast_masks.slice(-2) == [2, 1], "an unload click must resolve the layer-two refinery separately from layer-one terrain")
 
 	harvester.defer_navigation_orders = true
 	commands.raycast_hits.append({})
 	commands.raycast_hits.append({"position": Vector3(12.0, 0.0, 13.0)})
 	commands.handle_unhandled_input(_mouse_event(MOUSE_BUTTON_RIGHT))
+	_expect(
+		harvester.prepared_move_targets.is_empty(),
+		"the deferred move must not be prepared before its scheduled tick is pumped"
+	)
+	pump.pump(commands)
 	_expect(harvester.prepared_move_targets.back() == Vector3(12.0, 0.0, 13.0), "navigation must prepare the direct move through the unit API")
 	_expect(navigation.commands.is_empty(), "a move deferred until UnloadEnd must not reach navigation immediately")
 	harvester.defer_navigation_orders = false
@@ -1352,8 +1492,12 @@ func _test_repeated_click_undeploy(token: int, local_player) -> int:
 
 func _test_deployed_unit_move_rejected(token: int, local_player) -> int:
 	var navigation := FakeNavigation.new()
+	var pump := CommandPumpScript.new()
+	pump.configure_move(navigation)
 	var commands := FakeUnitCommandController.new()
-	commands.setup(null, null, navigation, null, null)
+	commands.setup(
+		null, null, navigation, null, null, null, [], pump.bus(), Callable(pump, "next_orderable_tick")
+	)
 	var statuses: Array[String] = []
 	commands.status_changed.connect(func(status: String) -> void: statuses.append(status))
 	root.add_child(commands)
@@ -1364,11 +1508,17 @@ func _test_deployed_unit_move_rejected(token: int, local_player) -> int:
 	unit.add_to_group("units")
 	unit.deployed = true
 	root.add_child(unit)
+	unit.entity_id = pump.register(unit, SimEntityRegistryScript.Kind.UNIT)
 	commands._set_selection([unit])
 
 	commands.raycast_hits.append({})
 	commands.raycast_hits.append({"position": Vector3(12.0, 0.0, 8.0)})
 	commands.handle_unhandled_input(_mouse_event(MOUSE_BUTTON_RIGHT))
+	_expect(
+		statuses.is_empty(),
+		"the rejection status must not appear before its scheduled tick is pumped"
+	)
+	pump.pump(commands)
 
 	_expect(navigation.commands.is_empty(), "a deployed unit must issue no navigation command")
 	_expect(unit.move_targets.is_empty(), "a deployed unit must not receive a direct move order")

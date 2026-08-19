@@ -10,9 +10,12 @@ extends RefCounted
 ## test -- so the same classification had to be kept in step by hand across
 ## three loops.
 ##
-## Deliberately a plain bucket with no logic of its own: deciding which bucket
-## an entity lands in needs the deployment controller and the player roster,
-## both of which belong to UnitCommandController, which fills this in.
+## Deliberately a plain bucket with no logic of its own: deciding which
+## bucket an entity lands in needs a deployment controller collaborator that
+## does not belong to this struct, now that both UnitCommandController and
+## CommandExecutor fill instances of it in -- see
+## scripts/match/selection_classifier.gd, which holds that logic and is
+## shared by both.
 
 ## Entities that carry their own move_to().
 var movable: Array[Node] = []
@@ -20,10 +23,6 @@ var movable: Array[Node] = []
 var rally: Array[Node] = []
 ## Selected and controllable, but immobile for the whole deploy span.
 var immobilized := 0
-## True when the selection holds something the local player does not own. The
-## move command refuses the whole order rather than commanding the rest of the
-## selection; the silent probes just find nothing in their buckets.
-var foreign := false
 ## True when the selection holds anything that answers a move order at all --
 ## including a deployed unit that is currently refusing to. Lets the cursor
 ## tell "this selection has nothing to do with movement" (no override) apart

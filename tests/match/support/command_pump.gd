@@ -21,8 +21,12 @@ extends RefCounted
 ##
 ## Written for reuse across every command type this phase and the next add --
 ## move, attack, deploy and the panel intents all submit through the same bus
-## and drain through the same executor -- but it exposes only what Stop needs
-## today; a command type that does not exist yet gets no surface here.
+## and drain through the same executor -- but it exposes only what Stop and
+## Move need today; a command type that does not exist yet gets no surface
+## here. configure_move() is the one addition Move needed that Stop did not:
+## a way to hand this pump's CommandExecutor the navigation system and
+## deployment controller Stop's executor never had to resolve anything
+## against.
 
 const EntityNodeIndexScript := preload("res://scripts/match/entity_node_index.gd")
 const SimCommandBusScript := preload("res://scripts/sim/command_bus.gd")
@@ -46,6 +50,20 @@ func register(node: Node, kind: int) -> int:
 ## Handed to UnitCommandController.setup() as its command_bus argument.
 func bus() -> SimCommandBus:
 	return _bus
+
+
+## Rebuilds this pump's CommandExecutor with Move's collaborators -- the
+## navigation system, the deployment controller and the terrain (for its
+## navigation grid and spice layer) -- none of which Stop ever needed, so
+## the field default of pump()'s own CommandExecutor(entities) leaves them
+## all null exactly like a Match built with no navigation/deployment/terrain
+## would. A move-issuing case passes the same fixture instances here that it
+## also hands to UnitCommandController.setup(), matching how Match wires one
+## shared navigation system and deployment controller into both
+## _command_executor and _unit_command_controller (see
+## Match._setup_unit_command_controller()'s call site).
+func configure_move(navigation = null, deployment_controller = null, terrain: MapLoader = null) -> void:
+	_executor = CommandExecutorScript.new(_entities, navigation, deployment_controller, terrain)
 
 
 ## Handed to UnitCommandController.setup() as its submit_tick_provider

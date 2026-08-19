@@ -16,6 +16,8 @@ const SelectionTargetAbilityControllerScript := preload(
 	"res://scripts/match/selection_target_ability_controller.gd"
 )
 const SimStopCommandScript := preload("res://scripts/sim/commands/stop_command.gd")
+const SimMoveCommandScript := preload("res://scripts/sim/commands/move_command.gd")
+const SelectionClassifierScript := preload("res://scripts/match/selection_classifier.gd")
 
 var _camera: Camera3D
 var _terrain: MapLoader
@@ -347,6 +349,94 @@ func on_command_executed(command: SimCommand, result: Dictionary) -> void:
 	match command.type_id():
 		SimStopCommandScript.TYPE_ID:
 			_emit_stop_status(int(result.get("stopped", 0)))
+		SimMoveCommandScript.TYPE_ID:
+			_emit_move_status(command as SimMoveCommand, result)
+
+
+## The feedback half of the Move split (see _command_move()): assembles
+## exactly the status text and voice line _command_move() used to build
+## inline, now from the result CommandExecutor._execute_move() computed
+## against the tick this command was scheduled for, plus the two fields
+## (target, move_mode) that are plain data on the command itself and need no
+## resolution against the world at all.
+##
+## "had_movable" absent (false) is CommandExecutor's signal for the branch
+## _command_move() used to take when partition.movable was empty outright --
+## a rally-point-or-nothing order, never a moving/harvesting/unloading one --
+## see _execute_move()'s doc comment for why that flag exists instead of
+## being inferred from the three entity arrays.
+func _emit_move_status(command: SimMoveCommand, result: Dictionary) -> void:
+	if bool(result.get("rejected", false)):
+		var target := command.target
+		status_changed.emit("Cannot move to %.1f, %.1f" % [target.x, target.z])
+		return
+
+	var deploying_entities := int(result.get("deploying", 0))
+	var rally_buildings: Array = result.get("rally_buildings", [])
+	var undeployment_messages: Array = result.get("undeployment_messages", [])
+
+	if not bool(result.get("had_movable", false)):
+		if rally_buildings.is_empty() and undeployment_messages.is_empty():
+			if deploying_entities > 0:
+				status_changed.emit(
+					"Unit cannot move while deployed" if deploying_entities == 1
+					else "%d units cannot move while deployed" % deploying_entities
+				)
+			return
+		var labels: Array[String] = []
+		if not rally_buildings.is_empty():
+			var rally_target := command.target
+			var rally_label := "Rally point set to %.1f, %.1f" % [rally_target.x, rally_target.z]
+			if rally_buildings.size() > 1:
+				rally_label = "Rally point set for %d buildings" % rally_buildings.size()
+			labels.append(rally_label)
+		for message in undeployment_messages:
+			labels.append(String(message))
+		if not labels.is_empty():
+			status_changed.emit(" | ".join(labels))
+		return
+
+	var moving_entities: Array[Node] = result.get("moving_entities", [])
+	var harvesting_entities: Array[Node] = result.get("harvesting_entities", [])
+	var unloading_entities: Array[Node] = result.get("unloading_entities", [])
+	var target_entity: Node = result.get("target_entity", null)
+
+	var feedback_entities: Array[Node] = []
+	feedback_entities.append_array(moving_entities)
+	feedback_entities.append_array(harvesting_entities)
+	feedback_entities.append_array(unloading_entities)
+	_play_voice_feedback(&"Move", feedback_entities)
+
+	var target := command.target
+	# Mirrors _command_move()'s old nav-debug computation exactly, reading
+	# _terrain -- a Node this controller already holds for cursor purposes,
+	# not anything CommandExecutor resolved -- against the command's plain
+	# Vector3 target. It stays here, view-side, rather than in the result:
+	# it is debug/cosmetic text about static terrain data, not a verdict
+	# about the command's effect.
+	var target_cell := Vector2i(-1, -1)
+	if _terrain != null and _terrain.navigation_grid != null and _terrain.navigation_grid.is_loaded():
+		target_cell = _terrain.navigation_grid.world_to_grid(target)
+	var nav_status := ""
+	if target_cell.x >= 0:
+		var debug: Dictionary = _terrain.navigation_grid.cell_debug(target_cell)
+		nav_status = " | nav %s tile %s terrain %s" % [
+			str(target_cell),
+			str(debug.get("source_tile", "?")),
+			str(debug.get("terrain_name", "?")),
+		]
+	var movement_label := _movement_label(
+		target, target_entity, unloading_entities, harvesting_entities, moving_entities
+	)
+	var formation_status := " | formation" \
+		if not moving_entities.is_empty() and command.move_mode == NavConstantsScript.MoveMode.FORMATION else ""
+	var deployment_status := " | %d unit(s) cannot move while deployed" % deploying_entities \
+		if deploying_entities > 0 else ""
+	var undeployment_status := " | %s" % " | ".join(undeployment_messages) \
+		if not undeployment_messages.is_empty() else ""
+	status_changed.emit("%s%s%s%s%s" % [
+		movement_label, nav_status, formation_status, deployment_status, undeployment_status
+	])
 
 
 ## The first `D` binding in the project. Applies to every selected
@@ -488,121 +578,74 @@ func _command_target_name(target_or_position: Variant) -> String:
 	return String((target_object as Node).name) if target_object is Node else "target"
 
 
+## The issue side of Move: immediate, and split from execution on purpose --
+## see _stop_selected_entities()'s doc comment for the same split done once
+## already, and docs/architecture/network-multiplayer.md, "Layering". Unlike
+## Stop, one click here can fan out into a plain move, a harvest order, an
+## unload order, a rally point, or an undeployment request, often several at
+## once for one selection -- but every one of those is a verdict about the
+## world (can this entity reach that target, is it still deployed, is there
+## spice under the cursor), and the command executes on a later tick than the
+## click, so the verdict has to be read from the world as it stands on that
+## tick, identically on every client. That is why _partition_selection(),
+## _can_issue_movement_order() and the harvest/unload classification loop
+## that used to live here moved to CommandExecutor._execute_move() instead of
+## staying inline: at input delay 0 (phase 2's single-player default) reading
+## the world now versus reading it next tick coincide, but the moment phase 5
+## raises the delay, a verdict computed here would be a per-client decision,
+## which is a desync.
+##
+## What stays here is what genuinely cannot move: the selection, the raycast
+## that turns screen_position into a world fact, and reading the formation
+## modifier -- see the module doc comment at the top of this file for the
+## full split. The status text, the voice line and the nav debug string all
+## move to on_command_executed() too, for the same reason Stop's did: they
+## describe what the command turned out to do, which is only known once
+## CommandExecutor has actually done it.
 func _command_move(screen_position: Vector2, target_entity = null) -> void:
 	if _selected_entities.is_empty():
 		return
-
-	var partition := _partition_selection()
-	if partition.foreign:
-		status_changed.emit("Cannot command this player")
+	if _command_bus == null or not _submit_tick_provider.is_valid():
+		push_error(
+			"UnitCommandController._command_move(): no command bus wired in -- " +
+			"call setup() with a SimCommandBus and a submit-tick provider before issuing " +
+			"orders (see Match._setup_unit_command_controller() or, in tests, " +
+			"tests/match/support/command_pump.gd)."
+		)
 		return
-	var movable_entities := partition.movable
-	var rally_buildings := partition.rally
-	var deploying_entities := partition.immobilized
-	if partition.is_empty():
-		if deploying_entities > 0:
-			status_changed.emit(
-				"Unit cannot move while deployed" if deploying_entities == 1
-				else "%d units cannot move while deployed" % deploying_entities
-			)
-		return
-
 	var hit := _raycast(screen_position, TERRAIN_COLLISION_MASK)
 	if hit.is_empty():
 		return
+	var entity_ids := PackedInt32Array()
+	for entity in _controllable_entities():
+		# entity_id == 0 -- including "this entity type has no such
+		# property at all" -- means "never registered with a Match" (see
+		# scripts/sim/entity_registry.gd): skip it rather than submit a
+		# command CommandExecutor could never resolve back to this entity.
+		if not &"entity_id" in entity:
+			continue
+		var id := int(entity.get(&"entity_id"))
+		if id != 0:
+			entity_ids.append(id)
+	if entity_ids.is_empty():
+		return
 
 	var target: Vector3 = hit["position"]
-	if not _can_interact_with(target_entity) and not _can_issue_movement_order(target):
-		status_changed.emit("Cannot move to %.1f, %.1f" % [target.x, target.z])
-		return
 	var move_mode := (
 		NavConstantsScript.MoveMode.FORMATION
 		if _formation_modifier_down
 		else NavConstantsScript.MoveMode.FREE
 	)
-	var ordinary_rally_buildings: Array[Node] = []
-	var undeployment_messages: Array[String] = []
-	for building in rally_buildings:
-		var undeployment := _request_undeployment(building, target, move_mode)
-		if undeployment.is_empty():
-			ordinary_rally_buildings.append(building)
-			continue
-		undeployment_messages.append(String(undeployment.get("message", "")))
-	rally_buildings = ordinary_rally_buildings
-	if movable_entities.is_empty():
-		for building in rally_buildings:
-			building.call("set_rally_point", target)
-		var labels: Array[String] = []
-		if not rally_buildings.is_empty():
-			var rally_label := "Rally point set to %.1f, %.1f" % [target.x, target.z]
-			if rally_buildings.size() > 1:
-				rally_label = "Rally point set for %d buildings" % rally_buildings.size()
-			labels.append(rally_label)
-		labels.append_array(undeployment_messages)
-		if not labels.is_empty():
-			status_changed.emit(" | ".join(labels))
-		return
-
-	var target_cell := Vector2i(-1, -1)
-	var spice_target := false
-	if _terrain != null and _terrain.navigation_grid != null and _terrain.navigation_grid.is_loaded():
-		target_cell = _terrain.navigation_grid.world_to_grid(target)
-		spice_target = _terrain.spice_layer != null and bool(_terrain.spice_layer.call("has_spice", target_cell))
-
-	var harvesting_entities: Array[Node] = []
-	var unloading_entities: Array[Node] = []
-	var moving_entities: Array[Node] = []
-	for entity in movable_entities:
-		var can_unload := target_entity != null \
-			and entity.has_method("can_unload_at") \
-			and bool(entity.call("can_unload_at", target_entity)) \
-			and entity.has_method("command_unload")
-		if can_unload and _terrain != null and _terrain.navigation_grid != null \
-		and bool(entity.call(
-			"command_unload", target_entity, _terrain.navigation_grid, _terrain.spice_layer
-		)):
-			unloading_entities.append(entity)
-			continue
-		var can_harvest := entity.has_method("can_harvest_spice") \
-			and bool(entity.call("can_harvest_spice")) \
-			and entity.has_method("command_harvest")
-		if spice_target and can_harvest \
-		and bool(entity.call("command_harvest", _terrain.spice_layer, _terrain.navigation_grid, target_cell)):
-			harvesting_entities.append(entity)
-			continue
-		moving_entities.append(entity)
-
-	if not moving_entities.is_empty():
-		if _navigation != null:
-			_navigation.command_move(moving_entities, target, move_mode)
-		else:
-			for entity in moving_entities:
-				entity.move_to(target)
-	var feedback_entities: Array[Node] = []
-	feedback_entities.append_array(moving_entities)
-	feedback_entities.append_array(harvesting_entities)
-	feedback_entities.append_array(unloading_entities)
-	_play_voice_feedback(&"Move", feedback_entities)
-	var nav_status := ""
-	if target_cell.x >= 0:
-		var debug: Dictionary = _terrain.navigation_grid.cell_debug(target_cell)
-		nav_status = " | nav %s tile %s terrain %s" % [
-			str(target_cell),
-			str(debug.get("source_tile", "?")),
-			str(debug.get("terrain_name", "?")),
-		]
-	var movement_label := _movement_label(
-		target, target_entity, unloading_entities, harvesting_entities, moving_entities
-	)
-	var formation_status := " | formation" \
-		if not moving_entities.is_empty() and move_mode == NavConstantsScript.MoveMode.FORMATION else ""
-	var deployment_status := " | %d unit(s) cannot move while deployed" % deploying_entities \
-		if deploying_entities > 0 else ""
-	var undeployment_status := " | %s" % " | ".join(undeployment_messages) \
-		if not undeployment_messages.is_empty() else ""
-	status_changed.emit("%s%s%s%s%s" % [
-		movement_label, nav_status, formation_status, deployment_status, undeployment_status
-	])
+	var command := SimMoveCommandScript.new()
+	var players = _players()
+	if players != null:
+		command.player_id = players.local_player_id
+	command.entity_ids = entity_ids
+	command.target = target
+	if target_entity != null and &"entity_id" in target_entity:
+		command.target_entity_id = int(target_entity.get(&"entity_id"))
+	command.move_mode = move_mode
+	_command_bus.submit(command, _submit_tick_provider.call())
 
 
 ## What the order turned out to be. One click can split the selection three
@@ -635,21 +678,30 @@ func _movement_label(
 	return "Moving to %.1f, %.1f" % [target.x, target.z]
 
 
-## One classification pass over the selection, shared by the move command and
-## by the two guards that answer whether a move order is possible at all.
+## One classification pass over the selection, shared by the two cursor
+## guards that answer whether a move order is possible at all
+## (_can_issue_movement_order(), _has_movement_or_rally_selection()). The
+## move command itself no longer calls this: it submits every controllable
+## entity's id and lets CommandExecutor classify against the world as it
+## stands on the execution tick instead -- see _command_move()'s doc
+## comment. Every per-entity verdict below comes from _classifier(), the one
+## place shared with CommandExecutor's own copy of this loop
+## (scripts/match/selection_classifier.gd); only the loop itself -- and the
+## foreign/movement_capable bookkeeping CommandExecutor has no use for --
+## stays local to this cursor-facing caller.
 func _partition_selection() -> SelectionPartition:
 	var partition := SelectionPartitionScript.new()
+	var classifier := _classifier()
 	for entity in _selected_entities:
 		if not is_instance_valid(entity):
 			continue
 		if not _can_control(entity):
-			partition.foreign = true
 			continue
-		var can_move: bool = entity.has_method("move_to")
-		var can_rally: bool = not can_move \
-			and (_can_set_rally_point(entity) or _can_undeploy(entity))
+		var can_move := classifier.can_move_directly(entity)
+		var can_rally := not can_move \
+			and (classifier.can_set_rally_point(entity) or classifier.can_undeploy(entity))
 		partition.movement_capable = partition.movement_capable or can_move or can_rally
-		if _is_immobilized_by_deployment(entity):
+		if classifier.is_immobilized_by_deployment(entity):
 			partition.immobilized += 1
 			continue
 		if can_move:
@@ -657,6 +709,14 @@ func _partition_selection() -> SelectionPartition:
 		elif can_rally:
 			partition.rally.append(entity)
 	return partition
+
+
+## Fresh every call rather than cached, because _navigation and
+## _deployment_controller can each be assigned directly by a test fixture
+## outside setup() (see tests/match/unit_command_run.gd) -- a cached
+## classifier built once in setup() would silently go stale against that.
+func _classifier() -> SelectionClassifier:
+	return SelectionClassifierScript.new(_deployment_controller, _navigation)
 
 
 ## The selection reduced to what this player may actually command. Seven guards
@@ -667,16 +727,6 @@ func _controllable_entities() -> Array[Node]:
 		if is_instance_valid(entity) and _can_control(entity):
 			result.append(entity)
 	return result
-
-
-func _request_undeployment(entity: Node, target: Vector3, move_mode: int) -> Dictionary:
-	if _deployment_controller == null or not entity.is_in_group("buildings") \
-	or not _deployment_controller.has_method("try_undeploy"):
-		return {}
-	var result: Dictionary = _deployment_controller.call(
-		"try_undeploy", entity, target, move_mode
-	)
-	return result if bool(result.get("handled", false)) else {}
 
 
 func _is_formation_modifier(event: InputEventKey) -> bool:
@@ -932,13 +982,7 @@ func _is_enemy_target(target) -> bool:
 
 
 func _can_interact_with(target) -> bool:
-	if target == null or not target.is_in_group("buildings"):
-		return false
-	for entity in _controllable_entities():
-		if entity.has_method("can_unload_at") and entity.has_method("command_unload") \
-		and bool(entity.call("can_unload_at", target)):
-			return true
-	return false
+	return _classifier().can_interact_with(_controllable_entities(), target)
 
 
 func _deployment_cursor_for(entity) -> int:
@@ -1003,30 +1047,15 @@ func _can_gather_at(target: Vector3) -> bool:
 	return false
 
 
-## Both transition states and the fully-deployed state reject movement: a
-## combat-deployed unit (Kindjal/Mortar/Kobra) is immobile for its whole
-## DEPLOYING -> DEPLOYED -> UNDEPLOYING span, not just while transitioning.
-func _is_immobilized_by_deployment(entity: Node) -> bool:
-	return (
-		(entity.has_method("is_deploying") and bool(entity.call("is_deploying")))
-		or (entity.has_method("is_deployed") and bool(entity.call("is_deployed")))
-	)
-
-
 func _can_issue_movement_order(target: Vector3) -> bool:
 	var partition := _partition_selection()
-	if not partition.rally.is_empty():
-		return true
-	if partition.movable.is_empty():
-		return false
-	if _navigation != null and _navigation.has_method("can_move_to"):
-		return bool(_navigation.call("can_move_to", partition.movable, target))
-	return true
+	return _classifier().can_reach(partition.movable, partition.rally, target)
 
 
 func _has_rally_point_selection() -> bool:
+	var classifier := _classifier()
 	for entity in _controllable_entities():
-		if _can_set_rally_point(entity):
+		if classifier.can_set_rally_point(entity):
 			return true
 	return false
 
@@ -1036,19 +1065,6 @@ func _has_rally_point_selection() -> bool:
 ## its override and looking like an unrelated selection.
 func _has_movement_or_rally_selection() -> bool:
 	return _partition_selection().movement_capable
-
-
-func _can_undeploy(entity: Node) -> bool:
-	return _deployment_controller != null and entity.is_in_group("buildings") \
-		and _deployment_controller.has_method("can_undeploy") \
-		and bool(_deployment_controller.call("can_undeploy", entity))
-
-
-func _can_set_rally_point(entity: Node) -> bool:
-	if not entity.has_method("set_rally_point"):
-		return false
-	return not entity.has_method("can_set_rally_point") \
-		or bool(entity.call("can_set_rally_point"))
 
 
 func _find_selectable_entity(node: Node):

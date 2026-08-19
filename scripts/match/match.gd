@@ -46,7 +46,12 @@ var _tick_driver: FrameTickDriver
 ## reason: this is the phase 2 spine everything else in the command path is
 ## built on. _command_executor is constructed with _entity_index because
 ## resolving a command's entity ids to Nodes is the one thing the sim-zone
-## bus itself may never do -- see scripts/match/command_executor.gd.
+## bus itself may never do -- see scripts/match/command_executor.gd. It is
+## also constructed with _unit_navigation_system, _unit_deployment_controller
+## and terrain, Move's collaborators that Stop never needed -- which is why
+## its construction is deferred past _setup_unit_navigation_system() and
+## _setup_unit_deployment_controller() in _ready() rather than sitting next
+## to _command_bus's.
 var _command_bus: SimCommandBus
 var _command_executor: CommandExecutor
 var _building_controller: BuildingController
@@ -105,7 +110,6 @@ func _ready() -> void:
 	_clock = MatchClockScript.new()
 	_tick_driver = FrameTickDriverScript.new()
 	_command_bus = SimCommandBusScript.new()
-	_command_executor = CommandExecutorScript.new(_entity_index)
 	_match_snapshot = MatchSnapshotScript.new(_snapshot_storage_path())
 	_restore_saved_startup_state()
 	_building_option_ids = _local_player_building_option_ids()
@@ -116,6 +120,13 @@ func _ready() -> void:
 	_setup_unit_navigation_system()
 	_setup_navigation_grid_debug()
 	_setup_unit_deployment_controller()
+	# Deferred until here, rather than sitting next to _command_bus above,
+	# because Move needs _unit_navigation_system and _unit_deployment_controller
+	# (see _command_bus's field comment) and neither exists yet at the top of
+	# this function.
+	_command_executor = CommandExecutorScript.new(
+		_entity_index, _unit_navigation_system, _unit_deployment_controller, terrain
+	)
 	_setup_unit_command_controller()
 	_setup_building_controller()
 	_setup_building_upgrade_controller()
