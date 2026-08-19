@@ -168,6 +168,27 @@ a hard ban on the non-portable subset, and our own replacements where the
 gameplay needs them — trigonometry over integer angle units backed by a
 generated table.
 
+**Measured, 2026-08-19, and it corrects the sentence above.** A bare GDScript
+`float` is indeed a double, but `Vector2`/`Vector3` components are **not**: this
+project runs a standard single-precision Godot build, so every component is a
+`float32`. Verified directly — `16777217.0` survives in a plain `float` and
+comes back as `16777216.0` from `Vector3.x`, and `0.1234567890123456789` loses
+precision at the eighth digit. Every position the game holds in a `Vector3`,
+including the click target inside `SimMoveCommand`, is therefore already
+narrowed to `float32` before anything else touches it.
+
+This does **not** break the guarantee, and the distinction matters: IEEE-754
+pins `+ - * /` and `sqrt` in binary32 exactly as it does in binary64, and every
+allowed `Vector*` operation below reduces to those. What it breaks is the
+*reasoning* — the determinism above rests on IEEE-754, not on the width, and
+the width is not what this section said it was.
+
+Where it becomes a real decision is phase 3. Decision 3 puts hot state in flat
+`Packed*Array`s, and `PackedVector3Array` is `float32` while `PackedFloat64Array`
+is not. That is a choice about precision on large map coordinates with real
+consequences, and it must be made deliberately rather than inherited from
+whichever packed type looks like it matches.
+
 Allowed in sim code: `+ - * /`, `sqrt`, `abs`, `min/max`, `floor/ceil/round`,
 `Vector2/3` addition, subtraction, scalar multiply, `dot`, `cross`, `length`,
 `length_squared`, `normalized`, `distance_to`, `lerp`.
@@ -435,3 +456,8 @@ already play before it is trusted by the mode we cannot yet test.
   `own-tick-rate` in the checker keeps it that way.
 - Snapshot size for reconnect, which cannot be estimated before the hot-state
   layout exists (decision 3).
+- Whether phase 3's hot state stores positions as `float32` (`PackedVector3Array`,
+  matching what `Vector3` already carries and what the view needs anyway) or as
+  `float64` (`PackedFloat64Array`, three arrays or a strided one). See decision 5:
+  either is deterministic; they differ in precision at map scale and in how much
+  converting costs at the view boundary, every tick, for every entity.
