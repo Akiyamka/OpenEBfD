@@ -6,6 +6,8 @@ const TerrainProbeScript := preload("res://scripts/world/terrain_probe.gd")
 const AuthoredModelScript := preload("res://scripts/world/authored_model.gd")
 const RuleTicksScript := preload("res://scripts/rules/rule_ticks.gd")
 const SimBuildOrderCommandScript := preload("res://scripts/sim/commands/build_order_command.gd")
+const SimSellBuildingCommandScript := preload("res://scripts/sim/commands/sell_building_command.gd")
+const SimRepairBuildingCommandScript := preload("res://scripts/sim/commands/repair_building_command.gd")
 
 signal status_changed(status: String)
 signal building_option_state_changed(option_state: BuildingOptionState)
@@ -574,12 +576,56 @@ func _deactivate_wall_line_mode(was_active: bool) -> void:
 	_refresh_building_option_states()
 
 
+## The command-bus seam for repair mode's right-click (see
+## docs/architecture/network-multiplayer.md, "Layering" -- "commands" vs
+## "simulation"). Only the raycast and the "you clicked nothing" verdict stay
+## here: a click that resolves to no building is not a game action and must
+## not put anything on the wire, the same reason a move click onto no
+## terrain submits nothing. Everything else -- ownership, the damage check,
+## and which direction the toggle goes -- moves to
+## execute_repair_building_command(), which SimRepairBuildingCommand's own
+## doc comment explains must read the toggle direction at execution time, not
+## here at click time.
 func _try_toggle_building_repair(screen_position: Vector2) -> void:
 	var hit := _raycast(screen_position, 2)
 	var building := _find_building(hit.get("collider") as Node)
 	if building == null:
 		status_changed.emit("Select one of your damaged buildings to repair")
 		return
+	_submit_repair_building_command(building)
+
+
+## Mirrors _submit_build_order_command()'s shape exactly, including its
+## push_error when no command bus is wired in -- see that method's doc
+## comment and the _command_bus field comment for why a missing bus is a
+## wiring mistake, not a supported mode.
+func _submit_repair_building_command(building: Node3D) -> void:
+	if _command_bus == null or not _submit_tick_provider.is_valid():
+		push_error(
+			"BuildingController._submit_repair_building_command(): no command bus wired in -- " +
+			"call setup() with a SimCommandBus and a submit-tick provider before issuing " +
+			"orders (see Match._setup_building_controller() or, in tests, " +
+			"tests/match/support/command_pump.gd)."
+		)
+		return
+	var command := SimRepairBuildingCommandScript.new()
+	var players = _players()
+	if players != null:
+		command.player_id = players.local_player_id
+	command.entity_id = int(building.get(&"entity_id")) if &"entity_id" in building else 0
+	_command_bus.submit(command, _submit_tick_provider.call())
+
+
+## The execution side of a repair click: CommandExecutor.execute()
+## (scripts/match/command_executor.gd) calls this with `building` already
+## resolved from the SimRepairBuildingCommand it just drained, on the tick
+## the bus scheduled it for. This is the entire remaining body of what used
+## to be _try_toggle_building_repair() before the command bus existed --
+## ownership, the damage check, and the toggle -- unchanged except that
+## is_repairing is now necessarily read here, at execution time, rather than
+## at the click: two clicks landing on the same tick then toggle twice, which
+## is what the player actually did.
+func execute_repair_building_command(building: Node3D) -> void:
 	if not _is_local_player_building(building):
 		status_changed.emit("You can only repair your own buildings")
 		return
@@ -659,14 +705,50 @@ func _remove_wall_marker(anchor_cell: Vector2i) -> void:
 func _clear_wall_markers() -> void:
 	_wall_session.clear_markers()
 
+## The command-bus seam for sell mode's left-click (see
+## docs/architecture/network-multiplayer.md, "Layering" -- "commands" vs
+## "simulation"). Only the raycast and the "you clicked nothing" verdict stay
+## here -- see _try_toggle_building_repair()'s doc comment for why, which
+## applies identically. Everything else -- the sale-service busy check,
+## ownership, and starting the sale -- moves to
+## execute_sell_building_command().
 func _try_sell_building(screen_position: Vector2) -> void:
-	if _sale_service.is_active():
-		return
-
 	var hit := _raycast(screen_position, 2)
 	var building := _find_building(hit.get("collider") as Node)
 	if building == null:
 		status_changed.emit("Select one of your buildings to sell")
+		return
+	_submit_sell_building_command(building)
+
+
+## Mirrors _submit_build_order_command()'s shape exactly, including its
+## push_error when no command bus is wired in -- see that method's doc
+## comment and the _command_bus field comment for why a missing bus is a
+## wiring mistake, not a supported mode.
+func _submit_sell_building_command(building: Node3D) -> void:
+	if _command_bus == null or not _submit_tick_provider.is_valid():
+		push_error(
+			"BuildingController._submit_sell_building_command(): no command bus wired in -- " +
+			"call setup() with a SimCommandBus and a submit-tick provider before issuing " +
+			"orders (see Match._setup_building_controller() or, in tests, " +
+			"tests/match/support/command_pump.gd)."
+		)
+		return
+	var command := SimSellBuildingCommandScript.new()
+	var players = _players()
+	if players != null:
+		command.player_id = players.local_player_id
+	command.entity_id = int(building.get(&"entity_id")) if &"entity_id" in building else 0
+	_command_bus.submit(command, _submit_tick_provider.call())
+
+
+## The execution side of a sell click: CommandExecutor.execute()
+## (scripts/match/command_executor.gd) calls this with `building` already
+## resolved from the SimSellBuildingCommand it just drained, on the tick the
+## bus scheduled it for. This is the entire remaining body of what used to be
+## _try_sell_building() before the command bus existed, unchanged.
+func execute_sell_building_command(building: Node3D) -> void:
+	if _sale_service.is_active():
 		return
 
 	if not _is_local_player_building(building):

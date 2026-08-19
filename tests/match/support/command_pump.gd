@@ -28,15 +28,16 @@ extends RefCounted
 ## navigation system, the deployment controller and (for target abilities)
 ## the ability handler list, none of which Stop's executor ever had to
 ## resolve anything against. The panel intents' three commands (build/unit/
-## upgrade order) are the other kind of addition: they never reach
-## CommandExecutor at all, since they name a production queue rather than an
-## entity id, so pump() dispatches them straight to whichever controller a
-## case wires in -- see pump()'s own doc comment.
+## upgrade order) are the other kind of addition -- see
+## configure_queue_controllers()'s own comment below for how those reach
+## CommandExecutor.execute() the same way every other command type does, just
+## without an entity id to resolve first.
 
 const EntityNodeIndexScript := preload("res://scripts/match/entity_node_index.gd")
 const SimCommandBusScript := preload("res://scripts/sim/command_bus.gd")
 const CommandExecutorScript := preload("res://scripts/match/command_executor.gd")
 const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
+const MatchLookupScript := preload("res://scripts/match/match_lookup.gd")
 
 var _entities := EntityNodeIndexScript.new()
 var _bus := SimCommandBusScript.new()
@@ -57,6 +58,71 @@ var _clock := MatchClockScript.new()
 ## .BUILDING (scripts/sim/entity_registry.gd).
 func register(node: Node, kind: int) -> int:
 	return _entities.register(node, kind)
+
+
+## MatchLookup.GROUP stand-in (see scripts/match/match_lookup.gd): a bare
+## Node whose entity_index() answers with this pump's own _entities, the
+## same call shape MatchLookup.entity_index() expects from a real Match
+## (`match_node.call("entity_index")`).
+class _MatchLookupStub extends Node:
+	var _index: EntityNodeIndex
+
+	func _init(index: EntityNodeIndex) -> void:
+		_index = index
+
+	func entity_index() -> EntityNodeIndex:
+		return _index
+
+
+var _match_lookup_stub: Node = null
+
+
+## Building._register_entity_id() (scripts/buildings/building.gd) -- and
+## Unit's equivalent -- finds its Match through
+## MatchLookup.entity_index(self), which walks up to the first node in
+## MatchLookup.GROUP that answers entity_index(). Suites with a stub entity
+## (tests/match/unit_command_run.gd and friends) sidestep that entirely by
+## calling register() above directly on their own stub, but a suite driving
+## a real Building has no such shortcut: Building.entity_id is a read-only
+## getter over a private field only _register_entity_id() ever writes, so
+## the only way to give a real Building a real, resolvable id is to make
+## MatchLookup.entity_index() find something -- this installs that something,
+## so a Building added to the tree afterward self-registers into this pump's
+## own _entities through the exact production code path (add_to_group() then
+## _ready() then _register_entity_id()), the same as it would under a real
+## Match.
+##
+## Must run before the Building enters the tree: _register_entity_id() reads
+## MatchLookup.entity_index() from _ready(), which Godot calls synchronously
+## as part of add_child() the first time a node enters a tree, so installing
+## the stub after add_child() is already too late.
+##
+## Call uninstall_match_lookup_stub() when the case is done with it, or the
+## stub leaks into the next case's own MatchLookup.entity_index() lookup --
+## see tests/match/command_bus_wiring_run.gd's comment on the identical
+## hazard for a real Match's group membership.
+func install_match_lookup_stub(tree_root: Node) -> void:
+	if _match_lookup_stub != null:
+		return
+	_match_lookup_stub = _MatchLookupStub.new(_entities)
+	tree_root.add_child(_match_lookup_stub)
+	_match_lookup_stub.add_to_group(MatchLookupScript.GROUP)
+
+
+## Removes the stub installed by install_match_lookup_stub(). Uses free(),
+## not queue_free(): this file's suites run their cases synchronously, with
+## no `await process_frame` between them (unlike
+## tests/match/command_bus_wiring_run.gd's, which awaits precisely because
+## queue_free() defers a real Match's removal from MatchLookupScript.GROUP to
+## the frame's teardown), so a deferred free here would leak this stub's
+## group membership into the very next case in the same synchronous run. The
+## stub is a bare, childless Node, so an immediate free() is safe where it
+## would not be for a live Match mid-teardown.
+func uninstall_match_lookup_stub() -> void:
+	if _match_lookup_stub == null:
+		return
+	_match_lookup_stub.free()
+	_match_lookup_stub = null
 
 
 ## Handed to UnitCommandController.setup() as its command_bus argument.

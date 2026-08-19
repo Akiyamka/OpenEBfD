@@ -17,6 +17,8 @@ const SimTargetAbilityCommandScript := preload("res://scripts/sim/commands/targe
 const SimBuildOrderCommandScript := preload("res://scripts/sim/commands/build_order_command.gd")
 const SimUnitOrderCommandScript := preload("res://scripts/sim/commands/unit_order_command.gd")
 const SimUpgradeOrderCommandScript := preload("res://scripts/sim/commands/upgrade_order_command.gd")
+const SimSellBuildingCommandScript := preload("res://scripts/sim/commands/sell_building_command.gd")
+const SimRepairBuildingCommandScript := preload("res://scripts/sim/commands/repair_building_command.gd")
 
 
 func _initialize() -> void:
@@ -79,6 +81,14 @@ func _initialize() -> void:
 	_run_case(
 		"SimUpgradeOrderCommand round-trips upgrade_id and button_index",
 		_test_upgrade_order_round_trip
+	)
+	_run_case(
+		"SimSellBuildingCommand round-trips type_id, player_id and entity_id",
+		_test_sell_building_round_trip
+	)
+	_run_case(
+		"SimRepairBuildingCommand round-trips type_id, player_id and entity_id",
+		_test_repair_building_round_trip
 	)
 	_run_case("decode() returns null on empty bytes", _test_decode_empty_bytes)
 	_run_case("decode() returns null on a buffer shorter than the envelope", _test_decode_truncated_envelope)
@@ -453,6 +463,34 @@ func _test_upgrade_order_round_trip() -> void:
 	_expect(decoded.player_id == 4, "player_id must round-trip")
 	_expect(decoded.upgrade_id == &"ATRefineryDock", "upgrade_id must round-trip")
 	_expect(decoded.button_index == MOUSE_BUTTON_RIGHT, "button_index must round-trip")
+
+
+func _test_sell_building_round_trip() -> void:
+	var command := SimSellBuildingCommandScript.new()
+	command.player_id = 2
+	command.entity_id = 17
+
+	var decoded := SimCommandCodecScript.decode(
+		SimCommandCodecScript.encode(command)
+	) as SimSellBuildingCommand
+	_expect(decoded != null, "a well-formed sell-building command must decode")
+	_expect(decoded.type_id() == SimSellBuildingCommandScript.TYPE_ID, "decoded command must be a SimSellBuildingCommand")
+	_expect(decoded.player_id == 2, "player_id must round-trip")
+	_expect(decoded.entity_id == 17, "entity_id must round-trip")
+
+
+func _test_repair_building_round_trip() -> void:
+	var command := SimRepairBuildingCommandScript.new()
+	command.player_id = 3
+	command.entity_id = 42
+
+	var decoded := SimCommandCodecScript.decode(
+		SimCommandCodecScript.encode(command)
+	) as SimRepairBuildingCommand
+	_expect(decoded != null, "a well-formed repair-building command must decode")
+	_expect(decoded.type_id() == SimRepairBuildingCommandScript.TYPE_ID, "decoded command must be a SimRepairBuildingCommand")
+	_expect(decoded.player_id == 3, "player_id must round-trip")
+	_expect(decoded.entity_id == 42, "entity_id must round-trip")
 
 
 func _test_decode_truncated_ability_id() -> void:

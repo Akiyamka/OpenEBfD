@@ -119,6 +119,18 @@ func _initialize() -> void:
 	_run_case("building sale plays the authored sell transition", _test_sale_animation.bind(local_player))
 	_run_case("building sale reverses construct without an authored sell transition", _test_sale_construct_fallback.bind(local_player))
 	_run_case(
+		"a sell click on no building submits nothing and still emits its status",
+		_test_sell_click_on_no_building_submits_nothing
+	)
+	_run_case(
+		"a sell click defers the sale to the tick the command executes on",
+		_test_sell_click_defers_to_the_tick.bind(local_player)
+	)
+	_run_case(
+		"a repair click defers the toggle to the tick the command executes on, reading the direction then",
+		_test_repair_click_defers_and_reads_toggle_at_execution.bind(local_player)
+	)
+	_run_case(
 		"losing and restoring a prerequisite building toggles menu availability",
 		_test_availability_reacts_to_prerequisite_loss.bind(local_player)
 	)
@@ -465,10 +477,25 @@ func _test_fixed_wall_marker_lifecycle(token: int) -> int:
 	return token
 
 
+## Sell is now a command-bus intent (see SimSellBuildingCommand's doc
+## comment): _try_sell_building() only submits, so this case wires in a
+## CommandPump exactly the way _test_handle_building_intent_defers_start()
+## does for build orders, and pumps once before asserting the effects
+## _try_sell_building() itself used to produce synchronously. The assertions
+## are otherwise unchanged from before the command bus existed --
+## install_match_lookup_stub() is what lets `building`, a real Building, pick
+## up a real resolvable entity id the same way it would under a real Match --
+## see that method's doc comment.
 func _test_sale_animation(token: int, local_player: PlayerData) -> int:
 	var controller := SaleController.new()
 	root.add_child(controller)
 	_setup_without_assets(controller)
+	var pump := CommandPumpScript.new()
+	pump.configure_queue_controllers(controller)
+	controller._command_bus = pump.bus()
+	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
+	pump.install_match_lookup_stub(root)
+
 	var building := ATConYardScene.instantiate() as Building
 	building.owner_player_id = local_player.player_id
 	root.add_child(building)
@@ -478,6 +505,7 @@ func _test_sale_animation(token: int, local_player: PlayerData) -> int:
 	var money_before := local_player.money
 
 	controller._try_sell_building(Vector2.ZERO)
+	pump.pump()
 	var player := building.get_node_or_null("StatePlayer") as AnimationPlayer
 	_expect(player != null and player.current_animation == &"sell", "sale must play the authored sell clip")
 	_expect(not building.is_construction_complete(), "a selling building must stop satisfying technology prerequisites immediately")
@@ -487,15 +515,24 @@ func _test_sale_animation(token: int, local_player: PlayerData) -> int:
 	_expect(building.is_queued_for_deletion(), "sell completion must remove the building")
 	_expect(local_player.money == money_before + 1000, "sell completion must retain the half-cost refund")
 
+	pump.uninstall_match_lookup_stub()
 	controller.free()
 	building.free()
 	return token
 
 
+## See _test_sale_animation()'s doc comment for why this now pumps once
+## before asserting; otherwise unchanged.
 func _test_sale_construct_fallback(token: int, local_player: PlayerData) -> int:
 	var controller := SaleController.new()
 	root.add_child(controller)
 	_setup_without_assets(controller)
+	var pump := CommandPumpScript.new()
+	pump.configure_queue_controllers(controller)
+	controller._command_bus = pump.bus()
+	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
+	pump.install_match_lookup_stub(root)
+
 	var building := Building.new()
 	building.owner_player_id = local_player.player_id
 	var player := AnimationPlayer.new()
@@ -512,6 +549,7 @@ func _test_sale_construct_fallback(token: int, local_player: PlayerData) -> int:
 	controller.raycast_hit = {"collider": collider}
 
 	controller._try_sell_building(Vector2.ZERO)
+	pump.pump()
 	_expect(player.current_animation == &"construct", "sale fallback must play construct")
 	_expect(is_equal_approx(player.current_animation_position, construct.length), "sale fallback must start at the end of construct")
 	_expect(player.get_playing_speed() < 0.0, "sale fallback must reverse construct")
@@ -519,6 +557,124 @@ func _test_sale_construct_fallback(token: int, local_player: PlayerData) -> int:
 	player.animation_finished.emit(&"construct")
 	_expect(building.is_queued_for_deletion(), "reversed construct completion must remove the building")
 
+	pump.uninstall_match_lookup_stub()
+	controller.free()
+	building.free()
+	return token
+
+
+## A sell click that resolves to no building must not put anything on the
+## bus -- the same reason a move click onto no terrain submits nothing (see
+## _try_sell_building()'s own doc comment). pending_count() is SimCommandBus's
+## own surface for observing this (scripts/sim/command_bus.gd), so this does
+## not need a next-tick drain to prove the bus stayed empty.
+func _test_sell_click_on_no_building_submits_nothing(token: int) -> int:
+	var controller := SaleController.new()
+	root.add_child(controller)
+	_setup_without_assets(controller)
+	var pump := CommandPumpScript.new()
+	controller._command_bus = pump.bus()
+	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
+	controller.raycast_hit = {}
+
+	# An Array, not a plain local, because a GDScript lambda captures an
+	# outer local by value -- reassigning it inside the closure would not be
+	# observable out here; appending to a shared Array is, matching the
+	# pattern every other status-capturing case in this file and
+	# tests/match/unit_command_run.gd already uses.
+	var statuses: Array[String] = []
+	controller.status_changed.connect(func(status: String) -> void: statuses.append(status))
+	controller._try_sell_building(Vector2.ZERO)
+	_expect(
+		statuses == ["Select one of your buildings to sell"],
+		"a miss click must still emit the existing status, and nothing else"
+	)
+	_expect(pump.bus().pending_count() == 0, "a miss click must put nothing on the command bus")
+
+	controller.free()
+	return token
+
+
+## Sell's command-bus counterpart to _test_sale_animation() above: the click
+## must not sell anything until the command executes on its scheduled tick.
+func _test_sell_click_defers_to_the_tick(token: int, local_player: PlayerData) -> int:
+	var controller := SaleController.new()
+	root.add_child(controller)
+	_setup_without_assets(controller)
+	var pump := CommandPumpScript.new()
+	pump.configure_queue_controllers(controller)
+	controller._command_bus = pump.bus()
+	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
+	pump.install_match_lookup_stub(root)
+
+	var building := ATConYardScene.instantiate() as Building
+	building.owner_player_id = local_player.player_id
+	root.add_child(building)
+	var collider := Node.new()
+	building.add_child(collider)
+	controller.raycast_hit = {"collider": collider}
+
+	controller._try_sell_building(Vector2.ZERO)
+	_expect(
+		not controller._sale_service.is_active(),
+		"a sell click must not start the sale before its command executes"
+	)
+	_expect(
+		building.is_construction_complete(),
+		"a sell click must not stop satisfying prerequisites before its command executes"
+	)
+	pump.pump()
+	_expect(
+		controller._sale_service.is_active(),
+		"a sell click must start the sale once its command executes"
+	)
+
+	pump.uninstall_match_lookup_stub()
+	controller.free()
+	building.free()
+	return token
+
+
+## Repair's command-bus counterpart: the click must not toggle repair until
+## the command executes, and -- per SimRepairBuildingCommand's doc comment --
+## the toggle direction is read off the building at execution time, not
+## decided at the click. Starts the building already repairing so a click
+## that executed immediately (instead of deferring) would be caught either
+## way: this test binds on the deferral, a mutation that made the click
+## execute immediately would still see the toggle happen, just too early --
+## see this suite's own mutation-proof notes for the click-time-execution
+## case.
+func _test_repair_click_defers_and_reads_toggle_at_execution(token: int, local_player: PlayerData) -> int:
+	var controller := SaleController.new()
+	root.add_child(controller)
+	_setup_without_assets(controller)
+	var pump := CommandPumpScript.new()
+	pump.configure_queue_controllers(controller)
+	controller._command_bus = pump.bus()
+	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
+	pump.install_match_lookup_stub(root)
+
+	var building := ATConYardScene.instantiate() as Building
+	building.owner_player_id = local_player.player_id
+	root.add_child(building)
+	building.health = building.max_health - 10.0
+	building.is_repairing = true
+	var collider := Node.new()
+	building.add_child(collider)
+	controller.raycast_hit = {"collider": collider}
+
+	controller._try_toggle_building_repair(Vector2.ZERO)
+	_expect(
+		building.is_repairing,
+		"a repair click must not toggle repair before its command executes"
+	)
+	pump.pump()
+	_expect(
+		not building.is_repairing,
+		"a repair click on an already-repairing building must cancel it once the command executes"
+	)
+
+	pump.uninstall_match_lookup_stub()
 	controller.free()
 	building.free()
 	return token

@@ -32,13 +32,20 @@ extends SimCommand
 ## clients reach different outcomes once input delay is nonzero (see
 ## SimMoveCommand's doc comment for the identical argument).
 
-## Dispatch id for SimCommandCodec (scripts/sim/command_codec.gd) and
-## Match._advance_simulation_tick()'s own command-type dispatch -- this
-## command is not resolved by CommandExecutor, which only ever resolves
-## entity ids (see that class's doc comment); a queue order has none. 1 is
-## SimStopCommand's, 2 is SimMoveCommand's, 3 is SimAttackCommand's, 4 is
-## SimDeployCommand's, 5 is SimTargetAbilityCommand's; this is the next one
-## claimed.
+## Dispatch id for CommandExecutor.execute() (scripts/match/command_executor.gd)
+## and SimCommandCodec (scripts/sim/command_codec.gd). Match has no
+## command-type dispatch of its own any more -- the dispatch that used to
+## live in Match._advance_simulation_tick() was consolidated into
+## CommandExecutor.execute()'s one match statement, which is now the only
+## place that answers "which command is this" (see that class's own doc
+## comment). This command's branch there forwards straight to
+## BuildingController.execute_build_order_command() without resolving an
+## entity id first, since a queue order names none -- unlike, say,
+## SimSellBuildingCommand's or SimRepairBuildingCommand's branches, which
+## resolve one before calling into BuildingController. 1 is SimStopCommand's,
+## 2 is SimMoveCommand's, 3 is SimAttackCommand's, 4 is SimDeployCommand's, 5
+## is SimTargetAbilityCommand's, 9 is SimSellBuildingCommand's, 10 is
+## SimRepairBuildingCommand's; this is the next one claimed.
 const TYPE_ID := 6
 
 var building_id: StringName = &""

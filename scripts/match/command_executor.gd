@@ -24,6 +24,8 @@ const SimTargetAbilityCommandScript := preload("res://scripts/sim/commands/targe
 const SimBuildOrderCommandScript := preload("res://scripts/sim/commands/build_order_command.gd")
 const SimUnitOrderCommandScript := preload("res://scripts/sim/commands/unit_order_command.gd")
 const SimUpgradeOrderCommandScript := preload("res://scripts/sim/commands/upgrade_order_command.gd")
+const SimSellBuildingCommandScript := preload("res://scripts/sim/commands/sell_building_command.gd")
+const SimRepairBuildingCommandScript := preload("res://scripts/sim/commands/repair_building_command.gd")
 const SelectionClassifierScript := preload("res://scripts/match/selection_classifier.gd")
 const SelectionTargetAbilityControllerScript := preload(
 	"res://scripts/match/selection_target_ability_controller.gd"
@@ -125,6 +127,10 @@ func execute(command: SimCommand) -> Dictionary:
 					command as SimUpgradeOrderCommand
 				)
 			return {}
+		SimSellBuildingCommandScript.TYPE_ID:
+			return _execute_sell_building(command as SimSellBuildingCommand)
+		SimRepairBuildingCommandScript.TYPE_ID:
+			return _execute_repair_building(command as SimRepairBuildingCommand)
 		_:
 			# A command the bus scheduled, the codec can carry, and nothing
 			# here knows how to run. Silence would drop it without a trace --
@@ -485,3 +491,39 @@ func _execute_target_ability(command: SimTargetAbilityCommand) -> Dictionary:
 	return handler.call(
 		"execute", command.ability_id, entities, target_entity, command.target_position
 	)
+
+
+## Resolves the command's building and, if both it and the controller are
+## still around, hands it to BuildingController.execute_sell_building_command()
+## (scripts/buildings/building_controller.gd) -- see that method's and
+## SimSellBuildingCommand's own doc comments for what runs there. An id that
+## no longer resolves (the building died, or was already sold, between the
+## click and this tick) is skipped silently, exactly as _execute_stop()'s
+## comment explains for the identical case -- this method hands a resolved
+## Node to BuildingController rather than an id, since this class is the only
+## place in the codebase that dereferences entity ids into Nodes (see this
+## class's own doc comment).
+func _execute_sell_building(command: SimSellBuildingCommand) -> Dictionary:
+	if _building_controller == null:
+		return {}
+	var node := _entities.node_for(command.entity_id)
+	if node == null:
+		return {}
+	_building_controller.execute_sell_building_command(node)
+	return {}
+
+
+## The repair-toggle counterpart to _execute_sell_building() above -- same
+## dead-id handling, same reason a resolved Node crosses into
+## BuildingController rather than a bare id. Which direction the toggle goes
+## is not this method's concern: BuildingController.
+## execute_repair_building_command() reads is_repairing off `node` itself,
+## on this tick, per SimRepairBuildingCommand's doc comment.
+func _execute_repair_building(command: SimRepairBuildingCommand) -> Dictionary:
+	if _building_controller == null:
+		return {}
+	var node := _entities.node_for(command.entity_id)
+	if node == null:
+		return {}
+	_building_controller.execute_repair_building_command(node)
+	return {}
