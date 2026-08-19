@@ -11,6 +11,7 @@ extends "res://tests/support/suite.gd"
 const SimCommandCodecScript := preload("res://scripts/sim/command_codec.gd")
 const SimStopCommandScript := preload("res://scripts/sim/commands/stop_command.gd")
 const SimMoveCommandScript := preload("res://scripts/sim/commands/move_command.gd")
+const SimAttackCommandScript := preload("res://scripts/sim/commands/attack_command.gd")
 
 
 func _initialize() -> void:
@@ -27,6 +28,14 @@ func _initialize() -> void:
 	_run_case(
 		"encode() spends 8 bytes per target component, proving float64 rather than assuming it",
 		_test_move_target_is_encoded_as_float64_not_float32
+	)
+	_run_case(
+		"SimAttackCommand round-trips a target-specific attack, including a nonzero target_entity_id",
+		_test_attack_round_trip_with_target
+	)
+	_run_case(
+		"SimAttackCommand round-trips an attack-ground order with target_entity_id 0",
+		_test_attack_round_trip_ground_only
 	)
 	_run_case("decode() returns null on empty bytes", _test_decode_empty_bytes)
 	_run_case("decode() returns null on a buffer shorter than the envelope", _test_decode_truncated_envelope)
@@ -137,6 +146,50 @@ func _test_move_target_is_encoded_as_float64_not_float32() -> void:
 	_expect(
 		bytes.size() == 42,
 		"encode() must spend 8 bytes per target component (float64), not 4 (float32); got %d total bytes" % bytes.size()
+	)
+
+
+## The with-target shape: a click that landed on a live entity, so
+## target_entity_id is nonzero alongside the plain-data target position
+## recorded at issue time (see SimAttackCommand.target's doc comment on why
+## that position still travels even when a target entity was found).
+func _test_attack_round_trip_with_target() -> void:
+	var command := SimAttackCommandScript.new()
+	command.player_id = 4
+	command.entity_ids = PackedInt32Array([11, 22])
+	command.target = Vector3(6.5, 0.0, -9.25)
+	command.target_entity_id = 55
+
+	var decoded := SimCommandCodecScript.decode(SimCommandCodecScript.encode(command)) as SimAttackCommand
+	_expect(decoded != null, "a well-formed target-specific Attack command must decode")
+	_expect(decoded.type_id() == SimAttackCommandScript.TYPE_ID, "decoded command must be a SimAttackCommand")
+	_expect(decoded.player_id == 4, "player_id must round-trip")
+	_expect(
+		decoded.entity_ids == PackedInt32Array([11, 22]), "entity_ids must round-trip in order and value"
+	)
+	_expect(decoded.target == Vector3(6.5, 0.0, -9.25), "target must round-trip exactly")
+	_expect(decoded.target_entity_id == 55, "a nonzero target_entity_id must round-trip")
+
+
+## The ground-only shape: a Ctrl-click on open terrain, where target_entity_id
+## must round-trip as 0 -- attack-ground, not "no clicked entity field at
+## all" -- exactly as SimMoveCommand's zero target_entity_id case pins down.
+func _test_attack_round_trip_ground_only() -> void:
+	var command := SimAttackCommandScript.new()
+	command.player_id = 1
+	command.entity_ids = PackedInt32Array([7])
+	command.target = Vector3(12.0, 0.0, 14.0)
+	command.target_entity_id = 0
+
+	var decoded := SimCommandCodecScript.decode(SimCommandCodecScript.encode(command)) as SimAttackCommand
+	_expect(decoded != null, "a well-formed attack-ground command must decode")
+	_expect(
+		decoded.entity_ids == PackedInt32Array([7]), "entity_ids must round-trip in order and value"
+	)
+	_expect(decoded.target == Vector3(12.0, 0.0, 14.0), "target must round-trip exactly")
+	_expect(
+		decoded.target_entity_id == 0,
+		"a zero target_entity_id (attack-ground) must round-trip as 0, not be conflated with a missing field"
 	)
 
 

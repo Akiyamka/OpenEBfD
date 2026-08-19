@@ -15,7 +15,10 @@ extends RefCounted
 ## each individually correct, each individually tested, silently able to
 ## drift apart the day someone fixed an edge case on only one side. This
 ## class is that fix: exactly one implementation of every verdict, called
-## from both places.
+## from both places. Converting Attack onto the command bus hit the identical
+## trap between UnitCommandController's cursor code (_can_issue_attack_order())
+## and CommandExecutor._execute_attack() and got the identical fix:
+## is_deploying() and can_attack() below are that pair's shared verdicts.
 ##
 ## Lives in scripts/match/, not scripts/sim/: every method here calls
 ## has_method()/call() on live Nodes (and, for can_undeploy()/
@@ -88,6 +91,33 @@ func is_immobilized_by_deployment(entity: Node) -> bool:
 		(entity.has_method("is_deploying") and bool(entity.call("is_deploying")))
 		or (entity.has_method("is_deployed") and bool(entity.call("is_deployed")))
 	)
+
+
+## True only while `entity` is mid-transition into or out of combat-deploy
+## (Kindjal/Mortar/Kobra's stationary firing mode) -- deliberately *not*
+## is_immobilized_by_deployment()'s broader test. A fully deployed combat unit
+## is the entire point of combat-deploy and must still accept an attack order,
+## so an attack order's own deployment gate only rejects the
+## DEPLOYING/UNDEPLOYING transition itself, never the steady deployed state
+## movement rejects. Two different verdicts share the same is_deploying()
+## primitive on the entity on purpose, one per caller's actual question.
+func is_deploying(entity: Node) -> bool:
+	return entity.has_method("is_deploying") and bool(entity.call("is_deploying"))
+
+
+## True when `entity` can currently accept an attack order against
+## `target_or_position` (a Node target, resolved live, or a Vector3
+## attack-ground position): it exposes both command_attack() and can_attack(),
+## and the entity's own can_attack() agrees. Deliberately does not also check
+## is_deploying() -- see that method's doc comment -- so callers combine the
+## two themselves (UnitCommandController._can_issue_attack_order() and
+## CommandExecutor._execute_attack() both do), matching how
+## is_immobilized_by_deployment() and can_move_directly() stay separate
+## verdicts a caller composes rather than one method that decides for both.
+func can_attack(entity: Node, target_or_position: Variant) -> bool:
+	if not entity.has_method("command_attack") or not entity.has_method("can_attack"):
+		return false
+	return bool(entity.call("can_attack", target_or_position))
 
 
 ## True when at least one of `entities` can unload at target_entity. A null

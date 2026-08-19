@@ -18,6 +18,7 @@ extends RefCounted
 
 const SimStopCommandScript := preload("res://scripts/sim/commands/stop_command.gd")
 const SimMoveCommandScript := preload("res://scripts/sim/commands/move_command.gd")
+const SimAttackCommandScript := preload("res://scripts/sim/commands/attack_command.gd")
 const SelectionClassifierScript := preload("res://scripts/match/selection_classifier.gd")
 
 var _entities: EntityNodeIndex
@@ -31,7 +32,9 @@ var _entities: EntityNodeIndex
 ## also uses it directly to actually move entities, not just to ask
 ## _classifier whether it could; _deployment_controller is not kept
 ## separately because nothing here reads it outside of what _classifier
-## already answers.
+## already answers. _execute_attack() reuses this same field for
+## _assign_attack_arcs() -- attack needs no collaborator Move does not
+## already require this class to hold.
 var _navigation
 var _terrain: MapLoader
 ## The one shared implementation of every "what would a move order do here"
@@ -60,6 +63,8 @@ func execute(command: SimCommand) -> Dictionary:
 			return _execute_stop(command as SimStopCommand)
 		SimMoveCommandScript.TYPE_ID:
 			return _execute_move(command as SimMoveCommand)
+		SimAttackCommandScript.TYPE_ID:
+			return _execute_attack(command as SimAttackCommand)
 		_:
 			return {}
 
@@ -224,3 +229,108 @@ func _execute_move(command: SimMoveCommand) -> Dictionary:
 		"deploying": deploying_count,
 		"target_entity": target_entity,
 	}
+
+
+## Resolves the command's acting entities and target, then carries out the
+## attack: an entity that is mid-deployment-transition (_classifier.
+## is_deploying(), deliberately narrower than the movement-side
+## is_immobilized_by_deployment() -- see that method's doc comment) or whose
+## own can_attack() rejects this target is left out of the accepted list
+## rather than treated as an error, and every accepted entity receives
+## command_attack(). This is the one place this loop differs from
+## _execute_stop()'s: that method only ever drops a *dead* id, never a living
+## entity that simply cannot act; this one does both, because "can this
+## entity attack this" is itself a verdict about the world that must be read
+## on the execution tick, identically on every client -- see SimAttackCommand's
+## doc comment.
+##
+## target_entity_id resolving to null (the clicked entity died between the
+## click and this tick) falls through to command.target -- an attack-ground
+## order at the position recorded when the order was issued -- exactly the
+## way SimMoveCommand's target_entity_id falls through to plain movement; see
+## SimAttackCommand.target_entity_id's doc comment for why this, rather than
+## silently dropping the order, is the chosen fallback.
+##
+## The result Dictionary is read by
+## UnitCommandController.on_command_executed(), which rebuilds the exact
+## status text and voice line _issue_attack_order() used to assemble inline --
+## see that method's doc comment for the key-by-key contract. "rejected" is
+## the empty-accepted-list case ("Selected units cannot attack this target");
+## "accepted" and "target_or_position" are what the controller needs to
+## reconstruct the label and play the attack voice line, since only this
+## method knows which entities actually accepted the order and what the live
+## target resolved to.
+func _execute_attack(command: SimAttackCommand) -> Dictionary:
+	var entities: Array[Node] = []
+	for id in command.entity_ids:
+		var node := _entities.node_for(id)
+		if node != null:
+			entities.append(node)
+
+	var target_entity: Node = null
+	if command.target_entity_id != 0:
+		target_entity = _entities.node_for(command.target_entity_id)
+	var target_or_position: Variant = target_entity if target_entity != null else command.target
+
+	var accepted: Array[Node] = []
+	for entity in entities:
+		if _classifier.is_deploying(entity):
+			continue
+		if not _classifier.can_attack(entity, target_or_position):
+			continue
+		if bool(entity.call("command_attack", target_or_position)):
+			accepted.append(entity)
+
+	if accepted.is_empty():
+		return {"rejected": true}
+
+	_assign_attack_arcs(accepted, target_or_position)
+
+	return {
+		"accepted": accepted,
+		"target_or_position": target_or_position,
+	}
+
+
+## Spreads one attack command into an arc around the target. Moved here from
+## UnitCommandController._issue_attack_order(): arc assignment changes where
+## units end up standing, which makes it simulation, not view -- it belongs on
+## the tick, next to the order it spreads, not at the click that merely
+## scheduled it.
+##
+## An attack order is otherwise entirely per-unit: every shooter runs the same
+## perch search, converges on the same cell, and the first arrivals stop on the
+## max-range ring and wall the rest out of weapon range. Handing each unit its
+## own bearing is what turns that queue into a firing line -- see
+## AttackArcAllocator for the geometry.
+##
+## Left alone deliberately: a lone shooter (nothing to spread), a building or
+## other stationary attacker (no bearing to take), and anything that cannot
+## engage this target at all.
+func _assign_attack_arcs(accepted: Array[Node], target_or_position: Variant) -> void:
+	if _navigation == null or not _navigation.has_method("assign_attack_arcs"):
+		return
+	var target := Vector3.INF
+	if target_or_position is Vector3:
+		target = target_or_position
+	elif target_or_position is Node3D:
+		target = (target_or_position as Node3D).global_position
+	if not target.is_finite():
+		return
+	var shooters: Array[Node3D] = []
+	# The pitch is measured on the tightest arc anyone will actually stand on,
+	# so the shortest engagement range in the group wins.
+	var engagement_radius := INF
+	for entity in accepted:
+		var unit := entity as Node3D
+		if unit == null or not unit.has_method("attack_engagement_radius") \
+		or not unit.has_method("set_attack_arc_direction"):
+			continue
+		var radius := float(unit.call("attack_engagement_radius", target_or_position))
+		if radius <= 0.0:
+			continue
+		shooters.append(unit)
+		engagement_radius = minf(engagement_radius, radius)
+	if shooters.size() <= 1 or not is_finite(engagement_radius):
+		return
+	_navigation.call("assign_attack_arcs", shooters, target, engagement_radius)

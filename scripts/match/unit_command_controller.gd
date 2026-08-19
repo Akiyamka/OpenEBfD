@@ -17,6 +17,7 @@ const SelectionTargetAbilityControllerScript := preload(
 )
 const SimStopCommandScript := preload("res://scripts/sim/commands/stop_command.gd")
 const SimMoveCommandScript := preload("res://scripts/sim/commands/move_command.gd")
+const SimAttackCommandScript := preload("res://scripts/sim/commands/attack_command.gd")
 const SelectionClassifierScript := preload("res://scripts/match/selection_classifier.gd")
 
 var _camera: Camera3D
@@ -351,6 +352,8 @@ func on_command_executed(command: SimCommand, result: Dictionary) -> void:
 			_emit_stop_status(int(result.get("stopped", 0)))
 		SimMoveCommandScript.TYPE_ID:
 			_emit_move_status(command as SimMoveCommand, result)
+		SimAttackCommandScript.TYPE_ID:
+			_emit_attack_status(result)
 
 
 ## The feedback half of the Move split (see _command_move()): assembles
@@ -439,6 +442,36 @@ func _emit_move_status(command: SimMoveCommand, result: Dictionary) -> void:
 	])
 
 
+## The feedback half of the Attack split (see _issue_attack_order()):
+## assembles exactly the status text and voice line _issue_attack_order() used
+## to build inline, now from the result CommandExecutor._execute_attack()
+## computed against the tick this command was scheduled for.
+##
+## "rejected" (accepted list came back empty) is the only failure case --
+## there is no equivalent of Move's "Cannot move to ..." because an attack
+## order's target is never itself invalid the way a movement destination can
+## be; every unit either individually can or cannot engage it.
+func _emit_attack_status(result: Dictionary) -> void:
+	if bool(result.get("rejected", false)):
+		status_changed.emit("Selected units cannot attack this target")
+		return
+	var accepted: Array[Node] = result.get("accepted", [])
+	_play_voice_feedback(&"Attack", accepted)
+	var target_or_position = result.get("target_or_position")
+	if target_or_position is Vector3:
+		var target: Vector3 = target_or_position
+		var label := "Attacking ground at %.1f, %.1f" % [target.x, target.z]
+		if accepted.size() > 1:
+			label += " with %d units" % accepted.size()
+		status_changed.emit(label)
+		return
+	var target_name := _command_target_name(target_or_position)
+	var label := "Attacking %s" % target_name
+	if accepted.size() > 1:
+		label += " with %d units" % accepted.size()
+	status_changed.emit(label)
+
+
 ## The first `D` binding in the project. Applies to every selected
 ## controllable entity the deployment controller can handle: toggles the MCV
 ## (deploy into its Construction Yard) as well as the combat-deploy units
@@ -475,93 +508,79 @@ func _select_units_in_rectangle(rectangle: Rect2) -> void:
 	status_changed.emit("")
 
 
+## Right-click-on-an-enemy and Ctrl-click-on-the-ground both land here, and
+## both are the same order -- SimAttackCommand distinguishes them only by
+## whether target_entity_id is nonzero (see that class's doc comment), so
+## this function makes exactly one issue-time decision (which of the two this
+## click was) and hands both cases to the same _issue_attack_order().
 func _command_at(screen_position: Vector2, force_attack: bool) -> void:
 	if _selected_entities.is_empty():
 		return
 	var entity_hit := _raycast(screen_position, ENTITY_SELECTION_COLLISION_MASK)
 	var target_entity = _find_selectable_entity(entity_hit.get("collider") as Node)
 	if target_entity != null and (force_attack or _is_enemy_target(target_entity)):
-		_issue_attack_order(target_entity)
+		_issue_attack_order(target_entity, entity_hit.get("position", Vector3.ZERO) as Vector3)
 		return
 	if force_attack:
 		var terrain_hit := _raycast(screen_position, TERRAIN_COLLISION_MASK)
 		if terrain_hit.is_empty():
 			status_changed.emit("No attack target")
 			return
-		_issue_attack_order(terrain_hit["position"] as Vector3)
+		_issue_attack_order(null, terrain_hit["position"] as Vector3)
 		return
 	_command_move(screen_position, target_entity)
 
 
-func _issue_attack_order(target_or_position: Variant) -> void:
-	var accepted: Array[Node] = []
-	for entity in _selected_entities:
-		if not _can_control(entity):
-			status_changed.emit("Cannot command this player")
-			return
-		if entity.has_method("is_deploying") and bool(entity.call("is_deploying")):
-			continue
-		if not _can_attack(entity, target_or_position):
-			continue
-		if bool(entity.call("command_attack", target_or_position)):
-			accepted.append(entity)
-	if accepted.is_empty():
-		status_changed.emit("Selected units cannot attack this target")
-		return
-	_assign_attack_arcs(accepted, target_or_position)
-	_play_voice_feedback(&"Attack", accepted)
-	if target_or_position is Vector3:
-		var target: Vector3 = target_or_position
-		var label := "Attacking ground at %.1f, %.1f" % [target.x, target.z]
-		if accepted.size() > 1:
-			label += " with %d units" % accepted.size()
-		status_changed.emit(label)
-		return
-	var target_name := _command_target_name(target_or_position)
-	var label := "Attacking %s" % target_name
-	if accepted.size() > 1:
-		label += " with %d units" % accepted.size()
-	status_changed.emit(label)
-
-
-## Spreads one attack command into an arc around the target.
+## The issue side of Attack: immediate, and split from execution -- see
+## _stop_selected_entities()'s doc comment for the same split done once
+## already, and docs/architecture/network-multiplayer.md, "Layering".
+## `target_entity` null means attack-ground at `position`; non-null means an
+## entity-target attack, with `position` carried alongside it purely as the
+## dead-target fallback described on SimAttackCommand.target_entity_id's doc
+## comment.
 ##
-## An attack order is otherwise entirely per-unit: every shooter runs the same
-## perch search, converges on the same cell, and the first arrivals stop on the
-## max-range ring and wall the rest out of weapon range. Handing each unit its
-## own bearing is what turns that queue into a firing line -- see
-## AttackArcAllocator for the geometry.
-##
-## Left alone deliberately: a lone shooter (nothing to spread), a building or
-## other stationary attacker (no bearing to take), and anything that cannot
-## engage this target at all.
-func _assign_attack_arcs(accepted: Array[Node], target_or_position: Variant) -> void:
-	if _navigation == null or not _navigation.has_method("assign_attack_arcs"):
+## What stays here: the selection, and resolving entity_ids from
+## _controllable_entities() -- exactly like _stop_selected_entities() and
+## _command_move(), a foreign or uncontrollable unit is silently excluded from
+## entity_ids, never an aborted order the way an older, pre-command-bus
+## version of this method used to abort with "Cannot command this player" the
+## moment it hit one. Every per-entity attack verdict -- is_deploying(),
+## can_attack(), command_attack() itself, and arc assignment -- moves to
+## CommandExecutor._execute_attack(), because whether a unit can attack this
+## target is a verdict about the world that must be read identically by every
+## client on the tick the order actually executes, not at the click that
+## merely scheduled it.
+func _issue_attack_order(target_entity, position: Vector3) -> void:
+	if _command_bus == null or not _submit_tick_provider.is_valid():
+		push_error(
+			"UnitCommandController._issue_attack_order(): no command bus wired in -- " +
+			"call setup() with a SimCommandBus and a submit-tick provider before issuing " +
+			"orders (see Match._setup_unit_command_controller() or, in tests, " +
+			"tests/match/support/command_pump.gd)."
+		)
 		return
-	var target := Vector3.INF
-	if target_or_position is Vector3:
-		target = target_or_position
-	elif target_or_position is Node3D:
-		target = (target_or_position as Node3D).global_position
-	if not target.is_finite():
-		return
-	var shooters: Array[Node3D] = []
-	# The pitch is measured on the tightest arc anyone will actually stand on,
-	# so the shortest engagement range in the group wins.
-	var engagement_radius := INF
-	for entity in accepted:
-		var unit := entity as Node3D
-		if unit == null or not unit.has_method("attack_engagement_radius") \
-		or not unit.has_method("set_attack_arc_direction"):
+	var entity_ids := PackedInt32Array()
+	for entity in _controllable_entities():
+		# entity_id == 0 -- including "this entity type has no such
+		# property at all" -- means "never registered with a Match" (see
+		# scripts/sim/entity_registry.gd): skip it rather than submit a
+		# command CommandExecutor could never resolve back to this entity.
+		if not &"entity_id" in entity:
 			continue
-		var radius := float(unit.call("attack_engagement_radius", target_or_position))
-		if radius <= 0.0:
-			continue
-		shooters.append(unit)
-		engagement_radius = minf(engagement_radius, radius)
-	if shooters.size() <= 1 or not is_finite(engagement_radius):
+		var id := int(entity.get(&"entity_id"))
+		if id != 0:
+			entity_ids.append(id)
+	if entity_ids.is_empty():
 		return
-	_navigation.call("assign_attack_arcs", shooters, target, engagement_radius)
+	var command := SimAttackCommandScript.new()
+	var players = _players()
+	if players != null:
+		command.player_id = players.local_player_id
+	command.entity_ids = entity_ids
+	command.target = position
+	if target_entity != null and &"entity_id" in target_entity:
+		command.target_entity_id = int(target_entity.get(&"entity_id"))
+	_command_bus.submit(command, _submit_tick_provider.call())
 
 
 func _command_target_name(target_or_position: Variant) -> String:
@@ -949,19 +968,20 @@ func _terrain_command_cursor_at(screen_position: Vector2) -> int:
 	return CursorManagerScript.CursorType.MOVE
 
 
+## Both per-entity checks below -- the deployment-transition gate and the
+## attack verdict itself -- come from _classifier() (scripts/match/
+## selection_classifier.gd), the same object CommandExecutor._execute_attack()
+## asks the identical two questions of; only this aggregating loop stays
+## local, for the reason that file's doc comment gives for keeping every
+## bucketing pass with its own caller.
 func _can_issue_attack_order(target_or_position: Variant) -> bool:
+	var classifier := _classifier()
 	for entity in _controllable_entities():
-		if entity.has_method("is_deploying") and bool(entity.call("is_deploying")):
+		if classifier.is_deploying(entity):
 			continue
-		if _can_attack(entity, target_or_position):
+		if classifier.can_attack(entity, target_or_position):
 			return true
 	return false
-
-
-func _can_attack(entity: Node, target_or_position: Variant) -> bool:
-	if not entity.has_method("command_attack") or not entity.has_method("can_attack"):
-		return false
-	return bool(entity.call("can_attack", target_or_position))
 
 
 func _is_enemy_target(target) -> bool:
