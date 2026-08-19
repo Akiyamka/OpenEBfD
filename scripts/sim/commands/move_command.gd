@@ -21,9 +21,16 @@ extends SimCommand
 ## once input delay is nonzero (see UnitCommandController._command_move()'s
 ## doc comment).
 
-## Dispatch id for CommandExecutor.execute() and SimCommandCodec
-## (scripts/sim/command_codec.gd). 1 is SimStopCommand's; this is the next
-## one claimed.
+## Dispatch id for CommandExecutor.execute()
+## (scripts/match/command_executor.gd) and SimCommandCodec
+## (scripts/sim/command_codec.gd). Which ids are already claimed is recorded
+## in exactly one place -- SimCommandCodec._COMMAND_SCRIPTS -- and
+## tests/sim/command_codec_run.gd fails if a command type is missing from
+## that table, so the next command type reads its id off that list. Each of
+## these comments used to carry its own copy of the list instead, which is
+## how two of them came to describe a command-type dispatch in Match that
+## has not existed since CommandExecutor.execute() became the only place
+## answering "which command is this".
 const TYPE_ID := 2
 
 var entity_ids: PackedInt32Array = PackedInt32Array()

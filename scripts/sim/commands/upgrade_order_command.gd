@@ -31,14 +31,21 @@ extends SimCommand
 ## different outcomes once input delay is nonzero (see SimMoveCommand's doc
 ## comment for the identical argument).
 
-## Dispatch id for SimCommandCodec (scripts/sim/command_codec.gd) and
-## Match._advance_simulation_tick()'s own command-type dispatch -- this
-## command is not resolved by CommandExecutor, which only ever resolves
-## entity ids (see that class's doc comment); an upgrade order has none. 1 is
-## SimStopCommand's, 2 is SimMoveCommand's, 3 is SimAttackCommand's, 4 is
-## SimDeployCommand's, 5 is SimTargetAbilityCommand's, 6 is
-## SimBuildOrderCommand's, 7 is SimUnitOrderCommand's; this is the next one
-## claimed.
+## Dispatch id for CommandExecutor.execute()
+## (scripts/match/command_executor.gd) and SimCommandCodec
+## (scripts/sim/command_codec.gd). Which ids are already claimed is recorded
+## in exactly one place -- SimCommandCodec._COMMAND_SCRIPTS -- and
+## tests/sim/command_codec_run.gd fails if a command type is missing from
+## that table, so the next command type reads its id off that list. Each of
+## these comments used to carry its own copy of the list instead, which is
+## how two of them came to describe a command-type dispatch in Match that
+## has not existed since CommandExecutor.execute() became the only place
+## answering "which command is this".
+##
+## This command's branch there forwards straight to
+## BuildingUpgradeController.execute_upgrade_order_command() without
+## resolving an entity id first: an upgrade order names none, so there is
+## nothing for EntityNodeIndex to look up.
 const TYPE_ID := 8
 
 var upgrade_id: StringName = &""

@@ -9,10 +9,20 @@ extends SimCommand
 ## CommandExecutor._execute_stop() (scripts/match/command_executor.gd) on
 ## the tick the bus schedules it for.
 
-## Dispatch id for CommandExecutor.execute() and SimCommandCodec
-## (scripts/sim/command_codec.gd). 1 is arbitrary -- it only has to be
-## stable and unique among command types -- and is claimed here first
-## because Stop is this slice's only concrete command.
+## Dispatch id for CommandExecutor.execute()
+## (scripts/match/command_executor.gd) and SimCommandCodec
+## (scripts/sim/command_codec.gd). Which ids are already claimed is recorded
+## in exactly one place -- SimCommandCodec._COMMAND_SCRIPTS -- and
+## tests/sim/command_codec_run.gd fails if a command type is missing from
+## that table, so the next command type reads its id off that list. Each of
+## these comments used to carry its own copy of the list instead, which is
+## how two of them came to describe a command-type dispatch in Match that
+## has not existed since CommandExecutor.execute() became the only place
+## answering "which command is this".
+##
+## 1 is arbitrary -- an id only has to be stable and unique among command
+## types -- and is claimed first because Stop was the first concrete
+## command this phase added.
 const TYPE_ID := 1
 
 var entity_ids: PackedInt32Array = PackedInt32Array()

@@ -32,20 +32,21 @@ extends SimCommand
 ## clients reach different outcomes once input delay is nonzero (see
 ## SimMoveCommand's doc comment for the identical argument).
 
-## Dispatch id for CommandExecutor.execute() (scripts/match/command_executor.gd)
-## and SimCommandCodec (scripts/sim/command_codec.gd). Match has no
-## command-type dispatch of its own any more -- the dispatch that used to
-## live in Match._advance_simulation_tick() was consolidated into
-## CommandExecutor.execute()'s one match statement, which is now the only
-## place that answers "which command is this" (see that class's own doc
-## comment). This command's branch there forwards straight to
-## BuildingController.execute_build_order_command() without resolving an
-## entity id first, since a queue order names none -- unlike, say,
-## SimSellBuildingCommand's or SimRepairBuildingCommand's branches, which
-## resolve one before calling into BuildingController. 1 is SimStopCommand's,
-## 2 is SimMoveCommand's, 3 is SimAttackCommand's, 4 is SimDeployCommand's, 5
-## is SimTargetAbilityCommand's, 9 is SimSellBuildingCommand's, 10 is
-## SimRepairBuildingCommand's; this is the next one claimed.
+## Dispatch id for CommandExecutor.execute()
+## (scripts/match/command_executor.gd) and SimCommandCodec
+## (scripts/sim/command_codec.gd). Which ids are already claimed is recorded
+## in exactly one place -- SimCommandCodec._COMMAND_SCRIPTS -- and
+## tests/sim/command_codec_run.gd fails if a command type is missing from
+## that table, so the next command type reads its id off that list. Each of
+## these comments used to carry its own copy of the list instead, which is
+## how two of them came to describe a command-type dispatch in Match that
+## has not existed since CommandExecutor.execute() became the only place
+## answering "which command is this".
+##
+## This command's branch there forwards straight to
+## BuildingController.execute_build_order_command() without resolving
+## an entity id first: a production-queue order names none, so there is
+## nothing for EntityNodeIndex to look up.
 const TYPE_ID := 6
 
 var building_id: StringName = &""
