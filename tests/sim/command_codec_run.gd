@@ -12,6 +12,8 @@ const SimCommandCodecScript := preload("res://scripts/sim/command_codec.gd")
 const SimStopCommandScript := preload("res://scripts/sim/commands/stop_command.gd")
 const SimMoveCommandScript := preload("res://scripts/sim/commands/move_command.gd")
 const SimAttackCommandScript := preload("res://scripts/sim/commands/attack_command.gd")
+const SimDeployCommandScript := preload("res://scripts/sim/commands/deploy_command.gd")
+const SimTargetAbilityCommandScript := preload("res://scripts/sim/commands/target_ability_command.gd")
 
 
 func _initialize() -> void:
@@ -37,9 +39,35 @@ func _initialize() -> void:
 		"SimAttackCommand round-trips an attack-ground order with target_entity_id 0",
 		_test_attack_round_trip_ground_only
 	)
+	_run_case("SimDeployCommand round-trips with an empty entity_ids", _test_deploy_round_trip_empty)
+	_run_case("SimDeployCommand round-trips with multiple entity_ids", _test_deploy_round_trip_multiple)
+	_run_case(
+		"SimTargetAbilityCommand round-trips every field, including a nonzero target_entity_id",
+		_test_target_ability_round_trip_full
+	)
+	_run_case(
+		"SimTargetAbilityCommand round-trips an ASCII ability id byte-for-byte",
+		_test_target_ability_round_trip_ascii_id
+	)
+	_run_case(
+		"SimTargetAbilityCommand round-trips an ability id containing a non-ASCII character",
+		_test_target_ability_round_trip_non_ascii_id
+	)
+	_run_case(
+		"SimTargetAbilityCommand round-trips an empty ability id",
+		_test_target_ability_round_trip_empty_id
+	)
+	_run_case(
+		"encode() spends 1 byte per UTF-8 code unit of ability_id, not per character",
+		_test_target_ability_id_is_encoded_as_utf8_byte_length
+	)
 	_run_case("decode() returns null on empty bytes", _test_decode_empty_bytes)
 	_run_case("decode() returns null on a buffer shorter than the envelope", _test_decode_truncated_envelope)
 	_run_case("decode() returns null on a buffer whose payload is truncated", _test_decode_truncated_payload)
+	_run_case(
+		"decode() returns null when an ability id's length prefix claims more bytes than the buffer holds",
+		_test_decode_truncated_ability_id
+	)
 	_run_case("decode() returns null on an unknown type id", _test_decode_unknown_type_id)
 	_run_case(
 		"decode() returns null when the payload leaves trailing bytes unconsumed",
@@ -190,6 +218,169 @@ func _test_attack_round_trip_ground_only() -> void:
 	_expect(
 		decoded.target_entity_id == 0,
 		"a zero target_entity_id (attack-ground) must round-trip as 0, not be conflated with a missing field"
+	)
+
+
+func _test_deploy_round_trip_empty() -> void:
+	var command := SimDeployCommandScript.new()
+	command.player_id = 2
+	command.entity_ids = PackedInt32Array()
+
+	var decoded := SimCommandCodecScript.decode(SimCommandCodecScript.encode(command))
+	_expect(decoded != null, "a well-formed Deploy command must decode")
+	_expect(decoded.type_id() == SimDeployCommandScript.TYPE_ID, "decoded command must be a SimDeployCommand")
+	_expect(decoded.player_id == 2, "player_id must round-trip")
+	_expect(
+		(decoded as SimDeployCommand).entity_ids == PackedInt32Array(),
+		"an empty entity_ids must round-trip as empty, not as absent or malformed"
+	)
+
+
+func _test_deploy_round_trip_multiple() -> void:
+	var command := SimDeployCommandScript.new()
+	# player_id can legitimately be negative: PlayerData.NEUTRAL_PLAYER_ID
+	# (scripts/players/player_data.gd) is -1, and it has to round-trip like
+	# any other value.
+	command.player_id = -1
+	command.entity_ids = PackedInt32Array([3, 1, 42, 100000])
+
+	var decoded := SimCommandCodecScript.decode(SimCommandCodecScript.encode(command)) as SimDeployCommand
+	_expect(decoded != null, "a well-formed Deploy command must decode")
+	_expect(decoded.player_id == -1, "a negative player_id must round-trip exactly")
+	_expect(
+		decoded.entity_ids == PackedInt32Array([3, 1, 42, 100000]),
+		"entity_ids must round-trip in the exact order and values submitted"
+	)
+
+
+func _test_target_ability_round_trip_full() -> void:
+	var command := SimTargetAbilityCommandScript.new()
+	command.player_id = 5
+	command.entity_ids = PackedInt32Array([9, 4])
+	command.ability_id = &"pickup"
+	command.target_entity_id = 33
+	command.target_position = Vector3(1.5, -2.25, 300.0)
+
+	var decoded := SimCommandCodecScript.decode(
+		SimCommandCodecScript.encode(command)
+	) as SimTargetAbilityCommand
+	_expect(decoded != null, "a well-formed target-ability command must decode")
+	_expect(
+		decoded.type_id() == SimTargetAbilityCommandScript.TYPE_ID,
+		"decoded command must be a SimTargetAbilityCommand"
+	)
+	_expect(decoded.player_id == 5, "player_id must round-trip")
+	_expect(
+		decoded.entity_ids == PackedInt32Array([9, 4]), "entity_ids must round-trip in order and value"
+	)
+	_expect(decoded.ability_id == &"pickup", "ability_id must round-trip")
+	_expect(decoded.target_entity_id == 33, "a nonzero target_entity_id must round-trip")
+	_expect(
+		decoded.target_position == Vector3(1.5, -2.25, 300.0), "target_position must round-trip exactly"
+	)
+
+
+## Pins down the plain-ASCII case on its own, distinct from the full-field
+## round trip above, so a codec that mishandled non-ASCII specifically (the
+## two cases beneath this one) could not hide behind an otherwise-passing
+## ASCII test.
+func _test_target_ability_round_trip_ascii_id() -> void:
+	var command := SimTargetAbilityCommandScript.new()
+	command.entity_ids = PackedInt32Array([1])
+	command.ability_id = &"drop"
+	command.target_entity_id = 0
+	command.target_position = Vector3.ZERO
+
+	var decoded := SimCommandCodecScript.decode(
+		SimCommandCodecScript.encode(command)
+	) as SimTargetAbilityCommand
+	_expect(decoded != null, "a well-formed ASCII ability id must decode")
+	_expect(decoded.ability_id == &"drop", "a plain-ASCII ability_id must round-trip byte-for-byte")
+
+
+## The case a hand-rolled string encoder that counts characters instead of
+## UTF-8 bytes gets wrong: "café" is 4 characters but 5 bytes (the "é" is a
+## two-byte UTF-8 sequence), so a length prefix that used
+## String.length() instead of the byte count would misplace the read cursor
+## for every field this command's payload writes after ability_id.
+func _test_target_ability_round_trip_non_ascii_id() -> void:
+	var command := SimTargetAbilityCommandScript.new()
+	command.entity_ids = PackedInt32Array([7, 8])
+	command.ability_id = StringName("café✓")
+	command.target_entity_id = 12
+	command.target_position = Vector3(4.0, 5.0, 6.0)
+
+	var decoded := SimCommandCodecScript.decode(
+		SimCommandCodecScript.encode(command)
+	) as SimTargetAbilityCommand
+	_expect(decoded != null, "a well-formed non-ASCII ability id must decode")
+	_expect(
+		decoded.ability_id == StringName("café✓"),
+		"a non-ASCII ability_id must round-trip exactly, not be mangled or truncated"
+	)
+	_expect(
+		decoded.target_entity_id == 12 and decoded.target_position == Vector3(4.0, 5.0, 6.0),
+		"fields written after a non-ASCII ability_id must still land at the right offset"
+	)
+
+
+## The other case a hand-rolled string encoder gets wrong: a zero-length
+## payload is not the same as a missing/malformed field, and must round-trip
+## as the empty StringName, not null and not a decode failure.
+func _test_target_ability_round_trip_empty_id() -> void:
+	var command := SimTargetAbilityCommandScript.new()
+	command.entity_ids = PackedInt32Array()
+	command.ability_id = &""
+	command.target_entity_id = 0
+	command.target_position = Vector3.ZERO
+
+	var decoded := SimCommandCodecScript.decode(
+		SimCommandCodecScript.encode(command)
+	) as SimTargetAbilityCommand
+	_expect(decoded != null, "a well-formed empty ability id must decode, not fail closed")
+	_expect(
+		decoded.ability_id == &"",
+		"an empty ability_id must round-trip as empty, not be conflated with a missing field"
+	)
+
+
+## Proves the length prefix is a byte count, not a character count, the same
+## way _test_move_target_is_encoded_as_float64_not_float32() proves float64 by
+## byte count rather than by value: "café" round-tripping correctly (the test
+## above) would also pass a codec that happened to store 4 UTF-16 code units
+## instead of 5 UTF-8 bytes, if get_string_from_utf8() silently tolerated the
+## mismatch. Checking the actual encoded byte count directly does not depend
+## on that tolerance.
+func _test_target_ability_id_is_encoded_as_utf8_byte_length() -> void:
+	var command := SimTargetAbilityCommandScript.new()
+	command.entity_ids = PackedInt32Array()
+	command.ability_id = StringName("café")
+	command.target_entity_id = 0
+	command.target_position = Vector3.ZERO
+
+	var bytes := SimCommandCodecScript.encode(command)
+	# envelope (2 + 4) + entity_ids count (4, zero ids) + ability_id length
+	# prefix (4) + ability_id bytes (5, UTF-8 -- "café" is 4 characters but a
+	# 2-byte UTF-8 sequence for "é" makes 5 bytes) + target_entity_id (4) +
+	# target_position (3 * 8 for float64) = 47.
+	_expect(
+		bytes.size() == 47,
+		"encode() must spend one byte per UTF-8 byte of ability_id, not per character; got %d total bytes" % bytes.size()
+	)
+
+
+func _test_decode_truncated_ability_id() -> void:
+	# A hand-built target-ability envelope (entity_ids empty) whose ability_id
+	# length prefix claims 10 bytes but supplies none.
+	var buffer := StreamPeerBuffer.new()
+	buffer.big_endian = true
+	buffer.put_u16(SimTargetAbilityCommandScript.TYPE_ID)
+	buffer.put_32(0)
+	buffer.put_u32(0)
+	buffer.put_u32(10)
+	_expect(
+		SimCommandCodecScript.decode(buffer.data_array) == null,
+		"decode() must return null when an ability id's length prefix claims more than the buffer holds"
 	)
 
 

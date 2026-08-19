@@ -47,8 +47,9 @@ var _tick_driver: FrameTickDriver
 ## built on. _command_executor is constructed with _entity_index because
 ## resolving a command's entity ids to Nodes is the one thing the sim-zone
 ## bus itself may never do -- see scripts/match/command_executor.gd. It is
-## also constructed with _unit_navigation_system, _unit_deployment_controller
-## and terrain, Move's collaborators that Stop never needed -- which is why
+## also constructed with _unit_navigation_system, _unit_deployment_controller,
+## terrain and _target_ability_handlers -- Move's, Deploy's and target
+## abilities' collaborators, none of which Stop ever needed -- which is why
 ## its construction is deferred past _setup_unit_navigation_system() and
 ## _setup_unit_deployment_controller() in _ready() rather than sitting next
 ## to _command_bus's.
@@ -85,6 +86,17 @@ var _match_snapshot
 ## itself up (via MatchLookupScript.entity_index()) from its own _ready() --
 ## see that comment below.
 var _entity_index: EntityNodeIndex
+## Shared between _command_executor and _unit_command_controller (see both
+## setup call sites below) so a target ability id resolves to the same
+## handler on both sides of the command bus -- SelectionTargetAbilityController.
+## handler_for() (scripts/match/selection_target_ability_controller.gd) is
+## the shared lookup; this is the shared list it is asked to search. Built
+## once here rather than as two separate `[AdvancedCarryallAbilityScript.new()]`
+## literals, which would hand each side its own instance -- harmless for this
+## stateless handler today, but a second instance is not "the same handler",
+## and nothing here should have to reason about whether that distinction
+## matters.
+var _target_ability_handlers: Array = [AdvancedCarryallAbilityScript.new()]
 
 
 func _enter_tree() -> void:
@@ -125,7 +137,8 @@ func _ready() -> void:
 	# (see _command_bus's field comment) and neither exists yet at the top of
 	# this function.
 	_command_executor = CommandExecutorScript.new(
-		_entity_index, _unit_navigation_system, _unit_deployment_controller, terrain
+		_entity_index, _unit_navigation_system, _unit_deployment_controller, terrain,
+		_target_ability_handlers
 	)
 	_setup_unit_command_controller()
 	_setup_building_controller()
@@ -229,7 +242,7 @@ func _setup_unit_command_controller() -> void:
 		selection_rectangle,
 		_unit_deployment_controller,
 		ability_bar,
-		[AdvancedCarryallAbilityScript.new()],
+		_target_ability_handlers,
 		_command_bus,
 		Callable(self, "next_orderable_tick")
 	)

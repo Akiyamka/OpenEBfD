@@ -54,6 +54,8 @@ extends RefCounted
 const SimStopCommandScript := preload("res://scripts/sim/commands/stop_command.gd")
 const SimMoveCommandScript := preload("res://scripts/sim/commands/move_command.gd")
 const SimAttackCommandScript := preload("res://scripts/sim/commands/attack_command.gd")
+const SimDeployCommandScript := preload("res://scripts/sim/commands/deploy_command.gd")
+const SimTargetAbilityCommandScript := preload("res://scripts/sim/commands/target_ability_command.gd")
 
 ## Every concrete command type, by its TYPE_ID. Add an entry here in the same
 ## change that adds a new SimCommand subclass under scripts/sim/commands/ --
@@ -64,6 +66,8 @@ const _COMMAND_SCRIPTS := {
 	SimStopCommandScript.TYPE_ID: SimStopCommandScript,
 	SimMoveCommandScript.TYPE_ID: SimMoveCommandScript,
 	SimAttackCommandScript.TYPE_ID: SimAttackCommandScript,
+	SimDeployCommandScript.TYPE_ID: SimDeployCommandScript,
+	SimTargetAbilityCommandScript.TYPE_ID: SimTargetAbilityCommandScript,
 }
 
 const _ENVELOPE_SIZE := 6  ## u16 type_id (2 bytes) + s32 player_id (4 bytes)

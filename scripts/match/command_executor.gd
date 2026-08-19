@@ -19,7 +19,12 @@ extends RefCounted
 const SimStopCommandScript := preload("res://scripts/sim/commands/stop_command.gd")
 const SimMoveCommandScript := preload("res://scripts/sim/commands/move_command.gd")
 const SimAttackCommandScript := preload("res://scripts/sim/commands/attack_command.gd")
+const SimDeployCommandScript := preload("res://scripts/sim/commands/deploy_command.gd")
+const SimTargetAbilityCommandScript := preload("res://scripts/sim/commands/target_ability_command.gd")
 const SelectionClassifierScript := preload("res://scripts/match/selection_classifier.gd")
+const SelectionTargetAbilityControllerScript := preload(
+	"res://scripts/match/selection_target_ability_controller.gd"
+)
 
 var _entities: EntityNodeIndex
 ## Move's collaborators, absent from Stop entirely -- see _execute_move().
@@ -45,13 +50,27 @@ var _terrain: MapLoader
 ## _deployment_controller after construction, so there is no staleness risk
 ## to guard against by rebuilding it.
 var _classifier: SelectionClassifier
+## Target ability's own collaborator, absent from every other command: the
+## handler list SelectionTargetAbilityController.handler_for() (scripts/match/
+## selection_target_ability_controller.gd) resolves an ability id against --
+## the same list UnitCommandController.setup() hands to its own
+## SelectionTargetAbilityController instance, so both sides resolve a given
+## ability id to the same handler. See _execute_target_ability().
+var _target_ability_handlers: Array = []
 
 
-func _init(entities: EntityNodeIndex, navigation = null, deployment_controller = null, terrain: MapLoader = null) -> void:
+func _init(
+		entities: EntityNodeIndex,
+		navigation = null,
+		deployment_controller = null,
+		terrain: MapLoader = null,
+		target_ability_handlers: Array = []
+	) -> void:
 	_entities = entities
 	_navigation = navigation
 	_terrain = terrain
 	_classifier = SelectionClassifierScript.new(deployment_controller, navigation)
+	_target_ability_handlers = target_ability_handlers.duplicate()
 
 
 ## Returns a small result Dictionary the caller can render as status text --
@@ -65,6 +84,10 @@ func execute(command: SimCommand) -> Dictionary:
 			return _execute_move(command as SimMoveCommand)
 		SimAttackCommandScript.TYPE_ID:
 			return _execute_attack(command as SimAttackCommand)
+		SimDeployCommandScript.TYPE_ID:
+			return _execute_deploy(command as SimDeployCommand)
+		SimTargetAbilityCommandScript.TYPE_ID:
+			return _execute_target_ability(command as SimTargetAbilityCommand)
 		_:
 			return {}
 
@@ -334,3 +357,83 @@ func _assign_attack_arcs(accepted: Array[Node], target_or_position: Variant) -> 
 	if shooters.size() <= 1 or not is_finite(engagement_radius):
 		return
 	_navigation.call("assign_attack_arcs", shooters, target, engagement_radius)
+
+
+## Resolves the command's acting entities and asks _classifier.request_deploy()
+## (scripts/match/selection_classifier.gd) to toggle each one through
+## UnitDeploymentController.try_deploy() -- the single entry point that
+## decides which direction (deploy a travel-mode MCV/combat-deploy unit, or
+## undeploy an already-deployed one) applies to a given entity right now. An
+## id that no longer resolves is skipped silently, exactly as _execute_stop()'s
+## comment explains; an id that resolves but is not a deploy candidate on this
+## tick (not a unit, or a unit the deployment controller has no strategy for)
+## is also skipped rather than treated as an error, for the same reason
+## _execute_attack() drops an entity that cannot act on this tick: "can this
+## entity deploy right now" is a verdict about the world that must be read
+## identically by every client on the execution tick, not at the click that
+## merely scheduled it -- see SimDeployCommand's doc comment.
+##
+## The result Dictionary is read by UnitCommandController.on_command_executed(),
+## which joins every accepted entity's message with " | ", exactly as
+## _deploy_selected_entities() used to build inline before this command moved
+## onto the bus.
+func _execute_deploy(command: SimDeployCommand) -> Dictionary:
+	var messages: Array[String] = []
+	for id in command.entity_ids:
+		var node := _entities.node_for(id)
+		if node == null:
+			continue
+		var result := _classifier.request_deploy(node)
+		if result.is_empty():
+			continue
+		var message := String(result.get("message", ""))
+		if not message.is_empty():
+			messages.append(message)
+	return {"messages": messages}
+
+
+## Resolves the command's acting entities and its optional target entity,
+## resolves the handler that serves command.ability_id against that acting
+## selection via SelectionTargetAbilityController.handler_for() (scripts/match/
+## selection_target_ability_controller.gd -- the same lookup that
+## controller's own live execute()/cursor_for() use, parameterized here on
+## this command's own entity_ids instead of whatever selection
+## UnitCommandController now holds; see that method's doc comment on why one
+## shared implementation serves both), and calls the handler's own execute().
+##
+## Mirrors SelectionTargetAbilityController.execute()'s {ok, message} result
+## contract exactly, so UnitCommandController.on_command_executed() can
+## assemble the identical status text that controller used to emit
+## synchronously. A handler that cannot be found (an id no active mode should
+## be able to produce, but not one this method trusts) returns an empty
+## Dictionary rather than a synthesized rejection message -- matching
+## SelectionTargetAbilityController.execute()'s own silent `return false` in
+## the identical case, which never emits a status either.
+##
+## target_entity resolving to null -- no entity was under the cursor at click
+## time, or the clicked entity died between the click and this tick -- is
+## simply passed through as null: unlike Move/Attack, no ability here falls
+## back to a ground position when its target entity is gone, because
+## AdvancedCarryallAbility's own candidate search already treats a null
+## target as "no eligible carrier" and reports "Ability target is invalid",
+## which is the correct behaviour for a target that no longer exists, not a
+## gap this method needs to paper over.
+func _execute_target_ability(command: SimTargetAbilityCommand) -> Dictionary:
+	var entities: Array[Node] = []
+	for id in command.entity_ids:
+		var node := _entities.node_for(id)
+		if node != null:
+			entities.append(node)
+
+	var target_entity: Node = null
+	if command.target_entity_id != 0:
+		target_entity = _entities.node_for(command.target_entity_id)
+
+	var handler = SelectionTargetAbilityControllerScript.handler_for(
+		command.ability_id, entities, _target_ability_handlers
+	)
+	if handler == null:
+		return {}
+	return handler.call(
+		"execute", command.ability_id, entities, target_entity, command.target_position
+	)

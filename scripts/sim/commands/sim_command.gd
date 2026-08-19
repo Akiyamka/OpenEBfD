@@ -88,3 +88,44 @@ func _read_entity_ids(buffer: StreamPeerBuffer) -> Variant:
 	for i in count:
 		ids[i] = buffer.get_32()
 	return ids
+
+
+## Shared payload helper: writes `value` as a u32 byte-length prefix followed
+## by its UTF-8 bytes -- the same "count prefix, then that many payload
+## bytes" shape _write_entity_ids() above uses, applied to the one field
+## shape this project's commands have needed a string for so far
+## (SimTargetAbilityCommand.ability_id, scripts/sim/commands/target_ability_command.gd).
+## Deliberately hand-rolled rather than StreamPeerBuffer's own
+## put_utf8_string()/get_utf8_string(): those exist, but read_payload()'s
+## contract (see SimCommand's own doc comment) is to fail closed on a
+## truncated buffer, which means validating the byte count against
+## get_available_bytes() *before* consuming it, the same discipline
+## _read_string_name() below applies and _read_entity_ids() above already
+## does -- not trusting a built-in whose behaviour on a short buffer this
+## class has not verified. The length is a byte count, not a character
+## count: UTF-8 is variable-width, so a non-ASCII StringName's byte length
+## and character length differ, and only the byte length says how many bytes
+## read_payload() must actually consume.
+func _write_string_name(buffer: StreamPeerBuffer, value: StringName) -> void:
+	var bytes := String(value).to_utf8_buffer()
+	buffer.put_u32(bytes.size())
+	buffer.put_data(bytes)
+
+
+## The inverse of _write_string_name(). Returns a StringName on success.
+## Returns null -- checked for by every read_payload() override that calls
+## this, exactly as _read_entity_ids() callers do -- when the buffer does not
+## hold as many bytes as its own length prefix claims: StreamPeerBuffer.get_data()
+## does not fail on a short read by itself (measured directly: asked for more
+## bytes than were available and it silently zero-padded the result up to the
+## requested length rather than erroring or truncating), so the length must
+## be checked against get_available_bytes() before get_data() is ever called,
+## not after.
+func _read_string_name(buffer: StreamPeerBuffer) -> Variant:
+	if buffer.get_available_bytes() < 4:
+		return null
+	var length := buffer.get_u32()
+	if buffer.get_available_bytes() < length:
+		return null
+	var bytes: PackedByteArray = buffer.get_data(length)[1]
+	return StringName(bytes.get_string_from_utf8())

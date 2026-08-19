@@ -18,6 +18,8 @@ const SelectionTargetAbilityControllerScript := preload(
 const SimStopCommandScript := preload("res://scripts/sim/commands/stop_command.gd")
 const SimMoveCommandScript := preload("res://scripts/sim/commands/move_command.gd")
 const SimAttackCommandScript := preload("res://scripts/sim/commands/attack_command.gd")
+const SimDeployCommandScript := preload("res://scripts/sim/commands/deploy_command.gd")
+const SimTargetAbilityCommandScript := preload("res://scripts/sim/commands/target_ability_command.gd")
 const SelectionClassifierScript := preload("res://scripts/match/selection_classifier.gd")
 
 var _camera: Camera3D
@@ -260,13 +262,37 @@ func _is_repeated_single_selection(entity: Node) -> bool:
 	return _selected_entities.size() == 1 and _selected_entities.front() == entity
 
 
+## The repeated-click path onto the same selected entity -- see _select_at().
+## _classifier().can_deploy() is the same read-only preview
+## _deployment_cursor_for() uses to decide whether to show the deploy cursor
+## at all: a coarse "is this entity a deploy candidate" gate that decides, at
+## issue time, whether this click commits to a deploy order (true, suppress
+## the ordinary reselect in _select_at()) or falls through to reselecting the
+## entity exactly as before this command moved onto the bus. The actual
+## toggle -- which direction, whether the MCV's footprint is still valid --
+## stays out of this gate and moves to CommandExecutor._execute_deploy() on
+## the execution tick, via the identical SimDeployCommand
+## _deploy_selected_entities() submits; see that method's doc comment.
 func _try_deploy(entity: Node) -> bool:
-	if _deployment_controller == null or not entity.is_in_group("units"):
+	if not _classifier().can_deploy(entity):
 		return false
-	var result: Dictionary = _deployment_controller.call("try_deploy", entity)
-	if not bool(result.get("handled", false)):
+	if _command_bus == null or not _submit_tick_provider.is_valid():
+		push_error(
+			"UnitCommandController._try_deploy(): no command bus wired in -- " +
+			"call setup() with a SimCommandBus and a submit-tick provider before issuing " +
+			"orders (see Match._setup_unit_command_controller() or, in tests, " +
+			"tests/match/support/command_pump.gd)."
+		)
 		return false
-	status_changed.emit(String(result.get("message", "")))
+	var entity_ids := _commandable_entity_ids()
+	if entity_ids.is_empty():
+		return false
+	var command := SimDeployCommandScript.new()
+	var players = _players()
+	if players != null:
+		command.player_id = players.local_player_id
+	command.entity_ids = entity_ids
+	_command_bus.submit(command, _submit_tick_provider.call())
 	return true
 
 
@@ -344,6 +370,10 @@ func on_command_executed(command: SimCommand, result: Dictionary) -> void:
 			_emit_move_status(command as SimMoveCommand, result)
 		SimAttackCommandScript.TYPE_ID:
 			_emit_attack_status(result)
+		SimDeployCommandScript.TYPE_ID:
+			_emit_deploy_status(result)
+		SimTargetAbilityCommandScript.TYPE_ID:
+			_emit_target_ability_status(result)
 
 
 ## The feedback half of the Move split (see _command_move()): assembles
@@ -462,28 +492,75 @@ func _emit_attack_status(result: Dictionary) -> void:
 	status_changed.emit(label)
 
 
-## The first `D` binding in the project. Applies to every selected
-## controllable entity the deployment controller can handle: toggles the MCV
-## (deploy into its Construction Yard) as well as the combat-deploy units
-## (Kindjal/Mortar/Kobra, toggling stationary combat mode both ways).
-func _deploy_selected_entities() -> void:
-	if _deployment_controller == null:
-		return
-	var messages: Array[String] = []
-	for entity in _controllable_entities():
-		if not entity.is_in_group("units"):
-			continue
-		if not _deployment_controller.has_method("can_handle") \
-		or not bool(_deployment_controller.call("can_handle", entity)):
-			continue
-		var result: Dictionary = _deployment_controller.call("try_deploy", entity)
-		if not bool(result.get("handled", false)):
-			continue
-		var message := String(result.get("message", ""))
-		if not message.is_empty():
-			messages.append(message)
+## The feedback half of the Deploy split (see _deploy_selected_entities() and
+## _try_deploy()): rebuilds exactly the joined-with-" | "-status text
+## _deploy_selected_entities() used to assemble inline, now from the result
+## CommandExecutor._execute_deploy() computed against the tick this command
+## was scheduled for. Nothing is emitted when every acting entity's result
+## was empty (not a deploy candidate at all), matching how
+## _deploy_selected_entities() never emitted an empty status before this
+## command moved onto the bus.
+func _emit_deploy_status(result: Dictionary) -> void:
+	var messages: Array = result.get("messages", [])
 	if not messages.is_empty():
 		status_changed.emit(" | ".join(messages))
+
+
+## The feedback half of the target-ability split (see
+## _execute_target_ability()): rebuilds exactly the status text
+## SelectionTargetAbilityController.execute() used to emit synchronously,
+## from the {ok, message} result CommandExecutor._execute_target_ability()
+## computed against the tick this command was scheduled for. An empty result
+## (CommandExecutor found no handler for this ability id -- should not
+## happen for an id a live mode ever armed, but is not trusted here either)
+## emits nothing, matching SelectionTargetAbilityController.execute()'s own
+## silent `return false` in the identical case.
+##
+## Unlike that controller's own execute(), this does not cancel the target
+## ability mode on success: _execute_target_ability() already did that at
+## issue time, the moment the click was submitted, rather than waiting a tick
+## to find out whether the order was accepted -- see that method's doc
+## comment.
+func _emit_target_ability_status(result: Dictionary) -> void:
+	if result.is_empty():
+		return
+	if bool(result.get("ok", false)):
+		status_changed.emit(String(result.get("message", "")))
+		return
+	status_changed.emit(String(result.get("message", "Ability target is invalid")))
+
+
+## The first `D` binding in the project. Submits one SimDeployCommand naming
+## every commandable selected entity -- see SimDeployCommand's doc comment
+## for why, unlike Move and Attack, there is no raycast here at all: Deploy
+## has no target, so the selection is this command's entire issue-time
+## content. CommandExecutor._execute_deploy() asks SelectionClassifier.
+## request_deploy() (scripts/match/selection_classifier.gd) to toggle each
+## acting entity through UnitDeploymentController.try_deploy() on the
+## execution tick -- deploying an MCV into its Construction Yard, or toggling
+## a combat-deploy unit (Kindjal/Mortar/Kobra) either direction, whichever
+## direction applies to that entity at that moment. Which entities are even
+## deploy candidates at all is deliberately not decided here, for the same
+## reason it is not decided at click time for any other order: see this
+## file's module doc comment on the seam.
+func _deploy_selected_entities() -> void:
+	if _command_bus == null or not _submit_tick_provider.is_valid():
+		push_error(
+			"UnitCommandController._deploy_selected_entities(): no command bus wired in -- " +
+			"call setup() with a SimCommandBus and a submit-tick provider before issuing " +
+			"orders (see Match._setup_unit_command_controller() or, in tests, " +
+			"tests/match/support/command_pump.gd)."
+		)
+		return
+	var entity_ids := _commandable_entity_ids()
+	if entity_ids.is_empty():
+		return
+	var command := SimDeployCommandScript.new()
+	var players = _players()
+	if players != null:
+		command.player_id = players.local_player_id
+	command.entity_ids = entity_ids
+	_command_bus.submit(command, _submit_tick_provider.call())
 
 
 func _select_units_in_rectangle(rectangle: Rect2) -> void:
@@ -832,12 +909,58 @@ func _on_target_ability_mode_changed(ability_id: StringName) -> void:
 		_clear_command_cursor()
 
 
+## The issue side of a target ability: immediate, and split from execution --
+## see _stop_selected_entities()'s doc comment for the same split done once
+## already, and docs/architecture/network-multiplayer.md, "Layering". What
+## stays here: which ability is armed (_target_abilities.active_ability(),
+## view state), the selection, and the two raycasts that turn screen_position
+## into an optional target entity and a world position -- the identical pair
+## _update_target_ability_cursor() already makes every frame for the preview.
+## Everything else -- resolving the handler for this ability id, calling its
+## execute(), and the {ok, message} it returns -- moves to
+## CommandExecutor._execute_target_ability() (scripts/match/command_executor.gd),
+## because whether this click's target is valid for this ability is a verdict
+## about the world that must be read identically by every client on the
+## execution tick, not at the click that merely scheduled it.
+##
+## Unlike SelectionTargetAbilityController.execute(), which only cancels the
+## active mode on success and stays armed (letting the player retry without
+## re-pressing the hotkey) on an invalid target, this always cancels the mode
+## immediately -- a click commits, the same way every other order's click
+## does, rather than leaving view state waiting on a tick-delayed verdict it
+## has no way to reconcile against whatever the player does with that mode in
+## the meantime (re-arm a different ability, change selection). The
+## success/failure status text itself is unaffected -- see
+## _emit_target_ability_status()'s doc comment.
 func _execute_target_ability(screen_position: Vector2) -> void:
+	var ability_id := _target_abilities.active_ability()
+	if ability_id.is_empty():
+		return
+	if _command_bus == null or not _submit_tick_provider.is_valid():
+		push_error(
+			"UnitCommandController._execute_target_ability(): no command bus wired in -- " +
+			"call setup() with a SimCommandBus and a submit-tick provider before issuing " +
+			"orders (see Match._setup_unit_command_controller() or, in tests, " +
+			"tests/match/support/command_pump.gd)."
+		)
+		return
 	var entity_hit := _raycast(screen_position, ENTITY_SELECTION_COLLISION_MASK)
 	var target = _find_selectable_entity(entity_hit.get("collider") as Node)
 	var terrain_hit := _raycast(screen_position, TERRAIN_COLLISION_MASK)
 	var position: Vector3 = terrain_hit.get("position", Vector3.INF)
-	_target_abilities.execute(target, position)
+	var entity_ids := _commandable_entity_ids()
+	if not entity_ids.is_empty():
+		var command := SimTargetAbilityCommandScript.new()
+		var players = _players()
+		if players != null:
+			command.player_id = players.local_player_id
+		command.entity_ids = entity_ids
+		command.ability_id = ability_id
+		if target != null and &"entity_id" in target:
+			command.target_entity_id = int(target.get(&"entity_id"))
+		command.target_position = position
+		_command_bus.submit(command, _submit_tick_provider.call())
+	_target_abilities.cancel()
 
 
 func _update_target_ability_cursor(screen_position: Vector2) -> void:
@@ -1021,9 +1144,7 @@ func _deployment_cursor_for(entity) -> int:
 	or _selected_entities.size() != 1 \
 	or _selected_entities.front() != entity \
 	or not _can_control(entity) \
-	or _deployment_controller == null \
-	or not _deployment_controller.has_method("can_handle") \
-	or not bool(_deployment_controller.call("can_handle", entity)):
+	or not _classifier().can_deploy(entity):
 		return NO_CURSOR_OVERRIDE
 
 	# The combat-deploy check (a handful of state-flag reads, no world

@@ -151,10 +151,30 @@ func _definitions() -> Array[Dictionary]:
 
 
 func _handler_for(ability_id: StringName):
-	for handler in _handlers:
+	return handler_for(ability_id, _selection, _handlers)
+
+
+## The inverse lookup of _definitions(): which handler in `handlers` offers
+## `ability_id` for `selection`. Static, and parameterized on `selection`
+## rather than reading this controller's own live _selection field, so it
+## serves two callers that ask the identical question against two different
+## selections -- this controller's own execute()/cursor_for(), against
+## whatever selection is live right now, and
+## CommandExecutor._execute_target_ability() (scripts/match/command_executor.gd),
+## against a command's own entity_ids resolved on the execution tick, which by
+## then may differ from whatever this controller's selection has become. One
+## implementation shared both ways, the same fix SelectionClassifier
+## (scripts/match/selection_classifier.gd) applies to Move/Attack/Deploy's
+## per-entity verdicts -- this file is the shared home for this one instead,
+## because "which handler serves this ability for this selection" is not a
+## per-entity/per-target verdict shaped like SelectionClassifier's others; it
+## already lived here as a private method before CommandExecutor needed it
+## too.
+static func handler_for(ability_id: StringName, selection: Array[Node], handlers: Array):
+	for handler in handlers:
 		if handler == null or not handler.has_method("definitions"):
 			continue
-		for definition in handler.call("definitions", _selection):
+		for definition in handler.call("definitions", selection):
 			if definition is Dictionary and StringName(definition.get("id", &"")) == ability_id:
 				return handler
 	return null

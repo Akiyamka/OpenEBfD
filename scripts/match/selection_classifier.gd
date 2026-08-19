@@ -19,6 +19,10 @@ extends RefCounted
 ## trap between UnitCommandController's cursor code (_can_issue_attack_order())
 ## and CommandExecutor._execute_attack() and got the identical fix:
 ## is_deploying() and can_attack() below are that pair's shared verdicts.
+## Converting Deploy hit the same trap a third time, between
+## _deployment_cursor_for()'s preview and _try_deploy()'s issue-time gate on
+## one side and CommandExecutor._execute_deploy() on the other: can_deploy()
+## and request_deploy() below are that trio's shared verdicts.
 ##
 ## Lives in scripts/match/, not scripts/sim/: every method here calls
 ## has_method()/call() on live Nodes (and, for can_undeploy()/
@@ -163,4 +167,45 @@ func request_undeployment(entity: Node, target: Vector3, move_mode: int) -> Dict
 	var result: Dictionary = _deployment_controller.call(
 		"try_undeploy", entity, target, move_mode
 	)
+	return result if bool(result.get("handled", false)) else {}
+
+
+## True when the deployment controller would treat `entity` as a deploy
+## candidate at all -- read-only, unlike request_deploy() below, which
+## actually attempts the toggle and can start an animation/placement flow as
+## a side effect. Only the cursor preview and the repeated-click issue-time
+## gate need this: _deployment_cursor_for() to decide whether to show the
+## deploy cursor over the selected entity, _try_deploy() to decide whether a
+## repeated click on it commits to a deploy order or falls through to an
+## ordinary reselect (see that method's doc comment). CommandExecutor has no
+## matching need for it -- request_deploy()'s own `handled` flag already
+## answers the identical question at the one moment that matters, the
+## execution tick, without a separate non-mutating preview step.
+func can_deploy(entity: Node) -> bool:
+	return _deployment_controller != null and entity.is_in_group("units") \
+		and _deployment_controller.has_method("can_handle") \
+		and bool(_deployment_controller.call("can_handle", entity))
+
+
+## Asks the deployment controller to try_deploy() `entity` -- the single
+## entry point that toggles both directions (deploy a travel-mode MCV or
+## combat-deploy unit, or undeploy an already-deployed one -- see
+## UnitDeploymentController.try_deploy()'s doc comment; a deployed
+## Construction Yard is undeployed through request_undeployment() above
+## instead, via a move order, not this path) -- returning its result
+## Dictionary if it applies to this entity (handled == true) or an empty
+## Dictionary otherwise. UnitCommandController's two issue-time callers used
+## to each hold their own copy of the "is this a unit the deployment
+## controller can handle" guard before this (_deploy_selected_entities()'s
+## explicit can_handle() pre-filter, _try_deploy()'s is_in_group("units")
+## check); CommandExecutor._execute_deploy() asks the identical question
+## again on the execution tick, so this is that guard's one implementation,
+## not a third copy -- the null/group check lives here once, and the actual
+## can_handle() recomputation that decides `handled` happens inside
+## try_deploy() itself, which every caller already had to trust regardless.
+func request_deploy(entity: Node) -> Dictionary:
+	if _deployment_controller == null or not entity.is_in_group("units") \
+	or not _deployment_controller.has_method("try_deploy"):
+		return {}
+	var result: Dictionary = _deployment_controller.call("try_deploy", entity)
 	return result if bool(result.get("handled", false)) else {}

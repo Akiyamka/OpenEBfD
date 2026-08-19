@@ -210,14 +210,26 @@ class FakeNavigation extends RefCounted:
 
 
 class FakeTargetAbility extends RefCounted:
+	## Recorded once per execute() call -- see _test_target_ability_execution(),
+	## which uses this to prove CommandExecutor._execute_target_ability() hands
+	## the handler the command's own snapshotted acting selection, not
+	## whatever UnitCommandController's live selection has become by the
+	## execution tick.
+	var executions: Array[Dictionary] = []
+	var result_ok := true
+	var result_message := "done"
+
 	func definitions(_selection: Array[Node]) -> Array[Dictionary]:
 		return [{"id": &"test_target", "slot": &"pickup", "keycode": KEY_F, "enabled": true}]
 
 	func cursor_for(_id: StringName, _selection: Array[Node], _target, _position: Vector3) -> int:
 		return CursorManagerScript.CursorType.DN5
 
-	func execute(_id: StringName, _selection: Array[Node], _target, _position: Vector3) -> Dictionary:
-		return {"ok": true, "message": "done"}
+	func execute(id: StringName, selection: Array[Node], target, position: Vector3) -> Dictionary:
+		executions.append({
+			"id": id, "selection": selection.duplicate(), "target": target, "position": position
+		})
+		return {"ok": result_ok, "message": result_message}
 
 
 ## A combat-deploy-style unit (Kindjal/Mortar/Kobra): unlike the MCV, `D` or a
@@ -319,6 +331,10 @@ func _initialize() -> void:
 	_run_case("carried cargo remains attackable but cannot be selected", _test_carried_cargo_targeting.bind(local_player, enemy_player))
 	_run_case("locked transport remains selected while cargo is pruned", _test_transport_selection_lock.bind(local_player))
 	_run_case("targeting right-click cancels and D keeps deployment", _test_target_mode_input_priority.bind(local_player))
+	_run_case(
+		"a target ability executes on its scheduled tick with the acting selection snapshotted at click time",
+		_test_target_ability_execution.bind(local_player, enemy_player)
+	)
 	await _test_target_hotkey_input_dispatch(local_player)
 	_run_case("right click and Ctrl route target-specific attack orders", _test_attack_orders.bind(local_player, enemy_player, neutral_player))
 	_run_case("clicking the selected unit again requests deployment", _test_repeated_click_deployment.bind(local_player))
@@ -493,13 +509,23 @@ func _test_transport_selection_lock(token: int, local_player) -> int:
 
 
 func _test_target_mode_input_priority(token: int, local_player) -> int:
+	# D's deploy order is issued through the real command bus, via the same
+	# CommandPump every command-issuing case wires in -- see
+	# tests/match/support/command_pump.gd and _test_stop_shortcut().
+	var deployment := FakeDeploymentController.new()
+	var pump := CommandPumpScript.new()
+	pump.configure_move(null, deployment)
 	var commands := FakeUnitCommandController.new()
+	commands.setup(
+		null, null, null, null, deployment, null, [], pump.bus(), Callable(pump, "next_orderable_tick")
+	)
 	root.add_child(commands)
 	var unit := FakeToggleUnit.new()
 	unit.name = "Deployable"
 	unit.player = local_player
 	unit.add_to_group("units")
 	root.add_child(unit)
+	unit.entity_id = pump.register(unit, SimEntityRegistryScript.Kind.UNIT)
 	commands._set_selection([unit])
 	commands._target_abilities.configure(null, [FakeTargetAbility.new()])
 	commands._target_abilities.selection_changed([unit])
@@ -508,15 +534,110 @@ func _test_target_mode_input_priority(token: int, local_player) -> int:
 	commands.handle_unhandled_input(_mouse_event(MOUSE_BUTTON_RIGHT))
 	_expect(not commands.has_active_target_ability() and unit.move_targets.is_empty(),
 		"right click in target mode must only cancel and never issue a normal order")
-	var deployment := FakeDeploymentController.new()
 	deployment.deployment_entities.append(unit)
-	commands._deployment_controller = deployment
 	commands.handle_unhandled_input(_key_event(KEY_F, true))
 	commands.handle_unhandled_input(_key_event(KEY_D, true))
-	_expect(not commands.has_active_target_ability() and deployment.calls == [unit],
-		"D must cancel target mode then retain its ordinary deployment behavior")
+	_expect(
+		not commands.has_active_target_ability() and deployment.calls.is_empty(),
+		"D must cancel target mode; its deploy order must not happen before its scheduled tick is pumped"
+	)
+	pump.pump(commands)
+	_expect(deployment.calls == [unit], "D must retain its ordinary deployment behavior once pumped")
 	commands.queue_free()
 	unit.queue_free()
+	return token
+
+
+func _test_target_ability_execution(token: int, local_player, enemy_player) -> int:
+	# A target ability is issued through the real command bus, via the same
+	# CommandPump every command-issuing case wires in -- see
+	# tests/match/support/command_pump.gd and _test_stop_shortcut(). The
+	# handler is registered on both sides of the bus, exactly as Match wires
+	# one shared handler list into UnitCommandController and CommandExecutor
+	# (see Match._target_ability_handlers) -- a fixture that only configured
+	# one side would test a handler resolution CommandExecutor never actually
+	# exercises.
+	var handler := FakeTargetAbility.new()
+	var pump := CommandPumpScript.new()
+	pump.configure_move(null, null, null, [handler])
+	var commands := FakeUnitCommandController.new()
+	commands.setup(
+		null, null, null, null, null, null, [handler], pump.bus(), Callable(pump, "next_orderable_tick")
+	)
+	var statuses: Array[String] = []
+	commands.status_changed.connect(func(status: String) -> void: statuses.append(status))
+	root.add_child(commands)
+
+	var carrier := _make_unit("Carryall", local_player)
+	var escort := _make_unit("Escort", local_player)
+	var cargo := _make_unit("Cargo", enemy_player)
+	root.add_child(carrier)
+	root.add_child(escort)
+	root.add_child(cargo)
+	carrier.entity_id = pump.register(carrier, SimEntityRegistryScript.Kind.UNIT)
+	escort.entity_id = pump.register(escort, SimEntityRegistryScript.Kind.UNIT)
+	cargo.entity_id = pump.register(cargo, SimEntityRegistryScript.Kind.UNIT)
+	var cargo_collider := Node.new()
+	cargo.add_child(cargo_collider)
+
+	commands._set_selection([carrier, escort])
+	commands.handle_unhandled_input(_key_event(KEY_F, true))
+	_expect(commands.has_active_target_ability(), "F must arm the fake target ability")
+
+	# _execute_target_ability() raycasts entities first, then terrain -- the
+	# same order _update_target_ability_cursor()'s preview already uses.
+	commands.raycast_hits.append({"collider": cargo_collider})
+	commands.raycast_hits.append({"position": Vector3(5.0, 0.0, 9.0)})
+	commands.handle_unhandled_input(_mouse_event(MOUSE_BUTTON_LEFT))
+	_expect(
+		not commands.has_active_target_ability(),
+		"a click always exits target mode immediately, before its command is even pumped"
+	)
+	_expect(
+		handler.executions.is_empty(),
+		"the ability must not execute before its scheduled tick is pumped"
+	)
+	pump.pump(commands)
+	_expect(handler.executions.size() == 1, "the pumped tick must execute the ability exactly once")
+	var execution: Dictionary = handler.executions[0]
+	_expect(execution["id"] == &"test_target", "the executed ability id must match what was armed")
+	_expect(
+		execution["selection"] == [carrier, escort],
+		"the executed selection must be the acting entities snapshotted at click time, not a live re-read"
+	)
+	_expect(execution["target"] == cargo, "the entity under the cursor must resolve to the live Node")
+	_expect(
+		execution["position"] == Vector3(5.0, 0.0, 9.0),
+		"the terrain position must be the one recorded at click time"
+	)
+	_expect(statuses.back() == "done", "a successful ability must report its handler's own message")
+
+	handler.result_ok = false
+	handler.result_message = "Select eligible ground vehicle"
+	commands.handle_unhandled_input(_key_event(KEY_F, true))
+	_expect(commands.has_active_target_ability(), "F must re-arm the ability for a second attempt")
+	commands.raycast_hits.append({})
+	commands.raycast_hits.append({"position": Vector3(1.0, 0.0, 1.0)})
+	commands.handle_unhandled_input(_mouse_event(MOUSE_BUTTON_LEFT))
+	_expect(
+		not commands.has_active_target_ability(),
+		"an invalid target still exits target mode immediately at click time"
+	)
+	_expect(
+		handler.executions.size() == 1,
+		"the rejected ability must not execute before its scheduled tick is pumped"
+	)
+	pump.pump(commands)
+	_expect(handler.executions.size() == 2, "the pumped tick must still ask the handler, even for a rejection")
+	_expect(
+		statuses.back() == "Select eligible ground vehicle",
+		"a rejected ability must report the handler's own validation message, not a generic one"
+	)
+
+	commands.queue_free()
+	carrier.queue_free()
+	escort.queue_free()
+	cargo.queue_free()
 	return token
 
 
@@ -698,23 +819,37 @@ func _test_attack_orders(token: int, local_player, enemy_player, neutral_player)
 
 
 func _test_repeated_click_deployment(token: int, local_player) -> int:
+	# Deploy is issued through the real command bus, via the same CommandPump
+	# every command-issuing case wires in -- see
+	# tests/match/support/command_pump.gd and _test_stop_shortcut().
 	var deployment := FakeDeploymentController.new()
+	var pump := CommandPumpScript.new()
+	pump.configure_move(null, deployment)
 	var commands := FakeUnitCommandController.new()
-	commands.setup(null, null, null, null, deployment)
+	commands.setup(
+		null, null, null, null, deployment, null, [], pump.bus(), Callable(pump, "next_orderable_tick")
+	)
 	var statuses: Array[String] = []
 	commands.status_changed.connect(func(status: String) -> void: statuses.append(status))
 	root.add_child(commands)
 
 	var mcv := _make_unit("ATMCV", local_player)
 	root.add_child(mcv)
+	mcv.entity_id = pump.register(mcv, SimEntityRegistryScript.Kind.UNIT)
 	var collider := Node.new()
 	mcv.add_child(collider)
 	commands.raycast_hits.append({"collider": collider})
 	commands.handle_unhandled_input(_mouse_event(MOUSE_BUTTON_LEFT))
 	_expect(deployment.calls.is_empty(), "the first click must only select the MCV")
 
+	deployment.deployment_entities.append(mcv)
 	commands.raycast_hits.append({"collider": collider})
 	commands.handle_unhandled_input(_mouse_event(MOUSE_BUTTON_LEFT))
+	_expect(
+		deployment.calls.is_empty(),
+		"the deploy order must not happen before its scheduled tick is pumped"
+	)
+	pump.pump(commands)
 	_expect(deployment.calls == [mcv], "the next click on the same selected unit must request deploy")
 	_expect(mcv.selected, "the MCV must remain selected during its deployment animation")
 	_expect(statuses.back() == "ATConYard deployment started", "deployment status must reach the shared selection label")
@@ -1263,9 +1398,37 @@ func _test_uncommandable_selection_explains_itself(token: int, enemy_player) -> 
 		"Stop must explain itself the same way rather than doing nothing in silence"
 	)
 
+	statuses.clear()
+	commands.handle_unhandled_input(_key_event(KEY_D, true))
+	_expect(
+		statuses.has("Cannot command this player"),
+		"D must explain itself the same way rather than doing nothing in silence"
+	)
+
+	statuses.clear()
+	var fake_ability := FakeTargetAbility.new()
+	commands._target_abilities.configure(null, [fake_ability])
+	commands.handle_unhandled_input(_key_event(KEY_F, true))
+	_expect(
+		commands.has_active_target_ability(),
+		"the fake ability must arm even for a selection this player does not control"
+	)
+	commands.raycast_hits.append({})
+	commands.raycast_hits.append({"position": Vector3(6.0, 0.0, 6.0)})
+	commands.handle_unhandled_input(_mouse_event(MOUSE_BUTTON_LEFT))
+	_expect(
+		not commands.has_active_target_ability(),
+		"the click must still exit target mode even though nothing could be commanded"
+	)
+	_expect(
+		statuses.has("Cannot command this player"),
+		"a target ability click on a selection this player does not control must say so"
+	)
+
 	pump.pump(commands)
 	_expect(
-		hostile.move_targets.is_empty() and hostile.stop_commands == 0,
+		hostile.move_targets.is_empty() and hostile.stop_commands == 0
+			and fake_ability.executions.is_empty(),
 		"nothing must reach the entity on the tick either -- no command was ever submitted"
 	)
 
@@ -1545,9 +1708,16 @@ func _key_event(keycode: Key, pressed: bool) -> InputEventKey:
 
 
 func _test_deploy_key_toggles(token: int, local_player) -> int:
+	# Deploy is issued through the real command bus, via the same CommandPump
+	# every command-issuing case wires in -- see
+	# tests/match/support/command_pump.gd and _test_stop_shortcut().
 	var deployment := FakeDeploymentController.new()
+	var pump := CommandPumpScript.new()
+	pump.configure_move(null, deployment)
 	var commands := FakeUnitCommandController.new()
-	commands.setup(null, null, null, null, deployment)
+	commands.setup(
+		null, null, null, null, deployment, null, [], pump.bus(), Callable(pump, "next_orderable_tick")
+	)
 	var statuses: Array[String] = []
 	commands.status_changed.connect(func(status: String) -> void: statuses.append(status))
 	root.add_child(commands)
@@ -1557,6 +1727,7 @@ func _test_deploy_key_toggles(token: int, local_player) -> int:
 	unit.player = local_player
 	unit.add_to_group("units")
 	root.add_child(unit)
+	unit.entity_id = pump.register(unit, SimEntityRegistryScript.Kind.UNIT)
 	deployment.deployment_entities.append(unit)
 	commands._set_selection([unit])
 
@@ -1564,11 +1735,21 @@ func _test_deploy_key_toggles(token: int, local_player) -> int:
 		commands.handle_unhandled_input(_key_event(KEY_D, true)),
 		"D must be handled as a command input"
 	)
+	_expect(
+		deployment.calls.is_empty(),
+		"the deploy order must not happen before its scheduled tick is pumped"
+	)
+	pump.pump(commands)
 	_expect(deployment.calls == [unit], "D must issue a deploy command to the selected unit")
 	_expect(unit.is_deployed(), "D must deploy a travel-mode unit")
 	_expect(statuses.back() == "ATKindjal deployed", "the deploy status must reach the selection label")
 
 	commands.handle_unhandled_input(_key_event(KEY_D, true))
+	_expect(
+		deployment.calls.size() == 1,
+		"the second D press's undeploy order must not happen before its scheduled tick is pumped"
+	)
+	pump.pump(commands)
 	_expect(deployment.calls.size() == 2, "a second D press must issue another deploy command")
 	_expect(not unit.is_deployed(), "D must undeploy an already-deployed unit")
 	_expect(statuses.back() == "ATKindjal undeployed", "the undeploy status must reach the selection label")
@@ -1579,9 +1760,16 @@ func _test_deploy_key_toggles(token: int, local_player) -> int:
 
 
 func _test_repeated_click_undeploy(token: int, local_player) -> int:
+	# Deploy is issued through the real command bus, via the same CommandPump
+	# every command-issuing case wires in -- see
+	# tests/match/support/command_pump.gd and _test_stop_shortcut().
 	var deployment := FakeDeploymentController.new()
+	var pump := CommandPumpScript.new()
+	pump.configure_move(null, deployment)
 	var commands := FakeUnitCommandController.new()
-	commands.setup(null, null, null, null, deployment)
+	commands.setup(
+		null, null, null, null, deployment, null, [], pump.bus(), Callable(pump, "next_orderable_tick")
+	)
 	var statuses: Array[String] = []
 	commands.status_changed.connect(func(status: String) -> void: statuses.append(status))
 	root.add_child(commands)
@@ -1592,6 +1780,7 @@ func _test_repeated_click_undeploy(token: int, local_player) -> int:
 	unit.add_to_group("units")
 	unit.deployed = true
 	root.add_child(unit)
+	unit.entity_id = pump.register(unit, SimEntityRegistryScript.Kind.UNIT)
 	deployment.deployment_entities.append(unit)
 	var collider := Node.new()
 	unit.add_child(collider)
@@ -1602,6 +1791,11 @@ func _test_repeated_click_undeploy(token: int, local_player) -> int:
 
 	commands.raycast_hits.append({"collider": collider})
 	commands.handle_unhandled_input(_mouse_event(MOUSE_BUTTON_LEFT))
+	_expect(
+		deployment.calls.is_empty(),
+		"the undeploy order must not happen before its scheduled tick is pumped"
+	)
+	pump.pump(commands)
 	_expect(deployment.calls == [unit], "the repeated click on a deployed unit must request undeploy")
 	_expect(not unit.is_deployed(), "the repeated click must undeploy the unit")
 	_expect(statuses.back() == "ORKobra undeployed", "the undeploy status must reach the selection label")
