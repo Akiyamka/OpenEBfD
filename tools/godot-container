@@ -17,6 +17,16 @@ WEB_EXPORT_PATH="${GODOT_WEB_EXPORT_PATH:-exports/web/index.html}"
 # line printed, then a host-side TCP connect attempt to the same port was
 # refused) rather than assumed.
 RELAY_PORT="${GODOT_RELAY_PORT:-8910}"
+# Container-side backstop deadline for one-shot commands (check, lint, godot
+# passthrough, exports, converters run through `godot`). `podman run
+# --timeout` makes the container kill itself from the inside, which is what
+# actually bounds its lifetime: an external `timeout` (as tools/run_godot_tests.sh
+# wraps each suite in) only kills the local `podman run` client -- conmon and
+# the container keep running regardless, indefinitely, competing for the
+# /workspace mount with every later suite. Not applied to `relay` (a
+# long-running server by design), `shell` (interactive), or `watch-export`
+# (continuous) -- a deadline would just kill those mid-session.
+TIMEOUT_SECONDS="${GODOT_CONTAINER_TIMEOUT_SECONDS:-300}"
 
 
 usage() {
@@ -35,6 +45,7 @@ Commands:
   relay [args]   Run the relay server, with its port published to the host.
                  [args] are passed through to relay_main.gd after --port, so
                  e.g. --max-connections 256 works. See GODOT_RELAY_PORT.
+  image          Print the resolved image tag (GODOT_CONTAINER_IMAGE).
 
 Environment:
   GODOT_CONTAINER_IMAGE   Image tag. Default: openebfd-godot:4.7
@@ -44,6 +55,11 @@ Environment:
   GODOT_WEB_EXPORT_PATH   Export path. Default: exports/web/index.html
   GODOT_RELAY_PORT        Relay port, both inside the container and
                            published to the host. Default: 8910
+  GODOT_CONTAINER_TIMEOUT_SECONDS
+                           Container-side deadline (seconds) for one-shot
+                           commands (check, lint, godot, exports/converters).
+                           Not applied to relay, shell, or watch-export.
+                           Default: 300
 USAGE
 }
 
@@ -56,6 +72,9 @@ tty_flags() {
 
 
 podman_base_args() {
+	# $1, if non-empty, is a container-side --timeout deadline in seconds.
+	# Callers that must not have one (relay, shell, watch-export) pass "".
+	local deadline="${1:-}"
 	local tty_flag
 	tty_flag="$(tty_flags)"
 
@@ -68,17 +87,25 @@ podman_base_args() {
 		--userns=keep-id \
 		--volume "${PROJECT_DIR}:/workspace:Z" \
 		--workdir /workspace
+
+	if [[ -n "${deadline}" ]]; then
+		printf '%s\n' --timeout "${deadline}"
+	fi
 }
 
 
 run_godot() {
-	mapfile -t base_args < <(podman_base_args)
+	mapfile -t base_args < <(podman_base_args "${TIMEOUT_SECONDS}")
 	"${PODMAN_BIN}" run "${base_args[@]}" "${IMAGE}" "$@"
 }
 
 
 run_shell() {
-	mapfile -t base_args < <(podman_base_args)
+	# $1 is a container-side --timeout deadline in seconds, or "" for none
+	# (see podman_base_args). Callers pick per the same split as run_godot.
+	local deadline="$1"
+	shift
+	mapfile -t base_args < <(podman_base_args "${deadline}")
 	"${PODMAN_BIN}" run "${base_args[@]}" --entrypoint bash "${IMAGE}" "$@"
 }
 
@@ -106,7 +133,7 @@ export_web() {
 
 watch_export() {
 	mkdir -p "${PROJECT_DIR}/$(dirname "${WEB_EXPORT_PATH}")"
-	run_shell -lc "set -e; while true; do godot --headless --path /workspace --export-release Web '/workspace/${WEB_EXPORT_PATH}' || true; inotifywait -r -e close_write,create,delete,move --exclude '(^|/)(\\.git|\\.godot|exports)(/|$)' /workspace; done"
+	run_shell "" -lc "set -e; while true; do godot --headless --path /workspace --export-release Web '/workspace/${WEB_EXPORT_PATH}' || true; inotifywait -r -e close_write,create,delete,move --exclude '(^|/)(\\.git|\\.godot|exports)(/|$)' /workspace; done"
 }
 
 
@@ -134,7 +161,7 @@ case "${command}" in
 		check_project
 		;;
 	lint)
-		run_shell -lc "/opt/gdtoolkit/bin/gdlint scripts tests converters"
+		run_shell "${TIMEOUT_SECONDS}" -lc "/opt/gdtoolkit/bin/gdlint scripts tests converters"
 		;;
 	export-web)
 		export_web
@@ -143,13 +170,16 @@ case "${command}" in
 		watch_export
 		;;
 	shell)
-		run_shell "$@"
+		run_shell "" "$@"
 		;;
 	godot)
 		run_godot "$@"
 		;;
 	relay)
 		run_relay "$@"
+		;;
+	image)
+		printf '%s\n' "${IMAGE}"
 		;;
 	""|help|--help|-h)
 		usage

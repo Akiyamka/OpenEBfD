@@ -3,6 +3,22 @@ set -uo pipefail
 
 readonly SUITE_TIMEOUT_SECONDS="${GODOT_SUITE_TIMEOUT_SECONDS:-180}"
 readonly GODOT_CONTAINER="${GODOT_CONTAINER:-./tools/godot-container}"
+readonly PODMAN_BIN="${PODMAN_BIN:-podman}"
+
+# The container gets a *longer* deadline than the outer `timeout` below, on
+# purpose: `timeout` should normally be the one that fires and reports a
+# suite as timed out, in the usual way our failure list already handles. The
+# container's own --timeout (see GODOT_CONTAINER_TIMEOUT_SECONDS in
+# tools/godot-container) is only the backstop that guarantees the container
+# dies even when nothing is left on this side to signal it -- which is
+# exactly the failure this script used to hit: `timeout` kills the local
+# `podman run` client, but conmon and the container survive it and keep
+# running, indefinitely, competing for the /workspace mount with every later
+# suite. Deriving it from SUITE_TIMEOUT_SECONDS instead of hardcoding a
+# second number keeps the two deadlines from drifting apart.
+readonly CONTAINER_TIMEOUT_MARGIN_SECONDS=30
+export GODOT_CONTAINER_TIMEOUT_SECONDS="${GODOT_CONTAINER_TIMEOUT_SECONDS:-$((SUITE_TIMEOUT_SECONDS + CONTAINER_TIMEOUT_MARGIN_SECONDS))}"
+
 readonly SUITES=(
 	tests/sim/match_clock_run.gd tests/sim/entity_registry_run.gd tests/sim/command_bus_run.gd
 	tests/characterization/run.gd tests/camera/run.gd tests/ui/cursor_run.gd
@@ -38,6 +54,23 @@ readonly SUITES=(
 	tests/net/relay_run.gd
 	tests/net/websocket_transport_run.gd
 )
+
+# Refuse to start on top of leftover containers rather than silently racing
+# them for the /workspace bind mount. This is not a theoretical concern: a
+# leaked container from a prior run competing for that mount is exactly what
+# made tests/units/deployment_run.gd report 124 failures on a run that passed
+# cleanly once the leaked containers were gone. A run that starts dirty
+# produces results nobody should trust.
+image="$("${GODOT_CONTAINER}" image)"
+running="$("${PODMAN_BIN}" ps --filter "ancestor=${image}" --format '{{.ID}}  running {{.RunningFor}}  {{.Command}}')"
+if [[ -n "${running}" ]]; then
+	printf 'Refusing to start: containers from %s are already running:\n' "${image}" >&2
+	printf '%s\n' "${running}" >&2
+	printf '\nThese would compete with this run for the /workspace bind mount and can\n' >&2
+	printf 'produce false failures. Stop them first, then re-run:\n' >&2
+	printf '  podman kill %s\n' "$("${PODMAN_BIN}" ps --filter "ancestor=${image}" --format '{{.ID}}' | tr '\n' ' ')" >&2
+	exit 1
+fi
 
 failures=()
 for suite in "${SUITES[@]}"; do
