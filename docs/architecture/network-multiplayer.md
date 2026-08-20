@@ -498,11 +498,26 @@ and by the time we get there the hard part is already tested.
   every second tick. 20 Hz does not divide out of 25 Hz any more than the spice
   hazard's 4 Hz did, so this is the same conversion phase 1 already made and
   for the same reason: a rate that cannot be expressed in whole ticks is a
-  second clock wearing a disguise. It costs about 25% more ORCA work per second
-  and a re-derivation of the constants scaled by the old rate —
-  `ground_path_follower.gd`'s waypoint capture radius (`speed /
-  NAVIGATION_TICK_RATE`) and its angular speed (`turn_rate *
-  NAVIGATION_TICK_RATE`) — with the same retuning risk that conversion carried.
+  second clock wearing a disguise. It costs about 25% more ORCA work per second,
+  plus a re-derivation of whatever the navigation layer expresses in its own
+  ticks. That inventory turned out small, and it is recorded here because it is
+  what makes the conversion checkable rather than hopeful. Exactly two
+  constants need re-deriving to keep their wall-clock meaning:
+  `SWAP_COOLDOWN_TICKS` (0.5 s) and ORCA's `SQUEEZE_COOLDOWN_TICKS` (0.3 s),
+  both anti-oscillation cooldowns, both rounded up so the damping is never
+  weakened. `REROUTE_BUDGET_PER_TICK` is a per-tick work allowance rather than
+  a duration, and correctly scales with the rate. `MAX_CATCH_UP_TICKS`
+  disappears: `FrameTickDriver.MAX_TICKS_PER_FRAME` already bounds exactly
+  this, and unlike the navigation budget it counts what it discards
+  (`dropped_ticks()`) — which a lockstep match needs, because ticks dropped on
+  one client and not another are themselves a divergence. Everything else
+  re-derives itself, being expressed in seconds: the enemy-block and
+  friendly-yield timers, ORCA's `TAU` horizons, and the waypoint capture radius
+  (`speed / NAVIGATION_TICK_RATE`). The one genuine trap was
+  `ground_path_follower.gd`'s angular speed, which read the navigation tick
+  rate where it meant the rules movement cadence — slice A1a fixed that
+  separately, precisely so this rate change could not silently alter how units
+  turn.
   Decimating to 12.5 Hz would divide evenly and cost less, and was rejected
   because it is coarser than what ships today: obstacle response and waypoint
   capture are the most visible part of unit control.
@@ -520,6 +535,25 @@ and by the time we get there the hard part is already tested.
   a physics rewrite. The node class stays because it still carries `velocity`
   and the `collision_layer` mouse picking selects units through; changing it
   would touch every unit scene to buy clarity, not behaviour.
+
+  **Found while measuring slice A1a, 2026-08-20: flight is already
+  non-deterministic, and the test suite has been showing it all along.**
+  `tests/units/flight_run.gd` reports 253 or 254 assertions on repeated runs of
+  identical code. The count varies because several of its loops assert once per
+  step and exit when the aircraft reaches a state, so the count *is* how many
+  steps that took — and that number is not reproducible. The cause is that
+  flight state transitions are driven by `AnimationPlayer`'s
+  `animation_finished` signal
+  (`UnitFlightController.notify_animation_finished()`), which fires on engine
+  frame time: how many `_physics_process()` steps elapse before a transition
+  lands depends on how fast the machine happened to run. This is simulation
+  state advanced by the view layer's clock — the exact thing decision 3
+  forbids, and what `sim-no-signals` and `sim-no-frame-delta` would catch if
+  this file sat in the sim zone. Slice B3 has to sever it: the transition
+  completes on a tick deadline the simulation owns, with the clip playing
+  alongside as presentation. Until then no replay of a match containing
+  aircraft can reproduce, and phase 4's replay-twice check would fail on this
+  alone.
 - **Phase 4 — determinism gate.** Portable math, RNG split, the static rules
   above wired into `check_architecture.py`, and the CI test that replays one
   command log twice in-process and then compares state hashes across native and
