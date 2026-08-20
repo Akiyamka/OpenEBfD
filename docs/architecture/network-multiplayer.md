@@ -154,6 +154,26 @@ navigation, flight, projectile flight and turret aim — still advances on frame
 steppy, and the view layer that interpolates between ticks is phase 3, which is
 where that motion moves with it.
 
+**That prediction was wrong, and phase 3 measured it.** Ground locomotion was
+never on frame `delta` to begin with: `Unit.navigation_step()` has integrated
+position explicitly as `global_position += velocity * delta` since the repo's
+first commit, on the navigation tick, which was 20 Hz. So a moving unit already
+stepped 20 times a second, and slice A1b made those steps 25% *finer*, not
+coarser. The `move_and_slide()` that did run on the 60 Hz physics frame was
+reached only by units the navigation system does not manage — which in a real
+match means units standing still with zero velocity, and in tests means
+fixtures with no navigation system at all. Running the demo match after slice
+B2 shows no steppiness, because there was none to introduce: at 25 Hz and
+ordinary unit speeds the per-step displacement is small, and 60 fps model
+animation covers it. This is how the genre has always shipped.
+
+What that costs B4 is its stated justification, not its place. Interpolation is
+not needed to undo damage this phase did. It is needed because phase 5 delivers
+ticks irregularly — the turn scheduler, adaptive input delay and stall policy
+mean a client can go several frames with no tick and then catch up — and
+because once decision 3's hot state lands in flat arrays, the view needs a read
+path across the boundary regardless.
+
 What it bought and what it did not: the tick order is now a handful of lines in
 one function instead of whatever order the scene tree handed out, so it is
 observable and changeable in one place. It is **not** yet cross-machine
