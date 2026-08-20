@@ -270,14 +270,22 @@ file — that table is the registry, and `tests/sim/command_codec_run.gd` walks
 copies of that list used to live in the command files; two had already rotted
 into describing a dispatch that no longer existed.
 
-Four rules, each of which cost a slice to learn:
+Five rules, each of which cost a slice to learn:
 
 - **The click carries input; execution decides.** Keep in the command only what
   cannot be recomputed later — where the player pointed, which entities were
-  selected, which mouse button. Recompute every judgement on the execution tick.
-  A verdict decided at click time is one that two clients can disagree about the
-  moment input delay stops being zero. A click that names nothing — no entity,
-  no cell — is not a game action and must submit nothing at all.
+  selected, which mouse button. Recompute every judgement on the execution tick,
+  because a verdict formed at click time can be wrong by the time it runs: the
+  target died, the cell was taken, another player got there first inside the
+  input-delay window.
+- **A local check may refuse to send; it may not authorize.** A click that names
+  nothing — no entity, no cell — is not a game action and must submit nothing.
+  Neither is a click the local state already knows is impossible, like placing a
+  building on a cell the placement reports unbuildable: filter it out and answer
+  immediately. That is not the duplication trap, because the filter and the
+  execution-time check are the same implementation called from two places with
+  two different jobs — one may only suppress, the other decides. Do not delete
+  either as redundant.
 - **One dispatch.** `CommandExecutor.execute()`'s `match` is the only place that
   answers "which command is this", and its default branch is a `push_error` for
   a reason. A second dispatch elsewhere means a new type registered in one and

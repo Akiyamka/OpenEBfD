@@ -441,9 +441,27 @@ and by the time we get there the hard part is already tested.
   verdict**: a click keeps only what cannot be recomputed later — where the
   player pointed, which entities were selected, which mouse button — while
   every judgement about what that means is recomputed on the execution tick,
-  against the world as it stands then. A verdict decided at click time is a
-  verdict two clients can disagree about the moment input delay stops being
-  zero.
+  against the world as it stands then.
+
+  The reason is not that two clients would otherwise disagree, tempting as that
+  reading is: a verdict carried inside a command is read identically by
+  everyone, so shipping one costs nothing in determinism. It is recomputed
+  because it can simply be **wrong** by the time it runs: the target died, the
+  cell was taken, the credits were spent. At a real input delay two players
+  can confirm the same cell inside the same window, and only an execution-time
+  check decides which of them loses. And a rule derived from shared state is a rule
+  no client can assert — a modified client can then lie about its own input,
+  but not about what the input means.
+
+  Which leaves room for something the first pass of this phase got wrong by
+  being too strict: **a local check may refuse to send, it just may not
+  authorize.** A click on a cell the placement already knows is unbuildable is
+  not a game action and should never reach the wire, exactly like a click that
+  lands on no cell at all — and before the command bus it never did. Suppressing
+  a doomed click locally is free, because the execution-time check still
+  decides for every click that does get sent. The filter and the authority are
+  the same implementation called from two places for two different jobs, and
+  neither is redundant with the other.
 
   The corollary cost real work: **the preview is not an authority.** The wall
   line used to hand the chain the set of cells its preview had judged

@@ -74,6 +74,20 @@ var _availability_tracker := BuildingAvailabilityTrackerScript.new()
 var _refreshing_building_option_states := false
 var _building_queue: BuildingQueue = BuildingQueueScript.new()
 var _building_placement: BuildingPlacement = BuildingPlacementScript.new()
+## Null when no placement command is in flight; set to the clicked nav cell by
+## _try_place_ready_building() the instant it submits a SimPlaceBuildingCommand,
+## and cleared by execute_place_building_command() the instant that command
+## executes -- every branch, including the stale-command early return, so no
+## outcome can leave this set (see that method's doc comment). Between those
+## two points a committed placement counts as already placed for input
+## purposes, matching what the player saw before the command bus, when the
+## click placed the building synchronously: process() pins the preview here
+## instead of following the pointer, handle_unhandled_input()'s placement
+## branch consumes nothing, and _on_building_slot_right_pressed() will not
+## cancel it. hover_cell_from_pointer() already returns this same Variant
+## shape (a Vector2i or null), so this field matches it rather than inventing
+## a second null-cell convention.
+var _committed_placement_cell: Variant = null
 var _local_player_resource: PlayerData
 var _mode := Mode.NONE
 var _sell_mode: bool:
@@ -201,12 +215,22 @@ func process(_delta: float) -> void:
 	if _wall_line_mode:
 		_process_wall_line_preview(get_viewport().get_mouse_position())
 	elif _building_placement.is_active():
-		var pointer_position := (
-			_placement_press_position
-			if _placement_pointer_down
-			else get_viewport().get_mouse_position()
-		)
-		_building_placement.process(pointer_position)
+		if _committed_placement_cell != null:
+			# The pending command names the clicked cell, not wherever the pointer
+			# drifts to before execute_place_building_command() clears this (see
+			# _committed_placement_cell's own doc comment) -- pin the preview there
+			# with preview_at_hover_cells(), which draws at an explicit cell and
+			# never touches the pointer, instead of process()'s usual read of the
+			# mouse.
+			var committed_cells: Array[Vector2i] = [_committed_placement_cell]
+			_building_placement.preview_at_hover_cells(committed_cells)
+		else:
+			var pointer_position := (
+				_placement_press_position
+				if _placement_pointer_down
+				else get_viewport().get_mouse_position()
+			)
+			_building_placement.process(pointer_position)
 
 
 ## Simulation half of the old process(delta): construction-order progress and
@@ -285,7 +309,17 @@ func handle_unhandled_input(event: InputEvent) -> bool:
 			return true
 		return false
 
-	if not _building_placement.is_active():
+	# A committed placement (see _committed_placement_cell's doc comment)
+	# already counts as placed for input purposes, so it takes the same branch
+	# as no placement at all -- folded in here rather than given its own early
+	# return, since this function is already at the linter's max-returns cap
+	# and both cases end identically: consume nothing, and let the event fall
+	# through to the controllers behind this one (Match._unhandled_input()
+	# offers UnitCommandController the event next). The double-click branch
+	# runs in the committed case too, and deliberately: before the command
+	# bus the confirming click placed the building synchronously, so the next
+	# click reached exactly this path.
+	if not _building_placement.is_active() or _committed_placement_cell != null:
 		if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 			if _try_handle_building_double_click(event.position):
 				return true
@@ -985,7 +1019,12 @@ func _on_building_slot_right_pressed(building_id: StringName) -> void:
 		return
 
 	if _building_placement.is_active():
-		_cancel_building_placement()
+		# A committed placement is already placed for input purposes (see
+		# _committed_placement_cell's doc comment) -- the sidebar's right-click
+		# cancel path must not treat it as a still-cancelable preview any more
+		# than the map's own right click may (handle_unhandled_input()).
+		if _committed_placement_cell == null:
+			_cancel_building_placement()
 		return
 
 	if order.ready or order.manually_paused:
@@ -1115,13 +1154,47 @@ func _refund_completed_wall_segment(order: BuildingOrder) -> void:
 ## nav cell is a raycast against local geometry, the same treatment
 ## SimMoveCommand.target gets (see its doc comment). A click that resolves to
 ## no cell is not a game action and must not put anything on the wire, the
-## same reason a move click onto no terrain submits nothing. Everything else
-## -- can this go here, does the scene exist, actually spawning the building
-## -- moves to execute_place_building_command(), which reads BuildingPlacement's
-## verdict at execution time, not here.
+## same reason a move click onto no terrain submits nothing.
+##
+## The evaluate_at_hover_cell() call below is a second, identically-reasoned
+## filter: a click on a cell BuildingPlacement already knows is unbuildable is
+## just as much "not a game action" as a click that resolved to no cell at
+## all, so it must not reach the wire either -- before the command bus this
+## same check (then still called synchronously) answered a doomed click
+## immediately, with no round trip. evaluate_at_hover_cell() is pure and draws
+## no preview (see its own doc comment), so calling it here costs nothing.
+##
+## This is NOT the same check execute_place_building_command() makes when the
+## command actually executes, even though both calls resolve to
+## BuildingPlacement's one shared implementation of "can this go here" --
+## they are the same implementation used for two different jobs, and neither
+## one may be deleted as redundant with the other:
+##   - this one is a FILTER, over the world as the issuing client sees it
+##     right now. It may only suppress a click; it never authorizes one.
+##   - execute_place_building_command()'s call is the AUTHORITY, over the
+##     world as it stands on the tick the command actually executes.
+## The two tell different stories whenever the world moves between the click
+## and that tick -- input delay is no longer zero, so another player can take
+## the cell, a unit can park on it, or the order itself can change, all
+## inside that window. A filter that passed here proves nothing about the
+## tick execute_place_building_command() runs on; only that call decides.
+## Everything else -- does the scene exist, actually spawning the building --
+## moves there too, reading BuildingPlacement's verdict fresh at execution
+## time, not here.
+##
+## _committed_placement_cell is set below the instant this submits, and is
+## what makes a committed placement count as already placed for input
+## purposes until execute_place_building_command() clears it -- see that
+## field's own doc comment. The guard against it here covers a direct second
+## call the same way handle_unhandled_input()'s own guard covers the normal
+## input path (see that method's doc comment) -- belt and suspenders, not a
+## second source of truth: the field stays untouched, so this returns exactly
+## as if nothing had happened.
 func _try_place_ready_building(screen_position: Vector2) -> void:
 	var order := _building_queue.current_order()
 	if order == null or not _building_placement.is_active():
+		return
+	if _committed_placement_cell != null:
 		return
 
 	var hover_cell = _building_placement.hover_cell_from_pointer(screen_position)
@@ -1129,6 +1202,20 @@ func _try_place_ready_building(screen_position: Vector2) -> void:
 		status_changed.emit("%s placement needs terrain" % order.display_name)
 		return
 
+	match _building_placement.evaluate_at_hover_cell(hover_cell):
+		BuildingPlacementScript.PlaceResult.CANNOT_BUILD:
+			status_changed.emit("%s cannot be placed there" % order.display_name)
+			return
+		BuildingPlacementScript.PlaceResult.NEEDS_TERRAIN:
+			status_changed.emit("%s placement needs terrain" % order.display_name)
+			return
+		BuildingPlacementScript.PlaceResult.INACTIVE:
+			# Unreachable: the is_active() guard above already returns before this
+			# point whenever BuildingPlacement is inactive. No new status string
+			# for a verdict that can never actually be reached from here.
+			return
+
+	_committed_placement_cell = hover_cell
 	_submit_place_building_command(
 		order.building_id, hover_cell, _building_placement.rotation_quarter_turns()
 	)
@@ -1170,12 +1257,14 @@ func _submit_place_building_command(
 ## an explicit cell with no pointer and no active preview
 ## (scripts/buildings/wall_line_session.gd:227).
 ##
-## Verifies identity before doing anything else: order.building_id must still
-## match command.building_id, or this command is stale -- the order changed
-## between the click and this tick -- and placing whatever happens to be
-## ready now would hand the player a building they never chose. A stale
-## command is discarded silently, the same treatment a dead entity id gets in
-## CommandExecutor._execute_stop()'s identical reasoning.
+## Verifies identity before doing anything else beyond clearing
+## _committed_placement_cell (see the doc comment on the line that does it,
+## just below): order.building_id must still match command.building_id, or
+## this command is stale -- the order changed between the click and this tick
+## -- and placing whatever happens to be ready now would hand the player a
+## building they never chose. A stale command is discarded silently, the same
+## treatment a dead entity id gets in CommandExecutor._execute_stop()'s
+## identical reasoning.
 ##
 ## The rest is _try_place_ready_building()'s old body, unchanged except that
 ## command.nav_cell replaces the pointer position. The two try_place_at_hover_cell()
@@ -1184,6 +1273,13 @@ func _submit_place_building_command(
 ## stay reachable -- see try_place_at_hover_cell()'s own doc comment for why
 ## the second call is cheap now that it no longer draws a preview.
 func execute_place_building_command(command: SimPlaceBuildingCommand) -> void:
+	# Clears before any branch below, including the stale-command early
+	# return: every outcome this command can reach -- placed, cannot-build,
+	# missing scene, stale -- ends the "committed" window the matching
+	# _try_place_ready_building() call opened (see _committed_placement_cell's
+	# doc comment), so the player's next click is live again regardless of how
+	# this one turned out.
+	_committed_placement_cell = null
 	var order := _building_queue.current_order()
 	if order == null or not order.ready:
 		return

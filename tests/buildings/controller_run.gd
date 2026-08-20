@@ -92,6 +92,28 @@ class HoverCellPlacement extends BuildingPlacement:
 		return stub_cell
 
 
+## Records every call to the two methods BuildingController.process() chooses
+## between once a placement is committed (see _committed_placement_cell's own
+## doc comment on BuildingController): process(pointer_position), the
+## pointer-following path, and preview_at_hover_cells(hover_cells), the
+## pinned-cell path. Neither of these controller tests sets up a real camera,
+## so the private, unstubbed _hover_cell_from_pointer() process() relies on
+## always resolves to no cell either way -- recording which method gets
+## called (and with what) is the only way to observe, from out here, whether
+## the committed branch actually stopped reading the pointer.
+class RecordingPlacement extends HoverCellPlacement:
+	var process_calls: Array[Vector2] = []
+	var preview_at_hover_cells_calls: Array = []
+
+	func process(pointer_position: Vector2) -> void:
+		process_calls.append(pointer_position)
+		super.process(pointer_position)
+
+	func preview_at_hover_cells(hover_cells: Array[Vector2i]) -> void:
+		preview_at_hover_cells_calls.append(hover_cells.duplicate())
+		super.preview_at_hover_cells(hover_cells)
+
+
 class FakeGrid extends RefCounted:
 	func is_loaded() -> bool:
 		return true
@@ -162,6 +184,26 @@ func _initialize() -> void:
 	_run_case(
 		"the drag-rotation recorded at the click survives the round trip to the placed building",
 		_test_place_click_rotation_survives_round_trip
+	)
+	_run_case(
+		"a place click on a cell BuildingPlacement already knows is unbuildable submits nothing",
+		_test_place_click_on_unbuildable_cell_submits_nothing
+	)
+	_run_case(
+		"a second place click while the first is still committed submits nothing",
+		_test_place_second_click_while_committed_submits_nothing
+	)
+	_run_case(
+		"a committed placement pins its preview at the committed cell instead of following the pointer",
+		_test_place_committed_preview_pinned_at_committed_cell
+	)
+	_run_case(
+		"a right click on a committed placement is not consumed and does not cancel it",
+		_test_place_committed_right_click_not_consumed
+	)
+	_run_case(
+		"the click-time filter and the execution-time check are independent",
+		_test_place_click_filter_and_execution_checks_are_independent
 	)
 	_run_case(
 		"a wall line's first click submits nothing and still emits its existing status",
@@ -912,6 +954,296 @@ func _test_place_click_rotation_survives_round_trip(token: int) -> int:
 	_expect(
 		spawned != null and is_equal_approx(spawned.rotation.y, PI * 0.5),
 		"the drag-rotation quarter turn recorded at the click must survive to the placed building"
+	)
+
+	controller.free()
+	buildings_root.free()
+	return token
+
+
+## Fix 1's own case (see _try_place_ready_building()'s doc comment): a click
+## that resolves to a real cell BuildingPlacement already knows is
+## unbuildable is just as much "not a game action" as a click that resolved
+## to no cell at all (_test_place_click_with_no_cell_submits_nothing above),
+## so it must not put anything on the bus either -- before the command bus
+## this same check answered the click immediately, with no round trip. Uses
+## ATWall (occupy_rows ["b"], a single occupy cell) at an occupy-cell-aligned
+## hover cell -- (6, 4), an even multiple of BuildingPlacement.NAV_CELLS_PER_
+## OCCUPY_CELL on both axes -- so its footprint's one anchor cell lands
+## exactly on the clicked cell with no anchor-offset arithmetic, and
+## MutableGrid.block_occupy_cell() can block precisely the cell this click
+## would have claimed.
+func _test_place_click_on_unbuildable_cell_submits_nothing(token: int) -> int:
+	var buildings_root := Node3D.new()
+	root.add_child(buildings_root)
+	var controller := _new_controller()
+	var stub := HoverCellPlacement.new()
+	stub.stub_cell = Vector2i(6, 4)
+	controller._building_placement.free()
+	controller._building_placement = stub
+	var building_ids: Array[StringName] = [&"ATWall"]
+	controller.setup(null, null, null, building_ids, null, null, null, null, PlacementWallScene)
+	var grid := MutableGrid.new()
+	grid.block_occupy_cell(Vector2i(6, 4))
+	_setup_controller_placement(controller,
+		null, grid, buildings_root, null, null, null, null, Callable()
+	)
+	var pump := CommandPumpScript.new()
+	pump.configure_queue_controllers(controller)
+	controller._command_bus = pump.bus()
+	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
+
+	controller._building_queue.start(&"ATWall", "Wall", 0, 1)
+	controller._building_queue.advance_tick(0)
+	controller._begin_ready_building_placement()
+
+	var statuses: Array[String] = []
+	controller.status_changed.connect(func(status: String) -> void: statuses.append(status))
+	controller._try_place_ready_building(Vector2.ZERO)
+
+	_expect(
+		statuses.has("Wall cannot be placed there"),
+		"a click on a cell the placement already knows is unbuildable must still emit the existing status"
+	)
+	_expect(
+		pump.bus().pending_count() == 0,
+		"a click on a cell the placement already knows is unbuildable must put nothing on the command bus"
+	)
+	_expect(
+		controller._committed_placement_cell == null,
+		"a filtered click must not leave anything committed"
+	)
+
+	controller.free()
+	buildings_root.free()
+	return token
+
+
+## Fix 2's own case for the second bullet of its doc comment: once
+## _try_place_ready_building() has committed a cell, a second click must not
+## reach the bus a second time -- unlike before the command bus, when a
+## second click landed on an inactive placement and simply did nothing, this
+## one only stops because of the guard _committed_placement_cell adds (see
+## its own doc comment).
+func _test_place_second_click_while_committed_submits_nothing(token: int) -> int:
+	var buildings_root := Node3D.new()
+	root.add_child(buildings_root)
+	var controller := _new_controller()
+	var stub := HoverCellPlacement.new()
+	stub.stub_cell = Vector2i(5, 7)
+	controller._building_placement.free()
+	controller._building_placement = stub
+	var building_ids: Array[StringName] = [&"ATBarracks"]
+	controller.setup(null, null, null, building_ids, null, null, null, null)
+	_setup_controller_placement(controller,
+		null, FakeGrid.new(), buildings_root, null, null, null, null, Callable()
+	)
+	var pump := CommandPumpScript.new()
+	pump.configure_queue_controllers(controller)
+	controller._command_bus = pump.bus()
+	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
+
+	controller._building_queue.start(&"ATBarracks", "Barracks", 0, 1)
+	controller._building_queue.advance_tick(0)
+	controller._begin_ready_building_placement()
+
+	controller._try_place_ready_building(Vector2.ZERO)
+	_expect(pump.bus().pending_count() == 1, "setup: the first click must submit exactly one command")
+
+	controller._try_place_ready_building(Vector2.ZERO)
+	_expect(
+		pump.bus().pending_count() == 1,
+		"a second click while the first placement is still committed must submit nothing"
+	)
+
+	controller.free()
+	buildings_root.free()
+	return token
+
+
+## Fix 2's own case for its first bullet: process() must stop reading the
+## pointer once a placement is committed, and instead pin the preview at the
+## cell the pending command actually names -- see process()'s own doc comment
+## and _committed_placement_cell's. RecordingPlacement (above) is what makes
+## this observable: neither of process()'s two candidate calls is otherwise
+## distinguishable from out here, since these controller tests have no real
+## camera for the pointer-following path to resolve against anyway (see that
+## class's own doc comment).
+func _test_place_committed_preview_pinned_at_committed_cell(token: int) -> int:
+	var buildings_root := Node3D.new()
+	root.add_child(buildings_root)
+	var controller := _new_controller()
+	var stub := RecordingPlacement.new()
+	stub.stub_cell = Vector2i(5, 7)
+	controller._building_placement.free()
+	controller._building_placement = stub
+	var building_ids: Array[StringName] = [&"ATBarracks"]
+	controller.setup(null, null, null, building_ids, null, null, null, null)
+	_setup_controller_placement(controller,
+		null, FakeGrid.new(), buildings_root, null, null, null, null, Callable()
+	)
+	var pump := CommandPumpScript.new()
+	pump.configure_queue_controllers(controller)
+	controller._command_bus = pump.bus()
+	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
+
+	controller._building_queue.start(&"ATBarracks", "Barracks", 0, 1)
+	controller._building_queue.advance_tick(0)
+	controller._begin_ready_building_placement()
+	controller._try_place_ready_building(Vector2.ZERO)
+	_expect(pump.bus().pending_count() == 1, "setup: the click must submit a command")
+
+	stub.process_calls.clear()
+	stub.preview_at_hover_cells_calls.clear()
+	# "The mouse moves elsewhere" is stood in for by disagreeing with the
+	# committed cell -- the committed branch of process() must never even ask.
+	stub.stub_cell = Vector2i(9, 9)
+	controller.process(0.0)
+
+	_expect(
+		stub.process_calls.is_empty(),
+		"a committed placement must stop reading the pointer through BuildingPlacement.process()"
+	)
+	_expect(
+		stub.preview_at_hover_cells_calls == [[Vector2i(5, 7)]],
+		"a committed placement must pin its preview at the committed cell, not wherever the pointer is"
+	)
+
+	controller.free()
+	buildings_root.free()
+	return token
+
+
+## Fix 2's own case for its third bullet: a right click on a committed
+## placement must not be consumed -- unlike the still-cancelable preview a
+## right click reaches before the click that commits it, this one has to
+## fall through to whatever controller is behind BuildingController in
+## Match._unhandled_input() (UnitCommandController), the same as it would
+## have after a synchronous, pre-command-bus placement. Checking is_active()
+## afterward is what catches a mutation that consumes the event by actually
+## running _cancel_building_placement() rather than one that merely forgets
+## to return true/false correctly.
+func _test_place_committed_right_click_not_consumed(token: int) -> int:
+	var buildings_root := Node3D.new()
+	root.add_child(buildings_root)
+	var controller := _new_controller()
+	var stub := HoverCellPlacement.new()
+	stub.stub_cell = Vector2i(5, 7)
+	controller._building_placement.free()
+	controller._building_placement = stub
+	var building_ids: Array[StringName] = [&"ATBarracks"]
+	controller.setup(null, null, null, building_ids, null, null, null, null)
+	_setup_controller_placement(controller,
+		null, FakeGrid.new(), buildings_root, null, null, null, null, Callable()
+	)
+	var pump := CommandPumpScript.new()
+	pump.configure_queue_controllers(controller)
+	controller._command_bus = pump.bus()
+	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
+
+	controller._building_queue.start(&"ATBarracks", "Barracks", 0, 1)
+	controller._building_queue.advance_tick(0)
+	controller._begin_ready_building_placement()
+	controller._try_place_ready_building(Vector2.ZERO)
+	_expect(pump.bus().pending_count() == 1, "setup: the click must submit a command")
+
+	var right_click := InputEventMouseButton.new()
+	right_click.button_index = MOUSE_BUTTON_RIGHT
+	right_click.pressed = true
+	_expect(
+		not controller.handle_unhandled_input(right_click),
+		"a right click on a committed placement must not be consumed"
+	)
+	_expect(
+		controller._building_placement.is_active(),
+		"a right click on a committed placement must not cancel it"
+	)
+
+	controller.free()
+	buildings_root.free()
+	return token
+
+
+## The case that proves Fix 1's click-time filter and execute_place_building_
+## command()'s own check are not redundant (see _try_place_ready_building()'s
+## doc comment): a click accepted by the filter, on a cell blocked afterward
+## but before the command's execution tick, must still be refused -- by
+## execute_place_building_command()'s own call, since the filter already
+## passed and cannot run again. Deleting either check breaks a different half
+## of this case: no click-time filter still reaches this same refusal (the
+## filter only ever suppresses, so removing it cannot make an already-passing
+## click fail here); no execution-time check would place the building anyway,
+## since nothing else in this test blocks that.  Also proves the committed
+## cell clears on every outcome, not just success: the fresh click at the end
+## only works if execute_place_building_command() cleared it despite refusing.
+func _test_place_click_filter_and_execution_checks_are_independent(token: int) -> int:
+	var buildings_root := Node3D.new()
+	root.add_child(buildings_root)
+	var controller := _new_controller()
+	var stub := HoverCellPlacement.new()
+	stub.stub_cell = Vector2i(6, 4)
+	controller._building_placement.free()
+	controller._building_placement = stub
+	var building_ids: Array[StringName] = [&"ATWall"]
+	controller.setup(null, null, null, building_ids, null, null, null, null, PlacementWallScene)
+	var grid := MutableGrid.new()
+	_setup_controller_placement(controller,
+		null, grid, buildings_root, null, null, null, null, Callable()
+	)
+	var pump := CommandPumpScript.new()
+	pump.configure_queue_controllers(controller)
+	controller._command_bus = pump.bus()
+	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
+
+	controller._building_queue.start(&"ATWall", "Wall", 0, 1)
+	controller._building_queue.advance_tick(0)
+	controller._begin_ready_building_placement()
+
+	var statuses: Array[String] = []
+	controller.status_changed.connect(func(status: String) -> void: statuses.append(status))
+
+	controller._try_place_ready_building(Vector2.ZERO)
+	_expect(pump.bus().pending_count() == 1, "setup: a click on a still-buildable cell must submit a command")
+
+	# Blocked between the click and the tick the command executes on -- the
+	# filter above already passed, so only execute_place_building_command()'s
+	# own check can still catch this.
+	grid.block_occupy_cell(Vector2i(6, 4))
+
+	pump.pump()
+	_expect(
+		buildings_root.get_child_count() == 0,
+		"a cell blocked after the filter passed must still place nothing at execution"
+	)
+	_expect(
+		statuses.has("Wall cannot be placed there"),
+		"execution must refuse a cell blocked since the click, with the existing status"
+	)
+	_expect(
+		controller._committed_placement_cell == null,
+		"a refused command must still clear the committed cell so the next click is live"
+	)
+
+	# A fresh click on a still-buildable cell must now work again.
+	stub.stub_cell = Vector2i(2, 4)
+	controller._try_place_ready_building(Vector2.ZERO)
+	_expect(
+		pump.bus().pending_count() == 1,
+		"a fresh click after a refused command must submit again"
+	)
+	pump.pump()
+	# A Building-typed child specifically, not a bare child count: ATWall's
+	# authored construction timeline schedules a one-shot AudioStreamPlayer3D
+	# as a sibling of the placed building (BuildingConstructionSound._play(),
+	# scripts/buildings/building_construction_sound.gd), so buildings_root
+	# legitimately ends up with more than one child on a real, successful
+	# placement.
+	var placed_buildings := buildings_root.get_children().filter(
+		func(child: Node) -> bool: return child is Building
+	)
+	_expect(
+		placed_buildings.size() == 1,
+		"a fresh click on a buildable cell must place successfully after a prior refusal"
 	)
 
 	controller.free()
