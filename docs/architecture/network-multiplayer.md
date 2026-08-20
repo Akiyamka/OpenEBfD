@@ -474,6 +474,11 @@ and by the time we get there the hard part is already tested.
 - **Phase 3 — sim/view split.** Move state ownership out of `Node3D` into the sim
   layer and the flat hot arrays; nodes start interpolating. Headless execution
   faster than real time becomes possible, which is what makes phase 4 cheap.
+  Production comes with it: the build and unit queues, the credits they spend
+  and the option state they drive are per-player simulation state that today
+  lives in one controller bound to the local player — see the open question
+  below. Until that lands, a command's `player_id` cannot choose a queue,
+  because there is only one.
 - **Phase 4 — determinism gate.** Portable math, RNG split, the static rules
   above wired into `check_architecture.py`, and the CI test that replays one
   command log twice in-process and then compares state hashes across native and
@@ -522,12 +527,30 @@ already play before it is trusted by the mode we cannot yet test.
   Cancelling the *order* is already safe by a different route: the queue is
   empty by execution time, so the placement command finds no matching ready
   order and does nothing.
-- Which player's controller a queue command is addressed to. A match holds
-  exactly one `BuildingController`, always the local player's, so
-  `SimBuildOrderCommand.player_id` is carried and ordered but never yet used to
-  choose a queue; placement ownership likewise reads the local roster rather
-  than the command. Both are correct while there is one controller and neither
-  is correct after that.
+- Production is still single-player-shaped. Under lockstep every client
+  simulates every player, so a `SimBuildOrderCommand` carrying `player_id: 2`
+  has to open an order in *that* player's queue, tick it against *that*
+  player's credits, and hand the finished building to *that* player. Today it
+  would take the one queue there is, spend the local player's money, write into
+  the local player's sidebar, and place a building owned by
+  `local_player_id`.
+
+  The roster is already ready for this: `PlayerRoster` holds a `PlayerData` per
+  player, each with its own credits, energy and purchased upgrades. The queues
+  are not. `BuildingController` owns a single `_building_queue`, and
+  `UnitRosterController` keys its queues by production-building id rather than
+  by player; both read costs through `_local_player()`. Every player needs its
+  own queues, its own resources — those exist — and its own option/availability
+  state, which today is computed once, for whoever is local.
+
+  So the fix is not to look the queue up by `player_id`. It is to separate the
+  three roles `BuildingController` currently shares: the queue and its
+  economics (simulation, per player), the sidebar's option state (per player as
+  data, rendered only for the local one), and input handling (local only). That
+  separation is phase 3's work — the same move that takes state out of the view
+  objects — and `player_id` selecting a queue falls out of it afterwards.
+  `SimBuildOrderCommand` already carries and orders `player_id` for that day, so
+  neither the wire format nor replays recorded before it have to change.
 - Suppressing local input while a replay plays back. Nothing can start playback
   from the UI today, so live controllers cannot collide with it. The day that
   changes, they submit to the same bus and would merge into the replay's stream
