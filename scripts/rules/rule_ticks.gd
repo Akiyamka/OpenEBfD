@@ -11,6 +11,13 @@ extends RefCounted
 ## Originally named for the first of those boundaries alone -- see git
 ## history -- until the second one arrived and the construction-only name
 ## started actively misleading.
+##
+## Also holds the plain rate constants behind those conversions -- not every
+## number the original data was authored against turns into a simulation
+## tick; TurnRate below is consumed directly as radians per second. This
+## module is the category's one home either way: a rate or duration measured
+## in the source data's own units, as distinct from anything this simulation
+## or its navigation layer ticks at.
 
 const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 
@@ -24,6 +31,22 @@ const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 ## on MatchClock, so that re-testing a different simulation tick rate (20 Hz
 ## is an open question -- see decision 4) never has to touch this constant.
 const RULE_TICKS_PER_SECOND := 60
+
+## Another rate the *source* rules data was authored at, and a different one
+## from RULE_TICKS_PER_SECOND above: Rules.txt stores TurnRate in radians per
+## original-game movement update, and the original engine ran twenty of those
+## per second. Independent of both MatchClock.TICKS_PER_SECOND (this
+## simulation's tick rate) and NavConstants.NAVIGATION_TICK_RATE
+## (UnitNavigationSystem's own tick domain, folded into the simulation tick by
+## a later slice) -- this constant stays 20.0 whatever either of those become.
+## Several modules alias it locally so the math in each stays readable
+## unqualified, and so a test can keep reading it by that class's name. Those
+## aliases are deliberately not listed here: a list of them is a second place
+## to keep correct, and it would be wrong the first time one is added or
+## removed without anyone thinking to come back. Grep the constant's name to
+## find them -- every alias assigns from this declaration, so the grep is
+## exhaustive by construction in a way a hand-kept list never is.
+const RULE_MOVEMENT_UPDATES_PER_SECOND := 20.0
 
 
 ## Converts a duration measured in rule ticks (60/sec) into whole

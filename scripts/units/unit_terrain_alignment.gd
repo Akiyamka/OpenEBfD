@@ -12,6 +12,7 @@ extends RefCounted
 
 const TerrainProbeScript := preload("res://scripts/world/terrain_probe.gd")
 const SpatialOrientationScript := preload("res://scripts/world/spatial_orientation.gd")
+const RuleTicksScript := preload("res://scripts/rules/rule_ticks.gd")
 
 const TERRAIN_COLLISION_MASK := 1
 const TERRAIN_RAY_HEIGHT := 200.0
@@ -19,9 +20,12 @@ const MIN_SLOPE_SPEED_MULTIPLIER := 0.65
 const MAX_SLOPE_SPEED_MULTIPLIER := 1.50
 const SLOPE_PROBE_DISTANCE := 0.5
 const SLOPE_ALIGNMENT_RESPONSE := 10.0
-## Original-rules movement tick. Turn rates are authored per tick, so the
-## per-second yaw step is `turn_rate * MOVEMENT_UPDATES_PER_SECOND`.
-const MOVEMENT_UPDATES_PER_SECOND := 20.0
+## Turn rates are authored per rules movement update, so the per-second yaw
+## step is `turn_rate * MOVEMENT_UPDATES_PER_SECOND`. Kept as a local alias of
+## RuleTicks.RULE_MOVEMENT_UPDATES_PER_SECOND -- see that constant's doc
+## comment for why it is one declaration shared with UnitFlightController and
+## SteeringStabilizer -- so call sites below stay unqualified.
+const MOVEMENT_UPDATES_PER_SECOND := RuleTicksScript.RULE_MOVEMENT_UPDATES_PER_SECOND
 
 var _unit: CharacterBody3D
 var _visual_root_rest_basis := Basis.IDENTITY

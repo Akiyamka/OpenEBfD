@@ -37,10 +37,12 @@ const UnitTerrainAlignmentScript := preload(
 	"res://scripts/units/unit_terrain_alignment.gd"
 )
 
-## Rules.txt stores TurnRate in radians per movement update. Navigation runs at
-## 20 fixed updates per second, so use the same cadence for the hull-turn
-## adjustment below. Mirrors Unit.RULE_MOVEMENT_UPDATES_PER_SECOND, which stays
-## on the facade because tests/match/demo_boot_run.gd reads it as Unit.<const>.
+## Rules.txt stores TurnRate in radians per movement update, and the original
+## engine ran twenty of those per second -- the cadence the rules data was
+## authored at, independent of whatever rate navigation or the simulation
+## itself ticks at. Used for the hull-turn adjustment below. Mirrors
+## Unit.RULE_MOVEMENT_UPDATES_PER_SECOND, which stays on the facade because
+## tests/match/demo_boot_run.gd reads it as Unit.<const>.
 const RULE_MOVEMENT_UPDATES_PER_SECOND := UnitTerrainAlignmentScript.MOVEMENT_UPDATES_PER_SECOND
 ## Converted XBF tracks use a 20 Hz timeline, while the original firing
 ## cadence measured from ReloadCount and Fire clip frame counts is 25 Hz.

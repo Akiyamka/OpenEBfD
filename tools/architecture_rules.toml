@@ -83,16 +83,28 @@ instead = "AutoloadLookup, which is the single place allowed to know these paths
 [[rules]]
 id = "own-tick-rate"
 zone = "all"
-pattern = 'TICKS_PER_SECOND\s*:=\s*[0-9]'
-exempt = ["scripts/sim/match_clock.gd", "scripts/rules/rule_ticks.gd"]
+pattern = '(?:TICKS_PER_SECOND|_TICK_RATE)\s*:=\s*[0-9]'
+exempt = [
+	"scripts/sim/match_clock.gd",
+	"scripts/rules/rule_ticks.gd",
+	# Slice A1a (see phase 3 notes) only told this violation apart from the
+	# rules-data rates it coincides with; it did not fix it. Slice A1b folds
+	# UnitNavigationSystem's own tick into the simulation tick and removes
+	# both NAVIGATION_TICK_RATE and this exemption. This line is the written
+	# record of that one known outstanding violation, not a permanent blessing.
+	"scripts/units/navigation/shared/nav_constants.gd",
+]
 summary = "module declares its own tick rate"
 why = """
 Phase 1 spent itself collapsing five of these back into one. A literal rate \
 next to a countdown is how a fourth tick domain appears without anyone \
 deciding to add one, and decision 4 promises that re-testing a different rate \
-is a one-constant change.
+is a one-constant change. The pattern covers both spellings seen so far -- \
+a `TICKS_PER_SECOND` and a `_TICK_RATE` literal -- because NAVIGATION_TICK_RATE \
+was exactly this violation under the second spelling, and the first pattern \
+here did not catch it.
 """
-instead = "MatchClock.TICKS_PER_SECOND for simulation time, or RuleTicks for durations authored in the rules data's own 60 Hz"
+instead = "MatchClock.TICKS_PER_SECOND for simulation time, or RuleTicks for a rate or duration authored in the rules data itself"
 
 [[rules]]
 id = "bare-class-name-reference"

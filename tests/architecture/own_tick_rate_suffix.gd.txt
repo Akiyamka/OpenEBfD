@@ -1,0 +1,14 @@
+extends RefCounted
+
+## A module that declares its own tick rate spelled with the _TICK_RATE
+## suffix instead of TICKS_PER_SECOND -- the same fourth-tick-domain failure
+## as own_tick_rate.gd.txt, just under the other name. This is exactly the
+## shape that let NavConstants.NAVIGATION_TICK_RATE go unnoticed by the
+## original pattern, which only matched the TICKS_PER_SECOND spelling.
+const SOME_TICK_RATE := 30.0
+
+var _remaining := 0.0
+
+
+func advance(delta: float) -> void:
+	_remaining -= delta * SOME_TICK_RATE

@@ -42,9 +42,11 @@ const SelectionHaloScript := preload("res://scripts/ui/selection_halo.gd")
 ## playable House walkers, but its converted model has the same articulated
 ## leg hierarchy and must retain a level gameplay root as well.
 const LEGACY_WALKER_UNIT_IDS: Array[StringName] = [&"INTLWalker"]
-## Rules.txt stores TurnRate in radians per movement update. Navigation runs at
-## 20 fixed updates per second, so use the same cadence for the unmanaged
-## fallback to keep turning independent of the caller's frame rate.
+## Rules.txt stores TurnRate in radians per movement update, and the original
+## engine ran twenty of those per second -- the cadence the rules data was
+## authored at, independent of whatever rate navigation or the simulation
+## itself ticks at. Used for the unmanaged fallback below to keep turning
+## independent of the caller's frame rate.
 ##
 ## Mirrors UnitCombat.RULE_MOVEMENT_UPDATES_PER_SECOND (used there for the
 ## combat module's own hull-turn adjustment); kept here too because

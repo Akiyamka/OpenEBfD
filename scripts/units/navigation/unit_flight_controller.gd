@@ -7,6 +7,8 @@ extends RefCounted
 ## asks `Unit` for the current players via `flight_play_clip`/`flight_clip_length`,
 ## so a mid-life `replace_visual_scene()` swap can't leave it stale.
 
+const RuleTicksScript := preload("res://scripts/rules/rule_ticks.gd")
+
 enum Phase {
 	GROUNDED,
 	HANGAR_EXIT,
@@ -52,7 +54,10 @@ const HEIGHT_OFFSET_WORLD_SCALE := 0.0625
 ## `Circles` craft are fixed-wing aircraft. Rules.txt TurnRate is radians per
 ## 20 Hz movement update, so this is also the angular speed used to derive a
 ## physical minimum turn radius rather than an arbitrary hover-circle radius.
-const MOVEMENT_UPDATES_PER_SECOND := 20.0
+## Local alias of RuleTicks.RULE_MOVEMENT_UPDATES_PER_SECOND -- see that
+## constant's doc comment -- kept here, unqualified, because
+## tests/units/flight_run.gd reads it as UnitFlightControllerScript.<const>.
+const MOVEMENT_UPDATES_PER_SECOND := RuleTicksScript.RULE_MOVEMENT_UPDATES_PER_SECOND
 const IDLE_CRUISE_SPEED_SCALE := 1.0 / 3.0
 ## Idle loiter uses a broad, gentle orbit. Ordered manoeuvres retain the full
 ## Rules.txt TurnRate. Scaling angular speed by the same 2/3 factor as the

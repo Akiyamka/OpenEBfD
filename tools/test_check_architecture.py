@@ -124,11 +124,28 @@ CASES: tuple[Case, ...] = (
         expect_rules=("own-tick-rate",),
     ),
     Case(
+        # NAVIGATION_TICK_RATE was this exact shape and the original pattern
+        # (TICKS_PER_SECOND only) missed it -- this proves the _TICK_RATE
+        # spelling is now caught too.
+        "module declares its own tick rate via a _TICK_RATE suffix",
+        scripts("own_tick_rate_suffix"),
+        EXIT_FINDINGS,
+        expect_rules=("own-tick-rate",),
+    ),
+    Case(
         # RuleTicks rather than MatchClock: the fixture's own advance(delta)
         # would trip the sim zone's frame-delta rule if it were placed under
         # scripts/sim/, which would prove nothing about this exemption.
         "the tick rate is allowed where RuleTicks owns it",
         {"scripts/rules/rule_ticks.gd": "own_tick_rate"},
+        EXIT_CLEAN,
+    ),
+    Case(
+        # The written record of the one known outstanding violation (see
+        # architecture_rules.toml): slice A1b removes both
+        # NAVIGATION_TICK_RATE and this exemption.
+        "the tick rate is allowed where NavConstants owns it until slice A1b",
+        {"scripts/units/navigation/shared/nav_constants.gd": "own_tick_rate_suffix"},
         EXIT_CLEAN,
     ),
     Case(

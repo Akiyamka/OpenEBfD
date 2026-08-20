@@ -2,6 +2,7 @@ class_name GroundPathFollower
 extends RefCounted
 
 const NavConstantsScript := preload("res://scripts/units/navigation/shared/nav_constants.gd")
+const RuleTicksScript := preload("res://scripts/rules/rule_ticks.gd")
 ## Runtime pursuit of a compact A* path: look-ahead steering target, monotonic
 ## waypoint advancement, cross-route lane offsetting, and the swept-disc
 ## visibility tests (chord/line-of-sight, per-cell passable/stoppable) that
@@ -288,7 +289,12 @@ func path_look_ahead_distance(agent: Dictionary, speed: float) -> float:
 	var omnidirectional_value = unit.get("can_move_any_direction")
 	if (omnidirectional_value == null or not bool(omnidirectional_value)) \
 	and turn_rate_value != null and float(turn_rate_value) > 0.0:
-		var angular_speed := float(turn_rate_value) * NavConstantsScript.NAVIGATION_TICK_RATE
+		# Rules.txt TurnRate is radians per rules movement update, and the
+		# original engine ran twenty of those per second. Deliberately not
+		# NavConstants.NAVIGATION_TICK_RATE: that is this navigation system's
+		# own scheduling rate, a different clock in the source data that only
+		# coincides with the movement-update cadence today.
+		var angular_speed := float(turn_rate_value) * RuleTicksScript.RULE_MOVEMENT_UPDATES_PER_SECOND
 		turn_distance = clampf(speed / angular_speed * 2.5, cell_width, cell_width * 6.0)
 	return maxf(radius_distance, turn_distance)
 

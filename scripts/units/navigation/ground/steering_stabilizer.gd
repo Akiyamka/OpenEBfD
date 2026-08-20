@@ -3,6 +3,7 @@ extends RefCounted
 
 const EntityQueryScript := preload("res://scripts/world/entity_query.gd")
 const MapNavigationGridScript := preload("res://scripts/world/map/map_navigation_grid.gd")
+const RuleTicksScript := preload("res://scripts/rules/rule_ticks.gd")
 ## Hard/soft geometry shared by every ground avoidance backend: terrain swept-
 ## disc checks and pressure field, friendly elastic separation, enemy swept-disc
 ## checks, and the non-holonomic chassis rate limiter (`stabilize_velocity`).
@@ -19,7 +20,10 @@ const STEERING_TURN_RATE_SHARE := 0.85
 const STEERING_CLOSE_TARGET_MAX_BEARING := 0.65
 const STEERING_DRIVEN_ARC_MAX_BEARING := 1.7
 const STEERING_CLOSE_TARGET_TURN_RADIUS_FACTOR := 1.25
-const RULE_MOVEMENT_UPDATES_PER_SECOND := 20.0
+## Local alias of RuleTicks.RULE_MOVEMENT_UPDATES_PER_SECOND -- see that
+## constant's doc comment -- kept here so the turn-step math below can read
+## it unqualified.
+const RULE_MOVEMENT_UPDATES_PER_SECOND := RuleTicksScript.RULE_MOVEMENT_UPDATES_PER_SECOND
 const OBSTACLE_BUCKET_CELLS := 8
 
 var runtime_map = null
