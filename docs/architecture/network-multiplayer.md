@@ -644,6 +644,88 @@ and by the time we get there the hard part is already tested.
   `tests/combat/support/sim_tick_pump.gd`), not because this loop's position
   enforces it.
 
+  *Updated after slice B3b, 2026-08-20:* `building_refinery_docks.gd` is off
+  that list; `building_combat.gd` is only partly off it. `Building._process()`
+  used to run four statements: `_building_combat.advance(delta)`,
+  `_authored_fire_controller.advance(delta)`,
+  `_building_combat.after_authored_advance()`, and
+  `_refinery_docks.advance(delta)`. `Building.sim_tick()` now runs three
+  things: `CombatTurret.advance_tick()` (already there), the authored fire
+  controller's `advance()` (shot committal), and the refinery dock departure
+  cooldown. `AuthoredFireController.advance_sequences()` was checked, not
+  assumed, the same way B3a checked `MAX_SIMULATION_STEP`: it keeps its own
+  `elapsed` accumulator and compares it against precomputed `shot_times`; it
+  never reads the `AnimationPlayer`'s playback position, and the clip itself
+  keeps playing via Godot's own per-frame processing at whatever
+  `speed_scale` was set regardless of which clock calls `advance()`. Moving it
+  onto the tick is therefore a change of delta source and nothing more — there
+  was no animation coupling to sever here, unlike the flight-controller
+  finding above.
+
+  `BuildingCombat._advance_popup_transition()` moved too, into a new
+  `BuildingCombat.sim_tick()`: its own `_transition_elapsed` accumulator has
+  the identical shape (never reads the transition player's position, only
+  compares against a duration cached once at transition start), and it gates
+  whether `_advance_engagement()` lets a popup turret fire — a simulation
+  decision wearing a visible motion, decided in favor of simulation because
+  the decision, not the motion, is what a replay or checksum needs to agree
+  on. `BuildingCombat.advance()` — turret aim, target acquisition, and the
+  engagement decision that calls the fire controller's `try_start()` — stays
+  on `_process()`, unmoved: this is the same "turret aim and target
+  acquisition" work the B3 inventory above already named as unmoved after
+  B3a, and it still is. `restore_popup_hold_pose()` stays in `_process()` too,
+  on both call sites (inside `advance()` and in `after_authored_advance()`):
+  it repairs a rendered pose the authored clip may have overwritten and
+  changes no state a replay or checksum can see, so it belongs on the frame's
+  clock regardless of what clock the fire controller itself runs on. Its
+  adjacency to the fire controller's `advance()` call is no longer
+  load-bearing now that that call has moved to `sim_tick()` — `Match` already
+  runs every due tick before any `Building`'s own `_process()` this same
+  frame (the ordering B3a's doc comment relies on), so `after_authored_advance()`
+  observes a tick's pose write regardless of exactly where in `_process()` it
+  sits — but the two-call structure was left as is rather than collapsed,
+  since collapsing it is a behavior change this slice was not asked to make.
+
+  `_advance_engagement()` also has a second, direct firing path
+  (`turret.try_fire_at()`, taken only when `has_fire_animation()` is false)
+  that stayed on `_process()` with the rest of that function. Checked, not
+  assumed: every one of `BuildingCombat.DEFENSIVE_TURRET_IDS`'s seven entries
+  has an authored `Fire_0` (and, for two-weapon turrets, `Fire_1`) animation
+  in its converted scene, so that fallback is unreachable by any building
+  configured today — there is nothing live to migrate, and it is left where
+  it is pending whichever slice gives `combat_turret.gd`'s aim/target
+  acquisition its own tick half to join, the same open item B3a recorded.
+
+  Building firing joining the tick reopened the trap B3a left explicitly for
+  this slice: "a projectile fired this tick must not also travel this tick"
+  held only because firing ran from `_process()`, not because of
+  `"sim_projectiles"`'s position in `Match._advance_simulation_tick()`. Once
+  `AuthoredFireController.advance()` runs from `Building.sim_tick()`, inside
+  that same function, a shot fired there parents a new `CombatProjectile`
+  synchronously (`turret.try_fire_at()` → `add_child()` → `_ready()` joins
+  `"sim_projectiles"` before the call returns), so the invariant now depends
+  entirely on loop order. The `"buildings"` loop moved from directly after
+  `"units"` (its position since before B3a) to directly after
+  `"sim_projectiles"` instead, so a projectile a building fires this tick
+  joins the group too late for this tick's already-completed projectile walk.
+  Units are unaffected — `unit_combat.gd` still fires from `Unit._process()`
+  (B3c), so scene-tree ordering alone still protects that path, exactly as
+  before. See `Match._advance_simulation_tick()`'s doc comment for the full
+  ordering argument, including why linger effects' and projectiles' own
+  positions did not need to move.
+
+  One fixture needed the B2 treatment twice.
+  `tests/combat/defensive_building_run.gd` drove five cases by hand with no
+  `Match` in the tree and expected a manual `building._process(1.0 / 60.0)`
+  loop (or, for two cases, `await physics_frame`/`await process_frame` with no
+  ticking at all) to both aim *and* fire; converted to pump `sim_tick()`
+  first, the same idiom `SimTickPumpScript` already names for this exact
+  failure. `tests/buildings/upgrade_run.gd`'s refinery dock reservation test
+  drove the departure cooldown with `refinery._process(2.9)` /
+  `refinery._process(0.1)`; converted to whole ticks (74 then 1, since
+  3.0 seconds is exactly 75 ticks at 25 Hz and 2.9/0.1 do not divide evenly
+  into `SECONDS_PER_TICK`).
+
   Two of them are worth naming individually, because their classification is
   not what the file they live in suggests:
 

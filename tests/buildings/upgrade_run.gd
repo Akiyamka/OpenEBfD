@@ -331,9 +331,17 @@ func _test_refinery_dock_reservations(token: int) -> int:
 	_expect(first_dock == 0, "the first harvester must reserve the central dock immediately")
 	_expect(refinery.try_reserve_refinery_dock(second) == -1, "a reserved dock must reject a second harvester")
 	refinery.release_refinery_dock(first)
-	refinery._process(2.9)
+	# The departure cooldown now advances on Building.sim_tick(), not
+	# _process() (B3b moved BuildingRefineryDocks.advance() off the render
+	# frame). 3.0 seconds is exactly 75 ticks at MatchClock's fixed 25 Hz --
+	# 2.9s/0.1s do not divide evenly into SECONDS_PER_TICK (0.04s), so the
+	# split becomes 74 ticks (2.96s, still short of 3.0) then 1 more (75
+	# ticks, exactly 3.0), preserving the original "not yet, then exactly at
+	# the boundary" intent.
+	for _i in 74:
+		refinery.sim_tick()
 	_expect(refinery.try_reserve_refinery_dock(second) == -1, "the dock must remain unavailable during its three-second departure gap")
-	refinery._process(0.1)
+	refinery.sim_tick()
 	_expect(refinery.try_reserve_refinery_dock(second) == 0, "the dock must reopen after exactly three seconds")
 	_expect(refinery.refinery_dock_world_position(0).is_finite(), "the central DeployTile must resolve to a world position")
 

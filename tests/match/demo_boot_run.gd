@@ -16,6 +16,7 @@ const HarvesterControllerScript := preload("res://scripts/units/harvester_contro
 const HarvesterScene := preload("res://scenes/units/harvester.tscn")
 const ATRefineryScene := preload("res://assets/converted/buildings/ATRefinery/ATRefinery.scn")
 const HKConYardScene := preload("res://assets/converted/buildings/HKConYard/HKConYard.scn")
+const ATRocketTurretScene := preload("res://assets/converted/buildings/ATRocketTurret/ATRocketTurret.scn")
 const ATMongooseModelScene := preload(
 	"res://assets/converted/models/AT_mongoose_H0/AT_mongoose_H0.scn"
 )
@@ -64,6 +65,10 @@ func _initialize() -> void:
 	await _run_case(
 		"a real projectile's flight advances from the match loop alone",
 		_test_match_loop_drives_projectile_flight
+	)
+	await _run_case(
+		"a real building fires, and the shot it fires does not also fly, from the match loop alone",
+		_test_match_loop_drives_building_fire
 	)
 	await _run_case(
 		"a real spice mound's maturity countdown advances from the match loop alone",
@@ -905,6 +910,141 @@ func _test_match_loop_drives_projectile_flight() -> void:
 
 	if is_instance_valid(projectile):
 		projectile.free()
+	match_instance.queue_free()
+
+
+## The building-firing counterpart to _test_match_loop_drives_projectile_flight
+## above -- same failure mode, same shape, but for a different move: B3b took
+## AuthoredFireController's shot committal (turret.try_fire_at(), the call
+## that actually parents a CombatProjectile) off Building._process() and put
+## it on Building.sim_tick() instead. Every assertion elsewhere that a
+## defensive building fires (defensive_building_run.gd) drives it with
+## SimTickPumpScript or manual sim_tick() calls, so all of it would keep
+## passing even if Building.sim_tick() were never reached from the match
+## loop's "buildings" group loop -- because nothing in that file's fixtures
+## relies on the central loop itself. This test boots the real match scene,
+## adds a real ATRocketTurret as its own child (so it self-registers into the
+## "buildings" group the same way Building._ready() always does, with no
+## fixture wiring), and lets the match loop's own ticking both aim and fire
+## it -- the same way _test_real_forced_friendly_attack proves it for a
+## unit's own weapon.
+##
+## It also proves the ordering fix the move required, not merely that firing
+## happens. Committing a shot inside Building.sim_tick() parents a new
+## CombatProjectile synchronously, which joins "sim_projectiles" in its own
+## _ready() before try_fire_at() returns -- so if the "buildings" loop still
+## ran *before* "sim_projectiles" (its position from before B3a until B3b),
+## that same _advance_simulation_tick() call would immediately walk the shot
+## it had just fired, one tick of flight it should not yet have. Recording
+## current_tick() from inside the weapon_fired handler -- which runs
+## synchronously from within that same tick's buildings loop -- captures
+## exactly which tick fired the shot; comparing the probe projectile's
+## elapsed_seconds against (current tick - fired tick) * SECONDS_PER_TICK
+## afterward is then exact, not approximate, for the identical reason the
+## turret-reload and linger-effect cases above are exact: every quantity in
+## the comparison comes from the same due-tick loop. Reverting the "buildings"
+## loop to run before "sim_projectiles" again fails this specific assertion
+## (elapsed_seconds reads one SECONDS_PER_TICK ahead of what it should),
+## exactly the shape of proof B3a's own such case used
+## ("advanced by 0.000000 against 5 clock ticks").
+##
+## ATRocketTurret, not HKGunTurret, is the probe deliberately: Rocket_B is a
+## real homing bullet with a positive speed (28 units/s, rules.db) and a
+## 12-unit max range, unlike HKGunTurret_B/PopUp_B/HMG_B, whose speed of -1
+## resolves as an instant hitscan with no travel to observe at all. Placing
+## the target 8 world units out keeps it inside range while asking for
+## roughly 8/28 ≈ 0.29s (~7 ticks) of real flight -- comfortably longer than
+## the settle window below, so the probe is still FLYING when checked.
+##
+## The building is placed 8 units behind ScoutA's own fixture position rather
+## than at the origin, and ScoutA itself is left untouched: the fixture map
+## has real terrain relief, and an early version of this test that instead
+## moved ScoutA out to `emission_position + direction * 8` and snapped it to
+## terrain landed it partway up a slope, arcing the shot down through several
+## world units of elevation change it was never meant to test. Anchoring both
+## ends of the shot to ground the rest of this suite already treats as flat
+## (ScoutA/OrdosAPC's own authored positions) keeps this test about tick
+## ordering, not terrain.
+func _test_match_loop_drives_building_fire() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	get_root().add_child(match_instance)
+	for _warmup in 5:
+		await process_frame
+
+	var target := match_instance.get_node("Units/ScoutA") as Unit
+	target.set_owner_player_id(2)
+	target.stop_at_current_position()
+
+	var building := ATRocketTurretScene.instantiate() as Building
+	building.owner_player_id = 1
+	building.position = target.global_position + Vector3(0.0, 0.0, -8.0)
+	match_instance.add_child(building)
+	await process_frame
+
+	var fired_projectiles: Array = []
+	var fired_ticks: Array[int] = []
+	building.weapon_fired.connect(func(projectiles: Array, _fired_target: Variant, _weapon_index: int) -> void:
+		fired_projectiles.append_array(projectiles)
+		for _projectile in projectiles:
+			fired_ticks.append(match_instance.current_tick())
+	)
+	_expect(
+		building.command_attack(target),
+		"a real ATRocketTurret must accept a real enemy unit as an explicit target"
+	)
+
+	# 900 frames matches the budget defensive_building_run.gd's own
+	# ATRocketTurret cases use (_test_atrocket_turret_muzzle_matches_authored_animation).
+	var frames := 0
+	while fired_projectiles.is_empty() and frames < 900:
+		await process_frame
+		frames += 1
+	_expect(
+		not fired_projectiles.is_empty(),
+		"a real building must fire from the match loop alone -- if this times out, "
+			+ "Building.sim_tick() (or the fire controller's advance() inside it) "
+			+ "never ran"
+	)
+	if fired_projectiles.is_empty():
+		building.free()
+		match_instance.queue_free()
+		return
+
+	var probe: Object = fired_projectiles[0]
+	var probe_fired_tick: int = fired_ticks[0]
+	# A few more frames so the comparison below is not reading the very same
+	# instant the shot was fired -- the ordering bug this test exists to catch
+	# only shows up once at least one more tick has had the chance to run.
+	for _settle in 10:
+		await process_frame
+	_expect(
+		is_instance_valid(probe) and probe.state == CombatProjectileScript.State.FLYING,
+		"the wiring probe must still be flying, or the elapsed-time comparison "
+			+ "below would not isolate the tick loop"
+	)
+	if is_instance_valid(probe) and probe.state == CombatProjectileScript.State.FLYING:
+		var expected_elapsed := float(
+			match_instance.current_tick() - probe_fired_tick
+		) * MatchClockScript.SECONDS_PER_TICK
+		_expect(
+			is_equal_approx(probe.elapsed_seconds, expected_elapsed),
+			(
+				"a shot a real building fires must not itself travel on the tick "
+				+ "that fired it: elapsed_seconds is %.6f, expected %.6f for a "
+				+ "shot fired on tick %d observed at tick %d -- this is exactly "
+				+ "the invariant Match._advance_simulation_tick()'s doc comment "
+				+ "requires the \"buildings\" loop to run after \"sim_projectiles\" "
+				+ "to preserve"
+			) % [
+				probe.elapsed_seconds, expected_elapsed, probe_fired_tick,
+				match_instance.current_tick()
+			]
+		)
+
+	for projectile in fired_projectiles:
+		if is_instance_valid(projectile) and not projectile.is_queued_for_deletion():
+			projectile.free()
+	building.free()
 	match_instance.queue_free()
 
 

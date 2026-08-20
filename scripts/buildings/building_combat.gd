@@ -7,6 +7,7 @@ const CombatTurretScript := preload("res://scripts/combat/combat_turret.gd")
 const CombatTargetAcquisitionScript := preload(
 	"res://scripts/combat/combat_target_acquisition.gd"
 )
+const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 
 enum PopupState { RETRACTED, DEPLOYING, DEPLOYED, UNDEPLOYING }
 
@@ -39,21 +40,59 @@ func configure(owner: Node3D, fire_controller) -> void:
 	_target_acquisition.configure(owner)
 
 
+## This module's view half: turret aim and target acquisition, both of which
+## visibly ride toward a moving target rather than advancing on a countdown --
+## see Building.sim_tick()'s doc comment for the split this leaves in place.
+## _advance_engagement() below can still commit a shot directly
+## (turret.try_fire_at()) for a turret with no authored fire animation at all
+## (has_fire_animation() false): every DEFENSIVE_TURRET_IDS entry configured
+## today has one, so that fallback is not reachable by any current building,
+## and it is left on this clock rather than the tick pending whatever slice
+## next gives combat_turret.gd's aim/target-acquisition a tick half to join --
+## see network-multiplayer.md's B3 inventory.
 func advance(delta: float) -> void:
 	if _owner == null:
 		return
 	_target_acquisition.advance(delta)
-	_advance_popup_transition(delta)
 	# The engagement and the authored fire animation may both drive the active
 	# model. Restore the hold pose on each side of them -- here so aiming sees
 	# it, and again in after_authored_advance() so the rendered frame keeps it
-	# once the authored controller has advanced on the facade.
+	# once the authored controller has advanced on the facade. See
+	# restore_popup_hold_pose()'s own doc comment for why this ordering
+	# survives the fire controller's advance() moving onto the tick.
 	restore_popup_hold_pose()
 	_advance_engagement(delta)
 
 
 func after_authored_advance() -> void:
 	restore_popup_hold_pose()
+
+
+## This module's simulation half: advances the popup deploy/undeploy
+## transition's own countdown by exactly one combat tick. Called once per
+## simulation tick from Building.sim_tick() -- never call this from
+## BuildingCombat's own advance() above, which is why _advance_popup_transition
+## no longer lives in that function's body.
+##
+## _popup_state gates whether _advance_engagement() lets a popup turret fire
+## (see the DEPLOYING/UNDEPLOYING/DEPLOYED checks there), so which clock
+## decides "the transition is complete" is a simulation decision, not merely a
+## cosmetic one -- the same reasoning that puts a projectile's flight and an
+## authored fire sequence's shot committal on the tick rather than the frame.
+##
+## _advance_popup_transition() itself never reads _transition_player's
+## playback position, only its own _transition_elapsed accumulator compared
+## against _transition_duration (cached once, in _begin_popup_transition(),
+## from animation.length) -- the identical shape AuthoredFireController's
+## "elapsed"/shot_times split uses, and verified the same way: moving this
+## onto the tick is a change of delta source only. The popup clip itself keeps
+## playing at the speed_scale _begin_popup_transition() set, via Godot's own
+## per-frame AnimationPlayer processing, regardless of which clock calls this
+## function -- so the popup visibly rises or falls exactly as before; only the
+## tick on which the simulation considers the transition finished (and
+## _popup_state flips) now lands on the 25 Hz grid instead of the frame grid.
+func sim_tick() -> void:
+	_advance_popup_transition(MatchClockScript.SECONDS_PER_TICK)
 
 
 ## Lifecycle protocol, required of every module that caches a reference into the
@@ -183,6 +222,22 @@ func bind_model(model_root: Node3D) -> void:
 		_fire_controller.configure(_owner, _owner.combat_turrets.front(), model_root)
 
 
+## Repairs a *rendered* pose the fire controller's authored clip may just have
+## overwritten -- it never changes _popup_state, reload, or anything else a
+## replay or checksum can see, so it belongs on the frame's clock and stays in
+## _process() (via advance() and after_authored_advance() above) rather than
+## joining sim_tick(). It used to sit immediately after
+## AuthoredFireController.advance() specifically because that call, back when
+## it also ran from _process(), could finish a sequence mid-frame and leave the
+## Fire clip's final pose showing; now that advance() runs from
+## Building.sim_tick() instead, Match already runs every due tick before any
+## Building's own _process() this same frame (see that function's doc
+## comment), so this call -- wherever it sits within _process() -- always
+## observes whatever the most recent tick left. The adjacency is therefore no
+## longer load-bearing, but two calls remain (see advance()'s and
+## Building._process()'s doc comments) because splitting them costs nothing:
+## the function is idempotent, and removing either call is a behavior change
+## this slice was not asked to make.
 func restore_popup_hold_pose() -> void:
 	if not _uses_popup_turret() or _popup_state != PopupState.DEPLOYED \
 		or _fire_controller == null or _fire_controller.is_active():

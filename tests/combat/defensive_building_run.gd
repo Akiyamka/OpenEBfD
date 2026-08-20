@@ -3,6 +3,7 @@ extends "res://tests/support/suite.gd"
 const LegacyRulesFixture := preload("res://tests/support/legacy_rules_fixture.gd")
 const CombatTurretScript := preload("res://scripts/combat/combat_turret.gd")
 const SimTickPumpScript := preload("res://tests/combat/support/sim_tick_pump.gd")
+const FrameTickDriverScript := preload("res://scripts/match/frame_tick_driver.gd")
 const Doubles := preload("res://tests/combat/support/combat_doubles.gd")
 const Assertions := preload("res://tests/combat/support/combat_assertions.gd")
 const HKGunTurretScene := preload("res://assets/converted/buildings/HKGunTurret/HKGunTurret.scn")
@@ -127,8 +128,13 @@ func _test_defensive_building_auto_fire() -> void:
 			func(projectiles: Array, _target: Variant, _weapon_index: int) -> void:
 				fired.append_array(projectiles)
 		)
+		# B3b moved shot committal from Building._process() onto
+		# Building.sim_tick(); a bare _process() loop with no Match in the tree
+		# would advance aim forever without ever advancing the fire controller's
+		# own "elapsed" -- see SimTickPumpScript's doc comment.
+		var building_pump := SimTickPumpScript.new()
 		for frame in 900:
-			building._process(1.0 / 60.0)
+			building_pump.advance(building, 1.0 / 60.0)
 			if not fired.is_empty():
 				break
 		_expect(
@@ -207,7 +213,17 @@ func _test_hkflame_turret_direct_friendly_fire() -> void:
 		building.command_attack(target),
 		"HKFlameTurret must accept a forced attack on a friendly unit"
 	)
+	# B3b moved shot committal from Building._process() onto
+	# Building.sim_tick(); this scene has no Match, so nothing calls sim_tick()
+	# for us the way it would in a real match -- pump it by hand, before each
+	# frame's automatic _process(), the same "ticks before this frame's
+	# Building._process()" ordering SimTickPumpScript documents (production
+	# reaches it because Match sits earlier in the tree, so Match._process()
+	# always runs first).
+	var tick_driver := FrameTickDriverScript.new()
 	for frame in 360:
+		for _tick in tick_driver.pending_ticks(1.0 / 60.0):
+			building.sim_tick()
 		await physics_frame
 		for projectile in fired:
 			if is_instance_valid(projectile):
@@ -323,8 +339,12 @@ func _test_atrocket_turret_muzzle_matches_authored_animation() -> void:
 			for emission: Dictionary in turret.last_emissions():
 				fired_muzzles.append(int(emission.get("index", -1)))
 	)
+	# B3b moved shot committal from Building._process() onto
+	# Building.sim_tick() -- see the identical comment in
+	# _test_defensive_building_auto_fire() above.
+	var building_pump := SimTickPumpScript.new()
 	for frame in 900:
-		building._process(1.0 / 60.0)
+		building_pump.advance(building, 1.0 / 60.0)
 		if fired.size() >= shot_times.size():
 			break
 	_expect(
@@ -467,6 +487,12 @@ func _test_ordos_popup_turret_animations() -> void:
 		var building := scene.instantiate() as Building
 		building.owner_player_id = 1
 		root.add_child(building)
+		# B3b moved the popup deploy/undeploy transition's own completion
+		# countdown from Building._process() onto Building.sim_tick(); this
+		# scene has no Match, so nothing calls sim_tick() for us -- pump it by
+		# hand, before each frame's automatic _process(), same ordering as
+		# _test_hkflame_turret_direct_friendly_fire() above.
+		var tick_driver := FrameTickDriverScript.new()
 		await process_frame
 		var turret = building.combat_turrets[0]
 		var player := building._active_model_animation_player(&"Deploy_Gun")
@@ -483,6 +509,8 @@ func _test_ordos_popup_turret_animations() -> void:
 				% String(building_id)
 		)
 		for frame in 90:
+			for _tick in tick_driver.pending_ticks(1.0 / 60.0):
+				building.sim_tick()
 			await process_frame
 			saw_deploy = saw_deploy \
 				or player.current_animation == &"Deploy_Gun"
@@ -511,6 +539,8 @@ func _test_ordos_popup_turret_animations() -> void:
 		building.cancel_attack_order()
 		var saw_undeploy := false
 		for frame in 120:
+			for _tick in tick_driver.pending_ticks(1.0 / 60.0):
+				building.sim_tick()
 			await process_frame
 			saw_undeploy = saw_undeploy \
 				or player.current_animation == &"Undeploy_Gun"
@@ -552,15 +582,19 @@ func _test_building_attack_order() -> void:
 		building.command_attack(target),
 		"an armed building must accept a compatible target outside its range"
 	)
+	# B3b moved shot committal from Building._process() onto
+	# Building.sim_tick() -- see the identical comment in
+	# _test_defensive_building_auto_fire() above.
+	var building_pump := SimTickPumpScript.new()
 	for frame in 120:
-		building._process(1.0 / 60.0)
+		building_pump.advance(building, 1.0 / 60.0)
 	_expect(
 		fired.is_empty() and building.has_attack_order(),
 		"the immobile building must retain, but not fire at, its distant target"
 	)
 	target.global_position = Vector3(emission["position"]) + direction * 5.0
 	for frame in 600:
-		building._process(1.0 / 60.0)
+		building_pump.advance(building, 1.0 / 60.0)
 		if not fired.is_empty():
 			break
 	_expect(
