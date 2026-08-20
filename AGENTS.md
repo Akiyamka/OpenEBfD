@@ -251,6 +251,65 @@ Two habits that this work paid for repeatedly:
   it needs its own test. Prove each one by removing the loop and watching it
   fail.
 
+## The command bus
+
+Every player intent — a move order, a production click, selling a building,
+drawing a wall line — becomes a `SimCommand` (`scripts/sim/commands/`) that
+takes effect on a scheduled tick, never at the moment of the click. Four pieces,
+one job each: `SimCommandBus` (`scripts/sim/command_bus.gd`) orders and
+schedules, `SimCommandCodec` encodes, `CommandExecutor`
+(`scripts/match/command_executor.gd`) carries out, and
+`Match._advance_simulation_tick()` drains once per tick and hands the result
+straight to the executor.
+
+To add a command type: subclass `SimCommand`, claim the next free `TYPE_ID`,
+register it in `SimCommandCodec._COMMAND_SCRIPTS`, and add one branch to
+`CommandExecutor.execute()`. Do not restate the list of claimed ids in your new
+file — that table is the registry, and `tests/sim/command_codec_run.gd` walks
+`get_global_class_list()` and fails when a subclass is missing from it. Ten
+copies of that list used to live in the command files; two had already rotted
+into describing a dispatch that no longer existed.
+
+Four rules, each of which cost a slice to learn:
+
+- **The click carries input; execution decides.** Keep in the command only what
+  cannot be recomputed later — where the player pointed, which entities were
+  selected, which mouse button. Recompute every judgement on the execution tick.
+  A verdict decided at click time is one that two clients can disagree about the
+  moment input delay stops being zero. A click that names nothing — no entity,
+  no cell — is not a game action and must submit nothing at all.
+- **One dispatch.** `CommandExecutor.execute()`'s `match` is the only place that
+  answers "which command is this", and its default branch is a `push_error` for
+  a reason. A second dispatch elsewhere means a new type registered in one and
+  forgotten in the other, and the symptom is the command vanishing without a
+  trace.
+- **Only `CommandExecutor` turns an id into a Node.** Sim code may not hold a
+  Node at all (see the architecture checks above). Commands name entities by
+  the stable ids in `scripts/sim/entity_registry.gd`; the executor resolves them
+  and hands Nodes onward. An id that no longer resolves is skipped silently —
+  the entity died between the click and the tick, identically on every client.
+- **Views are not authorities.** Mode toggles and hover previews stay local:
+  they change what the next click means, not the state of the world. Never let a
+  verdict computed for the player's eyes cross into execution — a placement
+  preview is drawn when the player aims and is stale by the time the thing is
+  built.
+
+Two habits, both bought with defects that a green suite did not catch:
+
+- **Audit the player-facing strings as a set, before and after.** Converting an
+  intent moves `status_changed` emissions between call sites, and it is easy to
+  drop one. One was dropped in a slice that was reviewed and approved, and the
+  whole suite stayed green because nothing asserted on it. Collect the string
+  literals mechanically, diff the two sets, and expect them identical unless you
+  meant otherwise.
+- **Prove a deferral test binds.** A test that pumps and then asserts the effect
+  passes just as well when the click never deferred at all. Assert the *absence*
+  of the effect before the pump, then check the assertion by making the handler
+  execute immediately and watching it fail. Most of this phase's real defects
+  were found by comparing two things that must agree — cursor against order, doc
+  against measurement, status strings before against after — not by a failing
+  test.
+
 ## Network latency measurement
 
 `make measure-nagle` (`tools/measure_nagle.py` plus

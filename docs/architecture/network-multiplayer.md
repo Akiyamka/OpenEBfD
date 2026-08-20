@@ -421,11 +421,38 @@ and by the time we get there the hard part is already tested.
   attached to the tick has a test that boots the real match and touches
   nothing, because a system silently dropped from the central loop is the
   failure mode central iteration trades for.
-- **Phase 2 — command bus.** Route every player intent through serializable
-  command structs with a scheduled execution tick.
-  `scripts/match/unit_command_controller.gd` is the natural seam. Single-player
-  runs with input delay 0 over a null transport. **Replay recording and playback
-  land here.**
+- **Phase 2 — command bus. Done 2026-08-20.** Every player intent now reaches
+  the world as a serializable command with a scheduled execution tick: twelve
+  types under `scripts/sim/commands/`, ordered by `SimCommandBus`
+  (`scripts/sim/command_bus.gd`), encoded by `SimCommandCodec`, and carried out
+  by `CommandExecutor` (`scripts/match/command_executor.gd`) — which is the
+  single place that answers "which command is this" and the only place that
+  turns an entity id back into a Node. Single-player runs with input delay 0
+  over a null transport. Replays landed as planned:
+  `scripts/match/replay_file.gd` holds the format, with recording hooked to the
+  drain so recorded order and executed order are one fact, and playback feeding
+  the same bus through `submit_at()`.
+
+  Two things this phase actually turned on, neither of which was on the list.
+  Entities needed stable ids first (`scripts/sim/entity_registry.gd`): a
+  command may not hold a Node, ids are never reused after release, and
+  `live_ids()` is the deterministic iteration order phases 3 and 4 need. And
+  the split that matters is not "input versus simulation" but **input versus
+  verdict**: a click keeps only what cannot be recomputed later — where the
+  player pointed, which entities were selected, which mouse button — while
+  every judgement about what that means is recomputed on the execution tick,
+  against the world as it stands then. A verdict decided at click time is a
+  verdict two clients can disagree about the moment input delay stops being
+  zero.
+
+  The corollary cost real work: **the preview is not an authority.** The wall
+  line used to hand the chain the set of cells its preview had judged
+  buildable. Segments are ordered one at a time over many seconds, so that
+  snapshot is stale by construction; the buildable set is now recomputed at
+  execution. Making that affordable meant splitting `BuildingPlacement`'s
+  verdict away from its drawing, which had been answering "can a building
+  stand here" only as a side effect of instantiating preview meshes — on the
+  simulation tick, on every client, including the ones with no cursor near it.
 - **Phase 3 — sim/view split.** Move state ownership out of `Node3D` into the sim
   layer and the flat hot arrays; nodes start interpolating. Headless execution
   faster than real time becomes possible, which is what makes phase 4 cheap.
@@ -456,6 +483,38 @@ already play before it is trusted by the mode we cannot yet test.
   `own-tick-rate` in the checker keeps it that way.
 - Snapshot size for reconnect, which cannot be estimated before the hot-state
   layout exists (decision 3).
+- What happens to local view state that races a command already submitted.
+  The concrete case is building placement. The confirming click submits a
+  command and deliberately leaves the preview up, because whether the cell was
+  buildable is not known until the command executes — and if it was not, the
+  preview has to still be there for the player to click somewhere else, which
+  is how it behaved before the command bus. That leaves a window between the
+  click and its execution in which the placement is still active, so a right
+  click lands in `BuildingController`'s placement branch (it is offered input
+  before the unit controller) and cancels a placement that is already
+  committed. The player sees the preview vanish; on the execution tick the
+  building is placed at the clicked cell anyway and `take_ready()` consumes the
+  order.
+
+  At input delay 0 that window is one tick and no human reaches it. It widens
+  with the delay, and the same shape covers every mode a player can leave
+  between their own click and its execution. Phase 5 needs one rule for the
+  class — treat the local dismissal as prediction and reconcile, or make the
+  dismissal itself a command and accept the latency — not a patch per action.
+  Cancelling the *order* is already safe by a different route: the queue is
+  empty by execution time, so the placement command finds no matching ready
+  order and does nothing.
+- Which player's controller a queue command is addressed to. A match holds
+  exactly one `BuildingController`, always the local player's, so
+  `SimBuildOrderCommand.player_id` is carried and ordered but never yet used to
+  choose a queue; placement ownership likewise reads the local roster rather
+  than the command. Both are correct while there is one controller and neither
+  is correct after that.
+- Suppressing local input while a replay plays back. Nothing can start playback
+  from the UI today, so live controllers cannot collide with it. The day that
+  changes, they submit to the same bus and would merge into the replay's stream
+  — see `ReplayPlayer`'s doc comment, which names the hazard where whoever adds
+  that UI will find it.
 - Whether phase 3's hot state stores positions as `float32` (`PackedVector3Array`,
   matching what `Vector3` already carries and what the view needs anyway) or as
   `float64` (`PackedFloat64Array`, three arrays or a strided one). See decision 5:
