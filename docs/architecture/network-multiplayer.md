@@ -113,6 +113,17 @@ engine frame time where no snapshot or checksum can see it. All of them are
 gone. `ballistics.gd`'s 20 Hz stays, correctly: it converts Rules.txt units,
 it is not a clock.
 
+**Found 2026-08-20, and it corrects "all of them are gone" above: the count
+was six.** `scripts/units/navigation/shared/nav_constants.gd` declares
+`NAVIGATION_TICK_RATE := 20.0`, and `UnitNavigationSystem._physics_process()`
+runs its own accumulator against it — a sixth domain, advancing on frame time,
+driving the part of the game that decides where every unit ends up. The sweep
+missed it because `own-tick-rate`'s pattern matches `TICKS_PER_SECOND` and this
+constant is named something else, which is precisely the failure mode that rule
+exists to prevent. It is folded into the one tick in phase 3 (slice A1), and
+the rule is widened at the same time so a seventh domain cannot appear under a
+seventh name.
+
 Two conversions were not one-to-one and are recorded here because they changed
 the game, slightly and deliberately:
 
@@ -479,6 +490,36 @@ and by the time we get there the hard part is already tested.
   lives in one controller bound to the local player — see the open question
   below. Until that lands, a command's `player_id` cannot choose a queue,
   because there is only one.
+
+  Two forks decided 2026-08-20, before any of it was written:
+
+  **Navigation runs on the sim tick, every tick, at 25 Hz** — not on an
+  accumulator of its own (see phase 1's correction above), and not decimated to
+  every second tick. 20 Hz does not divide out of 25 Hz any more than the spice
+  hazard's 4 Hz did, so this is the same conversion phase 1 already made and
+  for the same reason: a rate that cannot be expressed in whole ticks is a
+  second clock wearing a disguise. It costs about 25% more ORCA work per second
+  and a re-derivation of the constants scaled by the old rate —
+  `ground_path_follower.gd`'s waypoint capture radius (`speed /
+  NAVIGATION_TICK_RATE`) and its angular speed (`turn_rate *
+  NAVIGATION_TICK_RATE`) — with the same retuning risk that conversion carried.
+  Decimating to 12.5 Hz would divide evenly and cost less, and was rejected
+  because it is coarser than what ships today: obstacle response and waypoint
+  capture are the most visible part of unit control.
+
+  **`Unit` stays a `CharacterBody3D`; only the `move_and_slide()` call goes.**
+  Inspection found that call is doing far less than its name suggests:
+  `unit.gd` sets `collision_mask = 0` (deliberately — terrain height is sampled
+  explicitly, and letting the body collide with the terrain mesh made every
+  triangle edge behave like a small wall), and nothing in the project reads
+  `is_on_floor()`, `get_slide_collision()`, `up_direction` or `motion_mode`. So
+  it resolves no collision and returns nothing anyone consults; it integrates
+  `position += velocity * physics_delta` and that is all. Separation between
+  units is `OrcaAvoidance`'s job, on the navigation tick. Replacing it with an
+  explicit integration on the sim tick is therefore a small change rather than
+  a physics rewrite. The node class stays because it still carries `velocity`
+  and the `collision_layer` mouse picking selects units through; changing it
+  would touch every unit scene to buy clarity, not behaviour.
 - **Phase 4 — determinism gate.** Portable math, RNG split, the static rules
   above wired into `check_architecture.py`, and the CI test that replays one
   command log twice in-process and then compares state hashes across native and
