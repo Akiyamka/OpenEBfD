@@ -16,6 +16,7 @@ const UnitNavigationSystemScript := preload("res://scripts/units/navigation/unit
 const NavigationGridDebugScript := preload("res://scripts/units/navigation/navigation_grid_debug.gd")
 const MatchSnapshotScript := preload("res://scripts/match/match_snapshot.gd")
 const ReplayRecorderScript := preload("res://scripts/match/replay_recorder.gd")
+const ReplayPlayerScript := preload("res://scripts/match/replay_player.gd")
 const AutoloadLookupScript := preload("res://scripts/players/autoload_lookup.gd")
 const TerrainProbeScript := preload("res://scripts/world/terrain_probe.gd")
 const EntityQueryScript := preload("res://scripts/world/entity_query.gd")
@@ -62,6 +63,15 @@ var _command_bus: SimCommandBus
 ## place to hand drained commands to; record_tick() is a no-op until
 ## something outside this file calls start().
 var _replay_recorder: ReplayRecorder
+## Off by default for the identical reason _replay_recorder is (see that
+## field's comment): nothing in this file calls load() on it. Constructed
+## unconditionally here too, so _advance_simulation_tick() has a stable,
+## never-null place to ask for this tick's recorded commands; play_tick() is
+## a no-op until something outside this file calls load(). See
+## ReplayPlayer's own doc comment (scripts/match/replay_player.gd) for why a
+## live player's input is not suppressed while this is active -- there is no
+## UI yet that could make both happen at once.
+var _replay_player: ReplayPlayer
 var _command_executor: CommandExecutor
 var _building_controller: BuildingController
 var _building_upgrade_controller: BuildingUpgradeController
@@ -131,6 +141,7 @@ func _ready() -> void:
 	_tick_driver = FrameTickDriverScript.new()
 	_command_bus = SimCommandBusScript.new()
 	_replay_recorder = ReplayRecorderScript.new()
+	_replay_player = ReplayPlayerScript.new()
 	_match_snapshot = MatchSnapshotScript.new(_snapshot_storage_path())
 	_restore_saved_startup_state()
 	_building_option_ids = _local_player_building_option_ids()
@@ -355,6 +366,12 @@ func _process(delta: float) -> void:
 ## and it has to be the same everywhere a tick runs, which is why it is the
 ## very first line here and not folded into any one system's own advance_tick().
 ##
+## _replay_player.play_tick() runs between _clock.advance() and the drain,
+## not before commands-then-systems as a whole -- see its call site's own
+## comment and ReplayPlayer's doc comment (scripts/match/replay_player.gd)
+## for why a replay's commands must reach the bus before this same drain
+## rather than after it.
+##
 ## Every command type goes through CommandExecutor, the three that name a
 ## production or upgrade queue included. Those have nothing for its
 ## EntityNodeIndex to resolve and are forwarded straight to the controller
@@ -456,6 +473,15 @@ func _process(delta: float) -> void:
 ## can still be listed here as a freed instance and must not be ticked.
 func _advance_simulation_tick() -> void:
 	var tick := _clock.advance()
+	# Must run before drain(tick) below, not after: a replay command
+	# targeting `tick` has to be queued while _last_tick_drained is still
+	# tick - 1, or SimCommandBus.submit_at() (scripts/sim/command_bus.gd)
+	# would count it as late purely because playback was asked one
+	# statement too late, not because the replay is actually corrupt -- see
+	# ReplayPlayer.play_tick()'s doc comment (scripts/match/replay_player.gd).
+	# A no-op when no replay is loaded, so this costs nothing in the common
+	# case.
+	_replay_player.play_tick(_command_bus, tick)
 	# Captured once so record_tick() below sees exactly what the executor
 	# loop iterates -- drain() empties the bus of what it returns, so
 	# calling it a second time here would silently hand the recorder
