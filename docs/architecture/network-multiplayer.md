@@ -622,6 +622,28 @@ and by the time we get there the hard part is already tested.
   `unit_combat.gd`, `building_combat.gd`, `advanced_carryall_transport.gd`,
   `unit_deploy_state.gd`, `building_refinery_docks.gd`).
 
+  *Updated after slice B3a, 2026-08-20:* `combat_projectile.gd` is off that
+  list. `CombatProjectile` no longer defines `_physics_process()`; flight,
+  hit resolution and impact now run from `CombatProjectile.sim_tick()`,
+  joined to `Match._advance_simulation_tick()`'s new `"sim_projectiles"` group
+  loop the same way linger effects and spice mounds already join theirs (see
+  that function's doc comment for the loop and why it sits right after linger
+  effects). `advance()` itself is unchanged — it already sub-stepped against
+  `MAX_SIMULATION_STEP` (the rules' 20 Hz), which is coarser than one 25 Hz
+  tick (0.05s > 0.04s), so handing it a fixed tick-length delta was a
+  same-behavior wiring change, not a rewrite of flight itself. The rest of the
+  B3 list is untouched and stays on frame `delta`: firing still launches a
+  projectile from `unit_combat.gd`/`building_combat.gd`'s `_process()`
+  (B3b/B3c), and turret aim/target acquisition and flight-controller
+  transitions are unmoved. That leaves the placement question B3b inherits:
+  once firing itself joins the tick, whichever branch does it has to recheck
+  where `try_fire_at()`'s call site lands relative to the `"sim_projectiles"`
+  loop, because "a shot fired this tick must not also travel this tick" holds
+  today only by accident of scene-tree ordering (`Match._process()` runs
+  before any `Unit`/`Building`'s own `_process()` every frame — see
+  `tests/combat/support/sim_tick_pump.gd`), not because this loop's position
+  enforces it.
+
   Two of them are worth naming individually, because their classification is
   not what the file they live in suggests:
 

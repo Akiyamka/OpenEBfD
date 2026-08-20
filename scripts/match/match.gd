@@ -412,20 +412,26 @@ func _process(delta: float) -> void:
 ## reporting, not deciding, and no more "simulation" than
 ## _building_controller.status_changed already was before this slice.
 ## After the three controllers above: units, then buildings, then linger
-## effects, then spice mounds -- each entity's or system's own sim_tick().
-## For units and buildings that is today just CombatTurret.advance_tick() for
-## reload/burst countdowns (see Unit.sim_tick()/Building.sim_tick()); for
-## linger effects it is CombatLingerEffect.sim_tick() delivering one damage
-## tick and decrementing its own countdown (see combat_linger_effect.gd); for
-## spice mounds it is SpiceMound.sim_tick() decrementing the maturity
-## countdown that replaced its old MaturityTimer (see spice_mound.gd). What is
-## centrally maintained here is the list of *systems*, not of entities: group
-## membership maintains itself (Building.gd calls add_to_group("buildings")
-## in code; unit scenes declare "units" in their .tscn; CombatLingerEffect
-## adds itself to "sim_linger_effects" in its own configure(); SpiceMound adds
-## itself to "sim_spice_mounds" in its own _ready()), so adding a new unit or
-## building type, spawning another linger effect, or placing another mound
-## needs no change in this function.
+## effects, then projectiles, then spice mounds -- each entity's or system's
+## own sim_tick(). For units and buildings that is today just
+## CombatTurret.advance_tick() for reload/burst countdowns (see
+## Unit.sim_tick()/Building.sim_tick()); for linger effects it is
+## CombatLingerEffect.sim_tick() delivering one damage tick and decrementing
+## its own countdown (see combat_linger_effect.gd); for projectiles it is
+## CombatProjectile.sim_tick() advancing one tick of flight and resolving
+## whatever that tick's travel hits (see combat_projectile.gd -- B3a moved
+## this off _physics_process(), which advanced on engine frame time rather
+## than the tick a replay or checksum can see); for spice mounds it is
+## SpiceMound.sim_tick() decrementing the maturity countdown that replaced its
+## old MaturityTimer (see spice_mound.gd). What is centrally maintained here
+## is the list of *systems*, not of entities: group membership maintains
+## itself (Building.gd calls add_to_group("buildings") in code; unit scenes
+## declare "units" in their .tscn; CombatLingerEffect adds itself to
+## "sim_linger_effects" in its own configure(); CombatProjectile adds itself
+## to "sim_projectiles" in its own _ready(); SpiceMound adds itself to
+## "sim_spice_mounds" in its own _ready()), so adding a new unit or building
+## type, spawning another linger effect or projectile, or placing another
+## mound needs no change in this function.
 ##
 ## What this buys, stated honestly: the tick order is now these few lines in
 ## one function instead of whatever order the scene tree happened to hand
@@ -451,6 +457,49 @@ func _process(delta: float) -> void:
 ## would still be internally consistent, but it would be a different,
 ## silently-chosen simulation.
 ##
+## Projectiles (B3a) sit right after linger effects and before spice mounds,
+## and both boundaries are load-bearing rather than "after entities" restated
+## a second time:
+##
+## Before it, for the identical reason linger effects sit after units and
+## buildings: CombatProjectile.sim_tick() can resolve a hit against the very
+## unit or building the two loops above just ticked this tick, and it is
+## deliberately made to land after them -- an entity's reload and locomotion
+## for this tick are decided before any damage that might kill it arrives on
+## that same tick, on every client. Reversing this would still be internally
+## consistent; it would just be a different, silently-chosen simulation, the
+## same caveat the linger-effect ordering above carries.
+##
+## Right after the linger-effect loop specifically, not merely somewhere after
+## it: a projectile's impact can itself spawn a new CombatLingerEffect (see
+## combat_projectile.gd's _spawn_linger_effect()), which joins
+## SIM_LINGER_GROUP the instant it is configured, mid-loop. Running projectiles
+## after this tick's linger-effect loop has already executed means a linger
+## effect born from an impact this tick gets its first sim_tick() -- and its
+## first damage tick -- next tick, not this one. That is the same "docked one
+## tick" avoidance the spice-layer-before-mound-loop ordering below relies on,
+## applied here to the other pair of systems in this function that can spawn
+## one another mid-loop.
+##
+## Firing itself is not part of this function yet: unit_combat.gd and
+## building_combat.gd still launch a shot from _process() (B3b/B3c own moving
+## that), which the scene tree already runs after Match's own _process() every
+## frame -- see tests/combat/support/sim_tick_pump.gd's doc comment. A shot
+## fired this frame therefore cannot join SIM_PROJECTILES_GROUP in time to be
+## ticked by this same call, regardless of where in this function the loop
+## sits: "a projectile fired this tick must not also travel this tick" holds
+## today by scene-tree ordering, not by this loop's position. That stops being
+## true the moment firing itself moves onto this function's tick, so whichever
+## slice does that has to re-examine this loop's position rather than assume
+## today's placement still keeps the invariant.
+##
+## Like the four group loops above it, this one inherits the
+## get_nodes_in_group() ordering caveat recorded above: which projectile in a
+## multi-shot volley resolves first, on a tick where more than one could hit
+## the same target, is not guaranteed to match across clients yet. That is a
+## known, owned gap for phase 4 to close, the same as the other four loops --
+## not something this slice tries to solve.
+##
 ## The spice layer is the one step here that is not a group loop: unlike
 ## units, buildings, linger effects and mounds, it is a single system this
 ## match owns through its terrain (see map_loader.gd), so it is called
@@ -467,20 +516,25 @@ func _process(delta: float) -> void:
 ## Spice mounds go last, and unlike the loops above this really is "fixed and
 ## arbitrary": a mound's maturity countdown reads and writes nothing any other
 ## system in this function touches -- not a unit, not a building, not a
-## linger effect's damage, not a controller's credits -- so this loop could
-## sit anywhere among the six steps above it without changing a single
-## outcome. Appending it is simply the smallest diff, the one that leaves the
-## already-justified controller/unit/building/linger order untouched.
-## Recording that explicitly is the point: the next system to join this loop
-## should not have to guess whether "spice mounds are last" was load-bearing
-## or just where the diff happened to land.
+## linger effect's damage, not a projectile's flight, not a controller's
+## credits -- so this loop could sit anywhere among the seven steps above it
+## without changing a single outcome. Appending it is simply the smallest
+## diff, the one that leaves the already-justified
+## controller/unit/building/linger/projectile order untouched. Recording that
+## explicitly is the point: the next system to join this loop should not have
+## to guess whether "spice mounds are last" was load-bearing or just where the
+## diff happened to land.
 ##
-## is_instance_valid() guards all four group loops because queue_free() does not
-## remove a node from its groups until the frame ends: a unit that gave itself
-## away this frame (see Unit's set_process(false) call site), a linger effect
-## whose own countdown just ran out (see CombatLingerEffect._finish()), or a
-## mound freed this same frame by map_spice_layer.gd's _remove_spice_mound()
-## can still be listed here as a freed instance and must not be ticked.
+## is_instance_valid() guards all five group loops because queue_free() does
+## not remove a node from its groups until the frame ends: a unit that gave
+## itself away this frame (see Unit's set_process(false) call site), a linger
+## effect whose own countdown just ran out (see CombatLingerEffect._finish()),
+## a projectile that just impacted or expired (see CombatProjectile._finish(),
+## which also calls remove_from_group() itself for the same reason -- belt and
+## braces, since the group walk below cannot tell "freed" from "finished but
+## not yet freed" on its own), or a mound freed this same frame by
+## map_spice_layer.gd's _remove_spice_mound() can still be listed here as a
+## freed instance and must not be ticked.
 func _advance_simulation_tick() -> void:
 	var tick := _clock.advance()
 	# Must run before drain(tick) below, not after: a replay command
@@ -526,6 +580,9 @@ func _advance_simulation_tick() -> void:
 	for linger_effect in get_tree().get_nodes_in_group("sim_linger_effects"):
 		if is_instance_valid(linger_effect):
 			linger_effect.sim_tick()
+	for projectile in get_tree().get_nodes_in_group("sim_projectiles"):
+		if is_instance_valid(projectile):
+			projectile.sim_tick()
 	if terrain != null and terrain.spice_layer != null:
 		terrain.spice_layer.sim_tick()
 	for spice_mound in get_tree().get_nodes_in_group("sim_spice_mounds"):

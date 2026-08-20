@@ -192,18 +192,35 @@ func _test_hkflame_turret_direct_friendly_fire() -> void:
 	target.owner_player_id = building.owner_player_id
 	target.add_to_group(&"units")
 	root.add_child(target)
+	# CombatProjectile no longer advances itself from _physics_process() (B3a
+	# moved flight onto Match._advance_simulation_tick()'s "sim_projectiles"
+	# loop); this suite has no Match, so nothing drives that loop, and the
+	# flame stream would sit at the muzzle forever. Collect what the turret
+	# fires and step it by hand each frame, the same way every other fixture
+	# in this file that owns a projectile does.
+	var fired: Array = []
+	building.weapon_fired.connect(
+		func(projectiles: Array, _target: Variant, _weapon_index: int) -> void:
+			fired.append_array(projectiles)
+	)
 	_expect(
 		building.command_attack(target),
 		"HKFlameTurret must accept a forced attack on a friendly unit"
 	)
 	for frame in 360:
 		await physics_frame
+		for projectile in fired:
+			if is_instance_valid(projectile):
+				projectile.advance(1.0 / 60.0)
 		if target.damage_taken > 0.0:
 			break
 	_expect(
 		target.damage_taken > 0.0,
 		"HKFlameTurret direct fire must damage a friendly unit below its muzzle"
 	)
+	for projectile in fired:
+		if is_instance_valid(projectile) and not projectile.is_queued_for_deletion():
+			projectile.free()
 	building.free()
 	target.free()
 

@@ -4,6 +4,7 @@ const LegacyRulesFixture := preload("res://tests/support/legacy_rules_fixture.gd
 
 const CombatTurretScript := preload("res://scripts/combat/combat_turret.gd")
 const CombatLingerEffectScript := preload("res://scripts/combat/combat_linger_effect.gd")
+const CombatProjectileScript := preload("res://scripts/combat/combat_projectile.gd")
 const CombatBullets := preload("res://tests/combat/support/combat_bullets.gd")
 const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 const BuildingDefinitionCatalogScript := preload(
@@ -59,6 +60,10 @@ func _initialize() -> void:
 	await _run_case(
 		"a real linger effect's delivered ticks advance from the match loop alone",
 		_test_match_loop_drives_unit_linger_effect
+	)
+	await _run_case(
+		"a real projectile's flight advances from the match loop alone",
+		_test_match_loop_drives_projectile_flight
 	)
 	await _run_case(
 		"a real spice mound's maturity countdown advances from the match loop alone",
@@ -809,6 +814,97 @@ func _test_match_loop_drives_unit_linger_effect() -> void:
 	)
 
 	effect.queue_free()
+	match_instance.queue_free()
+
+
+## The projectile-flight counterpart to _test_match_loop_drives_unit_linger_effect
+## above -- same failure mode, same shape. Every other assertion that a
+## projectile actually travels (projectile_flight_run.gd and the rest of
+## tests/combat/) drives it with direct advance() or sim_tick() calls, so all
+## of it would keep passing even if CombatProjectile were never reached from
+## Match._advance_simulation_tick()'s "sim_projectiles" loop, because nothing
+## here calls sim_tick() itself either. Forgetting to add projectiles to that
+## central loop (see its doc comment, and the paragraph explaining where this
+## loop sits relative to linger effects and the entity loops) is exactly the
+## failure mode this test exists to catch, so it boots the real match scene,
+## launches a real CombatProjectile under it, and lets the match loop's own
+## ticking discover and drive it -- the same way the linger-effect case
+## discovers CombatLingerEffect.sim_tick().
+##
+## StraightBomb is a real rules bullet (resources/combat/bullets/StraightBomb.tres,
+## also used by projectile_flight_run.gd): non-homing, non-trajectory, 24
+## units/s with an 18-world-unit maximum range (maximum_range=9 tiles *
+## RULE_TILE_WORLD_SPAN=2.0). The ground point aimed at is 15 units out --
+## comfortably inside that 18-unit budget, so launch() accepts it, and
+## comfortably beyond what even a generous ~7 ticks of travel could cover
+## (7 * 24 * SECONDS_PER_TICK ≈ 6.7 units), so the shot is still guaranteed to
+## be FLYING when the window below closes -- the same "push it far out of the
+## window's reach" idea as the 1000-tick overrides above, applied to a
+## projectile's own flight budget rather than an integer counter.
+## elapsed_seconds is the metric instead of a tick counter because
+## CombatProjectile has none of its own: advance() adds exactly one delta per
+## call while FLYING, so if the match loop is really the only thing calling
+## sim_tick(), elapsed_seconds must advance by exactly
+## advanced_ticks * SECONDS_PER_TICK -- not approximately, because both
+## quantities come from the same due-tick loop within the same frame, same as
+## every other case in this section.
+func _test_match_loop_drives_projectile_flight() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	get_root().add_child(match_instance)
+	for _warmup in 5:
+		await process_frame
+
+	var projectile := CombatProjectileScript.new()
+	match_instance.add_child(projectile)
+	var bullet = CombatBullets.new().runtime_bullet(&"StraightBomb")
+	var origin := Vector3(0.0, 1.0, 0.0)
+	var ground_target := origin + Vector3.FORWARD * 15.0
+	_expect(
+		projectile.launch(
+			bullet,
+			{"position": origin, "direction": Vector3.FORWARD},
+			ground_target
+		),
+		"the wiring probe's StraightBomb must launch toward an empty, in-range ground point"
+	)
+
+	var started_msec := Time.get_ticks_msec()
+	var started_tick: int = match_instance.current_tick()
+	var started_elapsed: float = projectile.elapsed_seconds
+
+	var frames := 0
+	while Time.get_ticks_msec() - started_msec < 200 and frames < 400:
+		await process_frame
+		frames += 1
+
+	var advanced_ticks: int = match_instance.current_tick() - started_tick
+	var advanced_elapsed: float = projectile.elapsed_seconds - started_elapsed
+	_expect(
+		advanced_ticks >= 3,
+		"%d ms of the real match loop must advance the clock at least 3 ticks, got %d" \
+			% [Time.get_ticks_msec() - started_msec, advanced_ticks]
+	)
+	_expect(
+		projectile.state == CombatProjectileScript.State.FLYING,
+		"the wiring probe must still be flying at the end of the window, or the "
+			+ "elapsed-time comparison below would not isolate the tick loop"
+	)
+	# Same reasoning as the linger-effect case above: both quantities are
+	# advanced from the same due-tick loop within the same frame (see
+	# match.gd::_advance_simulation_tick()), so -- as long as the flight budget
+	# above is nowhere near exhausted, which the distant aim point guarantees
+	# -- the advance is exact, not just approximate.
+	_expect(
+		is_equal_approx(advanced_elapsed, float(advanced_ticks) * MatchClockScript.SECONDS_PER_TICK),
+		"a real projectile must advance by exactly one tick's worth of flight per simulation tick from the match loop alone: elapsed_seconds advanced by %.6f against %d clock ticks (%.6f expected)" \
+			% [
+				advanced_elapsed, advanced_ticks,
+				float(advanced_ticks) * MatchClockScript.SECONDS_PER_TICK
+			]
+	)
+
+	if is_instance_valid(projectile):
+		projectile.free()
 	match_instance.queue_free()
 
 

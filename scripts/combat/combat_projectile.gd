@@ -43,6 +43,13 @@ const TRAJECTORY_PROJECTILE_SIZE := 0.18
 const PIERCING_SWEEP_RADIUS := 1.4
 const MissileTrailScript := preload("res://scripts/combat/fx/missile_trail.gd")
 const LaserBeamScript := preload("res://scripts/combat/fx/laser_beam.gd")
+const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
+
+## Match._advance_simulation_tick() drives every live projectile's sim_tick()
+## by walking this group, the same way it walks "units", "buildings" and
+## "sim_linger_effects" -- see _ready() below for why this joins the group
+## itself rather than being registered centrally.
+const SIM_PROJECTILES_GROUP := "sim_projectiles"
 
 var bullet
 var _damage_scale := 1.0
@@ -72,8 +79,19 @@ var _impact_resolver = CombatImpactResolverScript.new()
 
 
 func _init() -> void:
-	set_physics_process(false)
 	_missile_trail.configure(self)
+
+
+## Joins SIM_PROJECTILES_GROUP unconditionally, in _ready() rather than
+## launch(): a projectile whose launch() call later fails (an out-of-range
+## shot, a target that died between muzzle selection and this call) is freed
+## the same frame by its caller (see combat_turret.gd's try_fire_at()), so a
+## brief, never-ticked group membership on a doomed instance costs nothing --
+## the same tolerance the is_instance_valid() guard in
+## Match._advance_simulation_tick() already extends to a unit or building that
+## gives itself away mid-frame.
+func _ready() -> void:
+	add_to_group(SIM_PROJECTILES_GROUP)
 
 
 func launch(
@@ -165,7 +183,6 @@ func launch(
 	_gravity_world = BallisticsScript.gravity_world(bullet_gravity)
 
 	state = State.FLYING
-	set_physics_process(true)
 	_face_direction(_direction)
 	_missile_trail.build(bullet, global_position, elapsed_seconds)
 
@@ -278,6 +295,23 @@ func _hide_fx_object(node: Node, object_name: String) -> void:
 		_hide_fx_object(child, object_name)
 
 
+## This projectile's simulation half: one call is one combat tick of flight,
+## deciding whether this tick's travel lands a hit exactly like a frame's
+## worth of _physics_process() used to. Called from
+## Match._advance_simulation_tick() via SIM_PROJECTILES_GROUP membership
+## joined in _ready() above -- never call this directly. See that function's
+## doc comment for where projectiles sit in the tick order and why.
+##
+## Handing advance() a whole tick's SECONDS_PER_TICK (0.04s, 25 Hz) rather
+## than sub-stepping it here relies on advance() already sub-stepping against
+## MAX_SIMULATION_STEP (0.05s, the rules' own 20 Hz) -- checked, not assumed:
+## 0.04 < 0.05, so its while loop below always runs exactly one iteration per
+## sim_tick() call, the same single step a 20 Hz-or-faster physics frame used
+## to hand it.
+func sim_tick() -> void:
+	advance(MatchClockScript.SECONDS_PER_TICK)
+
+
 func advance(delta: float) -> void:
 	if state != State.FLYING or delta <= 0.0:
 		return
@@ -315,10 +349,6 @@ func trajectory_impact_position() -> Vector3:
 
 func target() -> Object:
 	return _target_ref.get_ref() if _target_ref != null else null
-
-
-func _physics_process(delta: float) -> void:
-	advance(delta)
 
 
 func _resolve_hitscan() -> void:
@@ -656,7 +686,15 @@ func _expire(reason: StringName) -> void:
 func _finish(reason: StringName, world_position: Vector3) -> void:
 	finish_reason = reason
 	velocity = Vector3.ZERO
-	set_physics_process(false)
+	# queue_free() does not drop group membership until the frame ends, so
+	# leave the group explicitly here -- the same reason
+	# CombatLingerEffect._finish() does (see combat_linger_effect.gd):
+	# otherwise a finished projectile could still be listed by
+	# Match._advance_simulation_tick()'s SIM_PROJECTILES_GROUP loop on a later
+	# tick this same frame, before the deferred free actually lands. advance()
+	# already no-ops once state leaves FLYING, so this is not a correctness
+	# fix, just the same tidiness the sibling loop already keeps.
+	remove_from_group(SIM_PROJECTILES_GROUP)
 	var keeps_laser_visual: bool = (
 		bullet != null
 		and bullet.is_laser()
