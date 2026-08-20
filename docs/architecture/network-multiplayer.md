@@ -120,9 +120,18 @@ runs its own accumulator against it — a sixth domain, advancing on frame time,
 driving the part of the game that decides where every unit ends up. The sweep
 missed it because `own-tick-rate`'s pattern matches `TICKS_PER_SECOND` and this
 constant is named something else, which is precisely the failure mode that rule
-exists to prevent. It is folded into the one tick in phase 3 (slice A1), and
-the rule is widened at the same time so a seventh domain cannot appear under a
-seventh name.
+exists to prevent.
+
+**Closed 2026-08-20, in phase 3 slices A1a and A1b.** `NAVIGATION_TICK_RATE` is
+deleted, not re-pointed: there is no navigation tick rate any more, only the
+simulation's, and `UnitNavigationSystem.sim_tick()` is called once per tick from
+`Match._advance_simulation_tick()`. The `own-tick-rate` pattern now matches the
+`_TICK_RATE` spelling as well, so re-adding the constant is rejected outright --
+which is what actually keeps the domain closed, the deletion being merely the
+first half. A1a came first and changed no behaviour at all: it separated the
+Rules.txt movement cadence, which is also 20 and is not a clock, from the tick
+rate that was about to change, after finding one place that had already confused
+the two.
 
 Two conversions were not one-to-one and are recorded here because they changed
 the game, slightly and deliberately:
