@@ -46,8 +46,24 @@ var _last_tick_drained := -1
 var _dropped_late_count := 0
 
 
-## Schedules `command` for current_tick + input_delay_ticks and returns that
-## tick.
+## Schedules `command` for the absolute tick `target_tick` and returns it
+## unchanged, applying the same late-drop rule submit() does (see the
+## paragraphs below). This is the one implementation "queue a command for
+## tick T" has; submit() is written in terms of it rather than duplicating
+## the body, so there is exactly one place this logic can drift.
+##
+## The reason a separate absolute-tick entry point exists at all: a replay
+## records the tick drain() actually executed a command on
+## (scripts/match/replay_file.gd), and playback must land the command on
+## that exact recorded tick, not on whatever tick a fresh computation would
+## produce. input_delay_ticks is a `var` phase 5's adaptive policy changes
+## at runtime (see that field's doc comment) -- if playback reconstructed
+## the target tick via submit(command, recorded_tick - input_delay_ticks) or
+## any other derivation, the same replay would land on a different tick
+## depending on whatever input_delay_ticks happens to be set to at playback
+## time, silently diverging from the tick it actually ran on when recorded.
+## submit_at() sidesteps that reconstruction entirely: it is handed the
+## already-decided answer and trusts it.
 ##
 ## A command whose target tick is at or before the last tick this bus has
 ## already drained missed its slot. This mirrors FrameTickDriver.dropped_ticks()
@@ -61,9 +77,12 @@ var _dropped_late_count := 0
 ## tick either: it is counted in dropped_late_count() and nothing else,
 ## which is the seam a later phase (the turn scheduler's stall/drop policy,
 ## or a desync check) reads instead of discovering the loss only after a
-## match has already diverged.
-func submit(command: SimCommand, current_tick: int) -> int:
-	var target_tick := current_tick + input_delay_ticks
+## match has already diverged. Replay playback inherits this rule for free
+## by going through this method rather than around it: a recorded command
+## that targets a tick playback has already passed (say, because playback
+## started partway through the file) is dropped the same way a live late
+## command is, instead of needing its own second copy of this reasoning.
+func submit_at(command: SimCommand, target_tick: int) -> int:
 	if target_tick <= _last_tick_drained:
 		_dropped_late_count += 1
 		return target_tick
@@ -74,6 +93,14 @@ func submit(command: SimCommand, current_tick: int) -> int:
 	_next_sequence += 1
 	_pending.append(queued)
 	return target_tick
+
+
+## Schedules `command` for current_tick + input_delay_ticks and returns that
+## tick. A thin wrapper over submit_at() -- see that method for the
+## late-drop rule and for why an absolute-tick entry point exists at all
+## (replay playback).
+func submit(command: SimCommand, current_tick: int) -> int:
+	return submit_at(command, current_tick + input_delay_ticks)
 
 
 ## Every command due at exactly `tick`, removed from the bus, in the bus's

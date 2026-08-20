@@ -15,6 +15,7 @@ const BuildingDefinitionCatalogScript := preload("res://scripts/buildings/buildi
 const UnitNavigationSystemScript := preload("res://scripts/units/navigation/unit_navigation_system.gd")
 const NavigationGridDebugScript := preload("res://scripts/units/navigation/navigation_grid_debug.gd")
 const MatchSnapshotScript := preload("res://scripts/match/match_snapshot.gd")
+const ReplayRecorderScript := preload("res://scripts/match/replay_recorder.gd")
 const AutoloadLookupScript := preload("res://scripts/players/autoload_lookup.gd")
 const TerrainProbeScript := preload("res://scripts/world/terrain_probe.gd")
 const EntityQueryScript := preload("res://scripts/world/entity_query.gd")
@@ -54,6 +55,13 @@ var _tick_driver: FrameTickDriver
 ## _setup_unit_deployment_controller() in _ready() rather than sitting next
 ## to _command_bus's.
 var _command_bus: SimCommandBus
+## Off by default (see ReplayRecorder's doc comment,
+## scripts/match/replay_recorder.gd) -- nothing in this file calls start()
+## on it. It is still constructed unconditionally here, alongside
+## _command_bus, so _advance_simulation_tick() has a stable, never-null
+## place to hand drained commands to; record_tick() is a no-op until
+## something outside this file calls start().
+var _replay_recorder: ReplayRecorder
 var _command_executor: CommandExecutor
 var _building_controller: BuildingController
 var _building_upgrade_controller: BuildingUpgradeController
@@ -122,6 +130,7 @@ func _ready() -> void:
 	_clock = MatchClockScript.new()
 	_tick_driver = FrameTickDriverScript.new()
 	_command_bus = SimCommandBusScript.new()
+	_replay_recorder = ReplayRecorderScript.new()
 	_match_snapshot = MatchSnapshotScript.new(_snapshot_storage_path())
 	_restore_saved_startup_state()
 	_building_option_ids = _local_player_building_option_ids()
@@ -447,7 +456,16 @@ func _process(delta: float) -> void:
 ## can still be listed here as a freed instance and must not be ticked.
 func _advance_simulation_tick() -> void:
 	var tick := _clock.advance()
-	for command in _command_bus.drain(tick):
+	# Captured once so record_tick() below sees exactly what the executor
+	# loop iterates -- drain() empties the bus of what it returns, so
+	# calling it a second time here would silently hand the recorder
+	# nothing. This is also why recording happens at the drain rather than
+	# anywhere else: `commands` is already drain()'s total order (see
+	# scripts/sim/command_bus.gd), so "recorded order" and "executed order"
+	# are the same variable, not two facts a bug could let drift apart.
+	var commands := _command_bus.drain(tick)
+	_replay_recorder.record_tick(tick, commands)
+	for command in commands:
 		var result: Dictionary = _command_executor.execute(command)
 		if _unit_command_controller != null:
 			_unit_command_controller.on_command_executed(command, result)
