@@ -169,8 +169,29 @@ func _wait_for_state(
 	var samples: Array[Dictionary] = []
 	for _frame in maximum_frames:
 		await physics_frame
-		for _tick in _nav_tick_driver.pending_ticks(root.get_physics_process_delta_time()):
+		var ticks_this_frame := _nav_tick_driver.pending_ticks(
+			root.get_physics_process_delta_time()
+		)
+		for _tick in ticks_this_frame:
+			# Navigation first, then the units -- Match's own tick order (see
+			# Match._advance_simulation_tick()). Since slice B2 the carrier's
+			# transport and flight state advance from Unit.sim_tick() rather
+			# than from _physics_process, so ticking navigation alone leaves
+			# the carrier hovering in approach_pickup forever.
 			navigation.sim_tick()
+			for unit in [carrier, cargo]:
+				if is_instance_valid(unit):
+					unit.sim_tick()
+		# Sampled only on frames that actually advanced the simulation. Since
+		# slice B2 the carrier's alignment steps once per simulation tick, and
+		# physics frames outnumber ticks (60 to 25), so sampling every frame
+		# would record the same yaw two or three times in a row -- and the
+		# gradual-alignment assertion below, which compares two consecutive
+		# samples, would read that as "snapped in one step" when nothing had
+		# stepped at all. A sample per tick is what that assertion has always
+		# meant.
+		if ticks_this_frame <= 0:
+			continue
 		var state := carrier.transport_state_name()
 		samples.append({
 			"state": state,

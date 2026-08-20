@@ -71,9 +71,9 @@ func dispose() -> void:
 	_unit = null
 
 
-## Both machines advance every frame, then the cycle driver closes the loop
-## between them; that order is what lets a finished harvest hand straight over
-## to the trip home within the same frame.
+## Both machines advance every simulation tick, then the cycle driver closes
+## the loop between them; that order is what lets a finished harvest hand
+## straight over to the trip home within the same tick.
 func advance(delta: float) -> void:
 	advance_harvest_order(delta)
 	advance_unload_order(delta)
@@ -333,7 +333,9 @@ func harvest_target_cell() -> Vector2i:
 
 
 ## Public for deterministic fixed-delta feature tests; runtime calls it from
-## _process so harvesting remains independent of the navigation tick rate.
+## Unit.sim_tick(), once per simulation tick, so the credits it eventually
+## produces (see advance_unload_order() below) land on the same tick on every
+## client regardless of frame rate.
 func advance_harvest_order(delta: float) -> void:
 	if _harvest_phase == HarvestPhase.NONE:
 		return
@@ -364,8 +366,10 @@ func advance_harvest_order(delta: float) -> void:
 		transitions += 1
 
 
-## Public for deterministic feature tests. Runtime calls this from _process;
-## fixed-rate credit conversion is accumulated independently of render frames.
+## Public for deterministic feature tests. Runtime calls this from
+## Unit.sim_tick(); fixed-rate credit conversion is accumulated on the
+## simulation tick rather than the render frame, so which tick a credit lands
+## on -- and therefore what it can fund -- no longer depends on frame timing.
 func advance_unload_order(delta: float) -> void:
 	if _unload_phase == UnloadPhase.NONE:
 		return

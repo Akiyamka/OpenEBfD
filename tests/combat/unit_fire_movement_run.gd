@@ -112,15 +112,15 @@ func _test_fire_while_moving_capability() -> void:
 		and mongoose.combat()._moving_fire_weapons.has(0),
 		"Move must replace pursuit and enable autonomous fire for its movable turret"
 	)
-	# Unit._process() no longer advances turret reload since phase 1 -- Match's
-	# central loop does, through Unit.sim_tick(). This suite has no Match, so
-	# the pump stands in for that half of a real frame; without it the
-	# autonomous-reacquisition assertion at the end of this case waits on a
-	# reload that never expires.
+	# Unit._process() no longer advances turret reload or locomotion -- Match's
+	# central loop does, through Unit.sim_tick() (see _advance_locomotion_tick()
+	# for the locomotion half). This suite has no Match, so the pump stands in
+	# for that half of a real frame; without it neither the pursuit movement
+	# nor the autonomous-reacquisition assertion at the end of this case would
+	# ever happen.
 	var mongoose_pump := SimTickPumpScript.new()
 	for frame in 180:
 		mongoose_pump.advance(mongoose, 1.0 / 60.0)
-		mongoose._physics_process(1.0 / 60.0)
 		if true in movement_samples:
 			break
 	_expect(
@@ -140,7 +140,6 @@ func _test_fire_while_moving_capability() -> void:
 	target.global_position = mongoose.global_position + forward * 100.0
 	for frame in 180:
 		mongoose_pump.advance(mongoose, 1.0 / 60.0)
-		mongoose._physics_process(1.0 / 60.0)
 		if mongoose.combat()._weapon_fire_sequences.is_empty():
 			break
 	var out_of_range_yaw := absf(
@@ -176,7 +175,6 @@ func _test_fire_while_moving_capability() -> void:
 	autonomous_target.add_to_group(&"units")
 	for frame in 600:
 		mongoose_pump.advance(mongoose, 1.0 / 60.0)
-		mongoose._physics_process(1.0 / 60.0)
 		if autonomous_target in fired_targets:
 			break
 	_expect(

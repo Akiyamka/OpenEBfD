@@ -564,6 +564,16 @@ and by the time we get there the hard part is already tested.
   aircraft can reproduce, and phase 4's replay-twice check would fail on this
   alone.
 
+  *Updated after slice B2:* the **symptom** is gone from the suite — flight now
+  reports a stable 381 assertions across runs, because B2 moved the flight
+  branches onto the fixed tick and the fixture drives those ticks explicitly
+  instead of letting real frame timing decide how many steps a transition
+  takes. The **cause** is untouched: `Unit._on_animation_finished()` still
+  calls `UnitFlightController.notify_animation_finished()`, and transitions
+  still complete on that signal. A green, stable suite is now evidence about
+  the fixture rather than about the code, which makes this defect harder to
+  see, not easier. B3 still owns severing it.
+
   **Slice B1's inventory, 2026-08-20.** 96 `delta: float` signatures across 37
   files. The dividing question is not "does this run every frame" but "does the
   value this advances survive into the next tick as something a command or a

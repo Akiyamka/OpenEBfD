@@ -1,6 +1,13 @@
 extends SceneTree
 
 const LegacyRulesFixture := preload("res://tests/support/legacy_rules_fixture.gd")
+## Slice B2 moved Unit's deploy-alignment countdown off _physics_process and
+## onto sim_tick(), which no engine callback drives -- Match does. With no
+## Match in this fixture, `await physics_frame` alone advances nothing, and
+## the alignment loop below would spin out its 60 frames in silence. See that
+## helper's own doc comment: it was written for exactly this failure and
+## already names three suites that hit it before this one.
+const SimTickPumpScript := preload("res://tests/combat/support/sim_tick_pump.gd")
 
 const UnitDeploymentControllerScript := preload("res://scripts/units/unit_deployment_controller.gd")
 const UnitRosterControllerScript := preload("res://scripts/units/unit_roster_controller.gd")
@@ -194,10 +201,12 @@ func _test_unit_deployment_animation() -> void:
 		"deployment alignment must not snap the MCV rotation"
 	)
 	_expect(not unit.prepare_navigation_order(Vector3(20.0, 0.0, 20.0)), "a deploying unit must reject new movement orders")
+	var deploy_pump := SimTickPumpScript.new()
 	for frame in 60:
 		if player != null and player.current_animation == &"Move_Stop":
 			break
 		await physics_frame
+		deploy_pump.advance(unit, root.get_physics_process_delta_time())
 	_expect(
 		is_zero_approx(angle_difference(unit.global_rotation.y, 0.0)),
 		"the MCV must align with the future building axis before its transition"

@@ -3,6 +3,7 @@ class_name Unit
 
 const AutoloadLookupScript := preload("res://scripts/players/autoload_lookup.gd")
 const EntityQueryScript := preload("res://scripts/world/entity_query.gd")
+const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 const MatchLookupScript := preload("res://scripts/match/match_lookup.gd")
 const SimEntityRegistryScript := preload("res://scripts/sim/entity_registry.gd")
 const TeamColorScript := preload("res://scripts/world/team_color.gd")
@@ -170,10 +171,18 @@ var _death_sequence := UnitDeathSequenceScript.new()
 ## Not `velocity`: navigation_step() zeroes its vertical component, and
 ## UnitFlightController writes global_position directly, bypassing velocity
 ## entirely during takeoff/landing. Updated at the top of every
-## _physics_process call (see the comment there) so it always holds the
-## unit's position at the start of the most recent physics step, regardless
-## of which movement path is active.
+## _advance_locomotion_tick() call (see the comment there) so it always
+## holds the unit's position at the start of the most recent simulation
+## tick, regardless of which movement path is active.
 var _previous_global_position := Vector3.ZERO
+## Set once this unit has handed its model to a corpse (see
+## prepare_model_for_corpse()): from that moment it owns nothing left to
+## simulate, but Match's "units" group loop still reaches it -- queue_free()
+## is deferred, so is_instance_valid() stays true for the rest of the tick.
+## set_physics_process(false) used to be what stopped the locomotion half from
+## running in that window; locomotion is on sim_tick() now, which no engine
+## flag gates, so the guard has to be explicit.
+var _simulation_halted := false
 var _deploy := UnitDeployStateScript.new()
 ## Unit's combat engine (attack orders, turret engagement, fire sequences).
 ## See scripts/units/unit_combat.gd; modeled on Building/BuildingCombat.
@@ -281,13 +290,31 @@ func _release_entity_id() -> void:
 
 
 ## This entity's simulation half: advances every turret's reload/burst
-## countdown by exactly one combat tick. Called once per simulation tick by
+## countdown, then ground/generic locomotion and terrain snapping (see
+## _advance_locomotion_tick()), then -- for a harvester -- the economy, all by
+## exactly one simulation tick. Called once per simulation tick by
 ## Match._advance_simulation_tick() -- see its doc comment for why the tick is
 ## driven centrally instead of from this node's own _process(). Never call
 ## this from Unit itself.
+##
+## _harvester.advance() ends in HarvesterController._transfer_unload_credits()
+## -> player.add_money(), and credits gate production: which tick a credit
+## lands on must not depend on frame timing, so it advances here rather than
+## from _process() below.
 func sim_tick() -> void:
+	if _simulation_halted:
+		return
 	for turret in combat_turrets:
 		turret.advance_tick()
+	_advance_locomotion_tick()
+	if _harvester != null:
+		_harvester.advance(MatchClockScript.SECONDS_PER_TICK)
+
+
+## True once prepare_model_for_corpse() has run and sim_tick() has stopped
+## doing anything. The simulation-side counterpart to is_processing().
+func is_simulation_halted() -> bool:
+	return _simulation_halted
 
 
 func _process(delta: float) -> void:
@@ -298,26 +325,33 @@ func _process(delta: float) -> void:
 	_combat.advance(delta)
 	# Same ordering requirement as _combat.advance() above: the looping
 	# Deploy_Gun_Hold clip keys the turret pivot every frame, so recentering
-	# it must also run after the AnimationPlayers (_process, not
-	# _physics_process) or the animation's authored pose instantly overwrites
-	# each gradual step, making the turret look like it never turns at all.
+	# it must also run after the AnimationPlayers apply this frame's pose --
+	# which only _process() is guaranteed to run after; the simulation tick
+	# has no defined relationship to animation playback at all -- or the
+	# animation's authored pose instantly overwrites each gradual step, making
+	# the turret look like it never turns at all.
 	if _deploy.advance_undeploy_alignment(delta):
 		_deploy.start_undeploy_animation()
 	_advance_visual_slope_alignment(delta)
-	# Same _process (not _physics_process) requirement as the two calls above:
-	# the movement clip's playback position is only this frame's value after
-	# the AnimationPlayers have run.
+	# Same _process (not the simulation tick) requirement as the two calls
+	# above: the movement clip's playback position is only this frame's value
+	# after the AnimationPlayers have run.
 	_movement_sounds.advance(delta)
 	_shader_fx.advance(delta, shields)
-	if _harvester != null:
-		_harvester.advance(delta)
 
 
-func _physics_process(delta: float) -> void:
-	# Captured before this frame's movement runs, so by the time anything
+## Ground/generic locomotion's simulation half: driven from sim_tick() above,
+## once per simulation tick, never from a per-frame callback -- Unit no
+## longer defines _physics_process() at all. Folds in what that callback used
+## to do, including the terrain snap (_snap_to_terrain() sets
+## global_position.y, which is simulation state exactly like the rest of this
+## method).
+func _advance_locomotion_tick() -> void:
+	var delta := MatchClockScript.SECONDS_PER_TICK
+	# Captured before this tick's movement runs, so by the time anything
 	# reads it later (death momentum, see _begin_death_sequence) it holds
-	# "position at the start of the most recent physics step" — equivalent to
-	# updating it at the end of the previous call, but without duplicating
+	# "position at the start of the most recent simulation tick" -- equivalent
+	# to updating it at the end of the previous call, but without duplicating
 	# the assignment above every early return below.
 	_previous_global_position = global_position
 	if is_carried():
@@ -346,6 +380,12 @@ func _physics_process(delta: float) -> void:
 	if is_deployed():
 		velocity = Vector3.ZERO
 		return
+	# Match runs navigation_system.sim_tick() -- which moves every managed
+	# unit through navigation_step() -- before the "units" group loop reaches
+	# this unit's own sim_tick() (see match.gd's ordering comment). Both paths
+	# now run on the same 25 Hz clock, so without this guard a managed unit
+	# would be integrated a second time here, on top of what navigation_step()
+	# already did this same tick.
 	if _navigation_managed:
 		return
 	if _flight_controller != null and _flight_controller.circles_flight_enabled():
@@ -389,7 +429,16 @@ func _physics_process(delta: float) -> void:
 	if _locomotion.is_starting():
 		velocity = Vector3.ZERO
 	_locomotion.advance_gait(delta, animation_speed_scale)
-	move_and_slide()
+	# move_and_slide() used to run here. It resolved no collision and returned
+	# nothing anyone consulted: collision_mask is 0 (see _ready() -- terrain
+	# height is sampled explicitly below, and letting the body collide with
+	# the terrain mesh made every triangle edge act as a small wall), and
+	# nothing in the project reads is_on_floor(), get_slide_collision(),
+	# up_direction or motion_mode. So all it ever did was integrate position,
+	# which this does explicitly instead, exactly like navigation_step()
+	# already does for managed units. Separation between units is
+	# OrcaAvoidance's job, on the navigation tick.
+	global_position += velocity * delta
 	_snap_to_terrain(delta)
 
 
@@ -1356,14 +1405,16 @@ func prepare_model_for_corpse(model: Node3D) -> void:
 	# but nulled anyway so nothing can call back into it and so it no longer
 	# holds this Unit and one of the corpse's players alive together.
 	_flight_controller = null
-	# queue_free() does not stop this frame's remaining _process()/
-	# _physics_process() calls, so without halting processing here, a still-
-	# pending tick (e.g. a blocking fire sequence's was_blocking branch in
-	# _finish_fire_sequence_for calling _set_movement_animation) can still
-	# run this frame and try to act on a unit that has already given
-	# everything away.
+	# queue_free() does not stop this frame's remaining _process() call, so
+	# without halting processing here, a still-pending tick (e.g. a blocking
+	# fire sequence's was_blocking branch in _finish_fire_sequence_for calling
+	# _set_movement_animation) can still run this frame and try to act on a
+	# unit that has already given everything away.
 	set_process(false)
-	set_physics_process(false)
+	# The simulation half needs its own stop: Unit no longer defines
+	# _physics_process(), so set_physics_process(false) would gate nothing,
+	# and Match's group loop guards only on is_instance_valid().
+	_simulation_halted = true
 
 
 ## Disconnects every signal connection this Unit made onto `subtree_root` or

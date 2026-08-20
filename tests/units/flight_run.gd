@@ -13,6 +13,7 @@ const UnitLocalAvoidanceScript := preload("res://scripts/units/navigation/unit_l
 const UnitNavigationSystemScript := preload("res://scripts/units/navigation/unit_navigation_system.gd")
 const AirNavigationScript := preload("res://scripts/units/navigation/air/air_navigation.gd")
 const UnitFlightControllerScript := preload("res://scripts/units/navigation/unit_flight_controller.gd")
+const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 
 var _assertions := 0
 var _failures := 0
@@ -153,8 +154,12 @@ func _test_hangar_takeoff_sequence() -> void:
 
 	var spawn_y: float = flyer.global_position.y
 	var moved_out := false
-	for i in 100:
-		flyer._physics_process(0.05)
+	# 125 ticks at the 25 Hz simulation rate matches the old budget of 100
+	# calls at a hand-picked 0.05s delta (100 * 0.05 = 125 * SECONDS_PER_TICK
+	# = 5.0s): sim_tick() no longer takes a delta, it always advances by
+	# exactly one tick, so the loop count is what has to grow instead.
+	for i in 125:
+		flyer.sim_tick()
 		if flyer._flight_controller.flight_is_taking_off():
 			moved_out = true
 			break
@@ -170,8 +175,9 @@ func _test_hangar_takeoff_sequence() -> void:
 	var takeoff_start: Vector3 = flyer.global_position
 	var last_y: float = flyer.global_position.y
 	var climbed := false
-	for i in 20:
-		flyer._physics_process(0.2)
+	# 100 ticks preserves the old 4.0s budget (20 * 0.2 = 100 * SECONDS_PER_TICK).
+	for i in 100:
+		flyer.sim_tick()
 		_expect(flyer.global_position.y >= last_y - 0.0001,
 			"altitude must climb monotonically during takeoff")
 		if flyer.global_position.y > last_y + 0.0001:
@@ -240,8 +246,8 @@ func _test_flyer_cruise_animation() -> void:
 			"the converted %s model must expose its Fly clip" % model_case["name"]
 		)
 		_fast_forward_takeoff(flyer)
-		for _frame in 3:
-			flyer._physics_process(0.05)
+		for _frame in 4:
+			flyer.sim_tick()
 		_expect(
 			flyer.flight_is_airborne_phase(),
 			"%s must reach cruise" % model_case["name"]
@@ -294,19 +300,29 @@ func _test_circles_fixed_wing_cruise() -> void:
 	circling.flight_set_circles_order(circling.global_position)
 	var start := circling.global_position
 	var yaw_before := circling.global_rotation.y
-	circling._physics_process(0.05)
+	# A single sim_tick() call is a single step of exactly
+	# MatchClockScript.SECONDS_PER_TICK -- the formulas below measure "how far
+	# does one step move/turn the aircraft", so they must use that same
+	# constant rather than the 0.05 this suite used to hand-pick per call.
+	circling.sim_tick()
 	var offset := circling.global_position - start
 	offset.y = 0.0
 	_expect(offset.length() > 0.1,
 		"an idle Circles flyer must keep moving")
-	_expect(is_equal_approx(offset.length(), circling.navigation_move_speed() / 3.0 * 0.05),
-		"idle Circles speed must be exactly one third of its maximum speed")
+	_expect(
+		is_equal_approx(
+			offset.length(),
+			circling.navigation_move_speed() / 3.0 * MatchClockScript.SECONDS_PER_TICK
+		),
+		"idle Circles speed must be exactly one third of its maximum speed"
+	)
 	_expect(player != null and player.current_animation == &"Fly",
 		"idle Circles flight must use Fly rather than Hover")
 	var idle_yaw_step := absf(angle_difference(yaw_before, circling.global_rotation.y))
 	var expected_idle_yaw_step := circling.turn_rate \
 		* UnitFlightControllerScript.MOVEMENT_UPDATES_PER_SECOND \
-		* UnitFlightControllerScript.IDLE_CRUISE_TURN_RATE_SCALE * 0.05
+		* UnitFlightControllerScript.IDLE_CRUISE_TURN_RATE_SCALE \
+		* MatchClockScript.SECONDS_PER_TICK
 	_expect(is_equal_approx(idle_yaw_step, expected_idle_yaw_step),
 		"idle cruising must use the broad one-sixth-turn-rate orbit")
 	var idle_radius := circling.navigation_move_speed() \
@@ -320,7 +336,7 @@ func _test_circles_fixed_wing_cruise() -> void:
 	var behind := circling.global_position - forward * 60.0
 	start = circling.global_position
 	circling.flight_set_circles_order(behind)
-	circling._physics_process(0.05)
+	circling.sim_tick()
 	offset = circling.global_position - start
 	offset.y = 0.0
 	_expect(offset.length() > 0.1,
@@ -328,37 +344,44 @@ func _test_circles_fixed_wing_cruise() -> void:
 	_expect(absf(circling._flight_controller._visual_bank) > 0.01,
 		"a non-zero yaw rate must produce a visible bank")
 	var reached_behind := false
-	for _frame in 500:
-		circling._physics_process(0.05)
+	# 625 ticks preserves the old 25.0s budget (500 * 0.05 = 625 * SECONDS_PER_TICK).
+	for _frame in 625:
+		circling.sim_tick()
 		if not circling._flight_controller.circles_order_is_active():
 			reached_behind = true
 			break
 	_expect(reached_behind,
 		"a rear order must complete through forward curved flight rather than a turn in place")
 	var ordered_bank_sign := -signf(circling._flight_controller._circles_idle_turn_sign)
-	circling._physics_process(0.05)
+	circling.sim_tick()
 	_expect(signf(circling._flight_controller._visual_bank) == ordered_bank_sign,
 		"idle cruising must preserve the final non-zero ordered-turn bank direction")
 
 	var close_target := circling.global_position - circling.facing_direction()
 	circling.flight_set_circles_order(close_target)
-	circling._physics_process(0.05)
+	circling.sim_tick()
 	_expect(circling._flight_controller._circles_departure.is_finite(),
 		"a close target must first receive a forward departure manoeuvre")
 	var reached_close := false
-	for _frame in 500:
-		circling._physics_process(0.05)
+	# Same 625-tick budget as the "reached_behind" loop above, same reason.
+	for _frame in 625:
+		circling.sim_tick()
 		if not circling._flight_controller.circles_order_is_active():
 			reached_close = true
 			break
 	_expect(reached_close,
 		"a close rear target must complete after its one planned departure manoeuvre")
 	start = circling.global_position
-	circling._physics_process(0.05)
+	circling.sim_tick()
 	offset = circling.global_position - start
 	offset.y = 0.0
-	_expect(is_equal_approx(offset.length(), circling.navigation_move_speed() / 3.0 * 0.05),
-		"completing a close order must resume one-third-speed idle cruising")
+	_expect(
+		is_equal_approx(
+			offset.length(),
+			circling.navigation_move_speed() / 3.0 * MatchClockScript.SECONDS_PER_TICK
+		),
+		"completing a close order must resume one-third-speed idle cruising"
+	)
 	circling.free()
 
 	var stationary: Unit = ATADVCarryallScene.instantiate()
@@ -370,7 +393,11 @@ func _test_circles_fixed_wing_cruise() -> void:
 	if player != null and player.current_animation == &"FlyToHover":
 		player.animation_finished.emit(&"FlyToHover")
 	start = stationary.global_position
-	stationary._physics_process(1.0)
+	# 25 ticks preserves the old single-call 1.0s budget (25 * SECONDS_PER_TICK
+	# = 1.0s), so this still confirms the hover point holds over a full second,
+	# not just one 0.04s tick.
+	for _tick in 25:
+		stationary.sim_tick()
 	offset = stationary.global_position - start
 	offset.y = 0.0
 	_expect(offset.length() < 0.001,
@@ -455,8 +482,9 @@ func _test_pickup_takeoff_altitude() -> void:
 	root.add_child(carrier)
 	carrier.global_position = Vector3(5.0, 9.0, 5.0)
 	carrier.flight_begin_pickup_sequence(carrier.global_position, 2.0)
-	for _frame in 20:
-		carrier._physics_process(0.2)
+	# 100 ticks preserves the old 4.0s budget (20 * 0.2 = 100 * SECONDS_PER_TICK).
+	for _frame in 100:
+		carrier.sim_tick()
 		if carrier.flight_pickup_transition_finished():
 			break
 	_expect(carrier.flight_pickup_transition_finished(),
@@ -472,11 +500,12 @@ func _test_pickup_takeoff_altitude() -> void:
 	_assert_stationary_transport_clip(carrier, docking_y, &"EndPickup")
 	carrier.flight_complete_pickup_sequence()
 	var previous_y := carrier.global_position.y
-	for _frame in 40:
-		carrier._physics_process(0.1)
+	# 100 ticks preserves the old 4.0s budget (40 * 0.1 = 100 * SECONDS_PER_TICK).
+	for _frame in 100:
+		carrier.sim_tick()
 		var current_y := carrier.global_position.y
 		_expect(current_y > previous_y + 0.0001,
-			"Takeoff must raise the transport on every frame")
+			"Takeoff must raise the transport on every tick")
 		previous_y = current_y
 		if carrier.flight_transport_takeoff_finished():
 			break
@@ -490,8 +519,9 @@ func _test_pickup_takeoff_altitude() -> void:
 func _assert_stationary_transport_clip(
 	carrier: Unit, docking_y: float, phase_name: StringName
 ) -> void:
-	for _frame in 40:
-		carrier._physics_process(0.1)
+	# 100 ticks preserves the old 4.0s budget (40 * 0.1 = 100 * SECONDS_PER_TICK).
+	for _frame in 100:
+		carrier.sim_tick()
 		_expect(is_equal_approx(carrier.global_position.y, docking_y),
 			"%s must hold the transport at docking height" % phase_name)
 		if carrier.flight_pickup_transition_finished():
@@ -543,8 +573,9 @@ func _test_ornithopter_land_takeoff_round_trip() -> void:
 
 	var approach_y := flyer.global_position.y
 	var landing_started := false
-	for _frame in 100:
-		flyer._physics_process(0.05)
+	# 125 ticks preserves the old 5.0s budget (100 * 0.05 = 125 * SECONDS_PER_TICK).
+	for _frame in 125:
+		flyer.sim_tick()
 		if flyer._flight_controller.phase == UnitFlightControllerScript.Phase.LANDING:
 			landing_started = true
 			break
@@ -563,8 +594,9 @@ func _test_ornithopter_land_takeoff_round_trip() -> void:
 	var last_y: float = flyer.global_position.y
 	var last_distance := land_start_offset.length()
 	var descended := false
-	for i in 20:
-		flyer._physics_process(0.1)
+	# 50 ticks preserves the old 2.0s budget (20 * 0.1 = 50 * SECONDS_PER_TICK).
+	for i in 50:
+		flyer.sim_tick()
 		_expect(flyer.global_position.y <= last_y + 0.0001,
 			"altitude must descend monotonically while landing")
 		if flyer.global_position.y < last_y - 0.0001:
@@ -591,8 +623,9 @@ func _test_ornithopter_land_takeoff_round_trip() -> void:
 	_expect(flyer.flight_is_airborne_phase(), "ordering a landed flyer to move must start a fresh takeoff")
 	if player != null:
 		_expect(player.current_animation == &"Takeoff", "re-launch must play Takeoff again")
-	for _frame in 40:
-		flyer._physics_process(0.1)
+	# 100 ticks preserves the old 4.0s budget (40 * 0.1 = 100 * SECONDS_PER_TICK).
+	for _frame in 100:
+		flyer.sim_tick()
 		if not flyer._flight_controller.flight_is_taking_off():
 			break
 	var takeoff_offset := flyer.global_position - takeoff_start
@@ -709,10 +742,13 @@ func _test_buildings_ignored_at_cruise() -> void:
 
 
 func _fast_forward_takeoff(unit: Node3D) -> void:
-	# 20 * 0.2s = 4.0s, comfortably past both the authored clip length and the
-	# DEFAULT_TAKEOFF_SECONDS/DEFAULT_LAND_SECONDS fallback.
-	for i in 20:
-		unit._physics_process(0.2)
+	# 100 ticks at the 25 Hz simulation rate = 4.0s (100 * SECONDS_PER_TICK),
+	# preserving the old 20 * 0.2s budget: comfortably past both the authored
+	# clip length and the DEFAULT_TAKEOFF_SECONDS/DEFAULT_LAND_SECONDS fallback.
+	# sim_tick() no longer takes a delta -- it always advances by exactly one
+	# tick -- so the loop count is what has to grow to keep the same budget.
+	for i in 100:
+		unit.sim_tick()
 
 
 func _first_player_with(unit: Node3D, clip_name: StringName) -> AnimationPlayer:

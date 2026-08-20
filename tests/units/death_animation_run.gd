@@ -393,7 +393,7 @@ func _test_dying_unit_leaves_no_reference_into_its_corpse() -> void:
 		"a corpse must retain no signal connection into its former Unit or modules, but found: %s" % [bad_connections]
 	)
 	_expect(not unit.is_processing(), "a unit must stop _process() the instant it hands off its model")
-	_expect(not unit.is_physics_processing(), "a unit must stop _physics_process() the instant it hands off its model")
+	_expect(unit.is_simulation_halted(), "a unit must stop simulating the instant it hands off its model")
 
 	var player := corpse.find_child("AnimationPlayer", true, false) as AnimationPlayer
 	for i in range(5):

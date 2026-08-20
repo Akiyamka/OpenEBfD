@@ -1756,11 +1756,11 @@ func _test_real_harvester_unload_trip() -> void:
 
 	var visited_phases := {}
 	# 40 s budget (800 ticks at the old 20 Hz navigation tick), converted to
-	# ticks at the simulation rate. advance_unload_order() is a separate,
-	# frame-delta-driven clock (see harvester_controller.gd) that this loop
-	# happens to co-advance one simulated tick at a time for convenience, so
-	# its per-iteration step moves to the same tick length to keep the two
-	# in lockstep the way the old matching 0.05/0.05 pair did.
+	# ticks at the simulation rate. advance_unload_order() runs on the
+	# simulation tick in production too (see harvester_controller.gd and
+	# Unit.sim_tick()); this loop calls it directly rather than through a real
+	# Unit/Match, so its per-iteration step is that same tick length to stay
+	# in lockstep with the navigation tick driven alongside it.
 	for _tick in roundi(40.0 * float(MatchClockScript.TICKS_PER_SECOND)):
 		visited_phases[harvester._harvester.unload_phase()] = true
 		navigation.call("_navigation_tick")

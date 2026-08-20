@@ -250,7 +250,7 @@ func _test_hktrooper_building_damage() -> void:
 	)
 	for frame in 240:
 		trooper._process(1.0 / 60.0)
-		trooper._physics_process(1.0 / 60.0)
+		trooper.sim_tick()
 		if not fired.is_empty():
 			break
 	_expect(

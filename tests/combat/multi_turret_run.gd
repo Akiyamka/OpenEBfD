@@ -136,7 +136,7 @@ func _test_devastator_combined_salvo() -> void:
 	)
 	for frame in 900:
 		devastator._process(1.0 / 60.0)
-		devastator._physics_process(1.0 / 60.0)
+		devastator.sim_tick()
 		if fired_weapons.has(0) and fired_weapons.has(1):
 			break
 	_expect(fired_weapons.has(1), "the missile turret must engage the commanded target")
@@ -205,7 +205,7 @@ func _test_pursuit_range_uses_shortest_usable_weapon() -> void:
 	_expect(devastator.command_attack(target), "the Devastator must accept the target")
 	for frame in 1800:
 		devastator._process(1.0 / 60.0)
-		devastator._physics_process(1.0 / 60.0)
+		devastator.sim_tick()
 		if fired_weapons.has(0) and fired_weapons.has(1):
 			break
 	_expect(
@@ -287,7 +287,7 @@ func _test_idle_turret_engages_during_attack_order() -> void:
 	_expect(devastator.command_attack(aircraft), "the Devastator must accept the aircraft")
 	for frame in 1200:
 		devastator._process(1.0 / 60.0)
-		devastator._physics_process(1.0 / 60.0)
+		devastator.sim_tick()
 		if fired_targets.has(0) and fired_targets.has(1):
 			break
 	_expect(

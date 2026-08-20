@@ -163,7 +163,6 @@ func _test_unit_attack_order() -> void:
 	var mongoose_pump := SimTickPumpScript.new()
 	for frame in 240:
 		mongoose_pump.advance(mongoose, 1.0 / 60.0)
-		mongoose._physics_process(1.0 / 60.0)
 		if not mongoose_fired.is_empty():
 			break
 	_expect(
@@ -380,7 +379,6 @@ func _test_ink_vine_refire() -> void:
 	var ink_vine_pump := SimTickPumpScript.new()
 	for frame in 1200:
 		ink_vine_pump.advance(ink_vine, 1.0 / 60.0)
-		ink_vine._physics_process(1.0 / 60.0)
 		if fired.size() >= 2:
 			break
 	_expect(
@@ -463,7 +461,7 @@ func _test_far_attack_pursuit() -> void:
 	_expect(attacker.command_attack(target), "the Minotaurus must accept the distant target")
 	for frame in 1200:
 		attacker._process(1.0 / 60.0)
-		attacker._physics_process(1.0 / 60.0)
+		attacker.sim_tick()
 		if not fired.is_empty():
 			break
 	_expect(

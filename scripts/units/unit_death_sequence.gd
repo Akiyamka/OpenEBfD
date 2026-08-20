@@ -16,6 +16,7 @@ const DeathCorpseScript := preload("res://scripts/effects/death_corpse.gd")
 const CombatImpactEffectScript := preload("res://scripts/combat/combat_impact_effect.gd")
 const DeathSoundPlayerScript := preload("res://scripts/audio/death_sound_player.gd")
 const AuthoredDeathVoiceScript := preload("res://scripts/units/authored_death_voice.gd")
+const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 
 var _unit: CharacterBody3D
 ## Infantry and vehicles die differently enough (clip set, momentum, sound
@@ -110,10 +111,17 @@ func begin(cause: StringName, previous_global_position: Vector3) -> void:
 	)
 	var momentum := Vector3.ZERO
 	if carries_momentum:
-		var physics_delta := _unit.get_physics_process_delta_time()
+		# previous_global_position was captured at the top of the simulation
+		# tick's own _advance_locomotion_tick() (see Unit.gd), one tick ago --
+		# not one Godot physics frame ago, which is what
+		# get_physics_process_delta_time() would answer and, before this
+		# facade's locomotion moved onto the simulation tick, used to agree
+		# with. Dividing by that instead of the tick length would scale this
+		# velocity by whatever ratio the engine's physics FPS happens to differ
+		# from MatchClock.TICKS_PER_SECOND.
 		var inherited_velocity := (
-			(_unit.global_position - previous_global_position) / physics_delta
-			if physics_delta > 0.0 else Vector3.ZERO
+			(_unit.global_position - previous_global_position)
+				/ MatchClockScript.SECONDS_PER_TICK
 		)
 		momentum = inherited_velocity + launch_impulse
 
