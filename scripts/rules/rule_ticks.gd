@@ -35,10 +35,12 @@ const RULE_TICKS_PER_SECOND := 60
 ## Another rate the *source* rules data was authored at, and a different one
 ## from RULE_TICKS_PER_SECOND above: Rules.txt stores TurnRate in radians per
 ## original-game movement update, and the original engine ran twenty of those
-## per second. Independent of both MatchClock.TICKS_PER_SECOND (this
-## simulation's tick rate) and NavConstants.NAVIGATION_TICK_RATE
-## (UnitNavigationSystem's own tick domain, folded into the simulation tick by
-## a later slice) -- this constant stays 20.0 whatever either of those become.
+## per second. Independent of MatchClock.TICKS_PER_SECOND (this simulation's
+## tick rate) -- this constant stays 20.0 whatever that becomes. It used to
+## also coincide with NavConstants.NAVIGATION_TICK_RATE, UnitNavigationSystem's
+## own tick domain; slice A1b folded that into the simulation tick and deleted
+## the constant, which is exactly why this one needed to stop being read from
+## it (slice A1a) before A1b could touch the rate at all.
 ## Several modules alias it locally so the math in each stays readable
 ## unqualified, and so a test can keep reading it by that class's name. Those
 ## aliases are deliberately not listed here: a list of them is a second place

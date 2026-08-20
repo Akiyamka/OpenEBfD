@@ -25,7 +25,12 @@ const RESPONSIBILITY_AGAINST_IDLE := 0.25
 const RESPONSIBILITY_HARD := 1.0
 const COURSE_DAMPING_SHARE := 0.35
 const SQUEEZE_RESULT_FACTOR := 1.0
-const SQUEEZE_COOLDOWN_TICKS := 6
+## 0.32 s of wall-clock, rounded up from 0.3 s (6 ticks at the old 20 Hz
+## navigation tick) so this squeeze anti-oscillation cooldown is never
+## weakened by the move to 25 Hz -- see NavConstants.SWAP_COOLDOWN_TICKS for
+## the sibling constant re-derived the same way, and
+## docs/architecture/network-multiplayer.md, phase 3, decision 4.
+const SQUEEZE_COOLDOWN_TICKS := 8
 ## Combined-radius scale for the direct full-speed squeeze branch's clear-path
 ## check against other agents. Below 1.0 so the bounded elastic overlap
 ## `separation_velocity` already relies on for an ordinary crowd squeeze still

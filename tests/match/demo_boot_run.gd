@@ -1734,7 +1734,6 @@ func _test_real_harvester_unload_trip() -> void:
 	await physics_frame
 
 	var navigation = match_instance.get_node("UnitNavigationSystem")
-	navigation.set_physics_process(false)
 	harvester.set_process(false)
 	harvester.set_physics_process(false)
 	navigation.call("_refresh_building_blockers")
@@ -1756,10 +1755,16 @@ func _test_real_harvester_unload_trip() -> void:
 	)
 
 	var visited_phases := {}
-	for _tick in 800:
+	# 40 s budget (800 ticks at the old 20 Hz navigation tick), converted to
+	# ticks at the simulation rate. advance_unload_order() is a separate,
+	# frame-delta-driven clock (see harvester_controller.gd) that this loop
+	# happens to co-advance one simulated tick at a time for convenience, so
+	# its per-iteration step moves to the same tick length to keep the two
+	# in lockstep the way the old matching 0.05/0.05 pair did.
+	for _tick in roundi(40.0 * float(MatchClockScript.TICKS_PER_SECOND)):
 		visited_phases[harvester._harvester.unload_phase()] = true
-		navigation.call("_navigation_tick", 0.05)
-		harvester._harvester.advance_unload_order(0.05)
+		navigation.call("_navigation_tick")
+		harvester._harvester.advance_unload_order(MatchClockScript.SECONDS_PER_TICK)
 		if not harvester._harvester.has_unload_order():
 			break
 

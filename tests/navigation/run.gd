@@ -4,6 +4,7 @@ const NavigationMapScript := preload("res://scripts/units/navigation/unit_naviga
 const NavigationPlannerScript := preload("res://scripts/units/navigation/unit_navigation_planner.gd")
 const NavigationSystemScript := preload("res://scripts/units/navigation/unit_navigation_system.gd")
 const NavConstantsScript := preload("res://scripts/units/navigation/shared/nav_constants.gd")
+const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 const BuildingFootprintScript := preload("res://scripts/buildings/building_footprint.gd")
 const UnitDefinitionScript := preload("res://scripts/units/unit_definition.gd")
 const BuildingDefinitionScript := preload("res://scripts/buildings/building_definition.gd")
@@ -133,6 +134,24 @@ class FakeBuilding extends Node3D:
 		building_definition.occupy_rows = rows
 
 
+## Ticks needed to cover `seconds` of simulated time at MatchClock's rate.
+## Every duration below used to be a hardcoded iteration count against the
+## navigation system's own 20 Hz tick (0.05 s/tick); now that
+## UnitNavigationSystem.sim_tick() runs on the one simulation tick, this is
+## the single place that conversion happens, so the next MatchClock rate
+## change updates every call site through here instead of needing another
+## sweep of the 61 that used to hardcode it.
+func _navigation_tick_count(seconds: float) -> int:
+	return roundi(seconds * float(MatchClockScript.TICKS_PER_SECOND))
+
+
+## Advances `navigation` by `seconds` of simulated time, one _navigation_tick()
+## call per fixed simulation tick.
+func _advance_navigation(navigation, seconds: float) -> void:
+	for _iteration in _navigation_tick_count(seconds):
+		navigation.call("_navigation_tick")
+
+
 func _initialize() -> void:
 	await process_frame
 	var grid := _make_grid()
@@ -152,7 +171,6 @@ func _initialize() -> void:
 	_test_interior_escape(grid)
 	_test_immediate_movement(grid)
 	_test_fast_unit_does_not_overshoot_near_destination(grid)
-	_test_navigation_catch_up_budget(grid)
 	_test_selected_unit_navigation_debug(grid)
 	_test_rounded_local_avoidance_field(grid)
 	_test_local_avoidance_preserves_route_half_plane(grid)
@@ -204,7 +222,6 @@ func _initialize() -> void:
 func _test_unit_navigation_order_api(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize for the unit order API")
 	var unit := FakeUnit.new()
 	root.add_child(unit)
@@ -228,15 +245,13 @@ func _test_unit_navigation_order_api(grid: MapNavigationGrid) -> void:
 	var deferred := navigation.command_move([unit], target)
 	_expect(deferred.is_empty(), "a unit must be able to defer a route before navigation mutates its agent")
 	_expect(unit.prepared_navigation_targets == [target], "navigation must pass the assigned destination through the unit API")
-	for _iteration in 20:
-		navigation.call("_navigation_tick", 0.05)
+	_advance_navigation(navigation, 1.0)
 	_expect(unit.global_position == Vector3(90.5, 0.0, 100.5), "a deferred navigation order must not move the unit")
 
 	unit.defer_navigation_orders = false
 	var accepted := navigation.command_move([unit], target)
 	_expect(accepted.size() == 1, "the same unit must be able to accept a later route")
-	for _iteration in 100:
-		navigation.call("_navigation_tick", 0.05)
+	_advance_navigation(navigation, 5.0)
 	_expect(unit.global_position.distance_to(target) < 1.0, "an accepted route must move after unit preparation")
 
 	navigation.queue_free()
@@ -246,7 +261,6 @@ func _test_unit_navigation_order_api(grid: MapNavigationGrid) -> void:
 func _test_disconnected_island_orders(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize for island reachability")
 	var wall := {}
 	for y in MapNavigationGrid.NAV_SIZE:
@@ -267,8 +281,7 @@ func _test_disconnected_island_orders(grid: MapNavigationGrid) -> void:
 		stranded.prepared_navigation_targets.is_empty(),
 		"an unreachable island order must be rejected before it mutates the unit action"
 	)
-	for _iteration in 100:
-		navigation.call("_navigation_tick", 0.05)
+	_advance_navigation(navigation, 5.0)
 	_expect(
 		stranded.global_position == Vector3(100.5, 0.0, 100.5),
 		"a rejected island order must not make the unit walk into the separating wall"
@@ -315,8 +328,7 @@ func _test_disconnected_island_orders(grid: MapNavigationGrid) -> void:
 		mixed.size() == 1 and (mixed[0]["unit"] as Node3D) == reachable,
 		"a mixed-island group order must retain only units connected to the target"
 	)
-	for _iteration in 100:
-		navigation.call("_navigation_tick", 0.05)
+	_advance_navigation(navigation, 5.0)
 	_expect(
 		reachable.global_position.distance_to(unreachable_target) < 1.0,
 		"the reachable member of a mixed-island group must still execute the order"
@@ -330,7 +342,6 @@ func _test_disconnected_island_orders(grid: MapNavigationGrid) -> void:
 func _test_transport_drop_probe_uses_destination_not_reachability(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation must initialize for transport drop footprint probe")
 	var wall := {}
 	for y in MapNavigationGrid.NAV_SIZE:
@@ -380,7 +391,6 @@ func _test_transport_drop_probe_uses_destination_not_reachability(grid: MapNavig
 func _test_distributed_targets_avoid_disconnected_island(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize for distributed island targets")
 	# The clicked cell at (120, 100) is reachable, but the compact group's
 	# shape-preserving +2-cell aim lands on the isolated cell at (122, 100).
@@ -426,7 +436,6 @@ func _test_distributed_targets_avoid_disconnected_island(grid: MapNavigationGrid
 func _test_group_move_redirects_landed_flyer(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize for the mixed-domain group order test")
 
 	var flyer := FakeLandedFlyer.new()
@@ -445,8 +454,7 @@ func _test_group_move_redirects_landed_flyer(grid: MapNavigationGrid) -> void:
 	_expect(assignments.size() == 1 and (assignments[0]["unit"] as Node3D) == ground_unit,
 		"only the ground unit receives a slot assignment from the same group order")
 
-	for _iteration in 100:
-		navigation.call("_navigation_tick", 0.05)
+	_advance_navigation(navigation, 5.0)
 	_expect(ground_unit.global_position.distance_to(target) < 1.0,
 		"the ground unit in the mixed group must still move normally")
 
@@ -548,15 +556,13 @@ func _test_no_stop_cells(grid: MapNavigationGrid) -> void:
 
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize")
 	navigation.runtime_map.replace_blocked_cells({}, apron)
 	var passer := FakeUnit.new()
 	root.add_child(passer)
 	passer.global_position = Vector3(103.5, 0.0, 95.5)
 	navigation.command_move([passer], Vector3(103.5, 0.0, 112.5), NavConstantsScript.MoveMode.FREE)
-	for _iteration in 100:
-		navigation.call("_navigation_tick", 0.05)
+	_advance_navigation(navigation, 5.0)
 	_expect(passer.global_position.distance_to(Vector3(103.5, 0.0, 112.5)) < 2.0, "local steering must drive straight through a no-stop apron")
 
 	var clicker := FakeUnit.new()
@@ -568,8 +574,8 @@ func _test_no_stop_cells(grid: MapNavigationGrid) -> void:
 	_expect(bool(navigation.agent_debug(clicker)["no_stop_destination"]), "the no-stop leg must retain access to its explicit destination")
 	var command_count := navigation.command_log().size()
 	var entered_apron := false
-	for _iteration in 200:
-		navigation.call("_navigation_tick", 0.05)
+	for _iteration in _navigation_tick_count(10.0):
+		navigation.call("_navigation_tick")
 		entered_apron = entered_apron or apron.has(grid.world_to_grid(clicker.global_position))
 	var parked_cell: Vector2i = grid.world_to_grid(navigation.agent_debug(clicker)["destination"])
 	_expect(entered_apron, "the unit must enter the ordered no-stop area")
@@ -587,8 +593,7 @@ func _test_no_stop_cells(grid: MapNavigationGrid) -> void:
 	produced.global_position = Vector3(103.5, 0.0, 103.5)
 	navigation.command_move([produced], Vector3(103.5, 0.0, 120.5), NavConstantsScript.MoveMode.FREE)
 	_expect(bool(navigation.agent_debug(produced)["route_ready"]), "a unit inside the apron must still get a route immediately")
-	for _iteration in 200:
-		navigation.call("_navigation_tick", 0.05)
+	_advance_navigation(navigation, 10.0)
 	_expect(produced.global_position.distance_to(Vector3(103.5, 0.0, 120.5)) < 2.0, "a unit produced inside the apron must walk out and reach its destination")
 
 	navigation.queue_free()
@@ -600,7 +605,6 @@ func _test_no_stop_cells(grid: MapNavigationGrid) -> void:
 func _test_dock_order_has_per_unit_building_access(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize for docking")
 	var building_body := {}
 	var dock_cells := {}
@@ -623,8 +627,8 @@ func _test_dock_order_has_per_unit_building_access(grid: MapNavigationGrid) -> v
 	_expect(navigation.command_dock(harvester, dock, dock_cells), "a reserved harvester must receive a d/p stopping exception")
 	_expect(navigation.arrival_tolerance(harvester) > 0.35, "a size-three harvester must use its larger navigation arrival tolerance")
 	var crossed_building_body := false
-	for _iteration in 200:
-		navigation.call("_navigation_tick", 0.05)
+	for _iteration in _navigation_tick_count(10.0):
+		navigation.call("_navigation_tick")
 		crossed_building_body = crossed_building_body or building_body.has(
 			grid.world_to_grid(harvester.global_position)
 		)
@@ -640,8 +644,7 @@ func _test_dock_order_has_per_unit_building_access(grid: MapNavigationGrid) -> v
 		and bool(navigation.agent_debug(harvester)["departure_access"]),
 		"departing harvesters must temporarily retain access to their refinery cells"
 	)
-	for _iteration in 200:
-		navigation.call("_navigation_tick", 0.05)
+	_advance_navigation(navigation, 10.0)
 	var first_destination: Vector3 = navigation.agent_debug(harvester)["destination"]
 	var second_destination: Vector3 = navigation.agent_debug(second_harvester)["destination"]
 	_expect(
@@ -678,7 +681,6 @@ func _test_building_marker_navigation_semantics(grid: MapNavigationGrid) -> void
 	match_root.add_child(building)
 	var navigation := NavigationSystemScript.new()
 	match_root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation must initialize for occupy marker semantics")
 	navigation.call("_refresh_building_blockers")
 	var footprint: Dictionary = BuildingFootprintScript.nav_cells_by_marker(
@@ -702,7 +704,6 @@ func _test_map_change_prunes_freed_units(grid: MapNavigationGrid) -> void:
 	root.add_child(match_root)
 	var navigation := NavigationSystemScript.new()
 	match_root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation must initialize for freed-unit blocker refresh")
 	var unit := FakeUnit.new()
 	match_root.add_child(unit)
@@ -734,7 +735,6 @@ func _test_map_change_prunes_freed_units(grid: MapNavigationGrid) -> void:
 func _test_blocker_change_reroutes_direct_path_agent(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation must initialize for the direct-path reroute regression test")
 
 	var unit := FakeUnit.new()
@@ -760,7 +760,7 @@ func _test_blocker_change_reroutes_direct_path_agent(grid: MapNavigationGrid) ->
 		"the wall must register as a blocked-cell change"
 	)
 	navigation.call("_replan_after_map_change")
-	navigation.call("_navigation_tick", 0.05)
+	navigation.call("_navigation_tick")
 
 	agent = navigation._agents[unit.get_instance_id()]
 	_expect(
@@ -768,8 +768,7 @@ func _test_blocker_change_reroutes_direct_path_agent(grid: MapNavigationGrid) ->
 		"a wall crossing the stored direct line must be detected and clear the stale direct-path flag"
 	)
 
-	for _iteration in 400:
-		navigation.call("_navigation_tick", 0.05)
+	_advance_navigation(navigation, 20.0)
 	_expect(
 		unit.global_position.distance_to(destination) < 2.0,
 		"the unit must route around the new wall instead of stalling against its stale direct line"
@@ -782,7 +781,6 @@ func _test_blocker_change_reroutes_direct_path_agent(grid: MapNavigationGrid) ->
 func _test_blocked_target_uses_unit_approach_side(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation must initialize for blocked target approach selection")
 	var building_body := {}
 	for y in range(100, 108):
@@ -830,7 +828,6 @@ func _test_rotated_building_blockers(grid: MapNavigationGrid) -> void:
 	match_root.add_child(building)
 	var navigation := NavigationSystemScript.new()
 	match_root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize with a rotated building")
 	_expect(navigation.runtime_map.is_blocked(Vector2i(8, 10)), "rotated solid occupy cells must block their transformed location")
 	_expect(
@@ -857,7 +854,6 @@ func _test_interior_escape(grid: MapNavigationGrid) -> void:
 
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize")
 	navigation.runtime_map.replace_blocked_cells(interior, apron)
 	var produced := FakeUnit.new()
@@ -868,8 +864,8 @@ func _test_interior_escape(grid: MapNavigationGrid) -> void:
 	navigation.command_move([produced], destination, NavConstantsScript.MoveMode.FREE, exit_point)
 	_expect(bool(navigation.agent_debug(produced)["route_ready"]), "a unit inside the interior must still get a route immediately")
 	var first_open_cell := Vector2i(-1, -1)
-	for _iteration in 300:
-		navigation.call("_navigation_tick", 0.05)
+	for _iteration in _navigation_tick_count(15.0):
+		navigation.call("_navigation_tick")
 		var cell: Vector2i = grid.world_to_grid(produced.global_position)
 		if first_open_cell.x < 0 and not interior.has(cell) and not apron.has(cell):
 			first_open_cell = cell
@@ -888,8 +884,8 @@ func _test_interior_escape(grid: MapNavigationGrid) -> void:
 	)
 	_expect(rally_assignments.size() == 1, "a produced unit must accept a rally point on no-stop space")
 	var furthest_front_z := no_stop_rally_unit.global_position.z
-	for _iteration in 300:
-		navigation.call("_navigation_tick", 0.05)
+	for _iteration in _navigation_tick_count(15.0):
+		navigation.call("_navigation_tick")
 		furthest_front_z = maxf(furthest_front_z, no_stop_rally_unit.global_position.z)
 	_expect(
 		furthest_front_z >= exit_point.z - 1.0,
@@ -908,7 +904,6 @@ func _test_interior_escape(grid: MapNavigationGrid) -> void:
 func _test_immediate_movement(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize")
 	_expect(navigation.runtime_map.replace_blocked_cells(_wall_cells()), "walls must apply to the match runtime map")
 
@@ -922,8 +917,7 @@ func _test_immediate_movement(grid: MapNavigationGrid) -> void:
 	_expect(compact_path.size() <= 6,
 		"an A* cell route must be simplified to stable corner waypoints (got %d)" % compact_path.size())
 	var start_position := unit.global_position
-	for _iteration in 10:
-		navigation.call("_navigation_tick", 0.05)
+	_advance_navigation(navigation, 0.5)
 	_expect(unit.global_position.distance_to(start_position) > 1.0, "the unit must start moving within half a second of the order")
 
 	navigation.queue_free()
@@ -933,25 +927,29 @@ func _test_immediate_movement(grid: MapNavigationGrid) -> void:
 func _test_fast_unit_does_not_overshoot_near_destination(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize for near-destination speed limiting")
 
 	var unit := FakeUnit.new(2.0)
 	unit.move_speed = 14.0
 	root.add_child(unit)
 	# A size-two unit has a 0.294 arrival tolerance, but at speed 14 it would
-	# otherwise travel 0.7 units per 20 Hz navigation tick. Starting 0.35 away
-	# reproduces the old exact two-position loop across the destination.
+	# otherwise travel 0.56 units per 25 Hz simulation tick. Starting 0.35 away
+	# (comfortably inside that one-tick travel distance) reproduces the old
+	# exact two-position loop across the destination. _arrival_limited_speed()
+	# multiplies distance by TICKS_PER_SECOND and this integrates position by
+	# SECONDS_PER_TICK, so the exact landing-in-one-tick behaviour this test
+	# checks is invariant to the tick rate; only the travel-per-tick figure
+	# above (previously 0.7 at 20 Hz) actually moved.
 	unit.global_position = Vector3(99.65, 0.0, 100.0)
 	var assignments := navigation.command_move([unit], Vector3(100.0, 0.0, 100.0))
 	_expect(assignments.size() == 1, "the nearby destination must receive a movement assignment")
 	if not assignments.is_empty():
 		var destination: Vector3 = assignments[0]["position"]
-		navigation.call("_navigation_tick", 0.05)
+		navigation.call("_navigation_tick")
 		_expect(unit.global_position.distance_to(destination) <= 0.001,
 			"a fast unit's final tick must stop at the destination instead of overshooting it")
 		var arrived_position := unit.global_position
-		navigation.call("_navigation_tick", 0.05)
+		navigation.call("_navigation_tick")
 		_expect(unit.global_position.is_equal_approx(arrived_position),
 			"a fast unit must remain stopped after its speed-limited final tick")
 
@@ -959,29 +957,16 @@ func _test_fast_unit_does_not_overshoot_near_destination(grid: MapNavigationGrid
 	unit.queue_free()
 
 
-func _test_navigation_catch_up_budget(grid: MapNavigationGrid) -> void:
-	var navigation := NavigationSystemScript.new()
-	root.add_child(navigation)
-	navigation.set_physics_process(false)
-	_expect(navigation.setup(grid), "navigation system must initialize")
-	var before: int = navigation._navigation_tick_index
-	navigation.call("_physics_process", 1.0)
-	_expect(navigation._navigation_tick_index - before == NavigationSystemScript.MAX_CATCH_UP_TICKS,
-		"a delayed physics frame must execute only the bounded navigation catch-up budget")
-	navigation.queue_free()
-
-
 func _test_selected_unit_navigation_debug(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize for selected route debug")
 	var unit := FakeUnit.new(3.0)
 	root.add_child(unit)
 	unit.global_position = Vector3(80.5, 0.0, 80.5)
 	unit.set_selected(true)
 	navigation.command_move([unit], Vector3(90.5, 0.0, 86.5))
-	navigation.call("_navigation_tick", 0.05)
+	navigation.call("_navigation_tick")
 	var debug = navigation.get_node("NavigationDebug")
 	var geometry := debug.get_node("Geometry") as MeshInstance3D
 	_expect(
@@ -989,13 +974,12 @@ func _test_selected_unit_navigation_debug(grid: MapNavigationGrid) -> void:
 		"navigation diagnostics must start disabled until the unified debug layer is enabled"
 	)
 	navigation.set_debug_enabled(true)
-	navigation.call("_navigation_tick", 0.05)
+	navigation.call("_navigation_tick")
 	_expect(debug.has_geometry() and geometry.mesh != null \
 		and geometry.mesh.get_surface_count() >= 4,
 		"enabled diagnostics must draw route, waypoint, look-ahead, and destination surfaces")
 	var debug_mesh: Mesh = geometry.mesh
-	for _iteration in 20:
-		navigation.call("_navigation_tick", 0.05)
+	_advance_navigation(navigation, 1.0)
 	_expect(
 		geometry.mesh == debug_mesh,
 		"route diagnostics must update one reusable mesh instead of allocating a GPU resource every tick"
@@ -1005,7 +989,7 @@ func _test_selected_unit_navigation_debug(grid: MapNavigationGrid) -> void:
 		"disabling navigation diagnostics must hide and clear every route marker")
 	navigation.set_debug_enabled(true)
 	unit.set_selected(false)
-	navigation.call("_navigation_tick", 0.05)
+	navigation.call("_navigation_tick")
 	_expect(not debug.has_geometry(), "navigation route diagnostics must disappear after deselection")
 
 	navigation.queue_free()
@@ -1018,7 +1002,6 @@ func _test_selected_unit_navigation_debug(grid: MapNavigationGrid) -> void:
 func _test_rounded_local_avoidance_field(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize for rounded avoidance")
 	var blocked_cell := Vector2i(100, 100)
 	navigation.runtime_map.replace_blocked_cells({blocked_cell: true})
@@ -1055,7 +1038,6 @@ func _test_rounded_local_avoidance_field(grid: MapNavigationGrid) -> void:
 func _test_large_unit_steers_smoothly_around_corner(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize for smooth corner steering")
 	var walls := {}
 	for x in range(40, 121):
@@ -1076,8 +1058,8 @@ func _test_large_unit_steers_smoothly_around_corner(grid: MapNavigationGrid) -> 
 	_expect(int(agent["clearance"]) >= 3,
 		"the A* profile must leave enough building clearance for the harvester's long body")
 	unit.facing = (navigation.call("_desired_velocity", agent) as Vector3).normalized()
-	for _tick in 500:
-		navigation.call("_navigation_tick", 0.05)
+	for _tick in _navigation_tick_count(25.0):
+		navigation.call("_navigation_tick")
 		if unit.global_position.distance_to(navigation.agent_debug(unit)["destination"]) < 1.0:
 			break
 	_expect(
@@ -1118,7 +1100,6 @@ func _test_large_unit_steers_smoothly_around_corner(grid: MapNavigationGrid) -> 
 func _test_jagged_boundary_steering_stays_smooth(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize for jagged boundary steering")
 	var walls := {}
 	for y in range(80, 132):
@@ -1135,8 +1116,8 @@ func _test_jagged_boundary_steering_stays_smooth(grid: MapNavigationGrid) -> voi
 	unit.global_position = Vector3(98.5, 0.0, 128.5)
 	unit.facing = Vector3(0.0, 0.0, -1.0)
 	navigation.command_move([unit], Vector3(64.5, 0.0, 74.5))
-	for _tick in 500:
-		navigation.call("_navigation_tick", 0.05)
+	for _tick in _navigation_tick_count(25.0):
+		navigation.call("_navigation_tick")
 		if unit.global_position.distance_to(navigation.agent_debug(unit)["destination"]) < 1.0:
 			break
 	_expect(
@@ -1166,7 +1147,6 @@ func _test_jagged_boundary_steering_stays_smooth(grid: MapNavigationGrid) -> voi
 func _test_continuous_corner_steering(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize for continuous steering")
 	var blocked_cell := Vector2i(100, 100)
 	navigation.runtime_map.replace_blocked_cells({blocked_cell: true})
@@ -1215,7 +1195,6 @@ func _test_continuous_corner_steering(grid: MapNavigationGrid) -> void:
 func _test_long_steering_arc_does_not_periodically_stop(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize for sustained steering arcs")
 	navigation.avoidance.turn_rate_stabilization_enabled = true
 	var unit := FakeTurningUnit.new(3.0)
@@ -1255,7 +1234,6 @@ func _test_long_steering_arc_does_not_periodically_stop(grid: MapNavigationGrid)
 func _test_far_target_large_bearing_starts_driven_arc(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize for far-bearing arcs")
 	navigation.avoidance.turn_rate_stabilization_enabled = true
 	var unit := FakeTurningUnit.new(3.0)
@@ -1288,7 +1266,6 @@ func _test_far_target_large_bearing_starts_driven_arc(grid: MapNavigationGrid) -
 func _test_local_avoidance_preserves_route_half_plane(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid),
 		"navigation system must initialize for route-direction avoidance")
 	var corner := {}
@@ -1339,7 +1316,6 @@ func _test_local_avoidance_preserves_route_half_plane(grid: MapNavigationGrid) -
 func _test_close_target_does_not_become_orbit(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize for close-target steering")
 	var unit := FakeTurningUnit.new(3.0)
 	root.add_child(unit)
@@ -1378,7 +1354,6 @@ func _test_close_target_does_not_become_orbit(grid: MapNavigationGrid) -> void:
 func _test_path_lookahead_smooths_waypoint_corner(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize for path look-ahead")
 	var unit := FakeTurningUnit.new(3.0)
 	unit.move_speed = 4.0
@@ -1421,7 +1396,6 @@ func _test_path_lookahead_smooths_waypoint_corner(grid: MapNavigationGrid) -> vo
 func _test_path_chord_uses_rounded_geometry(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize for rounded path chords")
 	var blocked_cell := Vector2i(100, 100)
 	navigation.runtime_map.replace_blocked_cells({blocked_cell: true})
@@ -1462,7 +1436,6 @@ func _test_path_chord_uses_rounded_geometry(grid: MapNavigationGrid) -> void:
 func _test_missed_waypoint_advances_through_route_gate(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize for waypoint gates")
 	var unit := FakeUnit.new(3.0)
 	root.add_child(unit)
@@ -1509,7 +1482,6 @@ func _test_missed_waypoint_advances_through_route_gate(grid: MapNavigationGrid) 
 func _test_slots_and_collision(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize")
 	var units: Array[FakeUnit] = []
 	for index in 8:
@@ -1522,8 +1494,7 @@ func _test_slots_and_collision(grid: MapNavigationGrid) -> void:
 	_expect(navigation.command_log().size() == 1, "movement commands must be recorded for bug-report replay")
 	for unit in units:
 		_expect(bool(navigation.agent_debug(unit)["route_ready"]), "every unit in a group must have a route immediately")
-	for _iteration in 240:
-		navigation.call("_navigation_tick", 0.05)
+	_advance_navigation(navigation, 12.0)
 	var claimed: Array[Dictionary] = []
 	for unit in units:
 		var destination: Vector3 = navigation.agent_debug(unit)["destination"]
@@ -1558,8 +1529,8 @@ func _test_slots_and_collision(grid: MapNavigationGrid) -> void:
 	navigation.command_move([right], Vector3(90.0, 0.0, 100.0))
 	var closest_approach := INF
 	var largest_detour := 0.0
-	for _iteration in 80:
-		navigation.call("_navigation_tick", 0.05)
+	for _iteration in _navigation_tick_count(4.0):
+		navigation.call("_navigation_tick")
 		closest_approach = minf(closest_approach, left.global_position.distance_to(right.global_position))
 		largest_detour = maxf(largest_detour, maxf(
 			absf(left.global_position.z - 100.0),
@@ -1591,7 +1562,6 @@ func _test_slots_and_collision(grid: MapNavigationGrid) -> void:
 func _test_destination_uses_body_geometry(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize for destination geometry")
 
 	# A straight wall whose face lies on world x = 100. The block centre for a
@@ -1664,7 +1634,6 @@ func _test_destination_uses_body_geometry(grid: MapNavigationGrid) -> void:
 func _test_approach_anchor_prefers_nearest_valid_block(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize for approach-anchor competition")
 
 	var wall := {}
@@ -1703,7 +1672,6 @@ func _test_approach_anchor_prefers_nearest_valid_block(grid: MapNavigationGrid) 
 func _test_slide_around_stopped_friend(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize")
 
 	var blocker := FakeUnit.new()
@@ -1715,8 +1683,7 @@ func _test_slide_around_stopped_friend(grid: MapNavigationGrid) -> void:
 	navigation.register_unit(blocker)
 	var destination := Vector3(110.0, 0.0, 100.0)
 	navigation.command_move([runner], destination)
-	for _iteration in 100:
-		navigation.call("_navigation_tick", 0.05)
+	_advance_navigation(navigation, 5.0)
 	_expect(runner.global_position.distance_to(destination) < 1.0, "a unit must slide around a stopped friend on its route")
 
 	navigation.queue_free()
@@ -1733,7 +1700,6 @@ func _test_slide_around_stopped_friend(grid: MapNavigationGrid) -> void:
 func _test_turning_unit_arcs_around_stopped_friend(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize")
 
 	var blocker := FakeUnit.new(3.0)
@@ -1751,8 +1717,7 @@ func _test_turning_unit_arcs_around_stopped_friend(grid: MapNavigationGrid) -> v
 	navigation.register_unit(blocker)
 	var destination := Vector3(114.5, 0.0, 100.5)
 	navigation.command_move([runner], destination)
-	for _iteration in 200:
-		navigation.call("_navigation_tick", 0.05)
+	_advance_navigation(navigation, 10.0)
 	_expect(runner.global_position.distance_to(destination) < 1.5,
 		"a turning unit must reach a destination behind an adjacent friend instead of jittering forever")
 	_expect(runner.turn_starts <= 3,
@@ -1771,7 +1736,6 @@ func _test_turning_unit_arcs_around_stopped_friend(grid: MapNavigationGrid) -> v
 func _test_turn_in_place_counts_as_blocked_and_triggers_yield(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize")
 
 	var blocker := FakeUnit.new(3.0)
@@ -1788,19 +1752,21 @@ func _test_turn_in_place_counts_as_blocked_and_triggers_yield(grid: MapNavigatio
 	runner.global_position = Vector3(100.5, 0.0, 100.5)
 	navigation.register_unit(blocker)
 	navigation.command_move([runner], Vector3(114.5, 0.0, 100.5))
-	navigation.call("_navigation_tick", 0.05)
-	for _iteration in 4:
-		navigation.call("_navigation_tick", 0.05)
+	# Five ticks (one bare call plus a four-tick loop, unmerged in the
+	# original): a short settle window for blocked_time to accrue, not a
+	# specific-tick-counted mechanism, so it converts as a duration.
+	_advance_navigation(navigation, 5.0 * MatchClockScript.SECONDS_PER_TICK)
 	var runner_agent: Dictionary = navigation._agents[runner.get_instance_id()]
 	_expect(float(runner_agent["blocked_time"]) > 0.0,
 		"a turn-in-place tick must accrue blocked_time from displacement, not just solver velocity")
 
 	var blocker_start := blocker.global_position
 	var yield_ticks := ceili(
-		(NavConstantsScript.FRIENDLY_YIELD_TRIGGER_SECONDS + NavConstantsScript.FRIENDLY_YIELD_SECONDS) / 0.05
+		(NavConstantsScript.FRIENDLY_YIELD_TRIGGER_SECONDS + NavConstantsScript.FRIENDLY_YIELD_SECONDS)
+		/ MatchClockScript.SECONDS_PER_TICK
 	) + 5
 	for _iteration in yield_ticks:
-		navigation.call("_navigation_tick", 0.05)
+		navigation.call("_navigation_tick")
 	_expect(blocker.global_position.distance_to(blocker_start) > 0.2,
 		"a friendly on a stalled turning unit's route must be asked to yield")
 
@@ -1815,7 +1781,6 @@ func _test_turn_in_place_counts_as_blocked_and_triggers_yield(grid: MapNavigatio
 func _test_squeeze_does_not_ram_adjacent_friend(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize")
 
 	var blocker := FakeUnit.new(3.0)
@@ -1861,7 +1826,6 @@ func _test_squeeze_does_not_ram_adjacent_friend(grid: MapNavigationGrid) -> void
 func _test_group_convergence(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize")
 	var units: Array[FakeUnit] = []
 	for index in 6:
@@ -1870,8 +1834,7 @@ func _test_group_convergence(grid: MapNavigationGrid) -> void:
 		unit.global_position = Vector3(40.0 + float(index % 3), 0.0, 40.0 + float(index / 3))
 		units.append(unit)
 	var assignments := navigation.command_move(units, Vector3(60.0, 0.0, 60.0), NavConstantsScript.MoveMode.FREE)
-	for _iteration in 400:
-		navigation.call("_navigation_tick", 0.05)
+	_advance_navigation(navigation, 20.0)
 	for assignment in assignments:
 		var unit: Node3D = assignment["unit"]
 		var slot: Vector3 = assignment["position"]
@@ -1888,7 +1851,6 @@ func _test_group_convergence(grid: MapNavigationGrid) -> void:
 func _test_group_shift_keeps_shape(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize")
 
 	var units: Array[FakeUnit] = []
@@ -1899,17 +1861,19 @@ func _test_group_shift_keeps_shape(grid: MapNavigationGrid) -> void:
 		units.append(unit)
 	navigation.command_move(units, Vector3(112.5, 0.0, 102.5), NavConstantsScript.MoveMode.FREE)
 
-	const TICK := 0.05
-	const MAX_TICKS := 1200
-	const IDLE_TICKS_TO_FINISH := 100
+	var tick_seconds := MatchClockScript.SECONDS_PER_TICK
+	# 60 s budget, 5 s idle-settle window: durations, converted to ticks at
+	# the simulation rate rather than hardcoded against the old 20 Hz.
+	var max_ticks := _navigation_tick_count(60.0)
+	var idle_ticks_to_finish := _navigation_tick_count(5.0)
 	var previous: Array[Vector3] = []
 	for unit in units:
 		previous.append(unit.global_position)
 	var last_active_tick := 0
-	var elapsed_ticks := MAX_TICKS
+	var elapsed_ticks := max_ticks
 	var minimum_spread := INF
-	for tick in range(1, MAX_TICKS + 1):
-		navigation.call("_navigation_tick", TICK)
+	for tick in range(1, max_ticks + 1):
+		navigation.call("_navigation_tick")
 		var moved := false
 		var centroid := Vector3.ZERO
 		for index in units.size():
@@ -1924,13 +1888,13 @@ func _test_group_shift_keeps_shape(grid: MapNavigationGrid) -> void:
 		minimum_spread = minf(minimum_spread, spread)
 		if moved:
 			last_active_tick = tick
-		elif tick - last_active_tick >= IDLE_TICKS_TO_FINISH:
+		elif tick - last_active_tick >= idle_ticks_to_finish:
 			elapsed_ticks = tick
 			break
 	print("Group shift: settled in %.1f s, min mid-flight spread %.1f (gapped resting ~5.7)" % [
-		float(last_active_tick) * TICK, minimum_spread])
-	_expect(elapsed_ticks < MAX_TICKS, "a shifted pack must settle, not churn forever")
-	_expect(float(last_active_tick) * TICK < 8.0, "a ten-cell group shift must settle within 8 seconds")
+		float(last_active_tick) * tick_seconds, minimum_spread])
+	_expect(elapsed_ticks < max_ticks, "a shifted pack must settle, not churn forever")
+	_expect(float(last_active_tick) * tick_seconds < 8.0, "a ten-cell group shift must settle within 8 seconds")
 	_expect(minimum_spread > 1.8, "the pack must translate as a shape, not squeeze through the target point")
 
 	navigation.queue_free()
@@ -1944,7 +1908,6 @@ func _test_group_shift_keeps_shape(grid: MapNavigationGrid) -> void:
 func _test_yield_behaviour(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize")
 
 	var idle := FakeUnit.new()
@@ -1952,8 +1915,7 @@ func _test_yield_behaviour(grid: MapNavigationGrid) -> void:
 	idle.global_position = Vector3(120.5, 0.0, 120.5)
 	navigation.register_unit(idle)
 	navigation.call("_request_yield", idle, Vector3.RIGHT)
-	for _iteration in 20:
-		navigation.call("_navigation_tick", 0.05)
+	_advance_navigation(navigation, 1.0)
 	var displaced_position := idle.global_position
 	_expect(displaced_position.x > 121.5, "a yielded idle unit must move aside")
 	var parked: Vector3 = navigation.agent_debug(idle)["destination"]
@@ -1961,8 +1923,7 @@ func _test_yield_behaviour(grid: MapNavigationGrid) -> void:
 		absf(fposmod(parked.x, 1.0) - 0.5) < 0.001 and absf(fposmod(parked.z, 1.0) - 0.5) < 0.001,
 		"a yielded idle unit must park on a grid cell center (got %.2f, %.2f)" % [parked.x, parked.z]
 	)
-	for _iteration in 40:
-		navigation.call("_navigation_tick", 0.05)
+	_advance_navigation(navigation, 2.0)
 	_expect(idle.global_position.distance_to(displaced_position) < 0.01, "a yielded idle unit must not return to the choke point")
 
 	var owner := FakeUnit.new()
@@ -1970,15 +1931,13 @@ func _test_yield_behaviour(grid: MapNavigationGrid) -> void:
 	owner.global_position = Vector3(140.5, 0.0, 120.5)
 	var home := owner.global_position
 	navigation.command_move([owner], home)
-	navigation.call("_navigation_tick", 0.05)
+	navigation.call("_navigation_tick")
 	var prepared_order_count := owner.prepared_navigation_targets.size()
 	navigation.call("_request_yield", owner, Vector3.RIGHT)
 	_expect(owner.prepared_navigation_targets.size() == prepared_order_count, "an internal yield must not enter the player-order preparation API")
-	for _iteration in 8:
-		navigation.call("_navigation_tick", 0.05)
+	_advance_navigation(navigation, 0.4)
 	_expect(owner.global_position.x > 141.5, "a yielded commanded unit must move aside first")
-	for _iteration in 60:
-		navigation.call("_navigation_tick", 0.05)
+	_advance_navigation(navigation, 3.0)
 	_expect(owner.global_position.distance_to(home) < 0.3, "a commanded unit must return to its reserved block after yielding")
 	_expect(owner.prepared_navigation_targets.size() == prepared_order_count, "resuming after yield must preserve the original order instead of issuing a replacement")
 
@@ -1994,7 +1953,6 @@ func _test_yield_behaviour(grid: MapNavigationGrid) -> void:
 func _test_group_rounds_sharp_corner(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize")
 	var walls := {}
 	for x in range(40, 121):
@@ -2010,9 +1968,9 @@ func _test_group_rounds_sharp_corner(grid: MapNavigationGrid) -> void:
 	var assignments := navigation.command_move(units, Vector3(60.5, 0.0, 140.5), NavConstantsScript.MoveMode.FREE)
 	var maximum_tick_usec := 0
 	var maximum_tick_index := 0
-	for _iteration in 1200:
+	for _iteration in _navigation_tick_count(60.0):
 		var tick_start := Time.get_ticks_usec()
-		navigation.call("_navigation_tick", 0.05)
+		navigation.call("_navigation_tick")
 		var tick_usec := Time.get_ticks_usec() - tick_start
 		if tick_usec > maximum_tick_usec:
 			maximum_tick_usec = tick_usec
@@ -2041,7 +1999,6 @@ func _test_group_rounds_sharp_corner(grid: MapNavigationGrid) -> void:
 func _test_bunched_group_reverses_at_corner(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation must initialize for the bunched reversal regression")
 	var walls := {}
 	for x in range(40, 121):
@@ -2057,19 +2014,19 @@ func _test_bunched_group_reverses_at_corner(grid: MapNavigationGrid) -> void:
 	navigation.command_move(
 		units, Vector3(60.5, 0.0, 140.5), NavConstantsScript.MoveMode.FREE
 	)
-	# The original sharp-corner benchmark reaches maximum contact around tick
-	# 55. Stop just after the queue has compressed at the shared waypoint.
-	for _iteration in 55:
-		navigation.call("_navigation_tick", 0.05)
+	# The original sharp-corner benchmark reaches maximum contact around 2.75 s
+	# in (55 ticks at the old 20 Hz navigation tick). Stop just after the queue
+	# has compressed at the shared waypoint.
+	_advance_navigation(navigation, 2.75)
 
 	navigation.command_move(
 		units, Vector3(60.5, 0.0, 80.5), NavConstantsScript.MoveMode.FREE
 	)
 	var maximum_tick_usec := 0
 	var maximum_tick_index := 0
-	for tick in 300:
+	for tick in _navigation_tick_count(15.0):
 		var tick_start := Time.get_ticks_usec()
-		navigation.call("_navigation_tick", 0.05)
+		navigation.call("_navigation_tick")
 		var tick_usec := Time.get_ticks_usec() - tick_start
 		if tick_usec > maximum_tick_usec:
 			maximum_tick_usec = tick_usec
@@ -2089,7 +2046,6 @@ func _test_bunched_group_reverses_at_corner(grid: MapNavigationGrid) -> void:
 func _test_dense_group_rounds_solid_region(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation must initialize for the solid-region performance regression")
 	var blocked := {}
 	for y in range(80, 151):
@@ -2111,9 +2067,9 @@ func _test_dense_group_rounds_solid_region(grid: MapNavigationGrid) -> void:
 
 	var maximum_tick_usec := 0
 	var maximum_tick_index := 0
-	for tick in 600:
+	for tick in _navigation_tick_count(30.0):
 		var tick_start := Time.get_ticks_usec()
-		navigation.call("_navigation_tick", 0.05)
+		navigation.call("_navigation_tick")
 		var tick_usec := Time.get_ticks_usec() - tick_start
 		if tick_usec > maximum_tick_usec:
 			maximum_tick_usec = tick_usec
@@ -2140,7 +2096,6 @@ func _test_dense_group_rounds_solid_region(grid: MapNavigationGrid) -> void:
 func _test_large_pair_keeps_lanes_at_shared_corner(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize for shared-corner lanes")
 	var walls := {}
 	for x in range(40, 121):
@@ -2170,11 +2125,11 @@ func _test_large_pair_keeps_lanes_at_shared_corner(grid: MapNavigationGrid) -> v
 		>= comfort_distance,
 		"parallel route lanes must clear both bodies and their soft avoidance field")
 
-	var settled_tick := 700
+	var settled_tick := _navigation_tick_count(35.0)
 	var contact_streak := 0
 	var longest_contact_streak := 0
 	for tick in range(1, settled_tick + 1):
-		navigation.call("_navigation_tick", 0.05)
+		navigation.call("_navigation_tick")
 		if inner.global_position.distance_to(outer.global_position) < contact_distance + 0.05:
 			contact_streak += 1
 			longest_contact_streak = maxi(longest_contact_streak, contact_streak)
@@ -2187,12 +2142,12 @@ func _test_large_pair_keeps_lanes_at_shared_corner(grid: MapNavigationGrid) -> v
 		):
 			settled_tick = tick
 			break
-	_expect(settled_tick < 600,
+	_expect(settled_tick < _navigation_tick_count(30.0),
 		"both large units must clear one shared wall corner without leaving a unit nose-first at terrain (%.1f s)" \
-			% (float(settled_tick) * 0.05))
-	_expect(longest_contact_streak < 10,
+			% (float(settled_tick) * MatchClockScript.SECONDS_PER_TICK))
+	_expect(longest_contact_streak < _navigation_tick_count(0.5),
 		"parallel large units must not push in continuous contact around the corner (%.2f s)" \
-			% (float(longest_contact_streak) * 0.05))
+			% (float(longest_contact_streak) * MatchClockScript.SECONDS_PER_TICK))
 	for assignment in assignments:
 		var unit: Node3D = assignment["unit"]
 		_expect(unit.global_position.distance_to(navigation.agent_debug(unit)["destination"]) < 1.0,
@@ -2209,7 +2164,6 @@ func _test_large_pair_keeps_lanes_at_shared_corner(grid: MapNavigationGrid) -> v
 func _test_grid_aligned_slots(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize")
 
 	var units: Array[Node3D] = []
@@ -2224,8 +2178,7 @@ func _test_grid_aligned_slots(grid: MapNavigationGrid) -> void:
 		large.global_position = Vector3(140.0 + float(index) * 2.0, 0.0, 143.0)
 		units.append(large)
 	navigation.command_move(units, Vector3(150.7, 0.0, 150.2), NavConstantsScript.MoveMode.FREE)
-	for _iteration in 300:
-		navigation.call("_navigation_tick", 0.05)
+	_advance_navigation(navigation, 15.0)
 
 	var blocks: Array[Dictionary] = []
 	for unit in units:
@@ -2255,7 +2208,6 @@ func _test_grid_aligned_slots(grid: MapNavigationGrid) -> void:
 func _test_overlap_is_squeezed_out(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize")
 
 	var first := FakeUnit.new()
@@ -2266,8 +2218,7 @@ func _test_overlap_is_squeezed_out(grid: MapNavigationGrid) -> void:
 	second.global_position = Vector3(200.6, 0.0, 200.5)
 	navigation.register_unit(first)
 	navigation.register_unit(second)
-	for _iteration in 60:
-		navigation.call("_navigation_tick", 0.05)
+	_advance_navigation(navigation, 3.0)
 	var contact := float(navigation._agents[first.get_instance_id()]["radius"]) \
 		+ float(navigation._agents[second.get_instance_id()]["radius"])
 	_expect(first.global_position.distance_to(second.global_position) >= contact - 0.01,
@@ -2284,7 +2235,6 @@ func _test_overlap_is_squeezed_out(grid: MapNavigationGrid) -> void:
 func _test_hold_position_resists_separation(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize")
 
 	var held := FakeUnit.new()
@@ -2302,8 +2252,7 @@ func _test_hold_position_resists_separation(grid: MapNavigationGrid) -> void:
 	_expect(held.global_position.distance_to(overlapping.global_position) < contact,
 		"hold-position fixture must begin with overlapping agents")
 
-	for _iteration in 60:
-		navigation.call("_navigation_tick", 0.05)
+	_advance_navigation(navigation, 3.0)
 	_expect(held.global_position.is_equal_approx(held_position),
 		"separation must not displace a held unit")
 	_expect(held.global_position.distance_to(overlapping.global_position) >= contact - 0.01,
@@ -2320,7 +2269,6 @@ func _test_hold_position_resists_separation(grid: MapNavigationGrid) -> void:
 func _test_firing_anchor_resists_separation(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize")
 
 	var shooter := FakeUnit.new()
@@ -2338,8 +2286,7 @@ func _test_firing_anchor_resists_separation(grid: MapNavigationGrid) -> void:
 	_expect(shooter.global_position.distance_to(arriving.global_position) < contact,
 		"firing-anchor fixture must begin with overlapping agents")
 
-	for _iteration in 60:
-		navigation.call("_navigation_tick", 0.05)
+	_advance_navigation(navigation, 3.0)
 	_expect(shooter.global_position.is_equal_approx(anchored_position),
 		"separation must not displace a unit standing on its firing position")
 	_expect(shooter.global_position.distance_to(arriving.global_position) >= contact - 0.01,
@@ -2362,7 +2309,6 @@ func _test_firing_anchor_resists_separation(grid: MapNavigationGrid) -> void:
 func _test_attack_arc_spreads_a_group(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize")
 
 	var target := Vector3(120.5, 0.0, 120.5)
@@ -2428,7 +2374,6 @@ func _test_attack_arc_spreads_a_group(grid: MapNavigationGrid) -> void:
 func _test_firing_position_follows_its_arc_slot(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize")
 
 	var target := Vector3(140.5, 0.0, 140.5)
@@ -2496,7 +2441,6 @@ func _test_firing_position_follows_its_arc_slot(grid: MapNavigationGrid) -> void
 func _test_combat_deployed_unit_resists_displacement(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize")
 
 	var kindjal := UnitScene.instantiate() as Unit
@@ -2524,8 +2468,7 @@ func _test_combat_deployed_unit_resists_displacement(grid: MapNavigationGrid) ->
 		"deployed-unit fixture must begin with overlapping agents"
 	)
 
-	for _iteration in 60:
-		navigation.call("_navigation_tick", 0.05)
+	_advance_navigation(navigation, 3.0)
 	_expect(
 		kindjal.global_position.is_equal_approx(deployed_position),
 		"a deployed unit must not be displaced by another unit steered into it"
@@ -2545,7 +2488,6 @@ func _test_combat_deployed_unit_resists_displacement(grid: MapNavigationGrid) ->
 func _test_large_overlap_spans_spatial_buckets(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize")
 
 	var first := FakeUnit.new(5.0)
@@ -2560,8 +2502,7 @@ func _test_large_overlap_spans_spatial_buckets(grid: MapNavigationGrid) -> void:
 		+ float(navigation._agents[second.get_instance_id()]["radius"])
 	_expect(first.global_position.distance_to(second.global_position) < contact,
 		"large-unit fixture must begin overlapped across non-adjacent buckets")
-	for _iteration in 80:
-		navigation.call("_navigation_tick", 0.05)
+	_advance_navigation(navigation, 4.0)
 	_expect(first.global_position.distance_to(second.global_position) >= contact - 0.01,
 		"large overlapping units in distant buckets must still separate")
 
@@ -2575,7 +2516,6 @@ func _test_large_overlap_spans_spatial_buckets(grid: MapNavigationGrid) -> void:
 func _test_enemy_stays_solid_under_separation(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize")
 
 	var pusher := FakeUnit.new()
@@ -2594,8 +2534,8 @@ func _test_enemy_stays_solid_under_separation(grid: MapNavigationGrid) -> void:
 	var contact := float(navigation._agents[squeezed.get_instance_id()]["radius"]) \
 		+ float(navigation._agents[enemy.get_instance_id()]["radius"])
 	var closest_approach := squeezed.global_position.distance_to(enemy.global_position)
-	for _iteration in 80:
-		navigation.call("_navigation_tick", 0.05)
+	for _iteration in _navigation_tick_count(4.0):
+		navigation.call("_navigation_tick")
 		closest_approach = minf(closest_approach, squeezed.global_position.distance_to(enemy.global_position))
 	_expect(closest_approach >= contact - 0.01,
 		"friendly separation must not push a unit through an enemy (closest %.2f, contact %.2f)" % [closest_approach, contact])
@@ -2614,7 +2554,6 @@ func _test_enemy_stays_solid_under_separation(grid: MapNavigationGrid) -> void:
 func _test_elastic_corridor_pass(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize")
 	var walls := {}
 	for x in range(60, 71):
@@ -2636,12 +2575,12 @@ func _test_elastic_corridor_pass(grid: MapNavigationGrid) -> void:
 	var fastest_step := 0.0
 	var previous_east := east_bound.global_position
 	var previous_west := west_bound.global_position
-	for _iteration in 240:
-		navigation.call("_navigation_tick", 0.05)
+	for _iteration in _navigation_tick_count(12.0):
+		navigation.call("_navigation_tick")
 		closest_approach = minf(closest_approach, east_bound.global_position.distance_to(west_bound.global_position))
 		fastest_step = maxf(fastest_step, maxf(
-			previous_east.distance_to(east_bound.global_position) / 0.05,
-			previous_west.distance_to(west_bound.global_position) / 0.05
+			previous_east.distance_to(east_bound.global_position) / MatchClockScript.SECONDS_PER_TICK,
+			previous_west.distance_to(west_bound.global_position) / MatchClockScript.SECONDS_PER_TICK
 		))
 		previous_east = east_bound.global_position
 		previous_west = west_bound.global_position
@@ -2667,7 +2606,6 @@ func _test_elastic_corridor_pass(grid: MapNavigationGrid) -> void:
 func _test_lane_through_standing_formation(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize")
 
 	var formation: Array[FakeUnit] = []
@@ -2677,16 +2615,14 @@ func _test_lane_through_standing_formation(grid: MapNavigationGrid) -> void:
 		unit.global_position = Vector3(148.5 + float(index % 3), 0.0, 148.5 + float(index / 3))
 		formation.append(unit)
 	navigation.command_move(formation, Vector3(150.5, 0.0, 150.5), NavConstantsScript.MoveMode.FREE)
-	for _iteration in 200:
-		navigation.call("_navigation_tick", 0.05)
+	_advance_navigation(navigation, 10.0)
 
 	var runner := FakeUnit.new()
 	root.add_child(runner)
 	runner.global_position = Vector3(150.5, 0.0, 140.5)
 	var far_side := Vector3(150.5, 0.0, 160.5)
 	navigation.command_move([runner], far_side)
-	for _iteration in 200:
-		navigation.call("_navigation_tick", 0.05)
+	_advance_navigation(navigation, 10.0)
 	_expect(runner.global_position.distance_to(far_side) < 1.5,
 		"a single unit must cross a standing formation through its parking lanes (ended %.1f,%.1f)" % [
 			runner.global_position.x, runner.global_position.z])
@@ -2703,7 +2639,6 @@ func _test_lane_through_standing_formation(grid: MapNavigationGrid) -> void:
 func _test_large_reciprocal_crossing(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize for large-unit crossing")
 	var center := Vector3(170.5, 0.0, 170.5)
 	var starts := [
@@ -2720,9 +2655,9 @@ func _test_large_reciprocal_crossing(grid: MapNavigationGrid) -> void:
 		unit.global_position = starts[index]
 		units.append(unit)
 		navigation.command_move([unit], targets[index])
-	var settled_tick := 320
+	var settled_tick := _navigation_tick_count(16.0)
 	for tick in range(1, settled_tick + 1):
-		navigation.call("_navigation_tick", 0.05)
+		navigation.call("_navigation_tick")
 		if units.all(func(unit: FakeUnit) -> bool:
 			return unit.global_position.distance_to(
 				navigation.agent_debug(unit)["destination"]
@@ -2731,9 +2666,9 @@ func _test_large_reciprocal_crossing(grid: MapNavigationGrid) -> void:
 			settled_tick = tick
 			break
 	_expect(
-		settled_tick < 240,
+		settled_tick < _navigation_tick_count(12.0),
 		"four reciprocal size-three units must settle after one bounded avoidance manoeuvre (%.1f s)" \
-			% (float(settled_tick) * 0.05)
+			% (float(settled_tick) * MatchClockScript.SECONDS_PER_TICK)
 	)
 	for unit in units:
 		_expect(
@@ -2752,7 +2687,6 @@ func _test_large_reciprocal_crossing(grid: MapNavigationGrid) -> void:
 func _test_circle_convergence_metrics(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize")
 
 	var center := Vector3(100.5, 0.0, 100.5)
@@ -2765,16 +2699,18 @@ func _test_circle_convergence_metrics(grid: MapNavigationGrid) -> void:
 		units.append(unit)
 	navigation.command_move(units, center, NavConstantsScript.MoveMode.FREE)
 
-	const TICK := 0.05
-	const MAX_TICKS := 2400
-	const IDLE_TICKS_TO_FINISH := 100
+	var tick_seconds := MatchClockScript.SECONDS_PER_TICK
+	# 120 s budget, 5 s idle-settle window: durations, converted to ticks at
+	# the simulation rate rather than hardcoded against the old 20 Hz.
+	var max_ticks := _navigation_tick_count(120.0)
+	var idle_ticks_to_finish := _navigation_tick_count(5.0)
 	var previous: Array[Vector3] = []
 	for unit in units:
 		previous.append(unit.global_position)
 	var last_active_tick := 0
-	var elapsed_ticks := MAX_TICKS
-	for tick in range(1, MAX_TICKS + 1):
-		navigation.call("_navigation_tick", TICK)
+	var elapsed_ticks := max_ticks
+	for tick in range(1, max_ticks + 1):
+		navigation.call("_navigation_tick")
 		var moved := false
 		for index in units.size():
 			if units[index].global_position.distance_to(previous[index]) > 0.005:
@@ -2782,7 +2718,7 @@ func _test_circle_convergence_metrics(grid: MapNavigationGrid) -> void:
 			previous[index] = units[index].global_position
 		if moved:
 			last_active_tick = tick
-		elif tick - last_active_tick >= IDLE_TICKS_TO_FINISH:
+		elif tick - last_active_tick >= idle_ticks_to_finish:
 			elapsed_ticks = tick
 			break
 
@@ -2807,9 +2743,9 @@ func _test_circle_convergence_metrics(grid: MapNavigationGrid) -> void:
 			if not covered:
 				holes += 1
 	print("Circle convergence: settled in %.1f s, crowd radius %.1f (gapped ideal ~5.2), %d empty cells inside the crowd" % [
-		float(last_active_tick) * TICK, crowd_radius, holes])
-	_expect(elapsed_ticks < MAX_TICKS, "the convergence scrum must settle, not churn forever")
-	_expect(float(last_active_tick) * TICK < 30.0, "21 units converging on one point must settle within 30 seconds")
+		float(last_active_tick) * tick_seconds, crowd_radius, holes])
+	_expect(elapsed_ticks < max_ticks, "the convergence scrum must settle, not churn forever")
+	_expect(float(last_active_tick) * tick_seconds < 30.0, "21 units converging on one point must settle within 30 seconds")
 	_expect(crowd_radius < 7.0, "21 units must pack near the target on the gapped lattice")
 
 	navigation.queue_free()
@@ -2823,7 +2759,6 @@ func _test_circle_convergence_metrics(grid: MapNavigationGrid) -> void:
 func _test_command_overrides_yield(grid: MapNavigationGrid) -> void:
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "navigation system must initialize")
 
 	var unit := FakeUnit.new()
@@ -2831,12 +2766,10 @@ func _test_command_overrides_yield(grid: MapNavigationGrid) -> void:
 	unit.global_position = Vector3(120.5, 0.0, 120.5)
 	navigation.command_move([unit], unit.global_position)
 	navigation.call("_request_yield", unit, Vector3.RIGHT)
-	for _iteration in 4:
-		navigation.call("_navigation_tick", 0.05)
+	_advance_navigation(navigation, 0.2)
 	var destination := Vector3(130.5, 0.0, 130.5)
 	navigation.command_move([unit], destination)
-	for _iteration in 100:
-		navigation.call("_navigation_tick", 0.05)
+	_advance_navigation(navigation, 5.0)
 	_expect(unit.global_position.distance_to(destination) < 1.0, "an order issued mid-yield must still be executed")
 
 	navigation.queue_free()

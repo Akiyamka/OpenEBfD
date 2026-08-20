@@ -5,6 +5,7 @@ extends SceneTree
 
 const NavigationSystemScript := preload("res://scripts/units/navigation/unit_navigation_system.gd")
 const UnitDefinitionScript := preload("res://scripts/units/unit_definition.gd")
+const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 
 
 class ProbeUnit extends Node3D:
@@ -70,7 +71,6 @@ func _initialize() -> void:
 	var grid := _make_grid()
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	if not navigation.setup(grid):
 		printerr("PROBE: navigation setup failed")
 		quit(1)
@@ -99,8 +99,11 @@ func _initialize() -> void:
 	])
 	print("tick;pos_x;pos_z;facing_deg;desired_deg;pressure_deg;pressure_len;resolved_deg;resolved_len;stabil_deg;final_deg;pref_deg;pref_side;steer_dist;path_index;turn_in_place;moved")
 
-	var delta := 0.05
-	for tick in 700:
+	# 35 s of probe time, at the simulation tick rate rather than the old
+	# hardcoded 20 Hz -- see the tick_count helpers in tests/navigation/run.gd
+	# for the same conversion done for the real test suite.
+	var delta := MatchClockScript.SECONDS_PER_TICK
+	for tick in roundi(35.0 * float(MatchClockScript.TICKS_PER_SECOND)):
 		# Probe every steering stage on shallow copies so the real agent state
 		# is not advanced twice.
 		var probe: Dictionary = agent.duplicate()
@@ -118,7 +121,7 @@ func _initialize() -> void:
 		var preference_before: Vector3 = agent.get("avoidance_direction", Vector3.ZERO)
 		var side_before := int(agent.get("avoidance_side", 0))
 		var before := unit.global_position
-		navigation.call("_navigation_tick", delta)
+		navigation.call("_navigation_tick")
 		agent = navigation._agents[unit.get_instance_id()]
 		var final := Vector3.ZERO
 		if not unit.commanded_headings.is_empty():

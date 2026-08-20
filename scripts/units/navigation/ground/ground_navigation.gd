@@ -7,6 +7,7 @@ extends RefCounted
 ## (re)plan an agent's route.
 
 const NavConstantsScript := preload("res://scripts/units/navigation/shared/nav_constants.gd")
+const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 
 var _facade: Node
 var _runtime_map
@@ -204,10 +205,10 @@ func desired_velocity(agent: Dictionary) -> Vector3:
 
 
 ## Full cruise speed may cover more than the remaining final segment in one
-## fixed navigation tick. Limit only that last step so it lands on the target
+## fixed simulation tick. Limit only that last step so it lands on the target
 ## instead of crossing it and reversing direction on the following tick.
 func _arrival_limited_speed(agent: Dictionary, speed: float, distance: float) -> float:
-	var limited := minf(speed, distance * NavConstantsScript.NAVIGATION_TICK_RATE)
+	var limited := minf(speed, distance * float(MatchClockScript.TICKS_PER_SECOND))
 	agent["_arrival_speed_limited"] = limited < speed
 	return limited
 

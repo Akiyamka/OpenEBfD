@@ -15,6 +15,7 @@ const UnitNavigationSystemScript := preload(
 const MapNavigationGridScript := preload(
 	"res://scripts/world/map/map_navigation_grid.gd"
 )
+const FrameTickDriverScript := preload("res://scripts/match/frame_tick_driver.gd")
 
 const PICKUP_TIMEOUT_FRAMES := 1200
 const DROP_TIMEOUT_FRAMES := 1200
@@ -22,6 +23,16 @@ const DROP_POSITION := Vector3(52.0, 0.0, 40.0)
 
 var _assertions := 0
 var _failures := 0
+## This fixture has no Match instance to call UnitNavigationSystem.sim_tick()
+## for it, so it stands in for Match._process() itself: one driver, fed the
+## engine's fixed physics-frame delta each await physics_frame, turns that
+## into the whole simulation ticks due -- the same conversion FrameTickDriver
+## does for the real match, just called directly instead of through
+## _advance_simulation_tick(). Before slice A1b this was unnecessary because
+## UnitNavigationSystem ticked itself off its own _physics_process(); see
+## tests/combat/support/sim_tick_pump.gd for the equivalent seam that already
+## existed for Unit/Building sim_tick() and the suites it was written for.
+var _nav_tick_driver := FrameTickDriverScript.new()
 
 
 func _initialize() -> void:
@@ -48,7 +59,7 @@ func _initialize() -> void:
 	_expect(bool(pickup_result.get("ok", false)),
 		"the production ability adapter must issue pickup to the real Advanced Carryall")
 
-	var pickup_trace := await _wait_for_state(carrier, cargo, &"carrying", PICKUP_TIMEOUT_FRAMES)
+	var pickup_trace := await _wait_for_state(navigation, carrier, cargo, &"carrying", PICKUP_TIMEOUT_FRAMES)
 	if not bool(pickup_trace.get("reached", false)):
 		print("Pickup timeout: states=%s carrier=%s cargo=%s nav=%s" % [
 			pickup_trace.get("states", []), carrier.global_position, cargo.global_position,
@@ -98,7 +109,7 @@ func _initialize() -> void:
 	var drop_result: Dictionary = ability.execute(&"drop", selected_carriers, null, DROP_POSITION)
 	_expect(bool(drop_result.get("ok", false)),
 		"the production ability adapter must issue a legal drop order")
-	var drop_trace := await _wait_for_state(carrier, cargo, &"idle", DROP_TIMEOUT_FRAMES)
+	var drop_trace := await _wait_for_state(navigation, carrier, cargo, &"idle", DROP_TIMEOUT_FRAMES)
 	if not bool(drop_trace.get("reached", false)):
 		print("Drop timeout: states=%s carrier=%s cargo=%s nav=%s" % [
 			drop_trace.get("states", []), carrier.global_position, cargo.global_position,
@@ -152,12 +163,14 @@ func _initialize() -> void:
 
 
 func _wait_for_state(
-	carrier: Unit, cargo: Unit, desired: StringName, maximum_frames: int
+	navigation, carrier: Unit, cargo: Unit, desired: StringName, maximum_frames: int
 ) -> Dictionary:
 	var states: Array[StringName] = []
 	var samples: Array[Dictionary] = []
 	for _frame in maximum_frames:
 		await physics_frame
+		for _tick in _nav_tick_driver.pending_ticks(root.get_physics_process_delta_time()):
+			navigation.sim_tick()
 		var state := carrier.transport_state_name()
 		samples.append({
 			"state": state,

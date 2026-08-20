@@ -383,6 +383,16 @@ func _process(delta: float) -> void:
 ## They execute here, before any controller's own advance_tick() below, for
 ## the same reason every other command does: commands, then systems.
 ##
+## _unit_navigation_system.sim_tick() runs immediately after the command drain
+## above, before any of the three controllers below it: navigation is the
+## direct consumer of the move commands that loop just executed, so a move
+## order targeting this tick is acted on this tick instead of one tick late.
+## That is the same "commands, then systems" reasoning the drain's own
+## position enforces, applied to the one system commands hand data to
+## directly rather than through a controller. Null-guarded like the three
+## controllers below it: tests instantiate a match with no navigation grid
+## loaded at all.
+##
 ## _building_controller, then _building_upgrade_controller, then
 ## _unit_roster_controller -- exactly the order these three appeared in
 ## _process() before this slice split their simulation half out. Within a
@@ -495,6 +505,12 @@ func _advance_simulation_tick() -> void:
 		var result: Dictionary = _command_executor.execute(command)
 		if _unit_command_controller != null:
 			_unit_command_controller.on_command_executed(command, result)
+	# Navigation decides where every unit ends up, and it is the direct
+	# consumer of the move commands the loop just executed -- running it
+	# immediately after means a move order targeting this tick is acted on
+	# this tick, not one tick late.
+	if _unit_navigation_system != null:
+		_unit_navigation_system.sim_tick()
 	if _building_controller != null:
 		_building_controller.advance_tick()
 	if _building_upgrade_controller != null:

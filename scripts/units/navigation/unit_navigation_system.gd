@@ -19,12 +19,12 @@ const PathFunnelScript := preload("res://scripts/units/navigation/ground/path_fu
 const AirNavigationScript := preload("res://scripts/units/navigation/air/air_navigation.gd")
 const NavConstantsScript := preload("res://scripts/units/navigation/shared/nav_constants.gd")
 const MapNavigationGridScript := preload("res://scripts/world/map/map_navigation_grid.gd")
+const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 
 signal destination_slots_assigned(command_id: int, assignments: Array[Dictionary])
 @warning_ignore("unused_signal") # Public integration hook; intentionally not emitted here yet.
 signal enemy_blocked(unit: Node3D, blockers: Array[Node3D])
 
-const NAVIGATION_TICK_RATE := NavConstantsScript.NAVIGATION_TICK_RATE
 const BLOCKER_REFRESH_SECONDS := NavConstantsScript.BLOCKER_REFRESH_SECONDS
 const ENEMY_BLOCK_SECONDS := NavConstantsScript.ENEMY_BLOCK_SECONDS
 const FRIENDLY_YIELD_SECONDS := NavConstantsScript.FRIENDLY_YIELD_SECONDS
@@ -42,11 +42,6 @@ const PARKING_GAP_CELLS := NavConstantsScript.PARKING_GAP_CELLS
 ## used by local avoidance. Otherwise units technically have different targets
 ## but still spend the whole trip steering away from each other.
 const ROUTE_LANE_COMFORT_RADIUS_FACTOR := NavConstantsScript.ROUTE_LANE_COMFORT_RADIUS_FACTOR
-## Never let a slow navigation tick create an unbounded catch-up loop. Dropping
-## excess simulation time makes units briefly slow down under overload, but the
-## render thread can recover instead of spending every following frame on old
-## navigation work.
-const MAX_CATCH_UP_TICKS := NavConstantsScript.MAX_CATCH_UP_TICKS
 ## A building-blocker change only reroutes agents whose stored corridor or
 ## destination block actually overlaps the changed cells (see
 ## `_agent_route_intersects`); this caps how many of those dirty agents get an
@@ -72,7 +67,9 @@ var air_navigation := AirNavigationScript.new()
 var _agents: Dictionary = {}
 var _next_command_id := 1
 var _navigation_tick_index := 0
-var _navigation_accumulator := 0.0
+## Counts down in seconds against BLOCKER_REFRESH_SECONDS, decremented one
+## fixed simulation tick at a time by sim_tick() rather than by frame delta --
+## see that function's doc comment.
 var _blocker_refresh_remaining := 0.0
 var _command_log: Array[Dictionary] = []
 var _debug_enabled := false
@@ -757,25 +754,33 @@ func command_log() -> Array[Dictionary]:
 	return _command_log.duplicate(true)
 
 
-func _physics_process(delta: float) -> void:
+## Called once per simulation tick by Match._advance_simulation_tick() (see
+## that function's doc comment for tick order), at the fixed 25 Hz the whole
+## simulation runs at -- see docs/architecture/network-multiplayer.md, phase 3,
+## decision 4. This replaces the accumulator loop UnitNavigationSystem used to
+## run off _physics_process() at its own 20 Hz rate: that was a second clock,
+## and the catch-up budget it needed to bound a slow frame's accumulator
+## (MAX_CATCH_UP_TICKS, formerly here and in NavConstants) is gone rather than
+## moved. FrameTickDriver.MAX_TICKS_PER_FRAME (scripts/match/frame_tick_driver.gd)
+## already bounds how many ticks one frame may advance for every system on the
+## simulation tick, this one included -- and unlike the deleted navigation
+## budget, it counts what it discards (dropped_ticks()), which a lockstep
+## match needs: ticks dropped on one client and not another are themselves a
+## divergence.
+func sim_tick() -> void:
 	if runtime_map.grid == null:
 		return
-	_navigation_accumulator += delta
-	var tick_delta := 1.0 / NAVIGATION_TICK_RATE
-	var ticks := 0
-	while _navigation_accumulator >= tick_delta and ticks < MAX_CATCH_UP_TICKS:
-		_navigation_accumulator -= tick_delta
-		_navigation_tick(tick_delta)
-		ticks += 1
-	if _navigation_accumulator >= tick_delta:
-		_navigation_accumulator = fmod(_navigation_accumulator, tick_delta)
-	_blocker_refresh_remaining -= delta
+	_navigation_tick()
+	# Counts down by exactly one tick's worth of wall-clock time per call,
+	# the tick-domain replacement for the old frame-delta countdown -- see
+	# _blocker_refresh_remaining's own doc comment.
+	_blocker_refresh_remaining -= MatchClockScript.SECONDS_PER_TICK
 	if _blocker_refresh_remaining <= 0.0:
 		_blocker_refresh_remaining = BLOCKER_REFRESH_SECONDS
 		_refresh_building_blockers()
 
 
-func _navigation_tick(delta: float) -> void:
+func _navigation_tick() -> void:
 	_navigation_tick_index += 1
 	registry.prune_agents(_agents)
 	blocker_tracker.process_reroute_queue()
@@ -806,10 +811,14 @@ func _navigation_tick(delta: float) -> void:
 		slot_allocator.try_claim_slot(_agents, agent)
 	slot_allocator.uncross_assignments(ground_agents)
 	var ground_buckets := spatial_hash.build(ground_agents)
-	ground_navigation.tick(delta, ground_agents, ground_buckets)
+	# ground_navigation.tick()/air_navigation.tick() still take the interval
+	# as a parameter -- only the source of the value changed, from a frame
+	# delta threaded down through _physics_process() to the one fixed
+	# simulation tick length nobody can pass a wrong value for any more.
+	ground_navigation.tick(MatchClockScript.SECONDS_PER_TICK, ground_agents, ground_buckets)
 	if not air_agents.is_empty():
 		var air_buckets := spatial_hash.build(air_agents)
-		air_navigation.tick(delta, air_agents, air_buckets)
+		air_navigation.tick(MatchClockScript.SECONDS_PER_TICK, air_agents, air_buckets)
 	_refresh_navigation_debug()
 
 

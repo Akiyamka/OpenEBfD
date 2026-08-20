@@ -87,12 +87,6 @@ pattern = '(?:TICKS_PER_SECOND|_TICK_RATE)\s*:=\s*[0-9]'
 exempt = [
 	"scripts/sim/match_clock.gd",
 	"scripts/rules/rule_ticks.gd",
-	# Slice A1a (see phase 3 notes) only told this violation apart from the
-	# rules-data rates it coincides with; it did not fix it. Slice A1b folds
-	# UnitNavigationSystem's own tick into the simulation tick and removes
-	# both NAVIGATION_TICK_RATE and this exemption. This line is the written
-	# record of that one known outstanding violation, not a permanent blessing.
-	"scripts/units/navigation/shared/nav_constants.gd",
 ]
 summary = "module declares its own tick rate"
 why = """

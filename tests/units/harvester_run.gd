@@ -7,6 +7,7 @@ const UnitRosterControllerScript := preload("res://scripts/units/unit_roster_con
 const SelectionHaloScript := preload("res://scripts/ui/selection_halo.gd")
 const MatchSnapshotScript := preload("res://scripts/match/match_snapshot.gd")
 const NavigationSystemScript := preload("res://scripts/units/navigation/unit_navigation_system.gd")
+const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 
 var _assertions := 0
 var _failures := 0
@@ -476,7 +477,6 @@ func _test_two_harvesters_share_field(token: int) -> int:
 	var grid := _make_open_navigation_grid()
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
-	navigation.set_physics_process(false)
 	_expect(navigation.setup(grid), "the crowd-navigation fixture must initialize")
 	var layer := FakeSpiceLayer.new()
 	var field := Vector2i(60, 60)
@@ -497,10 +497,16 @@ func _test_two_harvesters_share_field(token: int) -> int:
 		navigation.register_unit(harvester)
 		_expect(harvester.command_harvest(layer, grid, field), "each harvester must accept the shared field order")
 		harvesters.append(harvester)
-	for _tick in 1500:
-		navigation.call("_navigation_tick", 0.05)
+	# 75 s budget (1500 ticks at the old 20 Hz navigation tick), converted to
+	# ticks at the simulation rate. advance_harvest_order() is a separate,
+	# frame-delta-driven clock (see harvester_controller.gd) that this loop
+	# happens to co-advance one simulated tick at a time for convenience, so
+	# its per-iteration step moves to the same tick length to keep the two
+	# in lockstep the way the old matching 0.05/0.05 pair did.
+	for _tick in roundi(75.0 * float(MatchClockScript.TICKS_PER_SECOND)):
+		navigation.call("_navigation_tick")
 		for harvester in harvesters:
-			harvester._harvester.advance_harvest_order(0.05)
+			harvester._harvester.advance_harvest_order(MatchClockScript.SECONDS_PER_TICK)
 		if harvesters.all(func(harvester: TestHarvester) -> bool: return harvester.spice > 0.0):
 			break
 	_expect(

@@ -141,14 +141,6 @@ CASES: tuple[Case, ...] = (
         EXIT_CLEAN,
     ),
     Case(
-        # The written record of the one known outstanding violation (see
-        # architecture_rules.toml): slice A1b removes both
-        # NAVIGATION_TICK_RATE and this exemption.
-        "the tick rate is allowed where NavConstants owns it until slice A1b",
-        {"scripts/units/navigation/shared/nav_constants.gd": "own_tick_rate_suffix"},
-        EXIT_CLEAN,
-    ),
-    Case(
         "zone globs reach nested directories",
         {"scripts/units/navigation/ground/deep.gd": "private_owner_access"},
         EXIT_FINDINGS,

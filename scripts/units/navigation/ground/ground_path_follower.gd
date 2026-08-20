@@ -3,6 +3,7 @@ extends RefCounted
 
 const NavConstantsScript := preload("res://scripts/units/navigation/shared/nav_constants.gd")
 const RuleTicksScript := preload("res://scripts/rules/rule_ticks.gd")
+const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 ## Runtime pursuit of a compact A* path: look-ahead steering target, monotonic
 ## waypoint advancement, cross-route lane offsetting, and the swept-disc
 ## visibility tests (chord/line-of-sight, per-cell passable/stoppable) that
@@ -134,7 +135,7 @@ func advanced_path_index(
 	# at the same never-quite-captured point from alternating sides, which
 	# reverses the commanded heading every tick. Covering at least one tick's
 	# travel keeps a single overshooting step inside the capture disc.
-	var capture := maxf(maxf(0.35, float(agent["radius"]) * 0.4), speed / NavConstantsScript.NAVIGATION_TICK_RATE)
+	var capture := maxf(maxf(0.35, float(agent["radius"]) * 0.4), speed * MatchClockScript.SECONDS_PER_TICK)
 	var base_corridor := maxf(float(agent["radius"]) * 2.0, cell_width * 1.5)
 	while result < path.size() - 1:
 		var waypoint: Vector3 = path[result]
@@ -291,9 +292,11 @@ func path_look_ahead_distance(agent: Dictionary, speed: float) -> float:
 	and turn_rate_value != null and float(turn_rate_value) > 0.0:
 		# Rules.txt TurnRate is radians per rules movement update, and the
 		# original engine ran twenty of those per second. Deliberately not
-		# NavConstants.NAVIGATION_TICK_RATE: that is this navigation system's
-		# own scheduling rate, a different clock in the source data that only
-		# coincides with the movement-update cadence today.
+		# MatchClock.TICKS_PER_SECOND: that is how often this simulation
+		# decides things, which has nothing to do with the cadence the source
+		# data was authored against. The two used to be the same number, back
+		# when this line read the navigation system's own 20 Hz rate -- which
+		# is exactly how it came to read the wrong one. See slice A1a.
 		var angular_speed := float(turn_rate_value) * RuleTicksScript.RULE_MOVEMENT_UPDATES_PER_SECOND
 		turn_distance = clampf(speed / angular_speed * 2.5, cell_width, cell_width * 6.0)
 	return maxf(radius_distance, turn_distance)
