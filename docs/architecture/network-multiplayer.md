@@ -563,6 +563,55 @@ and by the time we get there the hard part is already tested.
   alongside as presentation. Until then no replay of a match containing
   aircraft can reproduce, and phase 4's replay-twice check would fail on this
   alone.
+
+  **Slice B1's inventory, 2026-08-20.** 96 `delta: float` signatures across 37
+  files. The dividing question is not "does this run every frame" but "does the
+  value this advances survive into the next tick as something a command or a
+  checksum can see". Sorting them is the slice's whole product; B2–B4 consume
+  this list and it stops existing when they are done, which is why it is a work
+  list here rather than a registry anyone has to keep current.
+
+  *Stays on frame `delta`, and should* — camera (`rts_camera.gd`), cursor,
+  `panel_tab.gd`, `selection_halo.gd`, `navigation_grid_debug.gd`,
+  `unit_shader_fx.gd`, `unit_movement_sounds.gd`, `combat_impact_effect.gd`,
+  `UnitLocomotion.advance_gait()` (animation playback speed), and the visual
+  slope tilt (`Unit._advance_visual_slope_alignment()`,
+  `UnitTerrainAlignment.advance_slope_alignment()`). None of these are readable
+  by a command or a checksum, and interpolating them is the point of B4.
+
+  *Already resolved* — `FrameTickDriver.pending_ticks()` and `Match._process()`
+  are the conversion boundary itself; the three controllers' `process(_delta)`
+  no longer use the parameter; the navigation `tick(delta)` chain now receives
+  `MatchClock.SECONDS_PER_TICK` (slice A1b).
+
+  *Moves to the tick* — ground locomotion and terrain snapping (B2:
+  `Unit._physics_process()`, `navigation_step()`, `_snap_to_terrain()`,
+  `_slope_speed_multiplier()`, `turn_toward()`); flight, projectiles, turret
+  aim and target acquisition (B3: `unit_flight_controller.gd`,
+  `combat_projectile.gd`, `combat_turret.gd`, `combat_target_acquisition.gd`,
+  `unit_combat.gd`, `building_combat.gd`, `advanced_carryall_transport.gd`,
+  `unit_deploy_state.gd`, `building_refinery_docks.gd`).
+
+  Two of them are worth naming individually, because their classification is
+  not what the file they live in suggests:
+
+  `UnitLocomotion.advance_start_transition()` looks cosmetic and is not: while
+  `is_starting()` holds, `Unit` forces `velocity = Vector3.ZERO`, so this
+  countdown decides whether a unit moves at all. Its own comment already
+  records the tension — it says physics owns the deadline "as well as
+  AnimationPlayer" so that manual simulations keep moving when no render frame
+  advances the player. That is the same animation-drives-simulation coupling
+  the flight finding above describes, already worked around once rather than
+  fixed.
+
+  `HarvesterController._transfer_unload_credits()` advances the **economy** on
+  the render frame: `Unit._process()` calls it, and it ends in
+  `player.add_money()`. Total income per wall-clock second is frame-rate
+  independent, so this is not a "faster machine earns more" bug — but the tick
+  on which each credit lands is decided by frame timing, and credits gate
+  production. Two clients running at different frame rates would fund the same
+  build order on different ticks. It belongs with B2's economy-adjacent work
+  rather than being left for B3.
 - **Phase 4 — determinism gate.** Portable math, RNG split, the static rules
   above wired into `check_architecture.py`, and the CI test that replays one
   command log twice in-process and then compares state hashes across native and
