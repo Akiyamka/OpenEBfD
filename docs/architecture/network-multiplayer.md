@@ -975,39 +975,50 @@ and by the time we get there the hard part is already tested.
   narrow case where there is no alternative: without it a killed unit in
   those suites would never be freed at all.
 
-  **What C5 made visible, measured 2026-08-21 and deliberately left open: dead
-  units are still being moved.** Erasing liveness at the kill site turned every
-  hot-state write against a not-yet-drained entity into a loud refusal, and the
-  volume named the gap: 1707 `push_error`s across a full suite run, 1698 of them
-  from `tests/match/demo_boot_run.gd` alone (1662 position, 23 health, 17
-  shields, 5 owner; 7 of the 1707 are `tests/sim/entity_state_run.gd`'s own
-  deliberate error-path cases and 2 are `despawn_run.gd`'s).
+  **A finding this slice reported wrongly, and the measurement that corrected
+  it.** A full suite run emits about 1700 `SimEntityState` refused-write
+  errors, essentially all of them from `tests/match/demo_boot_run.gd`. The
+  first explanation written here -- and reported as traced -- was that C5
+  caused them: erasing liveness at the kill site would make every write
+  against a not-yet-drained entity loud, and `UnitNavigationSystem` does keep
+  stepping a unit whose node is still valid. Both halves of that are true
+  statements about the code, and together they are still the wrong answer.
 
-  The path, traced rather than guessed: `UnitNavigationSystem.sim_tick()` walks
-  its own agent registry and calls `Unit.navigation_step()`, which writes the
-  unit's position -- and it prunes agents on node validity alone, while
-  `queue_free()` keeps a node valid until the engine frame ends. So a dead unit
-  keeps being navigated for every remaining tick of the frame that killed it.
-  `Unit.sim_tick()`'s own `_simulation_halted` guard does not cover this,
-  because navigation drives the unit from outside that call.
+  Running `demo_boot_run.gd` at the commit *before* C5 settles it: **1737
+  errors there against 1698 after**, with the same call sites in the same
+  proportions (~800 from `Unit._terrain_snap_body()`, ~800 from
+  `navigation_step()`, ~60 from `Match._place_on_map()`). The flood predates
+  the slice and C5 slightly reduced it. A plausible mechanism that really
+  exists in the code is not evidence that it is the mechanism producing the
+  symptom in front of you -- the same mistake, in the same phase, that
+  `flight_run.gd`'s stabilised assertion count already taught once from the
+  opposite direction.
 
-  Behaviour did not change: the node still moves and the store still refuses,
-  exactly as before. What changed is that the store now says so. This is the
-  same trap phase 3 already walked into once from the other direction -- there,
-  moving a system onto the tick hid a defect's symptom while leaving its cause;
-  here, a slice that touched neither made a silent pre-existing defect start
-  reporting itself. Neither the silence nor the noise is evidence about the
-  code that produced it.
+  The actual cause, confirmed by experiment rather than by reading:
+  `MatchLookup` (scripts/match/match_lookup.gd) resolves the running match
+  with `get_first_node_in_group()` and does not check whether that node is
+  already `is_queued_for_deletion()`. A `Unit` or `Building` entering the tree
+  while a dying `Match` still holds group membership therefore takes its
+  entity id from a registry that is about to disappear, and every later write
+  resolves `entity_state()` to a different match's store -- where that id was
+  never allocated. Once a unit is mis-registered, every position write it
+  makes for the rest of its life reports. Skipping a queued-for-deletion match
+  in both lookups takes `demo_boot_run.gd` from 1698 refused writes to **0**,
+  with its 364 assertions still passing: an entity that can only find a dying
+  match now gets no id at all, which is exactly the "no Match in the tree"
+  case those lookups were already written to tolerate.
 
-  Two ways out, neither chosen here because choosing is a decision rather than a
-  detail. Either the store learns to tell a released id from a never-allocated
-  one -- `SimEntityRegistry.kind_of()` already outlives `release()` precisely so
-  that distinction stays available, and a write to an id that died this frame is
-  expected under C5 in a way a write to an id that never existed is not -- or
-  navigation stops stepping a halted unit at all, which is the behaviour fix and
-  a wider slice than quieting a report. Recorded here rather than in a checker
-  rule because it is one known site, not a class someone could reintroduce
-  without noticing.
+  What survives of the original reading, recorded so it is not rediscovered as
+  new: navigation prunes its agents on `EntityQuery.is_live()`, which tests
+  node validity and `is_queued_for_deletion()`, never simulation liveness. For
+  a kill that lands *on* a tick this is harmless, because `_navigation_tick()`
+  runs at the top of `_advance_simulation_tick()` and the drain at its bottom,
+  so the node is already queued for deletion before navigation next looks at
+  it. For a kill that lands *between* ticks -- a signal, a `_process()` path --
+  the unit is halted and its id released while the node is not yet queued, and
+  the next tick's navigation will step it once. One tick, no behaviour change,
+  and no measured volume behind it. It is a real gap and a small one; it is
+  not what the errors above were.
 
   One near-miss worth keeping, because the code comments that now prevent it
   read as obvious only in hindsight: `request_despawn()` is idempotent on
