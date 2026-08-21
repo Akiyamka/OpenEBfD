@@ -923,8 +923,36 @@ already play before it is trusted by the mode we cannot yet test.
   changes, they submit to the same bus and would merge into the replay's stream
   — see `ReplayPlayer`'s doc comment, which names the hazard where whoever adds
   that UI will find it.
-- Whether phase 3's hot state stores positions as `float32` (`PackedVector3Array`,
-  matching what `Vector3` already carries and what the view needs anyway) or as
-  `float64` (`PackedFloat64Array`, three arrays or a strided one). See decision 5:
-  either is deterministic; they differ in precision at map scale and in how much
-  converting costs at the view boundary, every tick, for every entity.
+- ~~Whether phase 3's hot state stores positions as `float32` or `float64`.~~
+  **Answered 2026-08-21: `float32`, `PackedVector3Array`.** Measured against the
+  shipped maps rather than argued: `#M70 Claw Rock` is 256x256 world units and
+  `#M25 GM Aprit Chard S 2` is 288x288 (`nav_world_bounds` in each map's
+  `map_data.tres`). Dune maps are small by RTS standards, and that settles most
+  of it.
+
+  There is no navigation coarsening to worry about. A `float32` step at the far
+  edge of the larger map is 3.05e-5 world units against a navigation cell of
+  1.125 — one part in 36,864 of a cell, on a grid whose own indices are integers
+  (`NAV_SIZE` 256), with a unit radius of about 3.7 units for scale. Float
+  precision only positions an entity *within* a cell, four and a half orders
+  finer than the cell itself.
+
+  Accumulated integration error does not decide it either. `position += velocity
+  * SECONDS_PER_TICK` at 25 Hz over a 60-minute match is 90,000 additions:
+  1.37 units if every rounding happens to fall the same way, which is an
+  adversarial bound rather than a physical one, and 0.005 units on the random
+  walk that actually occurs. And for lockstep it is not a correctness question
+  at all — IEEE-754 pins binary32 addition exactly as it pins binary64, so the
+  drift is bit-identical on every client. It asks whether a unit ends up where
+  the player expected, not whether two clients agree.
+
+  What actually decides it: **`float32` is the status quo, not a choice.**
+  Decision 5's own measurement already established that `Vector3` components are
+  `float32` in this build, so every position the game holds is narrowed to
+  `float32` today. `PackedVector3Array` changes nothing; `PackedFloat64Array`
+  would be an upgrade — and a false one. The simulation routes positions through
+  `Vector3` constantly (`global_position`, `SimMoveCommand`, ORCA's own
+  geometry), so `float64` storage would be truncated back at every one of those
+  boundaries, every tick. Real `float64` positions require the simulation to
+  stop using `Vector3` at all, which is a far larger change than picking a
+  packed type, and nothing measured here argues for paying for it.
