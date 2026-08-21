@@ -31,6 +31,14 @@ func _initialize() -> void:
 		"freeing an entity releases its id, and the id is never reissued",
 		_test_freed_entity_releases_and_never_reissues_its_id
 	)
+	await _run_case(
+		"a unit added beside a dying Match registers with the live one, not the dying one",
+		_test_unit_beside_a_dying_match_registers_with_the_live_match
+	)
+	await _run_case(
+		"two simultaneously live matches each resolve their own fixture, not each other's",
+		_test_two_simultaneously_live_matches_each_resolve_their_own_fixture
+	)
 
 	if _failures > 0:
 		printerr("Entity id wiring tests: %d failures after %d assertions" % [_failures, _assertions])
@@ -121,6 +129,182 @@ func _test_node_for_round_trips() -> void:
 	# Without waiting for it here, the next case's fresh Match could lose the
 	# race for get_first_node_in_group() to this one on its way out, and its
 	# entities would silently register into the wrong (dying) index.
+	await process_frame
+
+
+## Regression case for docs/architecture/network-multiplayer.md's phase 3
+## "A finding this slice reported wrongly" paragraph: MatchLookupScript used
+## to resolve the running match with get_first_node_in_group(GROUP) alone,
+## with no is_queued_for_deletion() check, so a Unit entering the tree beside
+## a dying Match took its entity id from a registry about to disappear.
+## Built directly rather than relied on from a suite that happens to
+## reproduce it (demo_boot_run.gd's ~1700 refused writes never say which
+## unit hit this path or when) -- two Match instances, the first
+## queue_free()d without a frame in between so it is still group-member #1,
+## then a fresh Unit added under the second.
+func _test_unit_beside_a_dying_match_registers_with_the_live_match() -> void:
+	var match_one := MatchFixtureScene.instantiate()
+	get_root().add_child(match_one)
+	await process_frame
+
+	match_one.queue_free()
+	# Deliberately not awaited -- see every other case's own comment on this
+	# above. Here that is the point rather than a hazard to guard against:
+	# match_one must still be a member of MatchLookupScript.GROUP for both
+	# add_child() calls below, which is the exact scenario this case exists
+	# to build. match_two is still created only after match_one.queue_free(),
+	# but that ordering is now a choice about which scenario this case
+	# builds, not a workaround for a limitation MatchLookup still has: with
+	# ancestor resolution, two fully live matches at once no longer misroute
+	# either one's fixture (see
+	# _test_two_simultaneously_live_matches_each_resolve_their_own_fixture
+	# below, which builds exactly that and asserts on it). This case keeps
+	# the queue_free()-then-create order because a dying match beside a live
+	# one is its own scenario, distinct from two live matches, and worth its
+	# own regression rather than folding into the other.
+	var match_two := MatchFixtureScene.instantiate()
+	get_root().add_child(match_two)
+	# Not awaited either: match_two's whole fixture -- including the units
+	# whose own registration this case is not testing -- resolves
+	# synchronously inside this add_child() call, the same as the new unit
+	# below. Waiting here would cost nothing for match_two's own fixture,
+	# but it would also let match_one's deferred removal actually run before
+	# the new unit ever looks the group up, proving nothing.
+
+	var unit_scene := load("res://scenes/units/unit.tscn") as PackedScene
+	var unit := unit_scene.instantiate()
+	# ScoutA's own authored position (tests/fixtures/match_fixture.tscn) --
+	# guarantees the terrain raycast in
+	# UnitTerrainAlignment.snap_body_to_terrain() actually hits the map both
+	# matches share a copy of, instead of gambling on whatever a default
+	# (0, 0, 0) happens to sit over.
+	unit.position = Vector3(129.6, 8.0, 22.2)
+	match_two.get_node("Units").add_child(unit)
+	# add_child() on a parent already inside the tree runs
+	# _enter_tree()/_ready() synchronously, with no frame boundary before
+	# control returns here -- see MatchLookupScript's own doc comment on
+	# _enter_tree() ordering. unit._register_entity_id() has therefore
+	# already resolved (or misresolved) a match by this point.
+
+	_expect(
+		unit.entity_id != 0,
+		"the unit must still get an id -- match_two is live in the group, so this is not the " +
+			"no-Match-in-the-tree case MatchLookupScript already tolerates"
+	)
+
+	var match_two_index = match_two.entity_index()
+	_expect(
+		match_two_index != null and match_two_index.registry().is_alive(unit.entity_id),
+		"the unit's id must resolve in match_two's registry -- the live match, not the dying one"
+	)
+	# Guards against a fix that just returns null whenever the first
+	# candidate is dying, instead of walking on to the live one: that would
+	# leave entity_id at 0 and already fail the check above, but checking
+	# match_one's own registry too rules out the id having been taken from
+	# the wrong (dying) registry and merely happening to also look unbound
+	# in match_two's.
+	var match_one_index = match_one.entity_index()
+	_expect(
+		match_one_index != null and not match_one_index.registry().is_alive(unit.entity_id),
+		"match_one's own registry must not know this id either"
+	)
+
+	var store = match_two.entity_state()
+	var started_msec := Time.get_ticks_msec()
+	var frames := 0
+	while frames < 400 and Time.get_ticks_msec() - started_msec < 500:
+		await process_frame
+		frames += 1
+		if store != null and store.has_position(unit.entity_id):
+			break
+	_expect(
+		store != null and store.has_position(unit.entity_id),
+		"the unit must pick up a position from match_two's own tick loop within the timeout"
+	)
+	var pos = store.position(unit.entity_id)
+	_expect(
+		pos.is_finite(),
+		"match_two.entity_state().position(unit.entity_id) must be finite once the unit has a position"
+	)
+
+	match_two.queue_free()
+	await process_frame
+
+
+## Second regression case, for what ancestor resolution newly makes true
+## rather than what it merely stops breaking: two Matches simultaneously
+## live, neither one dying, is a case group-position resolution could never
+## get right at all -- not "usually right, wrong for a frame during
+## teardown" like the case above, but wrong for as long as both matches
+## exist. get_first_node_in_group(GROUP) can only ever return one candidate,
+## so whichever match sits second in the group would have had its entire
+## fixture -- ScoutA, OrdosAPC, the lot -- register into the *first* match's
+## registry instead of its own, permanently, with no queue_free() involved
+## anywhere. The previous slice's own report named this as a real defect it
+## could not fix from a resolver that only knew how to skip a dying
+## candidate; ancestor resolution fixes it as a side effect of answering the
+## right question (ownership, not position), so this asserts on it directly
+## rather than leaving it as a claim.
+##
+## Both matches stay alive for the whole case -- no queue_free(), no
+## ordering trick -- which is the point: this is the ordinary "two matches
+## exist" shape, not the teardown-window shape the case above builds.
+##
+## Asserts via node_for() identity rather than registry().is_alive(id),
+## deliberately: each match's EntityNodeIndex allocates ids from its own
+## _next_id counter starting at 1 (scripts/sim/entity_registry.gd), and
+## match_one and match_two instantiate the identical fixture scene in the
+## identical order, so match_one's ScoutA and match_two's ScoutA routinely
+## end up with the *same* id number in their own independent registries.
+## is_alive(id) cannot tell those two apart -- asking match_one's registry
+## "is scout_two's id alive" collapses to asking "is scout_one's id alive"
+## whenever the numbers coincide, which would make the cross-match
+## assertion fail on fully correct code purely by coincidence. node_for(id)
+## does not have that problem: it returns a Node, and comparing that Node's
+## identity to the specific scout under test is correct whether the id
+## numbers happen to match or not.
+func _test_two_simultaneously_live_matches_each_resolve_their_own_fixture() -> void:
+	var match_one := MatchFixtureScene.instantiate()
+	get_root().add_child(match_one)
+	await process_frame
+
+	var match_two := MatchFixtureScene.instantiate()
+	get_root().add_child(match_two)
+	await process_frame
+
+	var scout_one := match_one.get_node("Units/ScoutA")
+	var scout_two := match_two.get_node("Units/ScoutA")
+	_expect(
+		scout_one.entity_id != 0 and scout_two.entity_id != 0,
+		"both matches' ScoutA must register an id -- two live matches is not the no-Match case"
+	)
+
+	var index_one = match_one.entity_index()
+	var index_two = match_two.entity_index()
+	_expect(
+		index_one != null and index_two != null,
+		"both matches must expose a live EntityNodeIndex while both are alive"
+	)
+
+	_expect(
+		index_one != null and index_one.node_for(scout_one.entity_id) == scout_one,
+		"match_one's ScoutA must round-trip through match_one's own registry"
+	)
+	_expect(
+		index_two != null and index_two.node_for(scout_one.entity_id) != scout_one,
+		"match_one's ScoutA must not be the node match_two's registry hands back for that id"
+	)
+	_expect(
+		index_two != null and index_two.node_for(scout_two.entity_id) == scout_two,
+		"match_two's ScoutA must round-trip through match_two's own registry"
+	)
+	_expect(
+		index_one != null and index_one.node_for(scout_two.entity_id) != scout_two,
+		"match_two's ScoutA must not be the node match_one's registry hands back for that id"
+	)
+
+	match_one.queue_free()
+	match_two.queue_free()
 	await process_frame
 
 

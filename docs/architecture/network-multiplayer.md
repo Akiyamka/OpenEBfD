@@ -1002,11 +1002,46 @@ and by the time we get there the hard part is already tested.
   entity id from a registry that is about to disappear, and every later write
   resolves `entity_state()` to a different match's store -- where that id was
   never allocated. Once a unit is mis-registered, every position write it
-  makes for the rest of its life reports. Skipping a queued-for-deletion match
-  in both lookups takes `demo_boot_run.gd` from 1698 refused writes to **0**,
-  with its 364 assertions still passing: an entity that can only find a dying
-  match now gets no id at all, which is exactly the "no Match in the tree"
-  case those lookups were already written to tolerate.
+  makes for the rest of its life reports. The fix that suggested itself was
+  to skip a queued-for-deletion match in both lookups: an entity that can
+  only find a dying match would then get no id at all, exactly the "no Match
+  in the tree" case those lookups were already written to tolerate.
+
+  That fix was measured, not just reasoned about, and the measurement
+  disproved it: `demo_boot_run.gd` produced **1696** refused writes with the
+  skip in place, against 1698 without it -- statistically unchanged, not a
+  fix. The reasoning above was incomplete rather than wrong: it addressed
+  only one of two mirror-image populations that group-position resolution
+  gets wrong. A *new* entity entering the tree beside a dying match does
+  skip it and take an id from the live one, once the skip exists. But an
+  entity *already registered* before a second match ever showed up keeps
+  being ticked every frame through the global `"units"`/`"buildings"`
+  groups, and its writes go through `entity_state()`, which was still
+  resolving the running match by `get_first_node_in_group()` -- so once two
+  matches were briefly both group members, an already-registered entity's
+  writes could resolve to whichever one the lookup preferred, not
+  necessarily its own, regardless of which candidate was dying. Skipping a
+  dying candidate cannot fix a resolver that is answering the wrong
+  question in the first place.
+
+  The right question is "which Match owns this node", not "which Match is
+  first in the group" -- group position only ever coincidentally agreed with
+  ownership, for as long as this repo's suites mostly kept exactly one Match
+  in the group at a time. Ownership is what the scene tree's ancestor chain
+  actually encodes: a node's Match ancestor is unambiguous no matter how
+  many other Matches the group holds at that instant. `_live_match()`
+  (`scripts/match/match_lookup.gd`) now walks the node's ancestors first and
+  returns the first one in `GROUP` that answers the requested method,
+  falling back to the old group-wide walk only when the node has no Match
+  ancestor at all -- `tests/match/support/command_pump.gd` installs a stub
+  Match into the group that is never an ancestor of the entities under test,
+  so that fallback is load-bearing, not caution. Measured after ancestor
+  resolution: `demo_boot_run.gd` produces **0** refused writes with its 364
+  assertions still passing, and the full suite -- **63 passed, 0 failed** --
+  drops refused writes across the whole run from 1707 to **9**, of which 7
+  are `tests/sim/entity_state_run.gd`'s own deliberate error-path cases and
+  2 are `tests/match/despawn_run.gd` hitting the known between-ticks
+  navigation gap the next paragraph describes.
 
   What survives of the original reading, recorded so it is not rediscovered as
   new: navigation prunes its agents on `EntityQuery.is_live()`, which tests
@@ -1017,7 +1052,9 @@ and by the time we get there the hard part is already tested.
   it. For a kill that lands *between* ticks -- a signal, a `_process()` path --
   the unit is halted and its id released while the node is not yet queued, and
   the next tick's navigation will step it once. One tick, no behaviour change,
-  and no measured volume behind it. It is a real gap and a small one; it is
+  and now a measured size rather than a guessed one: exactly 2 refused writes
+  across a full suite run, both of them `despawn_run.gd`'s own corpse-branch
+  case, which kills between ticks on purpose. It is a real gap and a small one; it is
   not what the errors above were.
 
   One near-miss worth keeping, because the code comments that now prevent it

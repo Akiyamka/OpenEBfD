@@ -14,32 +14,131 @@ extends RefCounted
 ## suites in this repo build a Unit or a Building directly, with no Match
 ## anywhere in the tree (see tests/combat/*). An entity that cannot find a
 ## Match simply gets no id and behaves exactly as it did before ids existed.
+##
+## The question both lookups answer is "which Match owns this node", not
+## "which Match is first in GROUP" -- and those two questions only usually
+## agree. get_first_node_in_group() answers the second one, which is close
+## enough for as long as exactly one Match is ever in the group at a time,
+## and this repo's suites mostly arrange exactly that. It stops being close
+## enough the instant a second Match exists in the same frame -- a rematch,
+## a reconnect, or (in tests) two fixtures instantiated back to back --
+## because group order then has nothing to do with which Match a given node
+## actually sits under.
+##
+## Measured directly: a Unit or Building newly entering the tree beside a
+## dying Match (queue_free() defers the actual removal, and the group
+## membership that goes with it, to this frame's teardown) took its entity
+## id from that dying Match's registry, and every later write resolved
+## entity_state() to whichever Match replaced it -- where that id was never
+## allocated -- reported as a refused write for the rest of that entity's
+## life. Making both lookups skip a dying candidate before choosing (still
+## visible in git history) fixed exactly that population and nothing else:
+## measured on tests/match/demo_boot_run.gd, 1696 refused writes with the
+## skip against 1698 without it -- not a fix, noise. The skip could never
+## touch the mirror population: an entity *already registered* before a
+## second Match ever showed up keeps being ticked every frame through the
+## global "units"/"buildings" groups, and its writes still went through
+## entity_state(), which was still resolving the running match by group
+## position -- so once two Matches were briefly both in the group, an
+## already-registered entity's writes could resolve to whichever one
+## get_first_node_in_group() preferred, not necessarily its own, regardless
+## of which candidate happened to be dying.
+##
+## Ancestry is what actually answers the ownership question, because it is
+## the one thing group order only ever coincidentally tracked: a node's
+## Match ancestor -- the Match it was add_child()'d under, directly or
+## transitively -- is unambiguous no matter how many other Matches the group
+## holds at that instant. _live_match() below walks `node`'s ancestors first
+## and returns the first one in GROUP that answers `method`, deliberately
+## with no is_queued_for_deletion() check: the entity genuinely belongs to
+## that ancestor, and its registry and store stay alive until this frame's
+## teardown actually removes it, so returning it rather than falling through
+## to null is exactly what fixes the second population above. Measured after
+## this change: demo_boot_run.gd produces 0 refused writes (364 assertions,
+## exit 0), and the full suite (63 passed, 0 failed) drops refused writes
+## across the whole run from 1707 to 9 -- 7 of them
+## tests/sim/entity_state_run.gd's own deliberate error-path cases, and 2
+## tests/match/despawn_run.gd hitting a separate, known, one-tick gap
+## recorded in docs/architecture/network-multiplayer.md's phase 3 section.
+##
+## The group walk stays, as a fallback, for a named reason rather than out
+## of caution: a node with no Match ancestor at all still needs an answer,
+## and at least one real caller depends on exactly that --
+## tests/match/support/command_pump.gd installs a stub Match node into GROUP
+## that answers entity_index() but is deliberately never made an ancestor of
+## the entities under test, standing in for Match without the rest of the
+## scene tree a real Match would own. Do not simplify this fallback away:
+## removing it would strip that stub, and every suite built on it, of entity
+## ids. Unlike the ancestor walk, the fallback does skip a dying candidate
+## (is_queued_for_deletion()): here there is no ownership evidence to fall
+## back on, only group membership, so the reasoning that keeps a dying
+## ancestor an entity's own does not apply -- a dying group member is no
+## more this node's Match than a live one picked at random would be.
 
 const GROUP := &"match_root"
 
 
+## The lookup both public functions below share, in two passes.
+##
+## Pass one walks `node` up through get_parent() and returns the first
+## ancestor in GROUP that answers `method` -- ownership, not position, and
+## deliberately not filtered by is_queued_for_deletion(). A queued-for-
+## deletion ancestor is still this node's own Match: its registry and store
+## remain live until this frame's teardown actually removes it, and treating
+## it as absent is exactly the bug this function replaces (see the class doc
+## comment above for the measured numbers).
+##
+## Pass two runs only when no ancestor answered -- a node with no Match
+## above it in the tree at all. It walks the whole group for the first
+## candidate that is_instance_valid(), not is_queued_for_deletion(), and
+## answers `method`, in that order, because here there is no ownership
+## evidence to rely on: group membership is the only signal available, and a
+## dying candidate is no more this node's own than any other live one would
+## be. This pass exists for tests/match/support/command_pump.gd's stub
+## Match, a GROUP member that answers entity_index() but is never an
+## ancestor of the entities it serves -- removing this fallback would leave
+## that stub's suites with no entity ids at all.
+##
+## Takes `method` rather than hardcoding one, because entity_index() and
+## entity_state() are asking about two different methods on the same Match
+## and neither should risk being satisfied by a candidate that only happens
+## to answer the other one.
+static func _live_match(node: Node, method: StringName) -> Node:
+	var ancestor: Node = node
+	while ancestor != null:
+		if ancestor.is_in_group(GROUP) and ancestor.has_method(method):
+			return ancestor
+		ancestor = ancestor.get_parent()
+	for candidate in node.get_tree().get_nodes_in_group(GROUP):
+		if is_instance_valid(candidate) and not candidate.is_queued_for_deletion() \
+		and candidate.has_method(method):
+			return candidate
+	return null
+
+
 ## The EntityNodeIndex the running Match owns, or null when `node` is not in
-## a tree yet, or no Match is anywhere in that tree. Returns Variant rather
-## than the EntityNodeIndex type so this file does not have to preload
-## match.gd's entire dependency chain merely to name a return type; callers
-## that need the type already preload entity_node_index.gd themselves.
+## a tree yet, or no live Match anywhere in that tree answers to
+## entity_index(). Returns Variant rather than the EntityNodeIndex type so
+## this file does not have to preload match.gd's entire dependency chain
+## merely to name a return type; callers that need the type already preload
+## entity_node_index.gd themselves.
 static func entity_index(node: Node) -> Variant:
 	if node == null or not node.is_inside_tree():
 		return null
-	var match_node := node.get_tree().get_first_node_in_group(GROUP)
-	if match_node == null or not match_node.has_method("entity_index"):
+	var match_node := _live_match(node, &"entity_index")
+	if match_node == null:
 		return null
 	return match_node.call("entity_index")
 
 
 ## The SimEntityState the running Match owns (scripts/sim/entity_state.gd), or
 ## null under the identical conditions entity_index() returns null -- same
-## lookup, same null-tolerance, so a Unit written with no Match in the tree
-## (most unit/combat tests) simply has no store to write through.
+## lookup, same null-tolerance, so a Unit written with no live Match in the
+## tree (most unit/combat tests) simply has no store to write through.
 static func entity_state(node: Node) -> Variant:
 	if node == null or not node.is_inside_tree():
 		return null
-	var match_node := node.get_tree().get_first_node_in_group(GROUP)
-	if match_node == null or not match_node.has_method("entity_state"):
+	var match_node := _live_match(node, &"entity_state")
+	if match_node == null:
 		return null
 	return match_node.call("entity_state")
