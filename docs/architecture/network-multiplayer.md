@@ -802,6 +802,40 @@ and by the time we get there the hard part is already tested.
   production. Two clients running at different frame rates would fund the same
   build order on different ticks. It belongs with B2's economy-adjacent work
   rather than being left for B3.
+
+  **Slice C2's scope, decided 2026-08-21, and the debt it knowingly takes on.**
+  `global_position` is touched 260 times across 55 files, 49 of them writes.
+  Migrating reads and writes together would be one unreviewable diff, which is
+  the opposite of how this phase has been built, so C2 takes the half that
+  carries the meaning: **`SimEntityState` owns the write; the node's
+  `global_position` becomes a mirror updated from it.** Roughly fifteen write
+  sites change; every read keeps working unchanged, because the mirror still
+  holds the same value it always did. That is enough to make the store
+  authoritative, to make a snapshot a copy of packed arrays, and to give B4 the
+  two consecutive ticks it interpolates between.
+
+  **The debt, stated plainly rather than implied: decision 3's "nodes are views"
+  is only half true after C2.** Writes go through the simulation, but readers
+  still ask the node, and a reader cannot tell the difference — which means the
+  design's own promise is being kept by convention at 260 call sites rather than
+  by structure. Two concrete consequences follow, and neither should be
+  discovered later as a surprise:
+
+  - Any code that writes `global_position` directly instead of through the
+    store diverges from it silently, and the mirror makes that divergence look
+    correct until a snapshot or a checksum disagrees. C2 must add a checker rule
+    for direct writes, with its `exempt` list as the audit queue — the same
+    ratchet `animation-completes-simulation` uses, for the same reason.
+  - Reads are not enforceable that way; 260 sites is far past where a rule stops
+    being a rule and becomes noise. They come back honestly only when a later
+    slice moves readers onto the store, which is a real slice someone has to
+    schedule, not something that happens as a side effect of C3 or C4.
+
+  This is a deliberate trade, not an oversight: the incremental path keeps every
+  slice reviewable and the game playable, which decision 11 requires. It is
+  recorded here so that "the sim owns state" is not read as finished when it is
+  half finished.
+
 - **Phase 4 — determinism gate.** Portable math, RNG split, the static rules
   above wired into `check_architecture.py`, and the CI test that replays one
   command log twice in-process and then compares state hashes across native and
