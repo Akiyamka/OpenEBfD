@@ -20,7 +20,8 @@ readonly CONTAINER_TIMEOUT_MARGIN_SECONDS=30
 export GODOT_CONTAINER_TIMEOUT_SECONDS="${GODOT_CONTAINER_TIMEOUT_SECONDS:-$((SUITE_TIMEOUT_SECONDS + CONTAINER_TIMEOUT_MARGIN_SECONDS))}"
 
 readonly SUITES=(
-	tests/sim/match_clock_run.gd tests/sim/entity_registry_run.gd tests/sim/command_bus_run.gd
+	tests/sim/match_clock_run.gd tests/sim/entity_registry_run.gd tests/sim/entity_state_run.gd
+	tests/sim/command_bus_run.gd
 	tests/sim/command_codec_run.gd
 	tests/sim/replay_file_run.gd
 	tests/sim/replay_player_run.gd
