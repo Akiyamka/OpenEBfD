@@ -67,6 +67,10 @@ func _initialize() -> void:
 	_run_case("hangar spawn moves outside before climbing to height_offset", _test_hangar_takeoff_sequence)
 	_run_case("every flying scene exposes the airborne animation state machine", _test_flight_clip_catalog)
 	_run_case("flyers transition between Fly and Hover", _test_flyer_cruise_animation)
+	_run_case(
+		"the Fly<->Hover transition completes on the tick deadline, never the clip's own signal",
+		_test_flight_transition_completes_on_tick_not_signal
+	)
 	_run_case("Circles flyers cruise continuously with banked turns", _test_circles_fixed_wing_cruise)
 	_run_case("Circles Stop enters idle cruise", _test_circles_stop_enters_idle_cruise)
 	_run_case("air orders share their clamped destination with Circles flight", _test_circles_order_uses_bounded_destination)
@@ -272,7 +276,12 @@ func _test_flyer_cruise_animation() -> void:
 				player.current_animation == &"FlyToHover",
 				"a stopping %s must transition through FlyToHover" % model_case["name"]
 			)
-			player.animation_finished.emit(&"FlyToHover")
+			# Driven by simulation ticks alone -- the AnimationPlayer's own
+			# playback is never advanced here. See
+			# _test_flight_transition_completes_on_tick_not_signal for the
+			# direct proof that the clip's animation_finished signal is not
+			# what completes this.
+			_advance_flight_transition(flyer, &"FlyToHover")
 			_expect(
 				player.current_animation == &"Hover"
 				and player.get_animation(&"Hover").loop_mode == Animation.LOOP_LINEAR,
@@ -283,12 +292,92 @@ func _test_flyer_cruise_animation() -> void:
 				player.current_animation == &"HoverToFly",
 				"a restarting %s must transition through HoverToFly" % model_case["name"]
 			)
-			player.animation_finished.emit(&"HoverToFly")
+			_advance_flight_transition(flyer, &"HoverToFly")
 			_expect(
 				player.current_animation == &"Fly",
 				"a moving %s must return to Fly" % model_case["name"]
 			)
 		flyer.free()
+
+
+## Direct proof for the B3d defect fix: the Fly<->Hover transition used to
+## complete on AnimationPlayer's animation_finished signal
+## (UnitFlightController.notify_animation_finished(), now removed), which
+## fires on engine frame time -- how many simulation ticks a transition took
+## depended on how fast the machine ran. It now completes on a deadline
+## computed once from the clip's authored length and ticked down by
+## advance(). Follows the shape of
+## tests/combat/unit_fire_movement_run.gd's
+## _test_turret_holds_angle_with_no_tick_this_frame: reproduce the old
+## trigger for real, prove it does nothing (the middle step -- without it a
+## "ticks alone complete it" assertion would be vacuous, since the signal path
+## might just as well still be wired up and never exercised), then prove the
+## replacement mechanism actually works with the AnimationPlayer's own
+## playback advanced by a completely different amount than the tick count
+## implies (zero).
+func _test_flight_transition_completes_on_tick_not_signal() -> void:
+	var flyer: Unit = ATOrniScene.instantiate()
+	root.add_child(flyer)
+	flyer.can_move_any_direction = true
+	flyer.begin_hangar_takeoff(flyer.global_position, Vector3.INF)
+	_fast_forward_takeoff(flyer)
+	_expect(flyer.flight_is_airborne_phase(), "must reach cruise before testing the transition")
+
+	var player := _first_player_with(flyer, &"FlyToHover")
+	_expect(player != null, "the converted ATOrni model must expose FlyToHover")
+	if player == null:
+		flyer.free()
+		return
+
+	# Takeoff completing sets _cruise_state_initialized = false (see
+	# UnitFlightController._advance_vertical_transition()), so the *first*
+	# set_cruise_moving() after it initialises the cruise state and returns
+	# without transitioning at all. Establish moving cruise first, or the
+	# stop below plays Hover directly and the transition under test never
+	# starts.
+	flyer.flight_set_movement_animation(true)
+	flyer.flight_set_movement_animation(false)
+	_expect(player.current_animation == &"FlyToHover",
+		"a stopping flyer must transition through FlyToHover")
+
+	var duration: float = flyer.flight_clip_length(
+		&"FlyToHover", UnitFlightControllerScript.DEFAULT_TRANSITION_SECONDS
+	)
+	_expect(duration > 0.0,
+		"the authored FlyToHover clip must have a positive length, or the regression below proves nothing")
+
+	# Reproduce the old trigger for real: let the AnimationPlayer actually
+	# finish playing the clip and fire its own animation_finished signal.
+	# player.animation_finished is still connected straight through to
+	# Unit._on_animation_finished() -- _prepare_idle_animations() wires every
+	# model player unconditionally, flight or not -- so this is not a
+	# contrived stand-in for the old path, it is the same signal the old
+	# code listened to, actually firing. No simulation tick has run yet.
+	player.advance(duration + 0.5)
+	# Not "current_animation is still FlyToHover": Godot clears
+	# current_animation when a non-looping clip ends. What matters is that
+	# the signal did not cause the *cruise* clip to be played, which is
+	# exactly what the removed notify_animation_finished() did via
+	# _play_cruise_state_clip(). If it had, this would already read "Hover".
+	_expect(player.current_animation != &"Hover",
+		"the clip finishing for real must not by itself settle the flyer into its "
+			+ "cruise clip, or the regression this test guards against would not "
+			+ "actually have happened")
+	_expect(flyer._flight_controller._transition_active,
+		"the transition must still be pending after only the AnimationPlayer's own signal fired")
+
+	# Now drive only the simulation tick -- the AnimationPlayer's own
+	# playback is advanced by zero more, a different amount than the tick
+	# count implies in the strongest possible sense.
+	var ticks: int = int(ceil(duration / MatchClockScript.SECONDS_PER_TICK)) + 1
+	for _tick in ticks:
+		flyer._flight_controller.advance(MatchClockScript.SECONDS_PER_TICK)
+	_expect(
+		player.current_animation == &"Hover" and not flyer._flight_controller._transition_active,
+		"the fixed tick deadline alone must complete the transition, independent of the "
+			+ "AnimationPlayer's own advancement"
+	)
+	flyer.free()
 
 
 func _test_circles_fixed_wing_cruise() -> void:
@@ -388,10 +477,7 @@ func _test_circles_fixed_wing_cruise() -> void:
 	root.add_child(stationary)
 	stationary.begin_hangar_takeoff(stationary.global_position, Vector3.INF)
 	_fast_forward_takeoff(stationary)
-	player = _first_player_with(stationary, &"FlyToHover")
 	stationary.flight_set_movement_animation(false)
-	if player != null and player.current_animation == &"FlyToHover":
-		player.animation_finished.emit(&"FlyToHover")
 	start = stationary.global_position
 	# 25 ticks preserves the old single-call 1.0s budget (25 * SECONDS_PER_TICK
 	# = 1.0s), so this still confirms the hover point holds over a full second,
@@ -749,6 +835,20 @@ func _fast_forward_takeoff(unit: Node3D) -> void:
 	# tick -- so the loop count is what has to grow to keep the same budget.
 	for i in 100:
 		unit.sim_tick()
+
+
+## Drives the Fly<->Hover transition to completion purely on the simulation
+## tick -- exactly how UnitFlightController._advance_transition() completes
+## it in the real game -- and never touches the AnimationPlayer at all. See
+## _test_flight_transition_completes_on_tick_not_signal for the direct proof
+## that the clip's own animation_finished signal is not what completes this.
+func _advance_flight_transition(flyer: Unit, clip_name: StringName) -> void:
+	var duration: float = flyer.flight_clip_length(
+		clip_name, UnitFlightControllerScript.DEFAULT_TRANSITION_SECONDS
+	)
+	var ticks: int = int(ceil(duration / MatchClockScript.SECONDS_PER_TICK)) + 1
+	for _tick in ticks:
+		flyer._flight_controller.advance(MatchClockScript.SECONDS_PER_TICK)
 
 
 func _first_player_with(unit: Node3D, clip_name: StringName) -> AnimationPlayer:

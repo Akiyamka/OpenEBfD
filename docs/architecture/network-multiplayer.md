@@ -594,6 +594,62 @@ and by the time we get there the hard part is already tested.
   the fixture rather than about the code, which makes this defect harder to
   see, not easier. B3 still owns severing it.
 
+  *Updated after slice B3d, 2026-08-21:* the **cause** is severed.
+  `UnitFlightController.notify_animation_finished()` is gone, and so is its
+  call site in `Unit._on_animation_finished()`. `set_cruise_moving()` now
+  reads the Fly/Hover transition clip's authored length once, when the
+  transition starts — the same `flight_clip_length()` one-time-lookup idiom
+  `flight_landing_approach_radius()` and the takeoff/land transitions already
+  used — and stores it as a tick deadline; `advance()`, called once per
+  simulation tick, ticks it down and completes the transition itself.
+  `AnimationPlayer` keeps playing the clip on its own player for the look, but
+  nothing simulation-relevant reads it back. `tests/units/flight_run.gd`
+  proves the severing directly, not just by staying green: a new case,
+  `_test_flight_transition_completes_on_tick_not_signal`, starts a transition,
+  lets the real `AnimationPlayer` actually finish playing the clip and fire
+  its own `animation_finished` (still wired straight into
+  `Unit._on_animation_finished()` by `_prepare_idle_animations()`, so this is
+  the real old trigger, not a stand-in for it) with zero simulation ticks
+  run, and asserts the transition is still pending — the middle-step canary,
+  without which a later "ticks alone complete it" assertion would be
+  vacuous. It then drives only `UnitFlightController.advance()`, with the
+  `AnimationPlayer`'s own playback never touched again, and confirms the
+  transition completes exactly on the computed tick deadline.
+  `_test_flyer_cruise_animation` was converted the same way, from emitting
+  `animation_finished` by hand to driving `advance()` by tick count.
+
+  Two things this slice did **not** touch, so a future reader does not read
+  "flight" as fully clean:
+
+  - `UnitDeployState`'s deploy/undeploy transitions
+    (`scripts/units/unit_deploy_state.gd`) and the authored fire-sequence
+    lifecycle both still complete on `Unit._on_animation_finished()`'s other
+    branches, exactly as before — B3's own file list never named
+    `unit_deploy_state.gd` as this slice's target, and `_on_animation_finished()`
+    still has to serve them after the flight branch is gone; this slice only
+    confirmed removing the flight branch does not change what reaches them
+    (checked directly: none of `UnitCombat`'s fire-sequence matching,
+    `UnitDeployState`'s player/animation-name matching, `UnitLocomotion`'s
+    mech-gait matching, or `UnitIdleAnimations`'s prefix matching can match a
+    `Fly`/`Hover`/`FlyToHover`/`HoverToFly` clip name, so the fall-through is a
+    no-op for all of them).
+  - **Found during the B3d sweep, not fixed by it:** `UnitLocomotion`'s mech
+    gait state machine (`scripts/units/unit_locomotion.gd`) has the identical
+    shape. `on_animation_finished()`'s `State.STARTING` branch completes a
+    mech's start-of-movement transition on `MOVE_START_ANIMATION`'s finished
+    signal — racing the tick-driven `advance_start_transition()`, whose own
+    comment already admits the tension ("Physics owns the transition deadline
+    *as well as* AnimationPlayer"). `is_starting()` gates whether `Unit`
+    zeroes `velocity`, so which of the two paths wins first decides, on real
+    hardware, which tick a mech actually starts moving on — the same class of
+    non-determinism this slice just removed from flight. Its `State.STOPPING`
+    branch is a plainer case of the same thing: `on_animation_finished()` is
+    the *only* path back to `State.IDLE`, with no tick-driven fallback at all.
+    This was already named, once, in the B1 inventory above ("already worked
+    around once rather than fixed") but is not in B3's file list and is not
+    fixed here — left for whichever slice claims `unit_locomotion.gd`,
+    flagged so it is not mistaken for something this slice ruled out.
+
   **Slice B1's inventory, 2026-08-20.** 96 `delta: float` signatures across 37
   files. The dividing question is not "does this run every frame" but "does the
   value this advances survive into the next tick as something a command or a

@@ -1444,9 +1444,13 @@ func prepare_model_for_corpse(model: Node3D) -> void:
 	# the corpse's subtree. This is the newly-found third site in the same
 	# class as cdc79b6/2b745b2.
 	_deploy.detach_model()
-	# Reachable only via _on_animation_finished (now unreachable, see above),
-	# but nulled anyway so nothing can call back into it and so it no longer
-	# holds this Unit and one of the corpse's players alive together.
+	# _on_animation_finished no longer calls into the flight controller at all
+	# (B3d removed notify_animation_finished(): the Fly<->Hover transition now
+	# completes on a tick deadline, not the clip's signal), and the controller
+	# itself caches no AnimationPlayer to begin with. Nulled anyway, purely
+	# defensively, so a still-pending tick this frame (see set_process(false)
+	# below) cannot reach a controller whose _unit is this half-torn-down
+	# instance.
 	_flight_controller = null
 	# queue_free() does not stop this frame's remaining _process() call, so
 	# without halting processing here, a still-pending tick (e.g. a blocking
@@ -2046,8 +2050,6 @@ func restore_combat_turret_poses() -> void:
 
 func _on_animation_finished(animation_name: StringName, player: AnimationPlayer) -> void:
 	if _harvester_owns_animation():
-		return
-	if _flight_controller != null and _flight_controller.notify_animation_finished(animation_name, player):
 		return
 	if _combat.on_animation_finished(animation_name, player):
 		return

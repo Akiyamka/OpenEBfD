@@ -36,6 +36,10 @@ const PICKUP_END_ANIMATION := &"EndPickup"
 
 const DEFAULT_TAKEOFF_SECONDS := 1.5
 const DEFAULT_LAND_SECONDS := 1.5
+## Fallback only: every shipped flying model has both transition clips (see
+## tests/units/flight_run.gd's _test_flight_clip_catalog), so
+## flight_clip_length() finds the authored duration in practice.
+const DEFAULT_TRANSITION_SECONDS := 1.0
 ## Mirrors Unit.SLOPE_ALIGNMENT_RESPONSE's role: exponential blend rate toward
 ## the vertical-avoidance target set by UnitLocalAvoidance.
 const VERTICAL_AVOIDANCE_RESPONSE := 4.0
@@ -88,8 +92,15 @@ var _landing_target := Vector3.INF
 var _landing_allowed_cells: Dictionary = {}
 var _cruise_moving := false
 var _cruise_state_initialized := false
-var _transition_player: AnimationPlayer = null
+## The Fly<->Hover transition completes on a tick deadline computed once when
+## it starts (flight_clip_length(), the same one-time-lookup-of-authored-data
+## idiom as flight_landing_approach_radius() and AuthoredFireController's
+## shot_times), not on the clip's own animation_finished signal -- see
+## _advance_transition()'s doc comment.
+var _transition_active := false
 var _transition_clip: StringName = &""
+var _transition_elapsed := 0.0
+var _transition_duration := 0.0
 var _circles_order_active := false
 var _circles_order_completed := false
 var _circles_destination := Vector3.INF
@@ -404,7 +415,7 @@ func _minimum_turn_radius() -> float:
 func _ensure_circles_cruising() -> void:
 	if phase == Phase.HOVERING:
 		phase = Phase.CRUISING
-	_transition_player = null
+	_transition_active = false
 	_transition_clip = &""
 	_cruise_state_initialized = true
 	_cruise_moving = true
@@ -545,6 +556,7 @@ func advance(delta: float) -> void:
 		if _landing_approach_reached():
 			_start_landing_descent()
 			return
+		_advance_transition(delta)
 		_advance_vertical_avoidance(delta)
 		_advance_cruise_altitude(delta)
 		_unit.global_position.y = cruise_altitude + _vertical_avoidance_offset
@@ -675,7 +687,7 @@ func set_cruise_moving(is_moving: bool, speed_scale: float) -> void:
 		_play_cruise_state_clip(is_moving, speed_scale)
 		return
 	if is_moving == _cruise_moving:
-		if is_moving and _transition_player == null:
+		if is_moving and not _transition_active:
 			_unit.flight_play_clip(FLY_ANIMATION, true, speed_scale)
 		return
 	_cruise_moving = is_moving
@@ -685,10 +697,20 @@ func set_cruise_moving(is_moving: bool, speed_scale: float) -> void:
 	else:
 		phase = Phase.HOVERING
 		_transition_clip = FLY_TO_HOVER_ANIMATION
-	_transition_player = _unit.flight_play_clip(_transition_clip, false, 1.0)
-	if _transition_player == null:
+	var player: AnimationPlayer = _unit.flight_play_clip(_transition_clip, false, 1.0)
+	if player == null:
 		_transition_clip = &""
 		_play_cruise_state_clip(is_moving, speed_scale)
+		return
+	# Duration read once from the clip, exactly like flight_landing_approach_
+	# radius() and the other flight_clip_length() call sites -- a one-time
+	# lookup of authored data, not a live read of the player's position or a
+	# wait on its finished signal. The clip itself keeps playing on `player`
+	# for the look; _advance_transition() owns when the transition actually
+	# completes.
+	_transition_duration = _unit.flight_clip_length(_transition_clip, DEFAULT_TRANSITION_SECONDS)
+	_transition_elapsed = 0.0
+	_transition_active = true
 
 
 func _play_cruise_state_clip(is_moving: bool, speed_scale: float) -> void:
@@ -698,17 +720,23 @@ func _play_cruise_state_clip(is_moving: bool, speed_scale: float) -> void:
 		_unit.flight_play_clip(HOVER_ANIMATION, true, 1.0)
 
 
-## Called from Unit._on_animation_finished() for every player; returns true
-## only when this was the Fly<->Hover transition clip this controller started,
-## in which case it has fully handled the event (mirrors the deployment/fire
-## sequence early-return branches already in that function).
-func notify_animation_finished(animation_name: StringName, player: AnimationPlayer) -> bool:
-	if _transition_player == null or player != _transition_player or animation_name != _transition_clip:
-		return false
-	_transition_player = null
+## Completes the Fly<->Hover transition once `_transition_duration` (read
+## once, at transition start, from the clip's authored length) has elapsed on
+## the simulation tick -- never on the clip's own animation_finished signal,
+## which fires on engine frame time and made how many ticks a transition took
+## depend on how fast the machine ran (see the "Updated after slice B2"
+## paragraph in docs/architecture/network-multiplayer.md). Called every tick
+## from advance() while CRUISING/HOVERING; the clip keeps playing on its
+## player for the look regardless of when this fires.
+func _advance_transition(delta: float) -> void:
+	if not _transition_active:
+		return
+	_transition_elapsed += maxf(delta, 0.0)
+	if _transition_elapsed < _transition_duration:
+		return
+	_transition_active = false
 	_transition_clip = &""
 	_play_cruise_state_clip(_cruise_moving, 1.0)
-	return true
 
 
 func _sample_ground_altitude(position: Vector3) -> float:
