@@ -142,6 +142,70 @@ then says something about the fixture, not about the code.
 instead = "read the clip's authored length once (flight_clip_length()) and complete on a tick deadline, the way UnitFlightController.advance() does since slice B3d"
 
 [[rules]]
+id = "global-position-bypasses-store"
+zone = "all"
+pattern = '\b(?:\w+\.)?global_position(?:\.[xyz])?\s*[-+]?=(?!=)'
+exempt = [
+	# The sanctioned mirror-write chokepoint itself. Unit.set_simulation_position()
+	# (its own doc comment) is the one place slice C2 permits a direct write --
+	# every other unit write site now calls it instead. Exempting the whole
+	# file, not a hatch on the one line: the dispatcher-must-survive-its-own-
+	# handlers shape animation-completes-simulation's own exempt list already
+	# uses for this exact file, for the identical reason -- a file-level rule
+	# cannot tell "the one sanctioned writer" from "a future accidental one"
+	# any more precisely than that rule can.
+	"scripts/units/unit.gd",
+	# Units caught in a footprint that is not (yet, or ever) a Unit -- nothing
+	# in this project puts a non-Unit Node3D in the "units" group today, but
+	# this function has never assumed only Units reach it (see its own
+	# comment) -- fall back to a direct write. The guarded branch above it
+	# routes every real Unit through set_simulation_position().
+	"scripts/buildings/unit_push_aside.gd",
+	# Building placement and preview meshes -- not simulation, and buildings
+	# are out of C2's scope by design (see the design doc's C2 paragraph:
+	# "Do not attempt buildings unless a unit write path forces it"). Also
+	# covers match.gd's own building.global_position write in _place_on_map();
+	# that file's *unit* placement two lines below it already routes through
+	# set_simulation_position().
+	"scripts/buildings/building_placement.gd",
+	"scripts/match/match.gd",
+	# A wall-preview marker: presentation only, not a simulated entity.
+	"scripts/buildings/wall_line_session.gd",
+	# The RTS camera. Never a unit, explicitly called out in the design doc's
+	# C2 paragraph as an exemption rather than a violation.
+	"scripts/world/camera/rts_camera.gd",
+	# A spice mound's one-time placement at spawn -- not a unit, and not
+	# migrated by this slice; C1-C4's hot-state arrays cover position, health
+	# and owner for units only so far (see entity_state.gd's own doc comment).
+	"scripts/world/map/map_spice_layer.gd",
+	# Cosmetic audio emitter placement -- the view layer, not the simulation.
+	"scripts/audio/death_sound_player.gd",
+	# Combat projectiles and linger effects are sim-tick-driven entities, but
+	# they are not units: C1/C2 only build and wire a position store for
+	# units (docs/architecture/network-multiplayer.md, phase 3's C1 and C2
+	# paragraphs). Giving them their own SimEntityState slice is real,
+	# scheduled work, not something C2 does as a side effect.
+	"scripts/combat/combat_projectile.gd",
+	"scripts/combat/combat_linger_effect.gd",
+	# Pure cosmetic VFX/particles/impact debris -- the view layer's own
+	# instant feedback, never read back by the simulation.
+	"scripts/combat/combat_impact_effect.gd",
+	"scripts/combat/fx/authored_fx_bank.gd",
+	"scripts/combat/fx/impact_debris.gd",
+	"scripts/combat/turret/combat_turret_fx.gd",
+]
+summary = "global_position written directly instead of through SimEntityState"
+why = """
+Decision 3 makes the simulation's hot-state store authoritative for a unit's \
+position and the node a mirror of it. A direct write that bypasses the store \
+diverges from it silently, and the mirror makes that divergence look correct \
+right up until a snapshot or a checksum disagrees -- the store keeps \
+answering with the value it was last told, not the value the node actually \
+holds. See docs/architecture/network-multiplayer.md, phase 3's C2 paragraph.
+"""
+instead = "Unit.set_simulation_position(value), which writes SimEntityState first and mirrors the result into global_position"
+
+[[rules]]
 id = "bare-class-name-reference"
 zone = "all"
 kind = "require-preload"

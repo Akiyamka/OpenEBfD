@@ -277,7 +277,7 @@ func _spawn_completed_unit(unit_id: StringName, production_building_id: StringNa
 	# Units begin just inside the producer's front edge, then immediately move
 	# toward that building's own rally point.
 	var spawn_position = building.call("production_spawn_position") if building.has_method("production_spawn_position") else building.global_position
-	unit.global_position = spawn_position
+	unit.set_simulation_position(spawn_position)
 	unit.face_direction(_production_exit_direction(building))
 	unit.set_owner_player_id(player.player_id)
 	var rally_point = building.call("rally_point_position") if building.has_method("rally_point_position") else _default_rally_point(building)

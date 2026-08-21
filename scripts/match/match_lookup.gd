@@ -30,3 +30,16 @@ static func entity_index(node: Node) -> Variant:
 	if match_node == null or not match_node.has_method("entity_index"):
 		return null
 	return match_node.call("entity_index")
+
+
+## The SimEntityState the running Match owns (scripts/sim/entity_state.gd), or
+## null under the identical conditions entity_index() returns null -- same
+## lookup, same null-tolerance, so a Unit written with no Match in the tree
+## (most unit/combat tests) simply has no store to write through.
+static func entity_state(node: Node) -> Variant:
+	if node == null or not node.is_inside_tree():
+		return null
+	var match_node := node.get_tree().get_first_node_in_group(GROUP)
+	if match_node == null or not match_node.has_method("entity_state"):
+		return null
+	return match_node.call("entity_state")

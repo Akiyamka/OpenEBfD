@@ -367,13 +367,13 @@ func advance_circles_flight(steering_velocity: Vector3, delta: float) -> Vector3
 	if _circles_order_active:
 		var segment_target := _circles_steering_target()
 		if _segment_reaches(start, end, segment_target, float(_unit.arrival_radius)):
-			_unit.global_position = Vector3(segment_target.x, start.y, segment_target.z)
+			_unit.set_simulation_position(Vector3(segment_target.x, start.y, segment_target.z))
 			if _circles_departure.is_finite():
 				_circles_departure = Vector3.INF
 			else:
 				_finish_circles_order()
 			return forward * speed
-	_unit.global_position = end
+	_unit.set_simulation_position(end)
 	return forward * speed
 
 
@@ -559,7 +559,9 @@ func advance(delta: float) -> void:
 		_advance_transition(delta)
 		_advance_vertical_avoidance(delta)
 		_advance_cruise_altitude(delta)
-		_unit.global_position.y = cruise_altitude + _vertical_avoidance_offset
+		var cruise_position: Vector3 = _unit.global_position
+		cruise_position.y = cruise_altitude + _vertical_avoidance_offset
+		_unit.set_simulation_position(cruise_position)
 		_unit.flight_set_visual_slope_target(Vector3.UP)
 		return
 	if phase == Phase.PICKUP_LAND:
@@ -583,7 +585,7 @@ func _advance_hangar_exit(delta: float) -> void:
 	var arrival := float(_unit.arrival_radius)
 	if distance > arrival and delta > 0.0:
 		var step: float = minf(float(_unit.navigation_move_speed()) * delta, distance)
-		_unit.global_position += exit_offset / distance * step
+		_unit.set_simulation_position(_unit.global_position + exit_offset / distance * step)
 		_unit.flight_snap_to_terrain()
 		_unit.flight_set_movement_animation(true)
 		return
@@ -604,7 +606,9 @@ func _advance_vertical_transition(
 		_unit.flight_advance_transition_motion(horizontal_target, delta)
 	var duration: float = _unit.flight_clip_length(clip_name, default_seconds)
 	var t := clampf(_phase_elapsed / duration, 0.0, 1.0) if duration > 0.0 else 1.0
-	_unit.global_position.y = lerpf(from_altitude, to_altitude, t)
+	var transition_position: Vector3 = _unit.global_position
+	transition_position.y = lerpf(from_altitude, to_altitude, t)
+	_unit.set_simulation_position(transition_position)
 	_unit.flight_set_visual_slope_target(Vector3.UP)
 	if t < 1.0:
 		return
@@ -638,7 +642,9 @@ func _advance_pickup_landing(delta: float) -> void:
 	_phase_elapsed += maxf(delta, 0.0)
 	var duration: float = _unit.flight_clip_length(LAND_ANIMATION, DEFAULT_LAND_SECONDS)
 	var t := clampf(_phase_elapsed / duration, 0.0, 1.0) if duration > 0.0 else 1.0
-	_unit.global_position.y = lerpf(_pickup_landing_start_altitude, _pickup_landing_altitude, t)
+	var pickup_position: Vector3 = _unit.global_position
+	pickup_position.y = lerpf(_pickup_landing_start_altitude, _pickup_landing_altitude, t)
+	_unit.set_simulation_position(pickup_position)
 	_unit.flight_set_visual_slope_target(Vector3.UP)
 	if t >= 1.0:
 		_pickup_transition_finished = true

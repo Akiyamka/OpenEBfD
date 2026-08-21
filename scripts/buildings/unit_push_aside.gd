@@ -39,7 +39,18 @@ static func push_units_out_of_footprint(
 			continue
 
 		var pushed := _push_destination(position, min_x, max_x, min_z, max_z, margin)
-		unit.global_position = pushed
+		# Duck-typed like the stop_at_current_position() call below, and for
+		# the same reason this function only ever checked `unit is Node3D`
+		# above rather than `unit is Unit`: routing through
+		# set_simulation_position() (see that method's own doc comment) keeps
+		# a real Unit's write going through the running match's
+		# SimEntityState, while a plain Node3D with no such method -- nothing
+		# in this project puts one in the "units" group today, but this
+		# function has never assumed otherwise -- still gets shoved directly.
+		if unit.has_method("set_simulation_position"):
+			unit.call("set_simulation_position", pushed)
+		else:
+			unit.global_position = pushed
 		if unit.has_method("stop_at_current_position"):
 			unit.call("stop_at_current_position")
 

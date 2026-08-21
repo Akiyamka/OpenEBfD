@@ -72,11 +72,16 @@ static func _spawn_survivor(
 	parent.add_child(survivor)
 	survivor.call("setup", unit_id)
 	survivor.call("set_owner_player_id", owner_player_id)
-	survivor.global_position = origin + Vector3(
+	# Duck-typed like setup()/set_owner_player_id() above: a survivor is
+	# always a real Unit (see _spawn_survivor()'s own instantiate() call), so
+	# this routes through set_simulation_position() (its own doc comment,
+	# scripts/units/unit.gd) rather than writing global_position directly,
+	# keeping this spawn's position in the running match's SimEntityState.
+	survivor.call("set_simulation_position", origin + Vector3(
 		randf_range(-half_extents.x, half_extents.x),
 		0.7,
 		randf_range(-half_extents.z, half_extents.z)
-	)
+	))
 	if survivor.has_method("stop_at_current_position"):
 		survivor.call("stop_at_current_position")
 	if "max_health" in survivor:

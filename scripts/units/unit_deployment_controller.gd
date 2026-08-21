@@ -383,7 +383,7 @@ func _finish_undeployment(undeployment_id: int) -> void:
 	unit.config_id = unit_id
 	unit.unit_definition = undeployment.get("unit_definition") as Resource
 	units_parent.add_child(unit)
-	unit.global_position = undeployment["spawn_position"]
+	unit.set_simulation_position(undeployment["spawn_position"])
 	unit.face_direction(undeployment["facing"])
 	unit.set_owner_player_id(int(undeployment["owner_player_id"]))
 

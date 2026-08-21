@@ -22,6 +22,7 @@ const TerrainProbeScript := preload("res://scripts/world/terrain_probe.gd")
 const EntityQueryScript := preload("res://scripts/world/entity_query.gd")
 const MatchLookupScript := preload("res://scripts/match/match_lookup.gd")
 const EntityNodeIndexScript := preload("res://scripts/match/entity_node_index.gd")
+const SimEntityStateScript := preload("res://scripts/sim/entity_state.gd")
 const AbilityBarScript := preload("res://scripts/ui/ability_bar.gd")
 const AdvancedCarryallAbilityScript := preload("res://scripts/match/advanced_carryall_ability.gd")
 const PLACEMENT_ARROW_SCENE := preload("res://assets/converted/placement/build_arrow.scn")
@@ -104,6 +105,19 @@ var _match_snapshot
 ## itself up (via MatchLookupScript.entity_index()) from its own _ready() --
 ## see that comment below.
 var _entity_index: EntityNodeIndex
+## The flat hot-state position store slice C1 built (scripts/sim/entity_state.gd)
+## and slice C2 wires in: decision 3 ("Simulation core owns state; nodes are
+## views"). Constructed here, immediately after _entity_index and for the
+## identical reason -- it takes the registry _entity_index owns
+## (SimEntityState._init() wants a SimEntityRegistry by reference so it can ask
+## is_alive() rather than keep a second copy of that bookkeeping) -- so it must
+## exist before any child's _ready() can reach it via
+## MatchLookupScript.entity_state(), the same route entity_state() itself
+## follows for the node index. See _entity_index's own comment for why
+## _enter_tree() and not _ready(): units and buildings self-register (and, as
+## of C2, write their position) from their own _ready(), which the engine runs
+## only after _enter_tree() has finished for the whole freshly-added subtree.
+var _entity_state: SimEntityState
 ## Shared between _command_executor and _unit_command_controller (see both
 ## setup call sites below) so a target ability id resolves to the same
 ## handler on both sides of the command bus -- SelectionTargetAbilityController.
@@ -127,6 +141,7 @@ func _enter_tree() -> void:
 	# for why _configure_demo_players() also cannot wait for _ready().
 	add_to_group(MatchLookupScript.GROUP)
 	_entity_index = EntityNodeIndexScript.new()
+	_entity_state = SimEntityStateScript.new(_entity_index.registry())
 	# Children initialize their owner visuals in _ready(), so the player
 	# roster must exist before buildings and units enter the scene tree.
 	# The Rules autoload's catalog, in contrast, only loads in its own
@@ -318,7 +333,14 @@ func _place_on_map() -> void:
 
 	for unit in get_tree().get_nodes_in_group("units"):
 		var spot: Vector3 = unit.global_position
-		unit.global_position = _snap_to_ground(spot)
+		# Routes through Unit.set_simulation_position() (its own doc comment)
+		# rather than writing global_position directly: by this point every
+		# scene-authored unit has already run its own _ready() (see
+		# _entity_index's and _entity_state's comments on why both are built in
+		# _enter_tree(), before any child's _ready() runs), so entity_id is
+		# already set and this initial snap-to-ground is this unit's very first
+		# write into the running match's SimEntityState.
+		unit.set_simulation_position(_snap_to_ground(spot))
 		unit.stop_at_current_position()
 
 
@@ -707,6 +729,15 @@ func next_orderable_tick() -> int:
 ## building.gd) can reach it without a hardcoded path.
 func entity_index() -> EntityNodeIndex:
 	return _entity_index
+
+
+## The id-indexed position store every Unit's own write path
+## (Unit.set_simulation_position()) routes through, when one exists -- exposed
+## the same way entity_index() is, for the same reason: MatchLookupScript.
+## entity_state() (duck-typed, see its own comment) reaches this without
+## preloading match.gd's entire dependency chain.
+func entity_state() -> SimEntityState:
+	return _entity_state
 
 
 func _unhandled_input(event: InputEvent) -> void:

@@ -160,6 +160,25 @@ CASES: tuple[Case, ...] = (
         EXIT_FINDINGS,
         expect_rules=("private-owner-access",),
     ),
+    Case(
+        "global_position written directly instead of through SimEntityState",
+        scripts("global_position_bypasses_store"),
+        EXIT_FINDINGS,
+        expect_rules=("global-position-bypasses-store",),
+        expect_text=("set_simulation_position",),
+    ),
+    Case(
+        # architecture_rules.toml's exempt list for this rule is the honest
+        # backlog of legitimate direct writers C2 left in place (buildings,
+        # cosmetic effects, the camera, and Unit.set_simulation_position()'s
+        # own mirror-write) -- this proves an entry on it really does silence
+        # the rule, the same shape the animation-completes-simulation case
+        # pair above proves for its own exempt list, so that removing an
+        # entry here is a meaningful event too.
+        "the direct write is allowed where the exempt list already covers it",
+        {"scripts/units/unit.gd": "global_position_bypasses_store"},
+        EXIT_CLEAN,
+    ),
     # -- simulation determinism rules ----------------------------------------
     Case(
         "scene tree API in sim",

@@ -101,7 +101,7 @@ func snap_body_to_terrain() -> void:
 
 	var snapped := _unit.global_position
 	snapped.y = (hit["position"] as Vector3).y
-	_unit.global_position = snapped
+	_unit.set_simulation_position(snapped)
 	set_slope_target(hit.get("normal", Vector3.UP) as Vector3)
 
 

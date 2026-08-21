@@ -1,0 +1,8 @@
+extends CharacterBody3D
+
+## A direct write to global_position, bypassing SimEntityState -- the shape
+## slice C2 migrated away from Unit's own locomotion/navigation/transport code
+## (docs/architecture/network-multiplayer.md, phase 3's C2 paragraph).
+
+func advance(value: Vector3) -> void:
+	global_position = value

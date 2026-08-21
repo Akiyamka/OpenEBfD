@@ -289,6 +289,53 @@ func _release_entity_id() -> void:
 	_entity_id = 0
 
 
+## The single place this unit's position is written -- by this file's own
+## locomotion/navigation/transport code, or by a collaborator holding a `_unit`
+## / `unit` reference (UnitTerrainAlignment, UnitFlightController,
+## UnitPushAside, BuildingSurvivors, UnitDeploymentController,
+## UnitRosterController, Match._place_on_map()). Routes through the running
+## match's SimEntityState (scripts/sim/entity_state.gd) when this unit has
+## one, then mirrors the result into global_position -- decision 3 makes the
+## store authoritative and the node a view over it
+## (docs/architecture/network-multiplayer.md, phase 3's C2 paragraph).
+##
+## Mirrors right here, at the write site, rather than once at the end of the
+## simulation tick: _advance_locomotion_tick(), navigation_step() and every
+## UnitFlightController transition all read global_position again later in
+## the very same tick (the offset to target_position, the terrain-snap probe,
+## flight_advance_transition_motion()'s own remaining-distance check, the next
+## transition's motion target) to decide what they do next, so a mirror
+## deferred to the end of the tick would hand that later code last tick's
+## position instead of the one this call just produced. That is checked, not
+## assumed -- see the call sites this replaces.
+##
+## _entity_id is 0 for the whole life of a unit built with no Match in the
+## tree -- most unit/combat tests build a Unit directly (see
+## _register_entity_id()'s own comment) -- and that is not an error: there is
+## no store to be authoritative over, so this simply writes the node, exactly
+## as every call site here did before this method existed.
+##
+## An id that IS assigned but that the registry reports dead is a different,
+## genuine bug: sim_tick() and sim_tick_combat() are guarded by
+## is_instance_valid() and _simulation_halted (see
+## Match._advance_simulation_tick()), so nothing should reach here for a dead,
+## still-registered id. SimEntityState.set_position() already refuses that
+## write and push_errors it, loudly, by id. This still writes the node
+## afterward regardless -- silently keeping the node's last position here
+## would look exactly like a unit that legitimately stopped moving, which is
+## precisely the bug a mirror can make plausible (see this method's own doc
+## comment on the class, and the design doc's C2 paragraph). Writing the node
+## keeps the visible symptom (a unit still moving while an error is logged for
+## its dead id) instead of a quieter one (a unit that mysteriously stops),
+## which is what gives a test or a log sweep an actual chance to catch it.
+func set_simulation_position(value: Vector3) -> void:
+	if _entity_id != 0:
+		var store = MatchLookupScript.entity_state(self)
+		if store != null:
+			store.set_position(_entity_id, value)
+	global_position = value
+
+
 ## This entity's simulation half: advances every turret's reload/burst
 ## countdown, then ground/generic locomotion and terrain snapping (see
 ## _advance_locomotion_tick()), then -- for a harvester -- the economy, all by
@@ -481,7 +528,7 @@ func _advance_locomotion_tick() -> void:
 	# which this does explicitly instead, exactly like navigation_step()
 	# already does for managed units. Separation between units is
 	# OrcaAvoidance's job, on the navigation tick.
-	global_position += velocity * delta
+	set_simulation_position(global_position + velocity * delta)
 	_snap_to_terrain(delta)
 
 
@@ -560,7 +607,7 @@ func flight_advance_transition_motion(
 	if align_to_motion:
 		turn_toward(direction, delta)
 	var step := minf(maxf(navigation_move_speed(), 0.0) * delta, distance)
-	global_position += direction * step
+	set_simulation_position(global_position + direction * step)
 	velocity = direction * (step / delta)
 	_set_navigation_debug_direction(velocity)
 	return step >= distance - 0.0001
@@ -791,7 +838,7 @@ func navigation_step(horizontal_velocity: Vector3, delta: float) -> void:
 	# Unit/unit collision has already been resolved centrally as swept discs.
 	# Applying the exact fixed navigation delta avoids depending on physics-frame
 	# frequency and keeps command replays stable.
-	global_position += velocity * delta
+	set_simulation_position(global_position + velocity * delta)
 	_snap_to_terrain(delta)
 
 
@@ -1266,7 +1313,7 @@ func transport_mark_released(world_position: Vector3, carrier_facing: Vector3) -
 	_transport_has_carried_vertical_bounds = false
 	_transport_reservation_ref = null
 	_transport_docking_locked = false
-	global_position = world_position
+	set_simulation_position(world_position)
 	face_direction(carrier_facing)
 	_terrain_snap_body()
 	_reset_locomotion_after_transport()
