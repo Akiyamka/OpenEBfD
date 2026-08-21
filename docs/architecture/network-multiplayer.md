@@ -879,6 +879,102 @@ and by the time we get there the hard part is already tested.
   adding one now would be exactly the speculative generality this store's own
   doc comment already declines for velocity.
 
+  **Slice C5, decided 2026-08-21: deferred despawn, and the defect that
+  changed its shape.** Decision 3's third borrowed-from-ECS property is
+  "entity creation and destruction are deferred to queues, never applied
+  mid-iteration." C5 takes destruction only; creation is C6. The split is not
+  a matter of diff size alone: creation's current safety rests on the loop
+  ordering `Match._advance_simulation_tick()`'s doc comment argues at length
+  and a wiring test pins, so it is fragile but *correct*, while destruction
+  was found to be neither.
+
+  What was checked rather than assumed. `FrameTickDriver.MAX_TICKS_PER_FRAME`
+  is 5, so one engine frame can run up to five simulation ticks, and
+  `queue_free()` neither drops group membership nor invalidates the instance
+  until that frame ends. A killed entity is therefore still listed by
+  `get_nodes_in_group()`, still passes `is_instance_valid()`, and still gets
+  ticked for every remaining tick of its own frame. `Unit` survives this only
+  because slice B2 gave it `_simulation_halted`, checked by both
+  `sim_tick()` and `sim_tick_combat()`. **`Building.sim_tick()` checks
+  nothing**, which means a dead building's turrets reload, its refinery dock
+  cooldown runs, and `AuthoredFireController.advance()` can commit a shot --
+  a dead building can fire. `Building.prepare_model_for_corpse()`'s own
+  comment claims `set_process(false)` prevents exactly this; that claim was
+  true when written and stopped being true at slice B3b, which moved those
+  ticks onto `sim_tick()`, where no engine flag reaches them. And both
+  classes' death sequences have a second hole on the branch where no death
+  clip matched (`unit_death_sequence.gd`, `building_death_sequence.gd`):
+  that branch calls `queue_free()` without going through
+  `prepare_model_for_corpse()` at all, so neither `_simulation_halted` nor
+  `set_process(false)` is ever set.
+
+  Five mechanisms currently encode one concept -- `_simulation_halted`,
+  `set_process(false)`, `set_physics_process(false)`, `remove_from_group()`
+  in projectiles and linger effects, and the six `is_instance_valid()` guards
+  in `Match`. C5 replaces the entity-id-carrying part of that with one:
+  `Unit.request_despawn()` / `Building.request_despawn()`, which halts the
+  entity's simulation immediately and hands its id to a queue.
+
+  **Fork 1, when a killed entity stops simulating: immediately, through one
+  shared notion, not at the end of the tick.** Deferring the *logical* death
+  to the tick boundary is the semantically cleaner simulation -- everything
+  on tick N would see the world as of the start of tick N, and simultaneous
+  mutual kills would become symmetric -- but it is a different simulation: a
+  unit killed by this tick's linger damage would newly get to shoot back in
+  the same tick's combat pass. Phase 3's standing rule is that behaviour does
+  not change, so the timing stays exactly what `_simulation_halted` already
+  gave units, and the queue owns only the structural half. Making death
+  resolve on the tick boundary is a real gameplay decision available to a
+  later phase; it is recorded here so nobody mistakes it for something C5
+  quietly settled.
+
+  The shared notion is `SimEntityRegistry`'s own liveness, not a new flag
+  alongside it: `request_release(id)` erases the id from `_alive` at once and
+  appends it to a pending queue. That has a consequence worth naming, because
+  it is a feature and not a side effect -- `SimEntityState`'s accessors all
+  guard on `is_alive()`, so a dead entity's hot state freezes the instant it
+  dies, with no per-field work. C3's `is_finite(stored)` read-back guard in
+  the health setter, added because a refused store write must not poison the
+  mirror, is what makes this safe without touching a single setter.
+  `EntityNodeIndex.node_for()` likewise stops resolving the id at once, which
+  `command_executor.gd` already expects: its comment has said since phase 2
+  that "an id that no longer resolves is skipped."
+
+  **Fork 2, where `queue_free()` goes: into the queue drain.** The drain runs
+  at the **end** of `_advance_simulation_tick()`, and that placement rather
+  than "the start of the next tick" is load-bearing for a reason specific to
+  Godot: `queue_free()` deletes at the end of the *engine frame* regardless
+  of which tick called it, so deferring from mid-tick to end-of-the-same-tick
+  costs exactly zero wall-clock and cannot be observed. Draining at the start
+  of the next tick would push a death that happened on a frame's last tick a
+  whole frame later, which would be visible. The node's actual deletion
+  moment is therefore unchanged by this slice; what changes is that the
+  entity is halted from the kill site onward, and that the unbinding happens
+  at one point instead of wherever the killing blow landed.
+
+  Every despawn of an id-carrying entity routes through this, not just the
+  two death sequences: `BuildingSaleService._finish()` and the two
+  `UnitDeploymentController` conversions (MCV to construction yard and back)
+  free a `Unit` or a `Building` too, and leaving them on the old path would
+  recreate the "one concept, several mechanisms" problem this slice exists to
+  end. A sold building stops firing immediately for the first time as a
+  result.
+
+  What C5 does not cover, stated so it is not read as finished.
+  Projectiles, linger effects, spice mounds and corpses carry no entity id at
+  all -- `SimEntityRegistry.Kind` has only `UNIT` and `BUILDING` -- so their
+  own `remove_from_group()` handling stays exactly as it is, and so do all
+  six `is_instance_valid()` guards in `Match`, which still protect against
+  nodes freed by routes no queue owns. An entity leaving the tree for a
+  reason that is not a despawn (scene teardown, a suite ending) still
+  unbinds through `_exit_tree()`; that path is idempotent against the queue
+  by construction, since the drain erases the same bindings. And an entity
+  with no `Match` in the tree -- which is most unit and combat suites -- has
+  no queue to drain it, so `request_despawn()` falls back to freeing the node
+  directly. That fallback is a second path, honestly, and it is the one
+  narrow case where there is no alternative: without it a killed unit in
+  those suites would never be freed at all.
+
 - **Phase 4 — determinism gate.** Portable math, RNG split, the static rules
   above wired into `check_architecture.py`, and the CI test that replays one
   command log twice in-process and then compares state hashes across native and
