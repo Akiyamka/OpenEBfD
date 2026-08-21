@@ -13,11 +13,40 @@ extends RefCounted
 ## class, scripts/match/entity_node_index.gd, because holding node references
 ## is exactly what the sim zone (tools/architecture_rules.toml) forbids.
 ##
-## Deliberately absent: owner player id. A unit's owner is not reliably set at
-## the moment it enters the tree -- building placement assigns it only after
-## add_child() -- so storing ownership here would bake in a lifecycle
-## assumption nobody has verified yet. The command executor reads ownership
-## off the node instead, for now.
+## Owner player id is not here either, and was not simply left out of this
+## class the way it was left out of every writer before slice C4: hot state
+## -- position, health, shields, owner -- belongs to SimEntityState
+## (scripts/sim/entity_state.gd), never to this class, which only allocates
+## and accounts for ids. C4 wired owner_player_id through that store, for
+## both units and buildings.
+##
+## This comment used to record the reason nobody had built that wiring yet:
+## a unit's or building's owner is not reliably set at the moment it enters
+## the tree, so storing it anywhere keyed on entity id would have baked in a
+## lifecycle assumption nobody had verified. That was checked, not assumed,
+## and it was real: every fixture and demo scene sets owner_player_id as a
+## scene property, which Godot applies during PackedScene.instantiate(),
+## before add_child(); MatchSnapshot._restore_entities()
+## (scripts/match/match_snapshot.gd) does the same on every load, calling
+## entity.set("owner_player_id", ...) before root.add_child(entity). Both
+## run before Unit._register_entity_id() / Building._register_entity_id()
+## ever assigns an entity id, at which point owner_player_id's own property
+## setter has nothing to write into yet. C4 closes this not by reordering
+## those callers -- scene deserialization order belongs to the engine, and
+## restoring owner before reparenting is simply how MatchSnapshot is
+## written -- but by having _register_entity_id() itself push whatever the
+## mirror currently holds into the store the moment the id becomes real, so
+## a write that happened first is not lost. See
+## scripts/sim/entity_state.gd's "Registration-time push" section.
+##
+## Readers have not moved. UnitCommandController's click filtering,
+## EntityQuery.owner_id_of() and combat_owner_player_id() all still read
+## owner_player_id off the node, and continue to for now: C2's own debt
+## paragraph in docs/architecture/network-multiplayer.md already recorded
+## that write slices do not migrate readers, because a dozen-plus call
+## sites across combat and UI code is the same "far past where a rule stops
+## being a rule" territory position's 260 read sites are in. Moving readers
+## onto the store is a real slice someone still has to schedule.
 
 enum Kind { UNIT = 1, BUILDING = 2 }
 

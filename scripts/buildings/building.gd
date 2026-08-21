@@ -51,6 +51,26 @@ const RALLY_POINT_LINE_HEIGHT := BuildingRallyPointScript.LINE_HEIGHT
 ## the second/right unfolds ~~4SmallPad02; both retain their final pose.
 enum RefineryUpgradeState { NONE, LEFT_DOCK, BOTH_DOCKS }
 @export var config_id: StringName
+## Store-then-mirror, the same order set_health()/set_shields() use here and
+## Unit.owner_player_id uses on the other kind (scripts/units/unit.gd) --
+## see both of those setters' own doc comments and
+## scripts/sim/entity_state.gd's "Owner player id" section for why this
+## property is the chokepoint C4 needed no separate method for, and why
+## there is no clamp and no store-vs-mirror precision gap to close by
+## reading the store's value back afterward. The store write runs after
+## cancel_attack_order()/_set_generated_energy(0), which both still need the
+## *old* owner_player_id, and before the assignment those two calls guard
+## against re-running for.
+##
+## This setter alone is not enough to keep the store honest: it only runs
+## while _entity_id != 0, i.e. after this building has registered. A
+## scene's exported value (every fixture and demo scene sets
+## owner_player_id this way -- see ATConYard/ATSmWindtrap in
+## tests/fixtures/match_fixture.tscn) and MatchSnapshot._restore_entities()
+## both assign this property before add_child() -- before _entity_id
+## exists -- so _register_entity_id() below makes a second push into the
+## store, at registration time, to catch exactly that case. See
+## scripts/sim/entity_state.gd's "Registration-time push" section.
 @export var owner_player_id := PlayerDataScript.NEUTRAL_PLAYER_ID:
 	set(value):
 		if owner_player_id == value:
@@ -58,6 +78,10 @@ enum RefineryUpgradeState { NONE, LEFT_DOCK, BOTH_DOCKS }
 		if is_inside_tree():
 			cancel_attack_order()
 		_set_generated_energy(0)
+		if _entity_id != 0:
+			var store = MatchLookupScript.entity_state(self)
+			if store != null:
+				store.set_owner_player_id(_entity_id, value)
 		owner_player_id = value
 		if is_inside_tree():
 			_refresh_owner_visuals()
@@ -271,10 +295,23 @@ func _exit_tree() -> void:
 ## see MatchLookupScript's doc comment for why this must run from _ready()
 ## rather than anywhere in Match. Leaves entity_id at 0, unchanged, when
 ## there is no Match in the tree.
+##
+## The owner_player_id push right after closes a real lifecycle gap: this
+## building's owner_player_id is routinely assigned before _entity_id ever
+## exists -- a scene's exported value (every fixture and demo scene) or
+## MatchSnapshot._restore_entities() both set it before add_child() ever
+## runs this method, and owner_player_id's own setter (above) can only
+## write into the store once _entity_id is nonzero. Pushing the mirror's
+## current value here, unconditionally, means a write that landed before
+## registration is not lost. See scripts/sim/entity_state.gd's
+## "Registration-time push" section.
 func _register_entity_id() -> void:
 	var index = MatchLookupScript.entity_index(self)
 	if index != null:
 		_entity_id = index.register(self, SimEntityRegistryScript.Kind.BUILDING)
+		var store = MatchLookupScript.entity_state(self)
+		if store != null:
+			store.set_owner_player_id(_entity_id, owner_player_id)
 
 
 func _release_entity_id() -> void:

@@ -11,16 +11,22 @@ extends "res://tests/support/suite.gd"
 ##
 ## This suite drives the store directly rather than through a booted match; a
 ## wiring test that proves something actually calls set_position() / set_
-## health() / set_shields() belongs to tests/match/entity_state_run.gd, the
-## same split tests/match/entity_id_run.gd draws against
-## tests/sim/entity_registry_run.gd. Health and shields have no
-## previous-tick buffer the way position does -- see entity_state.gd's own
-## doc comment for why -- so there is no previous_health()/previous_shields()
-## counterpart to _test_first_write_seeds_previous /
-## _test_second_write_shifts_previous below.
+## health() / set_shields() / set_owner_player_id() belongs to
+## tests/match/entity_state_run.gd, the same split tests/match/entity_id_run.gd
+## draws against tests/sim/entity_registry_run.gd -- and that file, not this
+## one, is where slice C4's actual reason for existing (a pre-registration
+## owner_player_id assignment must still reach the store) gets proven, because
+## it is a _register_entity_id()/_ready() ordering question a store driven
+## directly with no Unit/Building involved cannot pose. Health and shields
+## have no previous-tick buffer the way position does -- see entity_state.gd's
+## own doc comment for why -- so there is no previous_health()/
+## previous_shields() counterpart to _test_first_write_seeds_previous /
+## _test_second_write_shifts_previous below. owner_player_id has none either,
+## for the identical reason.
 
 const SimEntityRegistryScript := preload("res://scripts/sim/entity_registry.gd")
 const SimEntityStateScript := preload("res://scripts/sim/entity_state.gd")
+const PlayerDataScript := preload("res://scripts/players/player_data.gd")
 
 
 func _initialize() -> void:
@@ -90,6 +96,50 @@ func _initialize() -> void:
 	_run_case(
 		"restore() fails closed on malformed health data and leaves prior contents untouched",
 		_test_restore_fails_closed_on_malformed_health_data
+	)
+	_run_case(
+		"owner_player_id: write then read round-trips the exact value",
+		_test_owner_player_id_write_read_round_trip
+	)
+	_run_case(
+		"owner_player_id: has_owner_player_id() is false before the first write, true after",
+		_test_has_owner_player_id
+	)
+	_run_case(
+		"owner_player_id: reading a never-allocated id errors and returns the no-value marker",
+		_test_read_unallocated_id_owner_player_id_errors
+	)
+	_run_case(
+		"owner_player_id: reading a released id errors and returns the no-value marker",
+		_test_read_released_id_owner_player_id_errors
+	)
+	_run_case(
+		"owner_player_id: writing to a never-allocated id is refused, not corrupted",
+		_test_write_unallocated_id_owner_player_id_refused
+	)
+	_run_case(
+		"owner_player_id: writing to a released id is refused", _test_write_released_id_owner_player_id_refused
+	)
+	_run_case(
+		"owner_player_id: NEUTRAL_PLAYER_ID and Player 0 both round-trip as legitimate owners, distinct from"
+			+ " the no-value marker",
+		_test_owner_player_id_boundary_values_round_trip
+	)
+	_run_case(
+		"owner_player_id grows independently of position, health and shields",
+		_test_owner_player_id_grows_independently
+	)
+	_run_case(
+		"capture() then restore() round-trips every written id's owner_player_id alongside the other fields",
+		_test_snapshot_round_trip_owner_player_id
+	)
+	_run_case(
+		"restore() accepts a version-1 snapshot with no owner_player_id keys at all, as empty",
+		_test_restore_without_owner_player_id_keys_is_backward_compatible
+	)
+	_run_case(
+		"restore() fails closed on malformed owner_player_id data and leaves prior contents untouched",
+		_test_restore_fails_closed_on_malformed_owner_player_id_data
 	)
 	_finish("SimEntityState tests")
 
@@ -453,4 +503,204 @@ func _test_restore_fails_closed_on_malformed_health_data() -> void:
 	_expect(
 		state.health(a) == 33.0,
 		"a failed restore() must leave the store's prior health contents completely untouched"
+	)
+
+
+func _test_owner_player_id_write_read_round_trip() -> void:
+	var registry := SimEntityRegistryScript.new()
+	var state := SimEntityStateScript.new(registry)
+	var id := registry.allocate(SimEntityRegistryScript.Kind.UNIT)
+	state.set_owner_player_id(id, 2)
+	_expect(
+		state.owner_player_id(id) == 2, "owner_player_id() must return exactly what set_owner_player_id() wrote"
+	)
+
+
+func _test_has_owner_player_id() -> void:
+	var registry := SimEntityRegistryScript.new()
+	var state := SimEntityStateScript.new(registry)
+	var id := registry.allocate(SimEntityRegistryScript.Kind.UNIT)
+	_expect(
+		not state.has_owner_player_id(id),
+		"a freshly allocated id must have no owner_player_id until set_owner_player_id() is called"
+	)
+	state.set_owner_player_id(id, 1)
+	_expect(state.has_owner_player_id(id), "has_owner_player_id() must be true right after set_owner_player_id()")
+
+
+func _test_read_unallocated_id_owner_player_id_errors() -> void:
+	var registry := SimEntityRegistryScript.new()
+	var state := SimEntityStateScript.new(registry)
+	_expect(not state.has_owner_player_id(999), "an id that was never allocated must report no owner_player_id")
+	_expect(
+		state.owner_player_id(999) == SimEntityStateScript.NO_OWNER_PLAYER_ID,
+		(
+			"owner_player_id() of an unallocated id must answer with the no-value marker, not a legal player"
+			+ " id: 0 is Player 0 and -1 is PlayerDataScript.NEUTRAL_PLAYER_ID, both legal owners, so neither"
+			+ " can also mean \"no value\""
+		)
+	)
+
+
+func _test_read_released_id_owner_player_id_errors() -> void:
+	var registry := SimEntityRegistryScript.new()
+	var state := SimEntityStateScript.new(registry)
+	var id := registry.allocate(SimEntityRegistryScript.Kind.UNIT)
+	state.set_owner_player_id(id, 3)
+	registry.release(id)
+	_expect(
+		not state.has_owner_player_id(id),
+		"a released id must report no owner_player_id even though it was written before release"
+	)
+	_expect(
+		state.owner_player_id(id) == SimEntityStateScript.NO_OWNER_PLAYER_ID,
+		"owner_player_id() of a released id must answer with the no-value marker, not a legal player id"
+	)
+
+
+func _test_write_unallocated_id_owner_player_id_refused() -> void:
+	var registry := SimEntityRegistryScript.new()
+	var state := SimEntityStateScript.new(registry)
+	state.set_owner_player_id(42, 1)
+	_expect(
+		not state.has_owner_player_id(42), "a write to a never-allocated id must be refused, not silently accepted"
+	)
+
+
+func _test_write_released_id_owner_player_id_refused() -> void:
+	var registry := SimEntityRegistryScript.new()
+	var state := SimEntityStateScript.new(registry)
+	var id := registry.allocate(SimEntityRegistryScript.Kind.UNIT)
+	state.set_owner_player_id(id, 1)
+	registry.release(id)
+	state.set_owner_player_id(id, 2)
+	_expect(
+		not state.has_owner_player_id(id),
+		(
+			"a write to a released id must be refused -- the stale pre-release value must not be reachable"
+			+ " through has_owner_player_id()"
+		)
+	)
+
+
+## Binds the no-value marker directly: NEUTRAL_PLAYER_ID (-1) and Player 0
+## are the two values entity_state.gd's "Owner player id" section explains
+## NO_OWNER_PLAYER_ID must never be mistaken for. If NO_OWNER_PLAYER_ID were
+## ever changed to 0 or -1, this test starts failing the moment it does.
+func _test_owner_player_id_boundary_values_round_trip() -> void:
+	var registry := SimEntityRegistryScript.new()
+	var state := SimEntityStateScript.new(registry)
+	var neutral_id := registry.allocate(SimEntityRegistryScript.Kind.UNIT)
+	var player_zero_id := registry.allocate(SimEntityRegistryScript.Kind.UNIT)
+	state.set_owner_player_id(neutral_id, PlayerDataScript.NEUTRAL_PLAYER_ID)
+	state.set_owner_player_id(player_zero_id, 0)
+	_expect(
+		state.has_owner_player_id(neutral_id)
+			and state.owner_player_id(neutral_id) == PlayerDataScript.NEUTRAL_PLAYER_ID,
+		"NEUTRAL_PLAYER_ID (-1) must round-trip as a legitimate, recorded owner -- it is a legal value, not"
+			+ " \"no value\""
+	)
+	_expect(
+		state.has_owner_player_id(player_zero_id) and state.owner_player_id(player_zero_id) == 0,
+		"Player 0 must round-trip as a legitimate, recorded owner -- 0 is a legal player id, not \"no value\""
+	)
+	_expect(
+		PlayerDataScript.NEUTRAL_PLAYER_ID != SimEntityStateScript.NO_OWNER_PLAYER_ID and 0 != SimEntityStateScript.NO_OWNER_PLAYER_ID,
+		"sanity check: the no-value marker must not collide with either legal boundary value"
+	)
+
+
+## Building kind is used here deliberately, for the identical reason
+## _test_health_and_shields_grow_independently uses it.
+func _test_owner_player_id_grows_independently() -> void:
+	var registry := SimEntityRegistryScript.new()
+	var state := SimEntityStateScript.new(registry)
+	var a := registry.allocate(SimEntityRegistryScript.Kind.UNIT)
+	var b := registry.allocate(SimEntityRegistryScript.Kind.BUILDING)
+	state.set_owner_player_id(b, 3)
+	state.set_health(a, 10.0)
+	_expect(not state.has_owner_player_id(a), "a must have no owner_player_id: only b's was ever written")
+	_expect(not state.has_health(b), "b must have no health: only a's health was ever written")
+	_expect(
+		state.owner_player_id(b) == 3,
+		"b's owner_player_id must read back correctly regardless of a's unrelated health write"
+	)
+
+
+func _test_snapshot_round_trip_owner_player_id() -> void:
+	var registry := SimEntityRegistryScript.new()
+	var state := SimEntityStateScript.new(registry)
+	var a := registry.allocate(SimEntityRegistryScript.Kind.UNIT)
+	var b := registry.allocate(SimEntityRegistryScript.Kind.BUILDING)
+	state.set_position(a, Vector3(1.0, 2.0, 3.0))
+	state.set_owner_player_id(a, 1)
+	state.set_owner_player_id(b, PlayerDataScript.NEUTRAL_PLAYER_ID)
+	var snapshot := state.capture()
+
+	var restored := SimEntityStateScript.new(registry)
+	var ok := restored.restore(snapshot)
+	_expect(ok, "restore() of a snapshot capture() just produced must succeed")
+	_expect(restored.owner_player_id(a) == 1, "restore() must reproduce a's owner_player_id exactly")
+	_expect(
+		restored.owner_player_id(b) == PlayerDataScript.NEUTRAL_PLAYER_ID,
+		"restore() must reproduce b's owner_player_id exactly, including a legitimately-neutral value"
+	)
+	_expect(
+		restored.has_owner_player_id(b),
+		(
+			"b's owner_player_id must be recorded as written, not confused with \"never written\" merely"
+			+ " because the value is NEUTRAL_PLAYER_ID"
+		)
+	)
+
+
+func _test_restore_without_owner_player_id_keys_is_backward_compatible() -> void:
+	var registry := SimEntityRegistryScript.new()
+	var state := SimEntityStateScript.new(registry)
+	var ok := state.restore({"version": 1, "written_ids": [], "position": []})
+	_expect(
+		ok,
+		"restore() must accept a version-1 snapshot with no owner_player_id keys at all, as a pre-C4 capture"
+			+ " would produce"
+	)
+	var id := registry.allocate(SimEntityRegistryScript.Kind.UNIT)
+	_expect(
+		not state.has_owner_player_id(id),
+		"a store restored from a snapshot with no owner_player_id data must report no owner_player_id for any id"
+	)
+
+
+func _test_restore_fails_closed_on_malformed_owner_player_id_data() -> void:
+	var registry := SimEntityRegistryScript.new()
+	var state := SimEntityStateScript.new(registry)
+	var a := registry.allocate(SimEntityRegistryScript.Kind.UNIT)
+	state.set_owner_player_id(a, 2)
+
+	_expect(
+		not state.restore(
+			{
+				"version": 1,
+				"written_ids": [],
+				"position": [],
+				"owner_player_id_written_ids": [a],
+				"owner_player_id": [],
+			}
+		),
+		"restore() must reject mismatched owner_player_id_written_ids/owner_player_id lengths"
+	)
+	_expect(
+		not state.restore(
+			{
+				"version": 1,
+				"written_ids": [],
+				"position": [],
+				"owner_player_id_written_ids": [a],
+				"owner_player_id": ["not a number"],
+			}
+		),
+		"restore() must reject a malformed owner_player_id entry"
+	)
+	_expect(
+		state.owner_player_id(a) == 2,
+		"a failed restore() must leave the store's prior owner_player_id contents completely untouched"
 	)

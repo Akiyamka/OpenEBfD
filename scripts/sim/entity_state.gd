@@ -1,31 +1,31 @@
 class_name SimEntityState
 extends RefCounted
 
-## Flat hot-state store for entity position, health and shields -- the
-## container decision 3 promises in docs/architecture/network-multiplayer.md
-## ("Simulation core owns state; nodes are views"): "hot state -- position,
-## velocity, facing, health, owner -- lives in flat Packed*Arrays indexed by
-## entity id." Slice C1 (phase 3) built the container with position alone;
-## nothing wrote into it. Slice C2 wired unit position writes through it.
-## This slice, C3, adds health and shields and wires both units' and
-## buildings' setters through them -- see Unit.health/Unit.shields
-## (scripts/units/unit.gd) and Building.health/Building.shields
-## (scripts/buildings/building.gd), whose own doc comments explain why the
-## setter itself is the chokepoint here rather than a separate method like
-## Unit.set_simulation_position(): every health/shields write in this project
-## already funnels through the property setter, because GDScript routes
-## every assignment to a property with `set(value)` through that setter --
-## there is no second name for the backing storage a caller could assign to
-## instead. C4 does owner. Facing and velocity are still not staged: facing
-## has no reader yet either, and velocity stays out for the reason recorded
-## below.
+## Flat hot-state store for entity position, health, shields and owner
+## player id -- the container decision 3 promises in
+## docs/architecture/network-multiplayer.md ("Simulation core owns state;
+## nodes are views"): "hot state -- position, velocity, facing, health,
+## owner -- lives in flat Packed*Arrays indexed by entity id." Slice C1
+## (phase 3) built the container with position alone; nothing wrote into it.
+## Slice C2 wired unit position writes through it. Slice C3 added health and
+## shields for both units and buildings. This slice, C4, adds owner player
+## id, also for both kinds -- see Unit.owner_player_id
+## (scripts/units/unit.gd) and Building.owner_player_id
+## (scripts/buildings/building.gd), whose own doc comments explain why this
+## property's setter is the chokepoint here too, for the identical reason
+## C3 needed none built: every owner_player_id write in this project already
+## funnels through it, because GDScript routes every assignment to a
+## property with `set(value)` through that setter -- there is no second name
+## for the backing storage a caller could assign to instead. That was swept
+## and confirmed, not assumed -- see "Registration-time push" below for what
+## the sweep found. Facing and velocity are still not staged: facing has no
+## reader yet either, and velocity stays out for the reason recorded below.
 ##
 ## Both kinds share this store. `SimEntityRegistry` already allocates ids for
 ## `Kind.BUILDING` from the identical id space `Kind.UNIT` uses (see
-## entity_registry.gd), so a building's health lives at `_health[id]` exactly
-## as a unit's does -- no second array, no per-kind branch anywhere in this
-## file. C4 (owner) needs both kinds for the same reason and would have had
-## to add that branch itself if C3 had not.
+## entity_registry.gd), so a building's health -- and now its owner --
+## lives at `_health[id]` / `_owner_player_id[id]` exactly as a unit's does
+## -- no second array, no per-kind branch anywhere in this file.
 ##
 ## Velocity is deliberately still not staged: the phase 3 notes in the design
 ## doc found `Unit` keeps its own `velocity` on the CharacterBody3D node ("the
@@ -93,6 +93,64 @@ extends RefCounted
 ## landed still restores cleanly; present-but-malformed data still fails
 ## closed, exactly as position's fields already do.
 ##
+## --- Owner player id (slice C4) ---
+##
+## Storage type: `PackedInt32Array`, not `PackedFloat32Array` -- unlike
+## position and health/shields, this field is an `int` in GDScript today
+## (`Unit.owner_player_id`, `Building.owner_player_id`), and stays one here.
+## Every legal value (`PlayerDataScript.NEUTRAL_PLAYER_ID` through decision
+## 9's four in-lobby players) sits nowhere near a 32-bit range, so there is
+## no precision question the way there was for position or health -- this
+## is simply the matching packed type for the field's own declared type,
+## copying the pattern the other two sections already set rather than
+## generalizing this store into something id-and-type-agnostic.
+##
+## No clamping, for a stronger reason than health's "no array to hold
+## max_health": there is no ceiling to clamp against at all. The setter
+## passes this store exactly the value it receives.
+##
+## No-value marker: `NO_OWNER_PLAYER_ID`, not `0` and not
+## `PlayerDataScript.NEUTRAL_PLAYER_ID`. Integers have no `INF`, so this
+## field needs its own marker the way position needed `Vector3.INF` in
+## place of `Vector3.ZERO` and health needed `INF` in place of `0.0` --
+## and the reasoning is sharper here than for either: `0` is Player 0, a
+## legal owner, and `-1` (`NEUTRAL_PLAYER_ID`) is *also* a legal owner --
+## an unowned building or a neutral spice unit really is owned by -1, so
+## returning it for "no value" would make "this entity has no recorded
+## owner" and "this entity is neutral" the same answer, the exact trap
+## `0.0` was rejected for health. `NO_OWNER_PLAYER_ID` is the minimum value
+## a `PackedInt32Array` element can hold -- as far outside the legal
+## player-id domain as an int can get, the identical "cannot be mistaken
+## for a real value" argument `INF` makes for a float, checkable the same
+## way: compare against the constant rather than `is_finite()`, since ints
+## have no such builtin.
+##
+## Registration-time push, the problem this slice actually exists to close
+## (see entity_registry.gd's own former comment, which recorded the gap
+## rather than closing it, and which this slice's commit updates). A unit
+## or building gets its `_entity_id` inside its own `_ready()`
+## (`_register_entity_id()`, below both classes' `_ready()`). If
+## `owner_player_id` is assigned *before* that -- and it routinely is, not
+## hypothetically: every fixture and demo scene (tests/fixtures/*.tscn,
+## scenes/match/demo_match.tscn, scenes/match/demo_flame.tscn) sets
+## `owner_player_id` as a scene property, which Godot applies during
+## `PackedScene.instantiate()`, well before `add_child()`; and
+## `MatchSnapshot._restore_entities()` (scripts/match/match_snapshot.gd)
+## calls `entity.set("owner_player_id", ...)` before `root.add_child(entity)`
+## on every load -- the property setter runs with `_entity_id` still 0, so
+## its own store write (guarded by `if _entity_id != 0`, the same guard
+## every other field's setter uses) is skipped, and nothing else re-fires
+## the setter afterward. A mirror holding an owner the store never learned
+## is exactly the silent-divergence failure this store's own liveness
+## section and C2's debt paragraph both warn about. The fix is not to
+## reorder those callers -- scene deserialization order is the engine's,
+## not this project's, to change, and restoring owner before reparenting is
+## simply how MatchSnapshot is written -- it is for
+## `Unit._register_entity_id()` / `Building._register_entity_id()` to push
+## whatever the mirror currently holds into this store the moment
+## `_entity_id` becomes nonzero, so a write that happened before
+## registration is not lost. See those methods' own doc comments.
+##
 ## --- Position (slice C1/C2) ---
 ##
 ## Indexing: directly by entity id (scripts/sim/entity_registry.gd), the
@@ -146,6 +204,13 @@ extends RefCounted
 ## it; previous_position() exists from the start instead, unused until B4
 ## calls it, so no caller written before B4 has to change when it does.
 
+## No-value marker for owner_player_id -- see this file's "Owner player id"
+## section above for why neither 0 nor PlayerDataScript.NEUTRAL_PLAYER_ID
+## (-1) can serve, and why this is the minimum value a PackedInt32Array
+## element can hold rather than some smaller, arbitrary-looking negative
+## number.
+const NO_OWNER_PLAYER_ID := -2147483648
+
 var _registry: SimEntityRegistry
 
 ## Position as of the most recent set_position() call for each id --
@@ -178,6 +243,15 @@ var _health_has_value: PackedByteArray = PackedByteArray()
 ## and same independence from the other fields as _health above.
 var _shields: PackedFloat32Array = PackedFloat32Array()
 var _shields_has_value: PackedByteArray = PackedByteArray()
+
+## Owner player id as of the most recent set_owner_player_id() call for each
+## id. Same independence from the other fields as _health above -- a scene's
+## exported owner_player_id and MatchSnapshot's restored owner_player_id
+## both land here at registration time (see this file's "Registration-time
+## push" section), which does not wait on position, health or shields ever
+## being written for the same id.
+var _owner_player_id: PackedInt32Array = PackedInt32Array()
+var _owner_player_id_has_value: PackedByteArray = PackedByteArray()
 
 
 func _init(registry: SimEntityRegistry) -> void:
@@ -322,21 +396,64 @@ func has_shields(id: int) -> bool:
 	return _registry.is_alive(id) and id < _shields_has_value.size() and _shields_has_value[id] == 1
 
 
+## Writes `value` as `id`'s owner player id. No clamp to compute -- see this
+## file's "Owner player id" section on why there is no ceiling for this
+## field at all, unlike health/shields. Same refusal behaviour as
+## set_health()/set_position() for a dead or unallocated id.
+func set_owner_player_id(id: int, value: int) -> void:
+	if not _registry.is_alive(id):
+		push_error(
+			"SimEntityState.set_owner_player_id(): id %d is not alive (dead or never allocated) -- write refused" % id
+		)
+		return
+	_ensure_owner_player_id_capacity(id)
+	_owner_player_id[id] = value
+	_owner_player_id_has_value[id] = 1
+
+
+## `id`'s owner player id as of its most recent set_owner_player_id() call.
+## Errors loudly and returns NO_OWNER_PLAYER_ID for a dead, never-allocated,
+## or never-written id -- see this file's "Owner player id" section for why
+## neither 0 nor PlayerDataScript.NEUTRAL_PLAYER_ID can serve as that marker
+## the way 0.0 could not serve health's. Check has_owner_player_id() first
+## if that is a normal possibility at the call site rather than a bug.
+func owner_player_id(id: int) -> int:
+	if not has_owner_player_id(id):
+		push_error(
+			"SimEntityState.owner_player_id(): id %d has no owner_player_id -- dead, never allocated, or never written"
+				% id
+		)
+		return NO_OWNER_PLAYER_ID
+	return _owner_player_id[id]
+
+
+## True once set_owner_player_id(id, ...) has been called at least once for
+## a currently-alive id.
+func has_owner_player_id(id: int) -> bool:
+	return (
+		_registry.is_alive(id)
+		and id < _owner_player_id_has_value.size()
+		and _owner_player_id_has_value[id] == 1
+	)
+
+
 ## Array length backing the position field this store holds -- the id
 ## high-water mark among ids that have actually had a position written,
 ## plus one. Test-facing: proves restore() replaced the arrays rather than
-## merging into them. Health and shields grow independently (see _health's
-## own comment) and are not reflected here; nothing outside this file reads
-## their capacity yet, so no health_capacity()/shields_capacity() exists --
+## merging into them. Health, shields and owner_player_id grow independently
+## (see _health's own comment) and are not reflected here; nothing outside
+## this file reads their capacity yet, so no
+## health_capacity()/shields_capacity()/owner_player_id_capacity() exists --
 ## add one the way this method already exists, when something needs it.
 func capacity() -> int:
 	return _position.size()
 
 
-## Captures every written id's current position, health and shields into a
-## plain, JSON-safe Dictionary -- see this class's doc comment for why
-## previous_position() is not included, why no previous-health/-shields
-## exist to include, and why only written ids are captured for each field.
+## Captures every written id's current position, health, shields and owner
+## player id into a plain, JSON-safe Dictionary -- see this class's doc
+## comment for why previous_position() is not included, why no
+## previous-health/-shields/-owner exist to include, and why only written
+## ids are captured for each field.
 func capture() -> Dictionary:
 	var written_ids: Array = []
 	var position_rows: Array = []
@@ -356,6 +473,12 @@ func capture() -> Dictionary:
 		if _shields_has_value[id] == 1:
 			shields_written_ids.append(id)
 			shields_rows.append(_shields[id])
+	var owner_player_id_written_ids: Array = []
+	var owner_player_id_rows: Array = []
+	for id in _owner_player_id_has_value.size():
+		if _owner_player_id_has_value[id] == 1:
+			owner_player_id_written_ids.append(id)
+			owner_player_id_rows.append(_owner_player_id[id])
 	return {
 		"version": 1,
 		"written_ids": written_ids,
@@ -364,6 +487,8 @@ func capture() -> Dictionary:
 		"health": health_rows,
 		"shields_written_ids": shields_written_ids,
 		"shields": shields_rows,
+		"owner_player_id_written_ids": owner_player_id_written_ids,
+		"owner_player_id": owner_player_id_rows,
 	}
 
 
@@ -374,10 +499,11 @@ func capture() -> Dictionary:
 ## header-level corruption rather than partially applying it. On success,
 ## every id absent from `data` is gone from this store afterward, even if
 ## it was written here before the call: restore() replaces, it does not
-## merge. `health_written_ids`/`health`/`shields_written_ids`/`shields` are
-## optional -- a version-1 snapshot captured before this slice added them
-## restores with empty health/shields, not a failure; present-but-malformed
-## data in those fields still fails closed. Returns whether it succeeded.
+## merge. `health_written_ids`/`health`/`shields_written_ids`/`shields`/
+## `owner_player_id_written_ids`/`owner_player_id` are all optional -- a
+## snapshot captured before the slice that added a given pair restores with
+## that field empty, not a failure; present-but-malformed data in any of
+## them still fails closed. Returns whether it succeeded.
 func restore(data: Dictionary) -> bool:
 	if int(data.get("version", 0)) != 1:
 		push_error("SimEntityState.restore(): snapshot has no recognized version -- refusing to load")
@@ -419,6 +545,14 @@ func restore(data: Dictionary) -> bool:
 	shields_ids = shields_parsed["ids"]
 	shields_values = shields_parsed["values"]
 
+	var owner_ids: Array
+	var owner_values: Array
+	var owner_parsed := _parse_int_field(data, "owner_player_id_written_ids", "owner_player_id")
+	if owner_parsed.is_empty():
+		return false
+	owner_ids = owner_parsed["ids"]
+	owner_values = owner_parsed["values"]
+
 	var max_id := 0
 	for id in ids:
 		max_id = maxi(max_id, int(id))
@@ -455,6 +589,18 @@ func restore(data: Dictionary) -> bool:
 		new_shields[id] = float(shields_values[i])
 		new_shields_has_value[id] = 1
 
+	var max_owner_id := 0
+	for id in owner_ids:
+		max_owner_id = maxi(max_owner_id, int(id))
+	var new_owner_player_id := PackedInt32Array()
+	new_owner_player_id.resize(max_owner_id + 1)
+	var new_owner_player_id_has_value := PackedByteArray()
+	new_owner_player_id_has_value.resize(max_owner_id + 1)
+	for i in owner_ids.size():
+		var id: int = owner_ids[i]
+		new_owner_player_id[id] = int(owner_values[i])
+		new_owner_player_id_has_value[id] = 1
+
 	_position = new_position
 	_position_previous = new_position.duplicate()
 	_has_value = new_has_value
@@ -462,6 +608,8 @@ func restore(data: Dictionary) -> bool:
 	_health_has_value = new_health_has_value
 	_shields = new_shields
 	_shields_has_value = new_shields_has_value
+	_owner_player_id = new_owner_player_id
+	_owner_player_id_has_value = new_owner_player_id_has_value
 	return true
 
 
@@ -490,6 +638,14 @@ func _ensure_shields_capacity(id: int) -> void:
 	_shields_has_value.resize(new_size)
 
 
+func _ensure_owner_player_id_capacity(id: int) -> void:
+	if id < _owner_player_id.size():
+		return
+	var new_size := id + 1
+	_owner_player_id.resize(new_size)
+	_owner_player_id_has_value.resize(new_size)
+
+
 ## Shared parsing for restore()'s health and shields fields, which are
 ## identically shaped (a plain float, no per-row struct like position's
 ## Vector3 triple) -- unlike position, factoring this out is not building a
@@ -500,6 +656,41 @@ func _ensure_shields_capacity(id: int) -> void:
 ## relevant error. Absent keys parse as empty, not as failure -- see
 ## restore()'s own doc comment on backward compatibility.
 func _parse_float_field(data: Dictionary, ids_key: String, values_key: String) -> Dictionary:
+	var raw_ids: Variant = data.get(ids_key, [])
+	var raw_values: Variant = data.get(values_key, [])
+	if not raw_values is Array:
+		push_error("SimEntityState.restore(): snapshot '%s' field is malformed" % values_key)
+		return {}
+	if not (raw_ids is Array or raw_ids is PackedInt32Array):
+		push_error("SimEntityState.restore(): snapshot '%s' field is malformed" % ids_key)
+		return {}
+	var ids := _coerce_id_list(raw_ids)
+	var values: Array = raw_values
+	if ids.size() != values.size():
+		push_error("SimEntityState.restore(): '%s' and '%s' have different lengths" % [ids_key, values_key])
+		return {}
+	for i in values.size():
+		if not (values[i] is float or values[i] is int):
+			push_error("SimEntityState.restore(): malformed '%s' entry at index %d" % [values_key, i])
+			return {}
+		if ids[i] < 1:
+			push_error("SimEntityState.restore(): malformed '%s' id at index %d" % [ids_key, i])
+			return {}
+	return {"ids": ids, "values": values}
+
+
+## Parsing for restore()'s owner_player_id field. Structurally identical to
+## _parse_float_field() above -- same optional-key, fails-closed validation
+## -- but kept as its own copy rather than shared with it: owner_player_id
+## is a different type (int, not float) with a different no-value marker
+## (NO_OWNER_PLAYER_ID, not INF), and _parse_float_field()'s own doc comment
+## already scopes it to exactly the two float fields it serves. Reaching a
+## third, differently-typed field through that helper would make that
+## comment false and would be the generic id-and-type-agnostic store this
+## file's own doc comment says not to build -- copy the pattern instead, the
+## same choice set_owner_player_id()/owner_player_id()/has_owner_player_id()
+## already make against set_health()/health()/has_health().
+func _parse_int_field(data: Dictionary, ids_key: String, values_key: String) -> Dictionary:
 	var raw_ids: Variant = data.get(ids_key, [])
 	var raw_values: Variant = data.get(values_key, [])
 	if not raw_values is Array:

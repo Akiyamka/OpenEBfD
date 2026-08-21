@@ -35,9 +35,29 @@ extends SceneTree
 ## kinds -- and _test_health_clamp_lands_in_the_store proves the clamp
 ## specifically, which is the one place the two really could still diverge
 ## if the store were ever handed the unclamped value by mistake.
+##
+## Slice C4 adds owner_player_id, for both kinds again, and it is the one
+## field of the four where "the setter is the only chokepoint" is not the
+## whole story: the setter can only write into the store once _entity_id is
+## nonzero, and owner_player_id is routinely assigned *before* that -- every
+## fixture and demo scene sets it as a scene property (Godot applies those
+## during PackedScene.instantiate(), before add_child()), and
+## MatchSnapshot._restore_entities() does the identical thing on every load.
+## _test_boot_populates_the_store_owner_player_id already exercises that
+## path incidentally, because match_fixture.tscn's units and buildings are
+## themselves examples of it, but incidental coverage is not what closes a
+## slice: _test_owner_assigned_before_registration_reaches_the_store below
+## manufactures the exact scenario directly -- construct a node, assign
+## owner_player_id, *then* add_child() it -- so it fails specifically, and
+## only, if Unit._register_entity_id() / Building._register_entity_id()'s
+## registration-time push (scripts/sim/entity_state.gd's own "Registration-
+## time push" section) regresses, independent of whatever the fixture scene
+## happens to author.
 
 const LegacyRulesFixture := preload("res://tests/support/legacy_rules_fixture.gd")
 const MatchFixtureScene := preload("res://tests/fixtures/match_fixture.tscn")
+const UnitScene := preload("res://scenes/units/unit.tscn")
+const ConYardScene := preload("res://assets/converted/buildings/ATConYard/ATConYard.scn")
 
 var _assertions := 0
 var _failures := 0
@@ -72,6 +92,20 @@ func _initialize() -> void:
 	await _run_case(
 		"a write above max_health/max_shields lands clamped in the store, not only in the mirror",
 		_test_health_clamp_lands_in_the_store
+	)
+	await _run_case(
+		"every fixture unit and building already has a store owner_player_id once the match "
+			+ "finishes booting",
+		_test_boot_populates_the_store_owner_player_id
+	)
+	await _run_case(
+		"owner_player_id writes reach the store for both a unit and a building",
+		_test_owner_player_id_writes_reach_the_store_for_units_and_buildings
+	)
+	await _run_case(
+		"a unit or building whose owner_player_id is assigned before add_child() still ends up "
+			+ "with the right owner in the store once it registers",
+		_test_owner_assigned_before_registration_reaches_the_store
 	)
 
 	if _failures > 0:
@@ -422,5 +456,165 @@ func _test_health_clamp_lands_in_the_store() -> void:
 		"a below-zero shields write must land clamped to 0.0 in the store"
 	)
 
+	match_instance.queue_free()
+	await process_frame
+
+
+## Every fixture unit and building sets owner_player_id as a scene property
+## (see tests/fixtures/match_fixture.tscn: ScoutA=1, OrdosAPC=2, ATConYard=1,
+## ATSmWindtrap=1), which Godot applies during PackedScene.instantiate() --
+## before add_child(), before _ready(), before _entity_id exists. So this
+## case incidentally exercises the pre-registration path C4 exists to close,
+## the same way ScoutA/ATConYard's authored health already made
+## _test_boot_populates_the_store_health_and_shields prove the ordinary
+## lifecycle path for that field.
+## _test_owner_assigned_before_registration_reaches_the_store below proves
+## the same claim on purpose, independent of what this fixture happens to
+## author.
+func _test_boot_populates_the_store_owner_player_id() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	get_root().add_child(match_instance)
+	await process_frame
+	await process_frame
+	await process_frame
+
+	var store = match_instance.entity_state()
+	_expect(store != null, "Match must expose a live SimEntityState")
+
+	var expected_owner := {
+		"Units/ScoutA": 1,
+		"Units/OrdosAPC": 2,
+		"Buildings/ATConYard": 1,
+		"Buildings/ATSmWindtrap": 1,
+	}
+	for path in expected_owner:
+		# Bare `=`, not `:=`: entity_id/owner_player_id exist on Unit and
+		# Building but not on Node, the static type get_node() returns --
+		# see _test_boot_populates_the_store_health_and_shields's own
+		# comment for why this stays dynamically typed.
+		var entity = match_instance.get_node(path)
+		_expect(int(entity.entity_id) != 0, "%s must have a nonzero entity_id by boot" % path)
+		if store == null:
+			continue
+		_expect(
+			store.has_owner_player_id(entity.entity_id),
+			"%s must already have a store owner_player_id once the match has booted" % path
+		)
+		if store.has_owner_player_id(entity.entity_id):
+			_expect(
+				store.owner_player_id(entity.entity_id) == int(expected_owner[path]),
+				"%s's store owner_player_id must match its scene-authored value" % path
+			)
+			_expect(
+				store.owner_player_id(entity.entity_id) == int(entity.owner_player_id),
+				"%s's store owner_player_id must match its mirrored owner_player_id field after boot" % path
+			)
+
+	match_instance.queue_free()
+	await process_frame
+
+
+## Direct assignment to `.owner_player_id`, not set_owner_player_id() or any
+## one gameplay caller: this isolates the property setter's own behaviour,
+## the same reasoning _test_health_writes_reach_the_store_for_units_and_buildings
+## gives for health/shields. Both entities are already registered (added by
+## the fixture at boot), so this is the ordinary post-registration write
+## path -- _test_owner_assigned_before_registration_reaches_the_store below
+## covers the other one.
+func _test_owner_player_id_writes_reach_the_store_for_units_and_buildings() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	get_root().add_child(match_instance)
+	for _warmup in 3:
+		await process_frame
+
+	var unit := match_instance.get_node("Units/ScoutA") as Unit
+	var building := match_instance.get_node("Buildings/ATConYard") as Building
+	var store = match_instance.entity_state()
+	_expect(store != null, "Match must expose a live SimEntityState")
+	if store == null:
+		match_instance.queue_free()
+		return
+
+	unit.owner_player_id = 3
+	building.owner_player_id = 2
+
+	_expect(
+		store.owner_player_id(unit.entity_id) == 3,
+		"the unit's store owner_player_id must match its mirrored owner_player_id field after a direct write"
+	)
+	_expect(
+		store.owner_player_id(building.entity_id) == 2,
+		"the building's store owner_player_id must match its mirrored owner_player_id field after a direct write"
+	)
+
+	match_instance.queue_free()
+	await process_frame
+
+
+## The specific regression this slice exists to close, proven directly
+## rather than only incidentally (see this file's own header comment and
+## _test_boot_populates_the_store_owner_player_id's). A freshly instantiated
+## Unit and Building both get owner_player_id assigned *before* add_child()
+## -- exactly what a scene's exported value and
+## MatchSnapshot._restore_entities() both do in production (see
+## scripts/sim/entity_state.gd's "Registration-time push" section) -- so
+## _entity_id is still 0 when the property setter runs and its own store
+## write is skipped. Only Unit._register_entity_id() / Building.
+## _register_entity_id() pushing the mirror's current value into the store
+## at registration time can make this case pass; removing that push fails
+## it specifically, even though
+## _test_owner_player_id_writes_reach_the_store_for_units_and_buildings above
+## keeps passing.
+func _test_owner_assigned_before_registration_reaches_the_store() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	get_root().add_child(match_instance)
+	for _warmup in 3:
+		await process_frame
+
+	var store = match_instance.entity_state()
+	_expect(store != null, "Match must expose a live SimEntityState")
+	if store == null:
+		match_instance.queue_free()
+		return
+
+	var unit := UnitScene.instantiate() as Unit
+	unit.owner_player_id = 3
+	_expect(unit.entity_id == 0, "sanity check: a freshly instantiated unit must not be registered yet")
+	match_instance.get_node("Units").add_child(unit)
+	await process_frame
+
+	_expect(unit.entity_id != 0, "the unit must be registered once it has entered the tree")
+	_expect(
+		store.has_owner_player_id(unit.entity_id),
+		"a unit whose owner_player_id was assigned before add_child() must still have a store "
+			+ "owner_player_id once it registers"
+	)
+	if store.has_owner_player_id(unit.entity_id):
+		_expect(
+			store.owner_player_id(unit.entity_id) == 3,
+			"the store's owner_player_id must match the value assigned before registration, not 0 or "
+				+ "PlayerDataScript.NEUTRAL_PLAYER_ID"
+		)
+
+	var building := ConYardScene.instantiate() as Building
+	building.owner_player_id = 2
+	_expect(building.entity_id == 0, "sanity check: a freshly instantiated building must not be registered yet")
+	match_instance.get_node("Buildings").add_child(building)
+	await process_frame
+
+	_expect(building.entity_id != 0, "the building must be registered once it has entered the tree")
+	_expect(
+		store.has_owner_player_id(building.entity_id),
+		"a building whose owner_player_id was assigned before add_child() must still have a store "
+			+ "owner_player_id once it registers"
+	)
+	if store.has_owner_player_id(building.entity_id):
+		_expect(
+			store.owner_player_id(building.entity_id) == 2,
+			"the store's owner_player_id must match the value assigned before registration"
+		)
+
+	unit.queue_free()
+	building.queue_free()
 	match_instance.queue_free()
 	await process_frame
