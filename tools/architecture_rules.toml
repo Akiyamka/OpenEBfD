@@ -101,6 +101,47 @@ here did not catch it.
 instead = "MatchClock.TICKS_PER_SECOND for simulation time, or RuleTicks for a rate or duration authored in the rules data itself"
 
 [[rules]]
+id = "animation-completes-simulation"
+zone = "all"
+pattern = 'func _?on_animation_finished\s*\('
+exempt = [
+	# Phase 4's audit backlog. Every entry here handles AnimationPlayer's
+	# animation_finished signal, which fires on engine frame time. Where that
+	# handler completes *simulation* state, how many ticks something takes
+	# depends on how fast the machine ran -- slice B3d removed exactly that
+	# from UnitFlightController, and tests/units/flight_run.gd now proves the
+	# severing directly. These have NOT been audited the same way. Each needs
+	# the same question answered before phase 4's determinism gate: does it
+	# read live animation state to decide *when, or whether*, something
+	# happens? Reading a clip's authored length once is fine; waiting on its
+	# finished signal is not. Delete the entry when its file is fixed or
+	# cleared -- an emptying list is the progress report.
+	#
+	# Proven defective (see the phase 3 entry, slice B3d's sweep):
+	"scripts/units/unit_locomotion.gd",
+	# Suspected, unaudited -- each gates something a command can observe:
+	"scripts/units/unit_combat.gd",
+	"scripts/units/unit_deploy_state.gd",
+	"scripts/buildings/building_sale_service.gd",
+	# The dispatcher, not a decision of its own: it routes to the handlers
+	# above and must survive them, so it is cleared only when they all are.
+	"scripts/units/unit.gd",
+	# Cosmetic, audited and cleared: picks the next idle clip and nothing else.
+	"scripts/units/unit_idle_animations.gd",
+]
+summary = "simulation state completed from an animation signal"
+why = """
+AnimationPlayer's animation_finished fires on engine frame time, so a \
+transition that completes on it takes however many simulation ticks the \
+machine's frame rate happened to allow. Flight had this and it was \
+measurable: tests/units/flight_run.gd reported 253 or 254 assertions across \
+identical runs until slice B3d severed it. Worse, moving a system onto the \
+tick can *hide* the symptom while leaving the cause -- a stable green suite \
+then says something about the fixture, not about the code.
+"""
+instead = "read the clip's authored length once (flight_clip_length()) and complete on a tick deadline, the way UnitFlightController.advance() does since slice B3d"
+
+[[rules]]
 id = "bare-class-name-reference"
 zone = "all"
 kind = "require-preload"

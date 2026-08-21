@@ -806,6 +806,50 @@ and by the time we get there the hard part is already tested.
   above wired into `check_architecture.py`, and the CI test that replays one
   command log twice in-process and then compares state hashes across native and
   web builds.
+
+  **Carried in from phase 3, and deliberately not fixed there: simulation state
+  that completes on an animation signal.** `AnimationPlayer`'s
+  `animation_finished` fires on engine frame time, so anything that completes on
+  it takes however many simulation ticks the machine's frame rate happened to
+  allow. Slice B3d removed one instance of this from `UnitFlightController` and
+  proved the severing directly; the rest were found by its sweep and left,
+  because they were not in B3's file list and widening a slice after the fact is
+  how a slice stops being reviewable.
+
+  The backlog is not kept here, on purpose — a list in prose is a second place
+  to keep correct, and it would be wrong the first time someone fixed one
+  without coming back. It lives in `tools/architecture_rules.toml` as the
+  `exempt` list of the `animation-completes-simulation` rule, which is the audit
+  queue and the enforcement in one object: a **new** handler trips the rule
+  immediately, and deleting an entry is the visible event that records progress.
+  Read that list; it is current by construction. `tools/test_check_architecture.py`
+  proves both halves — that the shape is caught, and that an exemption really
+  does silence it, so removing one means something.
+
+  What each entry needs before this gate closes is one question, the same one
+  B3b answered "no" for authored building fire and B3d answered "yes" for
+  flight: **does it read live animation state to decide when, or whether,
+  something happens?** Reading a clip's authored length once is a lookup of
+  data and is fine — `flight_clip_length()` and `AuthoredFireController`'s
+  precomputed `shot_times` both do it. Waiting on a finished signal is not.
+  Expect some entries to clear without a fix, as building fire did.
+
+  One is already known to be defective rather than merely suspect:
+  `UnitLocomotion`'s mech gait. Its `STARTING` branch **races** the tick-driven
+  `advance_start_transition()`, whose own comment already admits the tension,
+  and `is_starting()` gates whether `Unit` zeroes `velocity` — so which path
+  wins decides which tick a mech starts moving on. Its `STOPPING` branch is
+  worse: the signal is the only path back to idle, with no tick-driven
+  fallback at all.
+
+  The trap this class sets, worth stating because phase 3 walked into it: moving
+  a system onto the tick can **hide** the symptom while leaving the cause.
+  `tests/units/flight_run.gd` reported 253 or 254 assertions across identical
+  runs until slice B2 made its fixture drive ticks explicitly, after which it
+  read a stable 381 with the coupling entirely intact. A green, stable suite
+  became evidence about the fixture rather than about the code. Prove a fix the
+  way B3d's test does: fire the real signal, assert nothing happened, then drive
+  ticks alone.
 - **Phase 5 — netcode.** Turn scheduler, adaptive input delay, checksums,
   stall/drop policy, snapshot-based reconnect, lobby with room codes and teams.
 - **Phase 6 — polish.** Cosmetic prediction, parameter tuning under induced

@@ -1,0 +1,15 @@
+extends RefCounted
+
+## A module that completes its own state from AnimationPlayer's
+## animation_finished signal, which fires on engine frame time -- the shape
+## slice B3d removed from UnitFlightController, where it made a transition
+## take however many simulation ticks the machine's frame rate allowed.
+
+var _transition_active := false
+
+
+func on_animation_finished(animation_name: StringName, player: AnimationPlayer) -> bool:
+	if not _transition_active:
+		return false
+	_transition_active = false
+	return true

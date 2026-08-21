@@ -141,6 +141,20 @@ CASES: tuple[Case, ...] = (
         EXIT_CLEAN,
     ),
     Case(
+        "simulation completed from an animation signal",
+        scripts("animation_completes_simulation"),
+        EXIT_FINDINGS,
+        expect_rules=("animation-completes-simulation",),
+    ),
+    Case(
+        # The exempt list in architecture_rules.toml is phase 4's audit
+        # backlog, not a blessing -- this proves an entry on it really does
+        # silence the rule, so that deleting one is a meaningful event.
+        "the animation handler is allowed where phase 4 still owes an audit",
+        {"scripts/units/unit_locomotion.gd": "animation_completes_simulation"},
+        EXIT_CLEAN,
+    ),
+    Case(
         "zone globs reach nested directories",
         {"scripts/units/navigation/ground/deep.gd": "private_owner_access"},
         EXIT_FINDINGS,
