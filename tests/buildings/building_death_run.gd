@@ -177,6 +177,17 @@ func _test_building_without_destroy_clip() -> void:
 	building.take_damage(building.max_health + building.max_shields + 10.0, &"")
 
 	_expect(building.is_queued_for_deletion(), "the building must still be freed even with no matching death clip")
+	# Slice C5's no-clip hole: this branch calls request_despawn() straight
+	# from BuildingDeathSequence's early return, never through
+	# prepare_model_for_corpse() -- before C5 neither set anything at all, so
+	# is_simulation_halted() staying false here would mean sim_tick() (turret
+	# reload, refinery dock cooldown, AuthoredFireController.advance()) kept
+	# running for a building that queue_free() had already, invisibly,
+	# condemned for the rest of this frame's remaining ticks.
+	_expect(
+		building.is_simulation_halted(),
+		"a building with no matching death clip must still halt its simulation"
+	)
 	_expect(_corpses_in(world).is_empty(), "no corpse may be spawned when ORConYard has no Destroy model")
 	var explosion_effects := _explosion_effects_in(world)
 	_expect(

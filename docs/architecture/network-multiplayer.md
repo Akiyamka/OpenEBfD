@@ -975,6 +975,52 @@ and by the time we get there the hard part is already tested.
   narrow case where there is no alternative: without it a killed unit in
   those suites would never be freed at all.
 
+  **What C5 made visible, measured 2026-08-21 and deliberately left open: dead
+  units are still being moved.** Erasing liveness at the kill site turned every
+  hot-state write against a not-yet-drained entity into a loud refusal, and the
+  volume named the gap: 1707 `push_error`s across a full suite run, 1698 of them
+  from `tests/match/demo_boot_run.gd` alone (1662 position, 23 health, 17
+  shields, 5 owner; 7 of the 1707 are `tests/sim/entity_state_run.gd`'s own
+  deliberate error-path cases and 2 are `despawn_run.gd`'s).
+
+  The path, traced rather than guessed: `UnitNavigationSystem.sim_tick()` walks
+  its own agent registry and calls `Unit.navigation_step()`, which writes the
+  unit's position -- and it prunes agents on node validity alone, while
+  `queue_free()` keeps a node valid until the engine frame ends. So a dead unit
+  keeps being navigated for every remaining tick of the frame that killed it.
+  `Unit.sim_tick()`'s own `_simulation_halted` guard does not cover this,
+  because navigation drives the unit from outside that call.
+
+  Behaviour did not change: the node still moves and the store still refuses,
+  exactly as before. What changed is that the store now says so. This is the
+  same trap phase 3 already walked into once from the other direction -- there,
+  moving a system onto the tick hid a defect's symptom while leaving its cause;
+  here, a slice that touched neither made a silent pre-existing defect start
+  reporting itself. Neither the silence nor the noise is evidence about the
+  code that produced it.
+
+  Two ways out, neither chosen here because choosing is a decision rather than a
+  detail. Either the store learns to tell a released id from a never-allocated
+  one -- `SimEntityRegistry.kind_of()` already outlives `release()` precisely so
+  that distinction stays available, and a write to an id that died this frame is
+  expected under C5 in a way a write to an id that never existed is not -- or
+  navigation stops stepping a halted unit at all, which is the behaviour fix and
+  a wider slice than quieting a report. Recorded here rather than in a checker
+  rule because it is one known site, not a class someone could reintroduce
+  without noticing.
+
+  One near-miss worth keeping, because the code comments that now prevent it
+  read as obvious only in hindsight: `request_despawn()` is idempotent on
+  `_simulation_halted`, and `Unit.prepare_model_for_corpse()` used to set that
+  same flag a few statements before `UnitDeathSequence.begin()` called
+  `request_despawn()`. The guard therefore swallowed the despawn on the ordinary
+  corpse branch -- the death path every unit with a matched death clip takes --
+  so the node was halted but never freed and its id never released. The flag now
+  has exactly one writer per class, `request_despawn()` itself, and
+  `tests/match/despawn_run.gd` names the hazard directly rather than leaving it
+  to be rediscovered through five unexplained `is_queued_for_deletion()`
+  failures in a suite about corpses and animation clips.
+
 - **Phase 4 — determinism gate.** Portable math, RNG split, the static rules
   above wired into `check_architecture.py`, and the CI test that replays one
   command log twice in-process and then compares state hashes across native and

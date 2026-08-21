@@ -217,3 +217,20 @@ func pump(controller: UnitCommandController = null) -> void:
 		var result: Dictionary = _executor.execute(command)
 		if controller != null:
 			controller.on_command_executed(command, result)
+
+
+## Slice C5 stand-in for the other half of
+## Match._advance_simulation_tick()'s own last statement: a real Building/
+## Unit's request_despawn() (scripts/buildings/building.gd,
+## scripts/units/unit.gd) queues its id in this pump's own EntityNodeIndex
+## rather than calling queue_free() directly, whenever install_match_lookup_
+## stub() below has given it a resolvable entity id -- the same deferred-
+## despawn contract a real Match honours by draining every tick. This pump
+## has no tick loop of its own to run that drain from automatically (pump()
+## above only drains the command bus), so a case that sells or kills a real
+## Building/Unit through the production code path must call this explicitly
+## before asserting is_queued_for_deletion(), or the node is left correctly
+## halted but never actually freed. tests/buildings/controller_run.gd's sale
+## cases are today's example.
+func apply_pending_releases() -> int:
+	return _entities.apply_pending_releases()

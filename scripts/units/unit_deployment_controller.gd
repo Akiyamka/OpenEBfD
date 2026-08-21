@@ -326,7 +326,10 @@ func _on_deployment_animation_finished(deployment_id: int) -> void:
 
 	unit.call("finish_deployment", true)
 	_deployments.erase(deployment_id)
-	unit.queue_free()
+	# call(), not a direct method call: `unit` is declared Node3D here, which
+	# has queue_free() but not request_despawn() -- a direct call would be a
+	# compile error that fails this whole file's parse.
+	unit.call("request_despawn")
 
 
 func _on_building_placed(building: Node3D, deployment_id: int) -> void:
@@ -388,7 +391,10 @@ func _finish_undeployment(undeployment_id: int) -> void:
 	unit.set_owner_player_id(int(undeployment["owner_player_id"]))
 
 	_undeployments.erase(undeployment_id)
-	building.queue_free()
+	# call(), not a direct method call: `building` is declared Node3D here,
+	# which has queue_free() but not request_despawn() -- a direct call would
+	# be a compile error that fails this whole file's parse.
+	building.call("request_despawn")
 	var move_target: Vector3 = undeployment["move_target"]
 	var exit_position: Vector3 = undeployment["exit_position"]
 	if _navigation != null and _navigation.has_method("command_move"):

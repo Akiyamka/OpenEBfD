@@ -634,6 +634,20 @@ func _process(delta: float) -> void:
 ## not yet freed" on its own), or a mound freed this same frame by
 ## map_spice_layer.gd's _remove_spice_mound() can still be listed here as a
 ## freed instance and must not be ticked.
+##
+## apply_pending_releases() runs last, draining whatever this same tick's
+## eight steps above queued through Unit.request_despawn() /
+## Building.request_despawn() (slice C5). Not deferred to the start of the
+## next call instead: queue_free() frees its node at the end of the engine
+## *frame*, not the end of the tick that requested it, regardless of which of
+## up to FrameTickDriver.MAX_TICKS_PER_FRAME's five ticks did the requesting
+## -- so draining here, at the end of the tick that produced the death, costs
+## zero wall-clock and is not observable from outside this function. Draining
+## at the start of the next tick instead would be observable: a death on a
+## frame's *last* tick would sit queued, still resolvable by
+## EntityNodeIndex.node_for() as absent but not yet freed, for a whole extra
+## frame before the drain that was supposed to belong to the tick that killed
+## it finally ran.
 func _advance_simulation_tick() -> void:
 	var tick := _clock.advance()
 	# Must run before drain(tick) below, not after: a replay command
@@ -694,6 +708,7 @@ func _advance_simulation_tick() -> void:
 	for spice_mound in get_tree().get_nodes_in_group("sim_spice_mounds"):
 		if is_instance_valid(spice_mound):
 			spice_mound.sim_tick()
+	_entity_index.apply_pending_releases()
 
 
 ## The simulation's current tick, for later slices and tests that need a way

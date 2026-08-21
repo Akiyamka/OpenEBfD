@@ -572,7 +572,11 @@ func _test_fixed_wall_marker_lifecycle(token: int) -> int:
 ## are otherwise unchanged from before the command bus existed --
 ## install_match_lookup_stub() is what lets `building`, a real Building, pick
 ## up a real resolvable entity id the same way it would under a real Match --
-## see that method's doc comment.
+## see that method's doc comment. One further step slice C5 added:
+## apply_pending_releases() must be called after the sell clip finishes,
+## because the resolvable entity id also routes the actual free through this
+## pump's own deferred-despawn queue instead of a direct queue_free() -- see
+## CommandPumpScript.apply_pending_releases()'s own comment.
 func _test_sale_animation(token: int, local_player: PlayerData) -> int:
 	var controller := SaleController.new()
 	root.add_child(controller)
@@ -599,6 +603,13 @@ func _test_sale_animation(token: int, local_player: PlayerData) -> int:
 	_expect(not building.is_queued_for_deletion(), "the building must remain until sell finishes")
 	if player != null:
 		player.animation_finished.emit(&"sell")
+	# Slice C5: BuildingSaleService._finish() now despawns through
+	# request_despawn(), which -- because install_match_lookup_stub() above
+	# gave `building` a resolvable entity id -- queues it in this pump's own
+	# EntityNodeIndex instead of calling queue_free() directly. Nothing here
+	# drives a tick loop to drain that queue on its own; see
+	# CommandPumpScript.apply_pending_releases()'s own comment.
+	pump.apply_pending_releases()
 	_expect(building.is_queued_for_deletion(), "sell completion must remove the building")
 	_expect(local_player.money == money_before + 1000, "sell completion must retain the half-cost refund")
 
@@ -642,6 +653,11 @@ func _test_sale_construct_fallback(token: int, local_player: PlayerData) -> int:
 	_expect(player.get_playing_speed() < 0.0, "sale fallback must reverse construct")
 	_expect(not building.is_queued_for_deletion(), "the building must remain until reversed construct finishes")
 	player.animation_finished.emit(&"construct")
+	# See _test_sale_animation()'s identical comment above: install_match_
+	# lookup_stub() gave `building` a resolvable entity id, so request_
+	# despawn() queued it in this pump's EntityNodeIndex rather than freeing
+	# it directly, and nothing else here drains that queue.
+	pump.apply_pending_releases()
 	_expect(building.is_queued_for_deletion(), "reversed construct completion must remove the building")
 
 	pump.uninstall_match_lookup_stub()

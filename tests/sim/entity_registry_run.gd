@@ -17,6 +17,10 @@ func _initialize() -> void:
 	_run_case("release() of an unknown id is a no-op", _test_release_unknown_id_is_noop)
 	_run_case("release() of an already-released id is a no-op", _test_release_twice_is_noop)
 	_run_case("live_count() and allocated_count() diverge once something is released", _test_counts)
+	_run_case("request_release() marks the id dead at once and drops it from live_ids()", _test_request_release_marks_dead_at_once)
+	_run_case("take_pending_releases() returns queued ids in request order", _test_take_pending_releases_request_order)
+	_run_case("take_pending_releases() clears the queue -- a second call returns empty", _test_take_pending_releases_clears_queue)
+	_run_case("request_release() of an unknown or already-released id queues nothing", _test_request_release_unknown_or_released_queues_nothing)
 	_finish("SimEntityRegistry tests")
 
 
@@ -89,4 +93,51 @@ func _test_counts() -> void:
 	_expect(
 		registry.allocated_count() == 3,
 		"allocated_count() is the id high-water mark and must include released ids"
+	)
+
+
+func _test_request_release_marks_dead_at_once() -> void:
+	var registry := SimEntityRegistryScript.new()
+	var a := registry.allocate(SimEntityRegistryScript.Kind.UNIT)
+	var b := registry.allocate(SimEntityRegistryScript.Kind.UNIT)
+	registry.request_release(a)
+	_expect(not registry.is_alive(a), "request_release() must mark the id dead immediately, not only once drained")
+	_expect(registry.live_ids() == PackedInt32Array([b]), "request_release() must drop the id from live_ids() at once")
+
+
+func _test_take_pending_releases_request_order() -> void:
+	var registry := SimEntityRegistryScript.new()
+	var a := registry.allocate(SimEntityRegistryScript.Kind.UNIT)
+	var b := registry.allocate(SimEntityRegistryScript.Kind.UNIT)
+	var c := registry.allocate(SimEntityRegistryScript.Kind.UNIT)
+	registry.request_release(c)
+	registry.request_release(a)
+	registry.request_release(b)
+	_expect(
+		registry.take_pending_releases() == PackedInt32Array([c, a, b]),
+		"take_pending_releases() must return ids in the order request_release() was called, not allocation order"
+	)
+
+
+func _test_take_pending_releases_clears_queue() -> void:
+	var registry := SimEntityRegistryScript.new()
+	var a := registry.allocate(SimEntityRegistryScript.Kind.UNIT)
+	registry.request_release(a)
+	registry.take_pending_releases()
+	_expect(
+		registry.take_pending_releases() == PackedInt32Array(),
+		"a second take_pending_releases() with no request_release() between must return empty, not the same ids again"
+	)
+
+
+func _test_request_release_unknown_or_released_queues_nothing() -> void:
+	var registry := SimEntityRegistryScript.new()
+	var a := registry.allocate(SimEntityRegistryScript.Kind.UNIT)
+	registry.request_release(a)
+	registry.take_pending_releases()
+	registry.request_release(a)
+	registry.request_release(999)
+	_expect(
+		registry.pending_release_count() == 0,
+		"request_release() of an already-released id or an unknown id must queue nothing"
 	)

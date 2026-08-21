@@ -1400,6 +1400,19 @@ func _test_rules_sidebar_tabs() -> void:
 	)
 
 	match_instance.queue_free()
+	# Missing here, unlike every other case in this file: queue_free() does
+	# not drop MatchLookupScript.GROUP membership until the frame ends, and
+	# the very next case's own match_instance registers its own buildings/
+	# units synchronously, inside its own add_child() call, before its first
+	# await -- so a still-lingering match_instance from this case was
+	# resolving as MatchLookupScript.entity_index()'s "first in group" for
+	# them instead of their own, brand-new Match. That id/registry mismatch
+	# was harmless before slice C5, when despawn was an unconditional
+	# queue_free() no matter which registry (if any) an entity thought it
+	# belonged to; C5's request_despawn() conditions the free on
+	# EntityNodeIndex.request_release() actually resolving the right one, so
+	# the stale registration now silently frees the wrong entity instead.
+	await process_frame
 
 
 ## Regression test: a building's DeathCorpse (BuildingDeathSequence.begin(),
@@ -1426,6 +1439,12 @@ func _test_dying_building_survives_sidebar_refresh() -> void:
 
 	var con_yard := match_instance.get_node("Buildings/ATConYard") as Building
 	con_yard.take_damage(con_yard.max_health + con_yard.max_shields + 10.0, &"")
+	# Slice C5: inside a real Match, request_despawn() queues the release
+	# through EntityNodeIndex instead of calling queue_free() directly (see
+	# Match._advance_simulation_tick()'s own doc comment on why the drain
+	# sits at the end of the tick), so the node is not actually freed until a
+	# tick's drain runs. Nothing here has advanced a tick yet.
+	match_instance.call("_advance_simulation_tick")
 	_expect(con_yard.is_queued_for_deletion(), "the killing blow must free the Construction Yard")
 
 	var buildings_root := match_instance.get_node("Buildings")

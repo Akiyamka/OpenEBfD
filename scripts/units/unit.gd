@@ -261,13 +261,16 @@ var _death_sequence := UnitDeathSequenceScript.new()
 ## holds the unit's position at the start of the most recent simulation
 ## tick, regardless of which movement path is active.
 var _previous_global_position := Vector3.ZERO
-## Set once this unit has handed its model to a corpse (see
-## prepare_model_for_corpse()): from that moment it owns nothing left to
-## simulate, but Match's "units" group loop still reaches it -- queue_free()
-## is deferred, so is_instance_valid() stays true for the rest of the tick.
-## set_physics_process(false) used to be what stopped the locomotion half from
-## running in that window; locomotion is on sim_tick() now, which no engine
-## flag gates, so the guard has to be explicit.
+## Set once request_despawn() below has run -- including on the branch where
+## prepare_model_for_corpse() already handed the model to a corpse first;
+## that function itself never touches this flag (see its own comment for
+## why setting it early there would break request_despawn()). From that
+## moment this unit owns nothing left to simulate, but Match's "units" group
+## loop still reaches it -- queue_free() is deferred, so is_instance_valid()
+## stays true for the rest of the tick. set_physics_process(false) used to be
+## what stopped the locomotion half from running in that window; locomotion
+## is on sim_tick() now, which no engine flag gates, so the guard has to be
+## explicit.
 var _simulation_halted := false
 var _deploy := UnitDeployStateScript.new()
 ## Unit's combat engine (attack orders, turret engagement, fire sequences).
@@ -498,6 +501,53 @@ func sim_tick_combat() -> void:
 ## doing anything. The simulation-side counterpart to is_processing().
 func is_simulation_halted() -> bool:
 	return _simulation_halted
+
+
+## Slice C5's single entry point for despawning a unit -- see
+## docs/architecture/network-multiplayer.md's "Slice C5" paragraph. Every
+## call site that used to call queue_free() on a unit directly (both branches
+## of UnitDeathSequence.begin(), UnitDeploymentController's deploy-completion
+## path) calls this instead, so "a unit is gone" resolves through one place
+## instead of the five mechanisms that paragraph found doing the same job
+## piecemeal.
+##
+## This is the only place that sets _simulation_halted -- not
+## prepare_model_for_corpse() above, even for the branch that hands the model
+## to a corpse; see that function's own comment for why pre-setting the flag
+## there would make the return-early guard below trip on this function's
+## first real call and skip index.request_release()/queue_free() entirely.
+## Both UnitDeathSequence.begin() branches (a matched death clip and no clip
+## at all) therefore reach this function still unhalted, and a caller never
+## has to know or care which branch it was on.
+##
+## Idempotent anyway, checked first: a second call -- e.g. a unit that dies
+## twice through two different call sites reached in the same synchronous
+## chain, or a future caller this function was not written to anticipate --
+## must not double-queue the entity or re-run set_process(false) redundantly.
+##
+## _entity_id != 0 alone is not enough to guard on -- MatchLookupScript.
+## entity_index(self) can still be null even for a registered unit whose
+## Match has already begun leaving the tree, and the reverse (an index with
+## _entity_id still 0) cannot happen by construction, since _register_entity_id()
+## is what sets both together -- but checking both costs nothing and states
+## the real precondition rather than one half of it.
+##
+## The queue_free() fallback below is not a defensive extra: most unit and
+## combat test suites (tests/combat/*) build a Unit with no Match anywhere in
+## the tree at all (see _entity_id's own doc comment), so there is no
+## EntityNodeIndex whose apply_pending_releases() will ever run for them --
+## Match._advance_simulation_tick() does not exist to call it. Without this
+## branch a killed unit in those suites would simply never be freed.
+func request_despawn() -> void:
+	if _simulation_halted:
+		return
+	_simulation_halted = true
+	set_process(false)
+	var index = MatchLookupScript.entity_index(self)
+	if index != null and _entity_id != 0:
+		index.request_release(_entity_id)
+	else:
+		queue_free()
 
 
 func _process(delta: float) -> void:
@@ -1604,10 +1654,20 @@ func prepare_model_for_corpse(model: Node3D) -> void:
 	# _set_movement_animation) can still run this frame and try to act on a
 	# unit that has already given everything away.
 	set_process(false)
-	# The simulation half needs its own stop: Unit no longer defines
-	# _physics_process(), so set_physics_process(false) would gate nothing,
-	# and Match's group loop guards only on is_instance_valid().
-	_simulation_halted = true
+	# The simulation half's own stop is deliberately NOT set here. It used to
+	# be ("_simulation_halted = true", pre-C5's request_despawn()), and that
+	# looked harmless -- pure redundancy, since request_despawn() sets the
+	# identical flag a few statements later in this same synchronous
+	# UnitDeathSequence.begin() call. It is not harmless: request_despawn()
+	# opens with `if _simulation_halted: return`, so pre-setting the flag here
+	# makes that later call a no-op -- it never reaches index.request_release()
+	# or its own queue_free() fallback, so the unit is never actually freed
+	# and its id is never released. That is exactly the hazard
+	# Building.prepare_model_for_corpse()'s own comment already argues for the
+	# identical shape on the building side; this function now matches it.
+	# request_despawn() (below in this file) is the single place that halts
+	# the simulation, for both this corpse branch and the no-clip branch that
+	# used to set nothing at all.
 
 
 ## Disconnects every signal connection this Unit made onto `subtree_root` or

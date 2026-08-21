@@ -76,3 +76,49 @@ func id_for(node: Node) -> int:
 	if node == null or not is_instance_valid(node):
 		return 0
 	return int(_id_by_instance.get(node.get_instance_id(), 0))
+
+
+## Forwards to SimEntityRegistry.request_release() -- see that method's own
+## doc comment for what "queued" means. This exists on EntityNodeIndex, not
+## just on the registry it wraps, because Unit.request_despawn() and
+## Building.request_despawn() reach this class through MatchLookupScript
+## (which resolves an EntityNodeIndex, never a bare SimEntityRegistry -- see
+## this class's own doc comment on why node references live here and not in
+## the sim zone), so this is the entry point they actually have.
+func request_release(id: int) -> void:
+	_registry.request_release(id)
+
+
+## Drains every id SimEntityRegistry.request_release() queued since the last
+## call and frees the node each one is still bound to -- the other half of
+## slice C5's deferred despawn, run once per tick from the *end* of
+## Match._advance_simulation_tick() (see that function's own doc comment for
+## why there, not the start of the next tick). Returns how many ids were
+## drained, for a caller that wants to log or assert on it.
+##
+## Looks each id up directly in `_node_by_id`, not through node_for(): every
+## queued id was already erased from the registry's `_alive` set the instant
+## request_release() queued it (that is the whole point -- see this class's
+## and the registry's own comments on liveness freezing hot state at once),
+## so node_for() would return null for every single one of them and this
+## function would free nothing. This is the one place in this file allowed
+## to bypass the liveness check, because unlike every other caller here, it
+## is not asking "is this id still a live, resolvable entity" -- it already
+## knows the answer is no, and its job is exactly to clean up after that.
+##
+## is_instance_valid() still guards the actual free(): a node can reach this
+## point already gone by some other route (e.g. _exit_tree()'s teardown ran
+## first for an unrelated reason and already called release_id(), which
+## erased `_node_by_id[id]` -- see that method's own comment -- so `node`
+## below is simply absent and this loop iteration does nothing at all).
+## `_node_by_id[id]` and its matching `_id_by_instance` entry are erased
+## either way, so a stale binding never lingers past the tick that queued it.
+func apply_pending_releases() -> int:
+	var ids := _registry.take_pending_releases()
+	for id in ids:
+		var node: Node = _node_by_id.get(id)
+		if node != null and is_instance_valid(node):
+			_id_by_instance.erase(node.get_instance_id())
+			node.queue_free()
+		_node_by_id.erase(id)
+	return ids.size()

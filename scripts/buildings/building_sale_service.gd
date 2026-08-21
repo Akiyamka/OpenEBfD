@@ -60,5 +60,8 @@ func _finish(building: Node3D) -> void:
 	_building = null
 	_player = null
 	_refund = 0
-	building.queue_free()
+	# call(), not a direct method call: `building` is declared Node3D here,
+	# which has queue_free() but not request_despawn() -- a direct call would
+	# be a compile error that fails this whole file's parse.
+	building.call("request_despawn")
 	completed.emit(display_name, refund)

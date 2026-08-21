@@ -227,6 +227,22 @@ var _entity_id := 0
 var entity_id: int:
 	get:
 		return _entity_id
+## Set once request_despawn() below has run -- including on the branch where
+## prepare_model_for_corpse() already handed the model to a corpse first;
+## that function itself never touches this flag (see its own comment for
+## why setting it early there would break request_despawn()). From that
+## moment there is nothing left to simulate, but Match's "buildings"
+## group loop still reaches it for every remaining tick of the frame that
+## killed it -- FrameTickDriver.MAX_TICKS_PER_FRAME is 5, so one engine frame
+## can run up to five simulation ticks, and queue_free() drops neither group
+## membership nor instance validity until the frame ends. sim_tick() below
+## used to check nothing here, which is the defect slice C5 exists to close:
+## a dead building's turrets kept reloading, its refinery dock cooldown kept
+## running, and AuthoredFireController.advance() could still commit a shot --
+## a dead building could fire. Mirrors Unit's own _simulation_halted
+## (scripts/units/unit.gd); see docs/architecture/network-multiplayer.md's
+## "Slice C5" paragraph for the full defect and the fix's shape.
+var _simulation_halted := false
 
 
 func _init() -> void:
@@ -351,11 +367,78 @@ func _release_entity_id() -> void:
 ##   already-completed projectile loop;
 ## - the refinery dock departure cooldown (BuildingRefineryDocks.advance()).
 func sim_tick() -> void:
+	if _simulation_halted:
+		return
 	for turret in combat_turrets:
 		turret.advance_tick()
 	_building_combat.sim_tick()
 	_authored_fire_controller.advance(MatchClockScript.SECONDS_PER_TICK)
 	_refinery_docks.advance(MatchClockScript.SECONDS_PER_TICK)
+
+
+## True once this building has been despawned (request_despawn() below) or,
+## on the corpse branch, has handed its model to a corpse
+## (prepare_model_for_corpse()), and sim_tick() has stopped doing anything.
+## The simulation-side counterpart to is_processing().
+func is_simulation_halted() -> bool:
+	return _simulation_halted
+
+
+## Slice C5's single entry point for despawning a building -- see
+## docs/architecture/network-multiplayer.md's "Slice C5" paragraph. Every call
+## site that used to call queue_free() on a building directly (both branches
+## of BuildingDeathSequence.begin(), BuildingSaleService._finish(), and
+## UnitDeploymentController's undeploy path) calls this instead, so "a
+## building is gone" resolves through one place instead of the five
+## mechanisms that paragraph found doing the same job piecemeal.
+##
+## This is the only place that sets _simulation_halted -- deliberately not
+## prepare_model_for_corpse() above, even for the branch that hands the model
+## to a corpse; see that function's own comment for why pre-setting the flag
+## there would make the return-early guard below trip on this function's
+## first real call and skip index.request_release()/queue_free() entirely
+## (Unit.prepare_model_for_corpse() argues the identical hazard for the
+## identical shape on the unit side). Both BuildingDeathSequence.begin()
+## branches (a matched Destroy clip and no clip at all) therefore reach this
+## function still unhalted, and a caller never has to know or care which
+## branch it was on.
+##
+## Idempotent anyway, checked first: a second call -- e.g. a sold building
+## reached through a call site this function was not written to anticipate --
+## must not double-queue the entity or re-run set_process(false)/
+## set_physics_process(false) redundantly.
+##
+## set_physics_process(false) is added even though Building defines no
+## _physics_process() today, matching what prepare_model_for_corpse() already
+## does below for the corpse branch -- a future _physics_process() must not
+## have to remember this call site, and it costs nothing against one that
+## does not exist yet.
+##
+## _entity_id != 0 alone is not enough to guard on -- MatchLookupScript.
+## entity_index(self) can still be null even for a registered building whose
+## Match has already begun leaving the tree, and the reverse (an index with
+## _entity_id still 0) cannot happen by construction, since
+## _register_entity_id() is what sets both together -- but checking both
+## costs nothing and states the real precondition rather than one half of it.
+##
+## The queue_free() fallback below is not a defensive extra: most building and
+## combat test suites (tests/combat/*, tests/buildings/*) build a Building
+## with no Match anywhere in the tree at all (see _entity_id's own doc
+## comment), so there is no EntityNodeIndex whose apply_pending_releases()
+## will ever run for them -- Match._advance_simulation_tick() does not exist
+## to call it. Without this branch a killed building in those suites would
+## simply never be freed.
+func request_despawn() -> void:
+	if _simulation_halted:
+		return
+	_simulation_halted = true
+	set_process(false)
+	set_physics_process(false)
+	var index = MatchLookupScript.entity_index(self)
+	if index != null and _entity_id != 0:
+		index.request_release(_entity_id)
+	else:
+		queue_free()
 
 
 ## This entity's view half. _building_combat.advance() also decides *whether*
@@ -752,10 +835,27 @@ func _begin_death_sequence() -> void:
 ##   _process()'s per-frame set_instance_shader_parameter() doesn't touch a
 ##   node the corpse now owns;
 ## - stop _process()/_physics_process() before queue_free() takes effect at
-##   end of frame — otherwise this building's own combat/turret/refinery-dock
-##   ticks would still run once more against a node about to be freed, the
-##   same class of "dead node still running this frame's logic" bug
-##   Unit.prepare_model_for_corpse()'s doc comment calls out (cdc79b6/2b745b2).
+##   end of frame. This used to be described as also halting "this building's
+##   own combat/turret/refinery-dock ticks" -- true when written, false since
+##   slice B3b moved those onto sim_tick(), which no engine flag reaches (see
+##   _simulation_halted's own doc comment for the defect that left open, and
+##   docs/architecture/network-multiplayer.md's "Slice C5" paragraph for the
+##   fix). What set_process(false)/set_physics_process(false) actually still
+##   stop here is the *view* half: _process()'s scroll-fx phase update and
+##   turret-aim/target-acquisition advance() (BuildingCombat.advance()), which
+##   would otherwise run once more this frame against a node about to be
+##   freed -- the same class of "dead node still running this frame's logic"
+##   bug Unit.prepare_model_for_corpse()'s doc comment calls out
+##   (cdc79b6/2b745b2). The simulation half is _simulation_halted's job now --
+##   deliberately not set here the way Unit's own prepare_model_for_corpse()
+##   sets it early (scripts/units/unit.gd): BuildingDeathSequence.begin()
+##   calls request_despawn() (not a bare queue_free()) a few statements after
+##   this returns, and request_despawn() is itself guarded on
+##   _simulation_halted already being true -- pre-setting it here would make
+##   that later call a no-op, which for Unit is a pre-existing redundant
+##   write with no such consequence (see Unit.prepare_model_for_corpse()'s own
+##   comment) but here would skip request_despawn()'s queue_free()/
+##   request_release() entirely and leak the node.
 func prepare_model_for_corpse(model: Node3D) -> void:
 	var remaining: Array[MeshInstance3D] = []
 	for mesh_instance in _scroll_fx_meshes:

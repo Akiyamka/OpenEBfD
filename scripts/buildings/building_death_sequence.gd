@@ -54,7 +54,10 @@ func begin() -> void:
 
 	if clip == &"" or states_node == null or parent == null:
 		spawn_explosion_effects(parent, _building.global_position)
-		_building.queue_free()
+		# call(), not a direct method call: _building is declared Node3D here,
+		# which has queue_free() but not request_despawn() -- a direct call
+		# would be a compile error that fails this whole file's parse.
+		_building.call("request_despawn")
 		return
 
 	var world_transform := states_node.global_transform
@@ -78,7 +81,9 @@ func begin() -> void:
 		_building.owner_player_id, [], true,
 	)
 	spawn_explosion_effects(parent, world_transform.origin)
-	_building.queue_free()
+	# call(), not a direct method call: see the comment on the early-return
+	# branch above.
+	_building.call("request_despawn")
 
 
 ## Spawns this building's rules-authored death explosion (BuildingDefinition's

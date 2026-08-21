@@ -57,6 +57,13 @@ var _kind_by_id: Dictionary = {}
 ## is_alive() and live_ids()/live_count() need no separate liveness flag.
 var _alive: Dictionary = {}
 var _next_id := 1
+## Ids handed to request_release(), in the order they were requested -- which
+## is deterministic by construction, since every caller runs on the
+## simulation tick (see docs/architecture/network-multiplayer.md, slice C5).
+## Drained by EntityNodeIndex.apply_pending_releases() at the end of
+## Match._advance_simulation_tick(); see that function's own doc comment for
+## why the drain sits there and not at the start of the next tick.
+var _pending_release := PackedInt32Array()
 
 
 ## Returns the next sequential id for an entity of the given Kind. Ids start
@@ -73,12 +80,69 @@ func allocate(kind: int) -> int:
 
 ## Marks `id` dead. A no-op for an unknown or already-released id -- callers
 ## never need to check is_alive() first.
+##
+## Deliberately does not touch _pending_release, even though it looks like it
+## should scrub a matching entry there: this stays the teardown path for an
+## entity leaving the tree for a reason that is not a despawn (scene teardown,
+## a suite ending -- see Unit._exit_tree()/Building._exit_tree(), which call
+## this, not request_release()), so most calls here never had a pending
+## entry to begin with. And on the rare path where one did -- an id that
+## reached request_release() (erasing it from _alive already) and then, before
+## the queue ever drained, left the tree by some other route and hit
+## release() too -- a stale entry left behind is provably harmless, not merely
+## assumed so: EntityNodeIndex.apply_pending_releases() resolves every drained
+## id through _node_by_id, which release_id() has already erased by the time
+## that second call happens, so the drain finds nothing and moves on. Scrubbing
+## here would mean this allocation-and-liveness class reaching back into
+## PackedInt32Array bookkeeping that exists only to serve the drain, for a
+## case the drain already handles for free.
 func release(id: int) -> void:
 	_alive.erase(id)
 
 
 func is_alive(id: int) -> bool:
 	return _alive.has(id)
+
+
+## Marks `id` dead immediately and queues it for the node-freeing half of a
+## despawn (see EntityNodeIndex.apply_pending_releases()). A no-op for an id
+## that is not currently alive -- an unknown id, an already-released one, or
+## one already queued by an earlier call -- so callers never need to check
+## is_alive() first, the same contract release() already gives them. That
+## no-op is also what keeps this idempotent: Unit.request_despawn() and
+## Building.request_despawn() both guard on their own _simulation_halted
+## flag before ever reaching here, but a second, redundant kill reaching this
+## call directly (a test, a future call site) must not double-queue the id.
+##
+## The erase from _alive happens here, synchronously, not when the queue
+## later drains -- see this class's own is_alive()/live_ids() and
+## SimEntityState's accessors, which all gate on is_alive(). That is the
+## single shared "this entity is dead" notion slice C5 is built on: once this
+## call returns, every hot-state read/write for `id` refuses immediately, so
+## a dead entity's simulation state freezes with no per-field flag to add or
+## forget.
+func request_release(id: int) -> void:
+	if not is_alive(id):
+		return
+	_alive.erase(id)
+	_pending_release.append(id)
+
+
+## Drains and returns every id queued by request_release() since the last
+## call, in request order -- which is the order this tick's kills happened
+## in, since every caller of request_release() runs from the simulation tick.
+## Clears the queue as a side effect: a second call before the next
+## request_release() returns an empty array, not the same ids again. Callers
+## that only want to know the queue's size without draining it should use
+## pending_release_count() instead.
+func take_pending_releases() -> PackedInt32Array:
+	var drained := _pending_release
+	_pending_release = PackedInt32Array()
+	return drained
+
+
+func pending_release_count() -> int:
+	return _pending_release.size()
 
 
 ## The Kind `id` was allocated with, or 0 (falsy, since Kind starts at 1) for

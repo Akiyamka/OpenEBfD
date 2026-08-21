@@ -144,6 +144,16 @@ func _test_no_matching_clip() -> void:
 	unit.take_damage(unit.max_health + unit.max_shields + 10.0, &"")
 
 	_expect(unit.is_queued_for_deletion(), "the unit must still be freed even with no matching death clip")
+	# Slice C5's no-clip hole: this branch calls request_despawn() straight
+	# from UnitDeathSequence's early return, never through
+	# prepare_model_for_corpse() -- before C5 neither set anything at all, so
+	# is_simulation_halted() staying false here would mean sim_tick() kept
+	# running for a unit that queue_free() had already, invisibly, condemned
+	# for the rest of this frame's remaining ticks.
+	_expect(
+		unit.is_simulation_halted(),
+		"a unit with no matching death clip must still halt its simulation"
+	)
 	_expect(_corpses_in(world).is_empty(), "no corpse may be spawned when no clip matches")
 	world.queue_free()
 	await process_frame

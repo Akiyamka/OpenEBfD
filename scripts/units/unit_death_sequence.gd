@@ -85,7 +85,10 @@ func begin(cause: StringName, previous_global_position: Vector3) -> void:
 		)
 		DeathSoundPlayerScript.play_pool(parent, _unit.global_position, start_paths)
 		spawn_explosion_effects(parent, _unit.global_position)
-		_unit.queue_free()
+		# call(), not a direct method call: _unit is declared CharacterBody3D
+		# here, which has queue_free() but not request_despawn() -- a direct
+		# call would be a compile error that fails this whole file's parse.
+		_unit.call("request_despawn")
 		return
 
 	# Resolved before the model is detached only for clarity of ordering — the
@@ -135,7 +138,9 @@ func begin(cause: StringName, previous_global_position: Vector3) -> void:
 		_unit.owner_player_id, start_paths,
 	)
 	spawn_explosion_effects(parent, world_transform.origin)
-	_unit.queue_free()
+	# call(), not a direct method call: see the comment on the early-return
+	# branch above.
+	_unit.call("request_despawn")
 
 
 ## Spawns this unit's rules-authored death explosion (UnitDefinition's

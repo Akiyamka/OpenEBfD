@@ -74,6 +74,16 @@ class FakeMCV extends Node3D:
 	func owner_player():
 		return get_node("/root/Players").player(owner_player_id)
 
+	## Slice C5: UnitDeploymentController's deploy-completion path now calls
+	## unit.call("request_despawn") instead of unit.queue_free() directly (see
+	## scripts/units/unit_deployment_controller.gd). This fixture has no Match
+	## in the tree, so no MatchLookupScript stub gives it a resolvable entity
+	## id -- a real Unit in that situation takes request_despawn()'s
+	## queue_free() fallback (see that method's own doc comment), which this
+	## mirrors directly rather than duck-typing the whole method.
+	func request_despawn() -> void:
+		queue_free()
+
 
 ## Unit.deploy()/undeploy()/finish_deployment() call set_hold_position on the
 ## unit's own navigation controller; this records every call so the combat
