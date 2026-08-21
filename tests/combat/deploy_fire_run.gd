@@ -149,6 +149,11 @@ func _test_deployed_mortar_high_arc() -> void:
 	_expect(mortar.command_attack(target_position), "a deployed Mortar must accept an in-range target")
 	for frame in 600:
 		mortar._process(1.0 / 60.0)
+		# Unit._process() no longer advances target acquisition, attack
+		# orders or fire sequences -- B3c moved that onto
+		# Unit.sim_tick_combat(), Match's second pass over the "units" group.
+		# No Match here, so drive it by hand.
+		mortar.sim_tick_combat()
 		if not fired.is_empty():
 			break
 	var final_emission: Dictionary = turret.peek_emission()
@@ -223,6 +228,8 @@ func _test_kindjal_deployed_fire() -> void:
 	_expect(kindjal.command_attack(target), "a deployed Kindjal must accept an attack order")
 	for frame in 300:
 		kindjal._process(1.0 / 20.0)
+		# See _test_deployed_mortar_high_arc's identical comment above.
+		kindjal.sim_tick_combat()
 		if not fired_bullets.is_empty():
 			break
 	_expect(not fired_bullets.is_empty(), "a deployed Kindjal must fire after completing its aim")
@@ -401,6 +408,8 @@ func _test_kobra_deployed_range_acquisition() -> void:
 	)
 	for frame in 300:
 		kobra._process(1.0 / 20.0)
+		# See _test_deployed_mortar_high_arc's identical comment above.
+		kobra.sim_tick_combat()
 		if not fired_projectiles.is_empty():
 			break
 	_expect(

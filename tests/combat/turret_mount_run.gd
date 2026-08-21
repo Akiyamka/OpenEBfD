@@ -383,6 +383,11 @@ func _test_limited_turret_hull_turn() -> void:
 	_expect(unit.command_attack(target), "the Minotaurus must accept an in-range rear target")
 	for frame in 360:
 		unit._process(1.0 / 60.0)
+		# Unit._process() no longer advances target acquisition, attack
+		# orders or fire sequences -- B3c moved that onto
+		# Unit.sim_tick_combat(), Match's second pass over the "units" group.
+		# No Match here, so drive it by hand.
+		unit.sim_tick_combat()
 		if not fired.is_empty():
 			break
 	var hull_turn := absf(angle_difference(initial_hull_yaw, unit.global_rotation.y))

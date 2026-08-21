@@ -71,6 +71,10 @@ func _initialize() -> void:
 		_test_match_loop_drives_building_fire
 	)
 	await _run_case(
+		"a real unit fires, and the shot it fires does not also fly, from the match loop alone",
+		_test_match_loop_drives_unit_fire
+	)
+	await _run_case(
 		"a real spice mound's maturity countdown advances from the match loop alone",
 		_test_match_loop_drives_spice_mound_maturity
 	)
@@ -1048,6 +1052,119 @@ func _test_match_loop_drives_building_fire() -> void:
 	match_instance.queue_free()
 
 
+## The unit-firing counterpart to _test_match_loop_drives_building_fire above
+## -- same failure mode, same shape, but for the other half of B3c's move.
+## _test_real_forced_friendly_attack below already proves a real unit fires
+## through the real match loop at all (it was already doing so before B3c,
+## just from Unit._process() rather than a tick); it does not probe the
+## specific ordering hazard B3c's move reopens, the same one B3b's own move
+## reopened for buildings. Committing a shot inside Unit.sim_tick_combat()
+## parents a new CombatProjectile synchronously, which joins "sim_projectiles"
+## in its own _ready() before try_fire_at() returns -- so if the second
+## "units" pass Match._advance_simulation_tick() now makes (see that
+## function's doc comment) ran *before* "sim_projectiles" instead of after it,
+## that same _advance_simulation_tick() call would immediately walk the shot
+## it had just fired, one tick of flight it should not yet have. Same probe
+## idiom as the building case: record current_tick() from inside the
+## synchronous weapon_fired handler, then compare the fired projectile's
+## elapsed_seconds against (current tick - fired tick) * SECONDS_PER_TICK once
+## a few more ticks have run. Reverting the second "units" pass to run before
+## "sim_projectiles" fails this specific assertion, the same shape of proof
+## _test_match_loop_drives_building_fire uses.
+##
+## ATMongoose/HEAT_B is the probe deliberately, for the identical reason
+## _test_match_loop_drives_building_fire picks ATRocketTurret/Rocket_B: a
+## real, positive-speed (28 units/s) bullet with enough range (10 units) that
+## an 8-unit shot asks for roughly 8/28 ~= 0.29s (~7 ticks) of real flight --
+## the same unit, bullet and 8-unit side offset _test_real_forced_friendly_attack
+## already uses, so this reuses a setup already proven to keep the shot in
+## range and still flying at the settle window below.
+func _test_match_loop_drives_unit_fire() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	get_root().add_child(match_instance)
+	for _warmup in 5:
+		await process_frame
+
+	var attacker := match_instance.get_node("Units/ScoutA") as Unit
+	var target := match_instance.get_node("Units/OrdosAPC") as Unit
+	attacker.setup(&"ATMongoose")
+	attacker.replace_visual_scene(ATMongooseModelScene)
+	target.set_owner_player_id(attacker.owner_player_id)
+	attacker.stop_at_current_position()
+	target.stop_at_current_position()
+
+	var emission: Dictionary = attacker.turret_emission_points()[0]
+	var forward: Vector3 = emission["direction"]
+	forward.y = 0.0
+	var side := forward.normalized().rotated(Vector3.UP, PI * 0.5)
+	target.global_position = attacker.global_position + side * 8.0
+	target.call("_snap_to_terrain")
+
+	var fired_projectiles: Array = []
+	var fired_ticks: Array[int] = []
+	attacker.weapon_fired.connect(func(projectiles: Array, _fired_target: Variant, _weapon_index: int) -> void:
+		fired_projectiles.append_array(projectiles)
+		for _projectile in projectiles:
+			fired_ticks.append(match_instance.current_tick())
+	)
+	_expect(
+		attacker.command_attack(target),
+		"a real Mongoose must accept a real allied unit as an explicit target"
+	)
+
+	# 240 frames matches _test_real_forced_friendly_attack's own budget for
+	# this identical unit, bullet and offset.
+	var frames := 0
+	while fired_projectiles.is_empty() and frames < 240:
+		await process_frame
+		frames += 1
+	_expect(
+		not fired_projectiles.is_empty(),
+		"a real unit must fire from the match loop alone -- if this times out, "
+			+ "Unit.sim_tick_combat() (or the second \"units\" pass that calls it) "
+			+ "never ran"
+	)
+	if fired_projectiles.is_empty():
+		match_instance.queue_free()
+		return
+
+	var probe: Object = fired_projectiles[0]
+	var probe_fired_tick: int = fired_ticks[0]
+	# A few more frames so the comparison below is not reading the very same
+	# instant the shot was fired -- the ordering bug this test exists to catch
+	# only shows up once at least one more tick has had the chance to run.
+	for _settle in 10:
+		await process_frame
+	_expect(
+		is_instance_valid(probe) and probe.state == CombatProjectileScript.State.FLYING,
+		"the wiring probe must still be flying, or the elapsed-time comparison "
+			+ "below would not isolate the tick loop"
+	)
+	if is_instance_valid(probe) and probe.state == CombatProjectileScript.State.FLYING:
+		var expected_elapsed := float(
+			match_instance.current_tick() - probe_fired_tick
+		) * MatchClockScript.SECONDS_PER_TICK
+		_expect(
+			is_equal_approx(probe.elapsed_seconds, expected_elapsed),
+			(
+				"a shot a real unit fires must not itself travel on the tick "
+				+ "that fired it: elapsed_seconds is %.6f, expected %.6f for a "
+				+ "shot fired on tick %d observed at tick %d -- this is exactly "
+				+ "the invariant Match._advance_simulation_tick()'s doc comment "
+				+ "requires the second \"units\" pass to run after "
+				+ "\"sim_projectiles\" to preserve"
+			) % [
+				probe.elapsed_seconds, expected_elapsed, probe_fired_tick,
+				match_instance.current_tick()
+			]
+		)
+
+	for projectile in fired_projectiles:
+		if is_instance_valid(projectile) and not projectile.is_queued_for_deletion():
+			projectile.free()
+	match_instance.queue_free()
+
+
 func _test_match_loop_drives_spice_mound_maturity() -> void:
 	var match_instance := MatchFixtureScene.instantiate()
 	get_root().add_child(match_instance)
@@ -1831,6 +1948,18 @@ func _test_real_forced_friendly_attack() -> void:
 		fired_animation_names == [&"Fire_0"],
 		"the real Mongoose missile must launch during its authored Fire_0 clip"
 	)
+	# begin_reload() and this weapon's first shot event land on the same
+	# simulation tick (ATMongooseMissile's Fire_0 has its one shot event
+	# authored at baked frame 1, and one tick's own fire-sequence advance --
+	# SECONDS_PER_TICK * FIRE_ANIMATION_SPEED_SCALE = 0.04 * 1.25 = 0.05s --
+	# already reaches exactly that frame; see the identical, checked-not-
+	# assumed finding in unit_attack_order_run.gd), so reload_ticks_remaining
+	# reads a freshly-set 30.0 immediately after the shot, before
+	# CombatTurret.advance_tick() gets another chance to decrement it. A few
+	# more real match ticks, still well inside the clip, are enough to
+	# observe the countdown actually running.
+	for _settle in 5:
+		await process_frame
 	_expect(
 		attacker.combat_turrets[0].reload_ticks_remaining > 0.0
 		and attacker.combat_turrets[0].reload_ticks_remaining < 30.0,

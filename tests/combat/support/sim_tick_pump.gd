@@ -21,7 +21,18 @@ extends RefCounted
 ## scene-tree order, so _advance_simulation_tick() -- and with it every
 ## entity's sim_tick() -- has already run for this frame by the time a real
 ## _process() observes it.
-
+##
+## Unit carries a second tick-shaped call, sim_tick_combat() (B3c): target
+## acquisition, attack order progression, turret aim and fire-sequence
+## committal, split from sim_tick() because Match runs it from a second,
+## later pass over the "units" group -- see match.gd's doc comment on
+## _advance_simulation_tick() for why. This pump has no "sim_projectiles"
+## loop of its own to run between the two passes -- driving a single entity
+## with no Match in the tree has no other units, buildings or projectiles for
+## that loop to walk anyway -- so it simply calls sim_tick_combat() right
+## after sim_tick(), same as production's relative order for one entity's own
+## two calls, via has_method() so a Building (which has no second pass) is
+## unaffected.
 const FrameTickDriverScript := preload("res://scripts/match/frame_tick_driver.gd")
 
 var _driver := FrameTickDriverScript.new()
@@ -30,6 +41,9 @@ var _driver := FrameTickDriverScript.new()
 ## Advances `entity` by one rendered frame of `delta`, running whatever whole
 ## simulation ticks that frame is due first.
 func advance(entity, delta: float) -> void:
+	var drives_combat_separately: bool = entity.has_method("sim_tick_combat")
 	for _tick in _driver.pending_ticks(delta):
 		entity.sim_tick()
+		if drives_combat_separately:
+			entity.sim_tick_combat()
 	entity._process(delta)

@@ -412,22 +412,28 @@ func _process(delta: float) -> void:
 ## reporting, not deciding, and no more "simulation" than
 ## _building_controller.status_changed already was before this slice.
 ## After the three controllers above: units, then linger effects, then
-## projectiles, then buildings, then spice mounds -- each entity's or system's
-## own sim_tick(). For units that is CombatTurret.advance_tick() for
-## reload/burst countdowns, locomotion, and (for a harvester) unload credits
-## (see Unit.sim_tick(), B2); for linger
-## effects it is CombatLingerEffect.sim_tick() delivering one damage tick and
-## decrementing its own countdown (see combat_linger_effect.gd); for
-## projectiles it is CombatProjectile.sim_tick() advancing one tick of flight
-## and resolving whatever that tick's travel hits (see combat_projectile.gd --
-## B3a moved this off _physics_process(), which advanced on engine frame time
-## rather than the tick a replay or checksum can see); for buildings (B3b) it
-## is CombatTurret.advance_tick() for reload/burst plus BuildingCombat's popup
-## transition countdown, the authored fire controller's shot committal, and
-## the refinery dock departure cooldown (see Building.sim_tick()) -- the
-## middle of those can itself add a new member to the "sim_projectiles" group
-## walked just above, which is why this loop moved here (see the "Firing
-## itself" paragraph below); for spice mounds it is SpiceMound.sim_tick()
+## projectiles, then buildings, then units' own combat pass, then spice
+## mounds -- each entity's or system's own sim_tick(). For units that first
+## pass is CombatTurret.advance_tick() for reload/burst countdowns,
+## locomotion, and (for a harvester) unload credits (see Unit.sim_tick(),
+## B2); for linger effects it is CombatLingerEffect.sim_tick() delivering one
+## damage tick and decrementing its own countdown (see combat_linger_effect.gd);
+## for projectiles it is CombatProjectile.sim_tick() advancing one tick of
+## flight and resolving whatever that tick's travel hits (see
+## combat_projectile.gd -- B3a moved this off _physics_process(), which
+## advanced on engine frame time rather than the tick a replay or checksum can
+## see); for buildings (B3b) it is CombatTurret.advance_tick() for
+## reload/burst plus BuildingCombat's popup transition countdown, the
+## authored fire controller's shot committal, and the refinery dock departure
+## cooldown (see Building.sim_tick()) -- the middle of those can itself add a
+## new member to the "sim_projectiles" group walked just above, which is why
+## this loop moved here (see the "Firing" paragraphs below); for units' combat
+## pass (B3c) it is Unit.sim_tick_combat() -- target acquisition, attack order
+## progression, turret aim and authored fire-sequence committal, i.e.
+## everything UnitCombat.advance() decides, including the same kind of new
+## "sim_projectiles" member the buildings pass can add, which is why this
+## second units pass sits down here rather than inside the first one (see the
+## "Firing" paragraphs below); for spice mounds it is SpiceMound.sim_tick()
 ## decrementing the maturity countdown that replaced its old MaturityTimer
 ## (see spice_mound.gd). What is centrally maintained here
 ## is the list of *systems*, not of entities: group membership maintains
@@ -437,7 +443,10 @@ func _process(delta: float) -> void:
 ## to "sim_projectiles" in its own _ready(); SpiceMound adds itself to
 ## "sim_spice_mounds" in its own _ready()), so adding a new unit or building
 ## type, spawning another linger effect or projectile, or placing another
-## mound needs no change in this function.
+## mound needs no change in this function. The units group is walked twice,
+## by two different functions, rather than being two systems -- see the
+## "Firing" paragraphs below for why one Unit needs two sim_tick-shaped calls
+## at two different points in this order today.
 ##
 ## What this buys, stated honestly: the tick order is now these few lines in
 ## one function instead of whatever order the scene tree happened to hand
@@ -449,11 +458,14 @@ func _process(delta: float) -> void:
 ## This is centralization, not determinism; the determinism gate is phase 4.
 ##
 ## Units before linger effects is a deliberate fixed choice, not an accident,
-## for the sharper reason the next paragraph gives. Buildings no longer
-## follows units directly (B3b moved it -- see below); nothing about that
-## move changes units' own position, which stays first because nothing
-## upstream of it needs to observe a tick-fresher unit or building than the
-## controllers above already produced.
+## for the sharper reason the next paragraph gives. "Units" here means the
+## first pass, unit.sim_tick() -- locomotion and reload -- not the second
+## pass, unit.sim_tick_combat(), which sits far below (see the "Firing"
+## paragraphs) for a reason specific to it. Buildings no longer follows units
+## directly (B3b moved it -- see below); nothing about that move changes
+## units' own position, which stays first because nothing upstream of it
+## needs to observe a tick-fresher unit or building than the controllers
+## above already produced.
 ##
 ## Linger effects go after units, for a sharper reason than "fixed and
 ## arbitrary": a linger effect's sim_tick() delivers damage to the very units
@@ -498,39 +510,68 @@ func _process(delta: float) -> void:
 ## applied here to the other pair of systems in this function that can spawn
 ## one another mid-loop.
 ##
-## Firing is split across two clocks today. unit_combat.gd still launches a
-## shot from Unit._process() (B3c owns moving that), which the scene tree runs
-## after Match's own _process() every frame -- see
-## tests/combat/support/sim_tick_pump.gd's doc comment -- so a unit's shot
-## still cannot join "sim_projectiles" in time to be ticked by this same call,
-## regardless of where any loop in this function sits: for units, "a
-## projectile fired this tick must not also travel this tick" still holds by
-## scene-tree ordering alone, exactly as B3a recorded.
+## Firing used to be split across two clocks. B3a put projectile flight on
+## the tick while both unit_combat.gd and building_combat.gd still launched a
+## shot from their facade's own _process(), which the scene tree runs after
+## Match's own _process() every frame -- see
+## tests/combat/support/sim_tick_pump.gd's doc comment -- so neither shot
+## could join "sim_projectiles" in time to be ticked by this same call,
+## regardless of where any loop in this function sat: "a projectile fired
+## this tick must not also travel this tick" held by scene-tree ordering
+## alone, exactly as B3a recorded.
 ##
-## building_combat.gd is different as of B3b: AuthoredFireController.advance()
-## -- the call that actually commits a shot, via turret.try_fire_at() -- now
-## runs from Building.sim_tick(), inside this function, alongside every other
+## B3b moved building_combat.gd first: AuthoredFireController.advance() --
+## the call that actually commits a shot, via turret.try_fire_at() -- moved
+## onto Building.sim_tick(), inside this function, alongside every other
 ## building in the "buildings" loop below. Scene-tree ordering no longer
-## protects that path at all, because there is no frame boundary between "a
-## building fires" and "the projectile loop might walk it": both happen
-## inside this one function call. That is exactly the trap B3a's own doc
-## comment named for whichever slice moved firing onto the tick next. The fix
-## is the reordering above: the "buildings" loop now runs *after*
-## "sim_projectiles" instead of before it (it sat directly after "units",
-## before linger effects and projectiles, prior to B3b), so a projectile a
-## building fires this tick joins the group too late for this tick's
-## already-completed projectile walk -- it gets its first sim_tick(), and its
-## first chance to travel, next tick, the same way a unit's frame-fired
-## projectile always has. Moving only the "buildings" loop, and not "units" or
-## "linger effects", is deliberate: those two loops' own positions are pinned
-## by the freshness reasoning given above them, and neither one fires a
-## weapon from this function, so neither carries this hazard.
+## protected that path at all, because there was no frame boundary left
+## between "a building fires" and "the projectile loop might walk it": both
+## now happen inside this one function call. That was exactly the trap B3a's
+## own doc comment named for whichever slice moved firing onto the tick next.
+## The fix was reordering: the "buildings" loop moved to run *after*
+## "sim_projectiles" instead of before it (it had sat directly after "units",
+## before linger effects and projectiles), so a projectile a building fires
+## this tick joins the group too late for this tick's already-completed
+## projectile walk -- it gets its first sim_tick(), and its first chance to
+## travel, next tick, the same way a frame-fired projectile always had.
 ##
-## Like the four group loops above it, this one inherits the
+## B3c moves unit_combat.gd the same way, and hits the identical trap: committing
+## a shot from Unit.sim_tick_combat() parents a CombatProjectile synchronously,
+## which joins "sim_projectiles" in _ready() before the call returns. The fix
+## is the same shape -- run after "sim_projectiles" -- but it cannot be
+## bought by moving the existing "units" loop the way "buildings" moved
+## wholesale, because unlike Building.sim_tick(), Unit.sim_tick() sets
+## global_position (locomotion) and that position feeds the freshness
+## argument two paragraphs above: a projectile resolves its hit against the
+## unit position this tick's "units" loop already produced, and reversing
+## that would be a different, silently-chosen simulation, not merely a
+## reshuffle. So "units" stays split: Unit.sim_tick() (reload, locomotion,
+## harvester) keeps its original early position, and the new
+## Unit.sim_tick_combat() (target acquisition, attack order progression, aim,
+## fire-sequence committal -- everything UnitCombat.advance() decides) runs
+## from a second pass over the same "units" group, positioned after
+## "buildings" below, for the identical too-late-to-travel-this-tick reason
+## buildings' own loop moved. Unit.sim_tick_combat()'s own doc comment carries
+## the other half of this argument: nothing it does sets global_position,
+## changes health, or changes hit geometry, which is what leaves it free to
+## move even though its sibling pass is not. Placed after "buildings" rather
+## than between "sim_projectiles" and "buildings": the two loops share no
+## state (neither reads nor writes anything the other touches), so their
+## relative order is exactly as arbitrary as spice mounds' own position
+## below, and appending is again the smallest diff -- it leaves "buildings"
+## directly following "sim_projectiles", which the paragraphs above already
+## justify, untouched.
+##
+## Reverting either "buildings" or the new "units combat" pass to run before
+## "sim_projectiles" reintroduces the same-tick travel bug for that system's
+## own shots; see the wiring test that proves this loop's position is load-
+## bearing rather than incidental.
+##
+## Like the five group loops above it, this one inherits the
 ## get_nodes_in_group() ordering caveat recorded above: which projectile in a
 ## multi-shot volley resolves first, on a tick where more than one could hit
 ## the same target, is not guaranteed to match across clients yet. That is a
-## known, owned gap for phase 4 to close, the same as the other four loops --
+## known, owned gap for phase 4 to close, the same as the other five loops --
 ## not something this slice tries to solve.
 ##
 ## The spice layer is the one step here that is not a group loop: unlike
@@ -550,17 +591,20 @@ func _process(delta: float) -> void:
 ## arbitrary": a mound's maturity countdown reads and writes nothing any other
 ## system in this function touches -- not a unit, not a building, not a
 ## linger effect's damage, not a projectile's flight, not a controller's
-## credits -- so this loop could sit anywhere among the seven steps above it
+## credits -- so this loop could sit anywhere among the eight steps above it
 ## without changing a single outcome. Appending it is simply the smallest
 ## diff, the one that leaves the already-justified
-## controller/unit/linger/projectile/building order untouched. Recording that
-## explicitly is the point: the next system to join this loop should not have
-## to guess whether "spice mounds are last" was load-bearing or just where the
-## diff happened to land.
+## controller/unit/linger/projectile/building/units-combat order untouched.
+## Recording that explicitly is the point: the next system to join this loop
+## should not have to guess whether "spice mounds are last" was load-bearing
+## or just where the diff happened to land.
 ##
-## is_instance_valid() guards all five group loops because queue_free() does
+## is_instance_valid() guards all six group loops because queue_free() does
 ## not remove a node from its groups until the frame ends: a unit that gave
-## itself away this frame (see Unit's set_process(false) call site), a linger
+## itself away this frame (see Unit's set_process(false) call site) -- which
+## the second "units" pass (Unit.sim_tick_combat()) needs exactly as much as
+## the first, since a unit can die from this same tick's linger damage or
+## projectile impact before that second pass ever reaches it -- a linger
 ## effect whose own countdown just ran out (see CombatLingerEffect._finish()),
 ## a projectile that just impacted or expired (see CombatProjectile._finish(),
 ## which also calls remove_from_group() itself for the same reason -- belt and
@@ -616,6 +660,13 @@ func _advance_simulation_tick() -> void:
 	for building in get_tree().get_nodes_in_group("buildings"):
 		if is_instance_valid(building):
 			building.sim_tick()
+	# Second pass over "units" -- see the "Firing" paragraphs above for why
+	# this cannot be folded into the first pass near the top of this
+	# function: committing a shot here can add a new member to
+	# "sim_projectiles" walked above, so this has to run after that walk.
+	for unit in get_tree().get_nodes_in_group("units"):
+		if is_instance_valid(unit):
+			unit.sim_tick_combat()
 	if terrain != null and terrain.spice_layer != null:
 		terrain.spice_layer.sim_tick()
 	for spice_mound in get_tree().get_nodes_in_group("sim_spice_mounds"):

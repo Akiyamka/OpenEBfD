@@ -301,6 +301,16 @@ func _release_entity_id() -> void:
 ## -> player.add_money(), and credits gate production: which tick a credit
 ## lands on must not depend on frame timing, so it advances here rather than
 ## from _process() below.
+##
+## Deliberately does not call sim_tick_combat() below, even though both run
+## once per tick and both used to be one call: this function's own contents
+## decide global_position (locomotion) and the reload countdown that Match's
+## doc comment names as the reason "units" runs before "sim_linger_effects"
+## and "sim_projectiles" -- a projectile resolves its hit against the fresh
+## position this tick already produced. Combat's aim/attack/fire decisions
+## carry no such freshness requirement (see sim_tick_combat()'s own comment),
+## which is what leaves them free to run later, after this tick's projectile
+## walk instead of before it.
 func sim_tick() -> void:
 	if _simulation_halted:
 		return
@@ -311,6 +321,33 @@ func sim_tick() -> void:
 		_harvester.advance(MatchClockScript.SECONDS_PER_TICK)
 
 
+## This entity's other simulation half (B3c): target acquisition, attack
+## order progression and authored fire-sequence committal -- everything
+## UnitCombat.advance() decides, run once per simulation tick with a fixed
+## MatchClock.SECONDS_PER_TICK delta instead of the render frame's variable
+## one. Split from sim_tick() above into its own function, and its own later
+## position in Match._advance_simulation_tick()'s group-loop order, rather
+## than folded into that call: committing a shot here parents a
+## CombatProjectile synchronously, which joins "sim_projectiles" in _ready()
+## before this call returns, so this has to run *after* Match has already
+## walked "sim_projectiles" for this tick -- otherwise a shot fired this tick
+## would also travel this tick (see combat_projectile.gd and B3b's identical
+## finding for buildings). sim_tick() above cannot simply move down there with
+## it: locomotion's freshness requirement pulls the other way (see that
+## function's comment), and nothing this function does sets global_position,
+## changes health, or changes hit geometry -- it only reads _owner's current
+## position/rotation, turns the hull (a rotation, not a position), zeroes
+## velocity via stop_at_current_position(), or hands the navigation system a
+## pursuit request that takes effect on a later tick regardless of where in
+## this tick it was requested -- so running it after this tick's damage
+## resolution costs the position freshness nothing while still fixing the
+## same-tick travel hazard. Never call this from Unit itself.
+func sim_tick_combat() -> void:
+	if _simulation_halted:
+		return
+	_combat.advance(MatchClockScript.SECONDS_PER_TICK)
+
+
 ## True once prepare_model_for_corpse() has run and sim_tick() has stopped
 ## doing anything. The simulation-side counterpart to is_processing().
 func is_simulation_halted() -> bool:
@@ -319,17 +356,23 @@ func is_simulation_halted() -> bool:
 
 func _process(delta: float) -> void:
 	# Authored locomotion/fire overlays run before Unit (see
-	# _prioritize_animations_before_unit_logic()). Restore and advance the
-	# combat-owned servo first, then sample the muzzle for this frame's shots;
-	# otherwise a moving turret launches along the clip's forward rest pose.
-	_combat.advance(delta)
-	# Same ordering requirement as _combat.advance() above: the looping
-	# Deploy_Gun_Hold clip keys the turret pivot every frame, so recentering
-	# it must also run after the AnimationPlayers apply this frame's pose --
-	# which only _process() is guaranteed to run after; the simulation tick
-	# has no defined relationship to animation playback at all -- or the
-	# animation's authored pose instantly overwrites each gradual step, making
-	# the turret look like it never turns at all.
+	# _prioritize_animations_before_unit_logic()). The combat-owned aim angle
+	# (current_yaw/current_pitch) is simulation state now, advanced at most
+	# once per tick by sim_tick_combat() above, which already repaints the
+	# pivots with whatever it last computed -- see that function's comment.
+	# This call is what repeats that paint on every frame *between* ticks:
+	# unlike sim_tick_combat(), it is guaranteed to run every rendered frame,
+	# which is what makes the turret hold its last simulated angle instead of
+	# snapping back to a looping authored Stationary/Move/Deploy_Gun_Hold clip's
+	# rest pose on a frame with no tick of its own.
+	restore_combat_turret_poses()
+	# Same ordering requirement as restore_combat_turret_poses() above: the
+	# looping Deploy_Gun_Hold clip keys the turret pivot every frame, so
+	# recentering it must also run after the AnimationPlayers apply this
+	# frame's pose -- which only _process() is guaranteed to run after; the
+	# simulation tick has no defined relationship to animation playback at
+	# all -- or the animation's authored pose instantly overwrites each
+	# gradual step, making the turret look like it never turns at all.
 	if _deploy.advance_undeploy_alignment(delta):
 		_deploy.start_undeploy_animation()
 	_advance_visual_slope_alignment(delta)

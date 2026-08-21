@@ -62,12 +62,16 @@ func _test_xbf_fire_event_timing() -> void:
 		trooper.combat()._start_authored_fire_sequence(turret),
 		"ORAATrooper must start its authored Fire_0 sequence"
 	)
-	trooper._process(0.59)
+	# The shot-event timing this regression pins is exact (15/20 clip seconds
+	# at the 25/20 Fire_0 playback speed = 0.6s), unrelated to the tick rate --
+	# call the simulation function directly with those deltas rather than
+	# through the fixed-tick Unit.sim_tick_combat().
+	trooper.combat().advance(0.59)
 	_expect(
 		fired.is_empty(),
 		"ORAATrooper must not launch before the authored firing pose"
 	)
-	trooper._process(0.02)
+	trooper.combat().advance(0.02)
 	_expect(
 		fired.size() == 1,
 		"ORAATrooper must launch when Fire_0 reaches its type-10 event"

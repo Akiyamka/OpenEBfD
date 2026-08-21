@@ -1,6 +1,8 @@
 extends "res://tests/support/suite.gd"
 
 const LegacyRulesFixture := preload("res://tests/support/legacy_rules_fixture.gd")
+const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
+const FrameTickDriverScript := preload("res://scripts/match/frame_tick_driver.gd")
 const CombatTurretScript := preload("res://scripts/combat/combat_turret.gd")
 const FireRequestScript := preload("res://scripts/combat/fire_request.gd")
 const SimTickPumpScript := preload("res://tests/combat/support/sim_tick_pump.gd")
@@ -112,6 +114,11 @@ func _test_unit_attack_order() -> void:
 	_expect(unit.has_attack_order() and unit.attack_order_target() == target, "the live target must remain attached to the order")
 	for frame in 240:
 		unit._process(1.0 / 60.0)
+		# Unit._process() no longer advances target acquisition, attack
+		# orders or fire sequences -- B3c moved that onto
+		# Unit.sim_tick_combat(), Match's second pass over the "units" group.
+		# No Match here, so drive it by hand.
+		unit.sim_tick_combat()
 		if not fired_batches.is_empty():
 			break
 	_expect(fired_batches.size() == 1, "an aimed in-range order must fire the compatible weapon")
@@ -122,7 +129,10 @@ func _test_unit_attack_order() -> void:
 	unit.cancel_attack_order()
 	var far_ground := Vector3(emission["position"]) + direction * 30.0
 	_expect(unit.command_attack(far_ground), "attack-ground validity must not depend on current range")
-	unit._process(0.01)
+	# Attack pursuit is simulation state advanced by Unit.sim_tick_combat()
+	# (B3c), not by _process() -- one tick is enough to prove partial
+	# progress toward the far perch.
+	unit.sim_tick_combat()
 	var original_distance := Vector2(
 		far_ground.x - unit.global_position.x,
 		far_ground.z - unit.global_position.z
@@ -180,6 +190,19 @@ func _test_unit_attack_order() -> void:
 		and mongoose_fire_overlay.current_animation == &"Fire_0",
 		"the Mongoose shot must occur inside its turret-local Fire_0 overlay"
 	)
+	# begin_reload() and this weapon's first shot event now both land inside
+	# the same simulation tick (Mongoose's Fire_0 shot event is authored
+	# within its first baked frame, and B3c moved fire-sequence progression
+	# onto the tick, which advances the clip by exactly one baked frame per
+	# tick -- see FIRE_ANIMATION_SPEED_SCALE), so reload_ticks_remaining reads
+	# a freshly-set 30.0 at the exact instant of the shot, before
+	# CombatTurret.advance_tick() gets another chance to decrement it. That is
+	# not "reload deferred" (see the un-concurrent ATInfantry case below, where
+	# reload stays at exactly 0.0 through the whole clip instead) -- it is
+	# simply that no tick has elapsed yet since the countdown began this same
+	# tick. One more simulation tick, still well inside the clip, is enough to
+	# observe the countdown actually running.
+	mongoose.sim_tick()
 	_expect(
 		mongoose.combat_turrets[0].reload_ticks_remaining > 0.0
 		and mongoose.combat_turrets[0].reload_ticks_remaining < 30.0,
@@ -250,12 +273,23 @@ func _test_unit_attack_order() -> void:
 		infantry_refire_elapsed += 1.0 / 60.0
 		if infantry_fired.size() >= 2:
 			break
+	# infantry_refire_elapsed is measured by counting rendered frames
+	# (1/60s each) across two loops, each of which breaks the instant it
+	# observes a state change (clip finished, second shot fired) -- but B3c
+	# moved both the clip's own progress and the reload countdown onto the
+	# 25 Hz simulation tick, so each of those two state changes can now only
+	# actually happen on a tick boundary (0.04s apart) rather than smoothly
+	# within whichever 1/60s frame used to observe it continuously. The old
+	# tolerance (1/30s, about three quarters of one tick) covered one
+	# frame-granularity observation; two tick-granularity transitions are
+	# summed here, so the bound is two ticks now, not one frame -- measured at
+	# 0.05s against the old 0.0333s bound.
 	_expect(
 		infantry_fired.size() == 2
 		and absf(
 			infantry_refire_elapsed
 			- (45.0 + 30.0) / UnitScript.RULE_COMBAT_TICKS_PER_SECOND
-		) <= 1.0 / 30.0,
+		) <= 2.0 * MatchClockScript.SECONDS_PER_TICK,
 		"Atreides Infantry shots must combine its 45-frame action and 30-tick reload"
 	)
 
@@ -304,6 +338,12 @@ func _test_unit_attack_order() -> void:
 		)) < 0.1,
 		"starting Fire_0 must preserve the Minotaurus visual turret yaw"
 	)
+	# Same reasoning as the identical Mongoose comment above: begin_reload()
+	# and this weapon's first shot event land on the same simulation tick, so
+	# reload_ticks_remaining reads a freshly-set 120.0 at the exact instant of
+	# the shot. One more tick, still well inside the four-shot clip, is
+	# enough to observe the countdown actually running.
+	minotaurus.sim_tick()
 	_expect(
 		minotaurus.combat_turrets[0].reload_ticks_remaining > 0.0
 		and minotaurus.combat_turrets[0].reload_ticks_remaining < 120.0,
@@ -406,8 +446,13 @@ func _test_rejected_attack_perch() -> void:
 	var target: Vector3 = ink_vine.global_position + forward.normalized() * 60.0
 
 	_expect(ink_vine.command_attack(target), "the Ink Vine must accept the distant ground point")
+	# UnitAttackOrder.advance_pursuit()'s own repath gate (0.25s) is what this
+	# regression exercises, not tick timing -- call the simulation function
+	# directly with a delta safely past that interval, the same way
+	# _test_flickering_block_still_repositions below calls
+	# hold_firing_position() directly rather than through a tick loop.
 	for attempt in 3:
-		ink_vine._process(0.3)
+		ink_vine.combat().advance(0.3)
 	_expect(
 		navigation.destinations.size() == 3,
 		"rejected firing positions must be retried instead of leaving pursuit inert"
@@ -462,6 +507,8 @@ func _test_far_attack_pursuit() -> void:
 	for frame in 1200:
 		attacker._process(1.0 / 60.0)
 		attacker.sim_tick()
+		# See _test_unit_attack_order's identical comment above.
+		attacker.sim_tick_combat()
 		if not fired.is_empty():
 			break
 	_expect(
@@ -514,6 +561,8 @@ func _test_obstructed_attack_order() -> void:
 	_expect(attacker.command_attack(target), "the blocked target must still accept an order")
 	for frame in 120:
 		attacker._process(1.0 / 60.0)
+		# See _test_unit_attack_order's identical comment above.
+		attacker.sim_tick_combat()
 	_expect(
 		fired.is_empty(),
 		"an in-range unit without a line of fire must not shoot into the obstacle"
@@ -549,6 +598,8 @@ func _test_obstructed_attack_order() -> void:
 	)
 	for frame in 240:
 		attacker._process(1.0 / 60.0)
+		# See _test_unit_attack_order's identical comment above.
+		attacker.sim_tick_combat()
 		if not fired.is_empty():
 			break
 	_expect(
@@ -634,6 +685,8 @@ func _test_friendly_on_the_line_holds_fire() -> void:
 	var home: Vector3 = attacker.global_position
 	for frame in 240:
 		attacker._process(1.0 / 60.0)
+		# See _test_unit_attack_order's identical comment above.
+		attacker.sim_tick_combat()
 		attacker.global_position = home
 	_expect(fired.is_empty(), "a unit must not put its shot through a squadmate")
 	_expect(
@@ -655,6 +708,8 @@ func _test_friendly_on_the_line_holds_fire() -> void:
 	)
 	for frame in 240:
 		attacker._process(1.0 / 60.0)
+		# See _test_unit_attack_order's identical comment above.
+		attacker.sim_tick_combat()
 		if not fired.is_empty():
 			break
 	_expect(
@@ -700,13 +755,37 @@ func _test_friendly_arriving_mid_clip_cancels_the_shot() -> void:
 			fired.append_array(projectiles)
 	)
 	var home: Vector3 = attacker.global_position
-	var attacker_pump := SimTickPumpScript.new()
+	# ATAPC's LMG_B Fire_0 has exactly one shot event, authored at baked frame
+	# 1 (elapsed 0.05s -- see AuthoredFireController/FIRE_ANIMATION_SPEED_SCALE):
+	# checked directly, its shot_times is [{"time": 0.05, ...}]. One
+	# simulation tick's own fire-sequence advance (SECONDS_PER_TICK *
+	# FIRE_ANIMATION_SPEED_SCALE = 0.04 * 1.25 = 0.05, by the same design that
+	# makes one tick exactly one baked frame) already reaches that shot
+	# exactly, so a tick-quantized Unit.sim_tick_combat() call cannot ever
+	# observe "the clip started but has not yet reached its shot" for this
+	# weapon -- both happen inside the very first tick, deterministically,
+	# every run. That collapsed window is specific to firing on a tick clock;
+	# it was not collapsed when fire-sequence progress ran on the render frame
+	# (B3c moved it), because a single frame's smaller advance (delta *
+	# FIRE_ANIMATION_SPEED_SCALE at 1/60s ~= 0.021) undershot 0.05 and left a
+	# real intermediate frame to observe. Locomotion (pursuit) still has to
+	# run on the tick -- Unit.sim_tick() integrates global_position, and nothing
+	# here needs frame-granular movement -- so only the combat half is driven
+	# at frame granularity here, directly through UnitCombat.advance(), the
+	# same "call the simulation function directly for a precise-delta
+	# regression" idiom _test_rejected_attack_perch uses above.
+	var tick_driver := FrameTickDriverScript.new()
+	var advance_pursuit_and_combat := func(delta: float) -> void:
+		for _tick in tick_driver.pending_ticks(delta):
+			attacker.sim_tick()
+		attacker.combat().advance(delta)
+		attacker._process(delta)
 	_expect(attacker.command_attack(target), "a clear line must accept the order")
 	# Run until the clip is under way but before its shot event, so the engage
 	# decision is already made and only the muzzle can still refuse.
 	var sequence_started := false
 	for frame in 240:
-		attacker_pump.advance(attacker, 1.0 / 60.0)
+		advance_pursuit_and_combat.call(1.0 / 60.0)
 		attacker.global_position = home
 		if attacker._fire_sequence_active:
 			sequence_started = true
@@ -727,7 +806,7 @@ func _test_friendly_arriving_mid_clip_cancels_the_shot() -> void:
 		"the arriving squadmate must land on the muzzle line"
 	)
 	for frame in 240:
-		attacker_pump.advance(attacker, 1.0 / 60.0)
+		advance_pursuit_and_combat.call(1.0 / 60.0)
 		attacker.global_position = home
 	_expect(
 		fired.is_empty(),
@@ -737,7 +816,7 @@ func _test_friendly_arriving_mid_clip_cancels_the_shot() -> void:
 	squadmate.free()
 	await physics_frame
 	for frame in 480:
-		attacker_pump.advance(attacker, 1.0 / 60.0)
+		advance_pursuit_and_combat.call(1.0 / 60.0)
 		attacker.global_position = home
 		if not fired.is_empty():
 			break

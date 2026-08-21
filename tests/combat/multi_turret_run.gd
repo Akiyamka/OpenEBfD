@@ -137,6 +137,12 @@ func _test_devastator_combined_salvo() -> void:
 	for frame in 900:
 		devastator._process(1.0 / 60.0)
 		devastator.sim_tick()
+		# Unit._process() no longer advances target acquisition, attack orders
+		# or fire sequences -- B3c moved that onto Unit.sim_tick_combat(),
+		# called from a second pass Match makes over the "units" group after
+		# sim_tick() above. This fixture has no Match, so nothing calls either
+		# sim_tick-shaped method for it; drive both by hand.
+		devastator.sim_tick_combat()
 		if fired_weapons.has(0) and fired_weapons.has(1):
 			break
 	_expect(fired_weapons.has(1), "the missile turret must engage the commanded target")
@@ -206,6 +212,12 @@ func _test_pursuit_range_uses_shortest_usable_weapon() -> void:
 	for frame in 1800:
 		devastator._process(1.0 / 60.0)
 		devastator.sim_tick()
+		# Unit._process() no longer advances target acquisition, attack orders
+		# or fire sequences -- B3c moved that onto Unit.sim_tick_combat(),
+		# called from a second pass Match makes over the "units" group after
+		# sim_tick() above. This fixture has no Match, so nothing calls either
+		# sim_tick-shaped method for it; drive both by hand.
+		devastator.sim_tick_combat()
 		if fired_weapons.has(0) and fired_weapons.has(1):
 			break
 	_expect(
@@ -288,6 +300,12 @@ func _test_idle_turret_engages_during_attack_order() -> void:
 	for frame in 1200:
 		devastator._process(1.0 / 60.0)
 		devastator.sim_tick()
+		# Unit._process() no longer advances target acquisition, attack orders
+		# or fire sequences -- B3c moved that onto Unit.sim_tick_combat(),
+		# called from a second pass Match makes over the "units" group after
+		# sim_tick() above. This fixture has no Match, so nothing calls either
+		# sim_tick-shaped method for it; drive both by hand.
+		devastator.sim_tick_combat()
 		if fired_targets.has(0) and fired_targets.has(1):
 			break
 	_expect(

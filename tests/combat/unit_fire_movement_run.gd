@@ -37,6 +37,10 @@ func _initialize() -> void:
 		_test_independent_side_turrets
 	)
 	_run_case("turret recenters smoothly after attack is replaced by move", _test_turret_recenter_after_move)
+	_run_case(
+		"a turret holds its simulated aim on a rendered frame with no tick",
+		_test_turret_holds_angle_with_no_tick_this_frame
+	)
 	_run_case("idle unit turrets scan their forward sector", _test_idle_unit_turret_scan)
 	_run_case("unit model replacement rebinds its turret", _test_unit_turret_rebind)
 	_finish("Unit fire movement tests")
@@ -150,7 +154,13 @@ func _test_fire_while_moving_capability() -> void:
 	) as AnimationPlayer
 	if mongoose_player != null:
 		mongoose_player.advance(1.0 / 60.0)
-	mongoose_pump.advance(mongoose, 1.0 / 60.0)
+	# A bare mongoose_pump.advance() here is not guaranteed to contain a due
+	# tick -- pending_ticks() only fires once its own remainder crosses one
+	# whole SECONDS_PER_TICK, and the 180-iteration loop above can leave that
+	# remainder anywhere. This regression wants exactly one simulation step
+	# right after the animation-frame stomp above, so call it directly rather
+	# than through a pump call that might land on a tick-less frame.
+	mongoose.sim_tick_combat()
 	var returning_yaw := absf(mongoose.combat_turrets[0].current_yaw_degrees())
 	_expect(
 		returning_yaw < out_of_range_yaw and returning_yaw > 0.0,
@@ -208,6 +218,11 @@ func _test_blocking_fire_move_cancel() -> void:
 	)
 	for frame in 240:
 		infantry._process(1.0 / 60.0)
+		# Unit._process() no longer advances target acquisition, attack
+		# orders or fire sequences -- B3c moved that onto
+		# Unit.sim_tick_combat(), Match's second pass over the "units" group.
+		# No Match here, so drive it by hand.
+		infantry.sim_tick_combat()
 		if not projectiles.is_empty():
 			break
 	_expect(
@@ -329,6 +344,8 @@ func _test_independent_side_turrets() -> void:
 	)
 	for frame in 240:
 		flame._process(1.0 / 60.0)
+		# See _test_blocking_fire_move_cancel's identical comment above.
+		flame.sim_tick_combat()
 		if fired_targets.size() >= 2:
 			break
 	_expect(
@@ -383,6 +400,8 @@ func _test_independent_side_turrets() -> void:
 	)
 	for frame in 360:
 		blind_flame._process(1.0 / 60.0)
+		# See _test_blocking_fire_move_cancel's identical comment above.
+		blind_flame.sim_tick_combat()
 		if not blind_shots.is_empty():
 			break
 	_expect(
@@ -413,7 +432,13 @@ func _test_turret_recenter_after_move() -> void:
 		+ rest_direction.rotated(Vector3.UP, deg_to_rad(30.0)) * 10.0
 
 	_expect(unit.command_attack(target), "the Minotaurus must accept the side target")
-	unit._process(1.0 / 20.0)
+	# This regression pins the turn-step math to specific delta values (a
+	# whole 1/20 rule update, then thirds of it below) that have nothing to
+	# do with the simulation tick rate -- see combat_turret.gd's
+	# AIM_UPDATES_PER_SECOND, a Rules.txt authoring cadence, not a clock.
+	# Call the simulation function directly with those deltas rather than
+	# through Unit.sim_tick_combat(), which is fixed to one 25 Hz tick.
+	unit.combat().advance(1.0 / 20.0)
 	var attack_yaw := absf(turret.current_yaw_degrees())
 	var expected_yaw := 5.0 + rad_to_deg(unit.turn_rate)
 	_expect(
@@ -433,7 +458,10 @@ func _test_turret_recenter_after_move() -> void:
 		# Reproduce the normal frame order: authored Move pose first, then Unit
 		# combat logic restores its continuously changing servo pose.
 		player.advance(1.0 / 60.0)
-	unit._process(1.0 / 60.0)
+	# Same reasoning as the 1/20 call above: a precise-delta step-math
+	# regression, called directly rather than through the fixed-tick
+	# Unit.sim_tick_combat().
+	unit.combat().advance(1.0 / 60.0)
 	var returning_yaw := absf(turret.current_yaw_degrees())
 	_expect(
 		returning_yaw < attack_yaw and returning_yaw > 0.0,
@@ -453,13 +481,84 @@ func _test_turret_recenter_after_move() -> void:
 	)
 
 	_expect(unit.command_attack(target), "the side target must remain attackable after moving")
-	unit._process(1.0 / 60.0)
+	# Same reasoning as the two calls above.
+	unit.combat().advance(1.0 / 60.0)
 	var reacquired_direction: Vector3 = turret.peek_emission()["direction"]
 	_expect(
 		rad_to_deg(Assertions.horizontal_angle_between(returning_direction, reacquired_direction))
 			<= expected_yaw / 3.0 + 0.1,
 		"a repeated attack order must resume from the visible pose without restoring a cached yaw"
 	)
+
+
+## The property B3c's sim/view split exists for, proved directly rather than
+## inferred from a green suite: the combat-owned aim angle only changes on a
+## simulation tick (Unit.sim_tick_combat()), but the pivot that renders it has
+## to be repainted every rendered frame regardless, via _process()'s
+## restore_combat_turret_poses() call, because a looping authored
+## Stationary/Move track keys that same pivot back to its own rest pose every
+## frame it plays (see CombatTurret.aim_at()'s own comment). Every other
+## regression in this file drives sim_tick_combat() and _process() together
+## each step, so none of them would notice _process() failing to reapply the
+## pose on a frame where no tick ran -- this isolates that one frame.
+func _test_turret_holds_angle_with_no_tick_this_frame() -> void:
+	var unit = UnitScene.instantiate()
+	unit.config_id = &"ATMinotaurus"
+	root.add_child(unit)
+	unit.replace_visual_scene(ATMinotaurusModelScene)
+	var turret = unit.combat_turrets[0]
+	var rest_emission: Dictionary = turret.peek_emission()
+	var rest_direction: Vector3 = rest_emission["direction"]
+	rest_direction.y = 0.0
+	rest_direction = rest_direction.normalized()
+	var target := Doubles.FakeCombatTarget.new(&"None")
+	target.position = Vector3(rest_emission["position"]) \
+		+ rest_direction.rotated(Vector3.UP, deg_to_rad(30.0)) * 10.0
+
+	_expect(unit.command_attack(target), "the Minotaurus must accept the side target")
+	# The only simulation tick this test ever runs. Everything from here on
+	# drives _process() alone, with no further sim_tick_combat(), to isolate
+	# the view half from the simulation half it is being tested against.
+	unit.sim_tick_combat()
+	var aimed_yaw: float = turret.current_yaw_degrees()
+	_expect(
+		absf(aimed_yaw) > 0.01,
+		"test setup must actually turn the turret, or the regression below proves nothing"
+	)
+	var aimed_direction: Vector3 = turret.peek_emission()["direction"]
+
+	var player := unit.get_node("VisualRoot").find_child(
+		"AnimationPlayer", true, false
+	) as AnimationPlayer
+	_expect(
+		player != null,
+		"the Minotaurus model must expose an AnimationPlayer for this regression to mean anything"
+	)
+	if player != null:
+		# Reproduce a looping authored Stationary/Move track keying the
+		# turret pivot back to its own rest pose, exactly as it does every
+		# rendered frame it plays.
+		player.advance(1.0 / 60.0)
+		var stomped_direction: Vector3 = turret.peek_emission()["direction"]
+		_expect(
+			rad_to_deg(Assertions.horizontal_angle_between(stomped_direction, aimed_direction)) > 1.0,
+			"the animation must actually overwrite the pivot, or this regression proves nothing"
+		)
+	# No sim_tick_combat() this frame -- exactly a rendered frame with no due
+	# tick, which is the case a green suite driving both together every step
+	# would never exercise.
+	unit._process(1.0 / 60.0)
+	_expect(
+		is_equal_approx(turret.current_yaw_degrees(), aimed_yaw),
+		"the stored aim angle is simulation state and must not change on a tick-less frame"
+	)
+	var held_direction: Vector3 = turret.peek_emission()["direction"]
+	_expect(
+		rad_to_deg(Assertions.horizontal_angle_between(held_direction, aimed_direction)) < 0.1,
+		"a rendered frame with no tick must reapply the last simulated aim, not leave the "
+			+ "animation's rest pose showing"
+	)
+	unit.free()
 
 
 func _test_idle_unit_turret_scan() -> void:
@@ -470,12 +569,16 @@ func _test_idle_unit_turret_scan() -> void:
 	var turret = unit.combat_turrets[0]
 	turret._idle_scan_rng.seed = 1
 	turret._idle_scan_active = false
-	unit._process(2.0)
+	# Idle-scan timing is tested with deliberately large, exact deltas (three
+	# then five-ish seconds) that have nothing to do with the tick rate --
+	# call the simulation function directly rather than through the
+	# fixed-tick Unit.sim_tick_combat(), same as _test_turret_recenter_after_move.
+	unit.combat().advance(2.0)
 	_expect(
 		is_zero_approx(turret.current_yaw_degrees()),
 		"an idle turret must wait at least three seconds before its first scan turn"
 	)
-	unit._process(4.0)
+	unit.combat().advance(4.0)
 	var yaw: float = turret.current_yaw_degrees()
 	_expect(
 		absf(yaw) > 0.01 and absf(yaw) <= 70.01,

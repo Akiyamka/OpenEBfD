@@ -98,6 +98,25 @@ func configure(owner: CharacterBody3D) -> void:
 		_authored_fire_controller.weapon_fired.connect(_on_authored_weapon_fired)
 
 
+## This module's simulation half: target acquisition, attack order
+## progression and authored fire-sequence committal, including the servo
+## angles CombatTurret.aim_at()/idle_scan()/recenter() advance. current_yaw/
+## current_pitch are the simulation-owned numbers this changes; those methods
+## also still call CombatTurret._apply_aim_transforms() themselves (unchanged
+## by B3c -- it is how they sample the live muzzle direction mid-calculation
+## and how a shot committed inside this same call reads the pose it just
+## computed), so this call already leaves the pivots showing the angle it
+## picked. What is new is that nothing repeats that write on a later frame
+## with no tick of its own -- Unit._process()'s unconditional
+## restore_combat_turret_poses() call is the one guaranteed to run every
+## rendered frame regardless (see its comment there and
+## CombatTurret._apply_aim_transforms()'s), which is what holds the pose
+## between ticks instead of letting the animation stomp it. Called once per
+## simulation tick, with a fixed MatchClock.SECONDS_PER_TICK delta, by
+## Unit.sim_tick_combat() (B3c) -- never from Unit._process().
+## BuildingCombat.advance() is the same idea for a static shooter and still
+## runs on the frame; the two stay separate functions on separate clocks
+## rather than merging, exactly as they were before this slice.
 func advance(delta: float) -> void:
 	if _owner == null:
 		return
