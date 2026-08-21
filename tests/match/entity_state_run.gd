@@ -17,6 +17,24 @@ extends SceneTree
 ## case where they are made to disagree, and the store is shown to keep
 ## answering with its own last written value rather than the node's, proves
 ## that. _test_store_outlives_a_direct_node_poke is that case.
+##
+## Slice C3 adds health and shields, for both units and buildings, and the
+## health/shields cases below are shaped differently from the position cases
+## above for a reason worth stating: there is no poke case for health or
+## shields the way _test_store_outlives_a_direct_node_poke exists for
+## position. Health and shields are custom GDScript properties with their
+## own `set(value)` on Unit and Building (scripts/units/unit.gd,
+## scripts/buildings/building.gd) -- every assignment to `.health` or
+## `.shields`, from any file, already runs through that setter, because
+## GDScript gives a property with a setter no second name a caller could
+## assign to instead. So unlike `global_position`, which is a plain Node3D
+## field any code could poke directly, there is no code path left that
+## writes the node's mirror without also writing the store: the two cannot
+## be made to disagree. _test_health_writes_reach_the_store_for_units_and_buildings
+## proves the positive claim this leaves -- store and mirror agree, for both
+## kinds -- and _test_health_clamp_lands_in_the_store proves the clamp
+## specifically, which is the one place the two really could still diverge
+## if the store were ever handed the unclamped value by mistake.
 
 const LegacyRulesFixture := preload("res://tests/support/legacy_rules_fixture.gd")
 const MatchFixtureScene := preload("res://tests/fixtures/match_fixture.tscn")
@@ -41,6 +59,19 @@ func _initialize() -> void:
 		"a direct write to global_position that bypasses set_simulation_position "
 			+ "does not move the store -- disagreement resolves in the store's favour",
 		_test_store_outlives_a_direct_node_poke
+	)
+	await _run_case(
+		"every fixture unit and building already has store health and shields once the match "
+			+ "finishes booting",
+		_test_boot_populates_the_store_health_and_shields
+	)
+	await _run_case(
+		"health and shields writes reach the store for both a unit and a building",
+		_test_health_writes_reach_the_store_for_units_and_buildings
+	)
+	await _run_case(
+		"a write above max_health/max_shields lands clamped in the store, not only in the mirror",
+		_test_health_clamp_lands_in_the_store
 	)
 
 	if _failures > 0:
@@ -227,6 +258,168 @@ func _test_store_outlives_a_direct_node_poke() -> void:
 	_expect(
 		not store.position(unit.entity_id).is_equal_approx(unit.global_position),
 		"store and node must actually disagree here, and the store's answer -- not the node's -- must be the one trusted"
+	)
+
+	match_instance.queue_free()
+	await process_frame
+
+
+## Boot alone -- Unit._ready() and Building._ready() both run `health =
+## max_health` and `shields = max_shields` before this case ever touches
+## either node -- so this proves the setter's store write fires from the
+## ordinary object lifecycle, not only from a write this test manufactures.
+func _test_boot_populates_the_store_health_and_shields() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	get_root().add_child(match_instance)
+	await process_frame
+	await process_frame
+	await process_frame
+
+	var store = match_instance.entity_state()
+	_expect(store != null, "Match must expose a live SimEntityState")
+
+	var unit_paths: Array[String] = ["Units/ScoutA", "Units/OrdosAPC"]
+	var building_paths: Array[String] = ["Buildings/ATConYard", "Buildings/ATSmWindtrap"]
+	for path in unit_paths + building_paths:
+		# Bare `=`, not `:=`: entity_id/health/shields exist on Unit and
+		# Building but not on Node, the static type get_node() returns, so
+		# this deliberately stays dynamically typed rather than risk a
+		# member-not-found parse error on the shared Node type.
+		var entity = match_instance.get_node(path)
+		_expect(int(entity.entity_id) != 0, "%s must have a nonzero entity_id by boot" % path)
+		if store == null:
+			continue
+		_expect(
+			store.has_health(entity.entity_id),
+			"%s must already have store health once the match has booted" % path
+		)
+		_expect(
+			store.has_shields(entity.entity_id),
+			"%s must already have store shields once the match has booted" % path
+		)
+		if store.has_health(entity.entity_id):
+			_expect(
+				is_equal_approx(store.health(entity.entity_id), float(entity.health)),
+				"%s's store health must match its mirrored health field after boot" % path
+			)
+		if store.has_shields(entity.entity_id):
+			_expect(
+				is_equal_approx(store.shields(entity.entity_id), float(entity.shields)),
+				"%s's store shields must match its mirrored shields field after boot" % path
+			)
+
+	match_instance.queue_free()
+	await process_frame
+
+
+## Direct assignment to `.health`/`.shields`, not take_damage() or the repair
+## service: any caller -- combat, repair, or this test -- reaches the
+## identical property setter (see this file's own header comment on why that
+## makes them equivalent for what this case is proving), so assigning
+## directly isolates the setter's own behaviour from any one gameplay
+## caller's balance data.
+func _test_health_writes_reach_the_store_for_units_and_buildings() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	get_root().add_child(match_instance)
+	for _warmup in 3:
+		await process_frame
+
+	var unit := match_instance.get_node("Units/ScoutA") as Unit
+	var building := match_instance.get_node("Buildings/ATConYard") as Building
+	var store = match_instance.entity_state()
+	_expect(store != null, "Match must expose a live SimEntityState")
+	if store == null:
+		match_instance.queue_free()
+		return
+
+	unit.max_shields = 40.0
+	building.max_shields = 60.0
+
+	unit.health = unit.max_health * 0.5
+	unit.shields = 25.0
+	building.health = building.max_health * 0.25
+	building.shields = 15.0
+
+	_expect(
+		is_equal_approx(store.health(unit.entity_id), unit.health),
+		"the unit's store health must match its mirrored health field after a direct write"
+	)
+	_expect(
+		is_equal_approx(store.shields(unit.entity_id), unit.shields),
+		"the unit's store shields must match its mirrored shields field after a direct write"
+	)
+	_expect(
+		is_equal_approx(store.health(building.entity_id), building.health),
+		"the building's store health must match its mirrored health field after a direct write"
+	)
+	_expect(
+		is_equal_approx(store.shields(building.entity_id), building.shields),
+		"the building's store shields must match its mirrored shields field after a direct write"
+	)
+
+	match_instance.queue_free()
+	await process_frame
+
+
+## Binds the design doc's clamp note directly: "clampf(value, 0.0,
+## max_health): the clamp is a simulation decision -- it changes the value
+## that gets stored -- so it has to happen on the way into the store, not
+## only on the way into the mirror, or the two hold different numbers."
+## Passing set_health()/set_shields() the raw, unclamped `value` argument
+## instead of the setter's own `clamped` local would leave the store holding
+## the over-range number while the mirror shows the correctly clamped one --
+## this case fails the moment that happens, on both bounds and for both a
+## unit and a building.
+func _test_health_clamp_lands_in_the_store() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	get_root().add_child(match_instance)
+	for _warmup in 3:
+		await process_frame
+
+	var unit := match_instance.get_node("Units/ScoutA") as Unit
+	var building := match_instance.get_node("Buildings/ATConYard") as Building
+	var store = match_instance.entity_state()
+	_expect(store != null, "Match must expose a live SimEntityState")
+	if store == null:
+		match_instance.queue_free()
+		return
+
+	unit.max_shields = 40.0
+	building.max_shields = 60.0
+
+	# Above max_health/max_shields.
+	unit.health = unit.max_health + 5000.0
+	unit.shields = unit.max_shields + 5000.0
+	building.health = building.max_health + 5000.0
+	building.shields = building.max_shields + 5000.0
+	_expect(unit.health == unit.max_health, "sanity check: the node's own clamp already caps the unit's health")
+	_expect(
+		is_equal_approx(store.health(unit.entity_id), unit.max_health),
+		"an over-max health write must land clamped to max_health in the store, not the raw over-max value"
+	)
+	_expect(
+		is_equal_approx(store.shields(unit.entity_id), unit.max_shields),
+		"an over-max shields write must land clamped to max_shields in the store"
+	)
+	_expect(
+		is_equal_approx(store.health(building.entity_id), building.max_health),
+		"a building's over-max health write must land clamped in the store exactly as a unit's does"
+	)
+	_expect(
+		is_equal_approx(store.shields(building.entity_id), building.max_shields),
+		"a building's over-max shields write must land clamped in the store"
+	)
+
+	# Below zero: the other bound of the same clamp.
+	unit.health = -100.0
+	building.shields = -100.0
+	_expect(
+		is_equal_approx(store.health(unit.entity_id), 0.0),
+		"a below-zero health write must land clamped to 0.0 in the store, not the raw negative value"
+	)
+	_expect(
+		is_equal_approx(store.shields(building.entity_id), 0.0),
+		"a below-zero shields write must land clamped to 0.0 in the store"
 	)
 
 	match_instance.queue_free()

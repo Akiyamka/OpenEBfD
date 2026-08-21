@@ -103,12 +103,73 @@ var target_position: Vector3
 var is_selected := false
 var is_hovered := false
 var invulnerable := false
+## The clamp is a simulation decision -- see SimEntityState's doc comment
+## (scripts/sim/entity_state.gd) on why it happens here, once, rather than
+## inside the store: this setter is the only place that knows max_health.
+## The clamped value is written to SimEntityState first, then mirrored into
+## this field, the same order Unit.set_simulation_position() uses for
+## position and for the identical reason -- the store is authoritative, this
+## field is a view over it. There is no separate chokepoint method the way
+## position needed one: every write to `health` anywhere in this project
+## already funnels through this setter, because GDScript has no second name
+## for a property's backing storage a caller could assign to instead.
 var health := 0.0:
 	set(value):
-		health = clampf(value, 0.0, max_health)
+		var clamped := clampf(value, 0.0, max_health)
+		# Mirrored from the store's own value, not from `clamped`, whenever a
+		# store exists: it holds float32 (PackedFloat32Array) while this field
+		# is a plain GDScript double, so assigning the pre-narrowing number
+		# would leave the mirror holding something the store does not have --
+		# "the node is a view over the store" would stop being exactly true,
+		# and a snapshot restore would silently shift the value. With no store
+		# there is nothing to disagree with, so `clamped` stands.
+		var mirrored := clamped
+		if _entity_id != 0:
+			var store = MatchLookupScript.entity_state(self)
+			if store != null:
+				store.set_health(_entity_id, clamped)
+				# Only when the store actually took it. A write for a dead
+				# but still-registered id is refused and push_errored (see
+				# SimEntityState), and reading back then returns the
+				# non-finite no-value marker -- assigning that would turn a
+				# logged, still-visible bug into an entity with INF health,
+				# which is far worse than the unnarrowed double this keeps
+				# instead. C2 made the same call for position: on a refused
+				# write the node still moves, so the symptom stays loud.
+				var stored: float = store.health(_entity_id)
+				if is_finite(stored):
+					mirrored = stored
+		health = mirrored
+## Same store-then-mirror order as health above; _refresh_shield_visibility()
+## runs last because it reads `shields`, which by then already holds the
+## clamped, store-agreeing value.
 var shields := 0.0:
 	set(value):
-		shields = clampf(value, 0.0, max_shields)
+		var clamped := clampf(value, 0.0, max_shields)
+		# Mirrored from the store's own value, not from `clamped`, whenever a
+		# store exists: it holds float32 (PackedFloat32Array) while this field
+		# is a plain GDScript double, so assigning the pre-narrowing number
+		# would leave the mirror holding something the store does not have --
+		# "the node is a view over the store" would stop being exactly true,
+		# and a snapshot restore would silently shift the value. With no store
+		# there is nothing to disagree with, so `clamped` stands.
+		var mirrored := clamped
+		if _entity_id != 0:
+			var store = MatchLookupScript.entity_state(self)
+			if store != null:
+				store.set_shields(_entity_id, clamped)
+				# Only when the store actually took it. A write for a dead
+				# but still-registered id is refused and push_errored (see
+				# SimEntityState), and reading back then returns the
+				# non-finite no-value marker -- assigning that would turn a
+				# logged, still-visible bug into an entity with INF health,
+				# which is far worse than the unnarrowed double this keeps
+				# instead. C2 made the same call for position: on a refused
+				# write the node still moves, so the symptom stays loud.
+				var stored: float = store.shields(_entity_id)
+				if is_finite(stored):
+					mirrored = stored
+		shields = mirrored
 		_refresh_shield_visibility()
 var passengers := 0.0
 var combat_turrets: Array = []

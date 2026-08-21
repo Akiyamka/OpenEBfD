@@ -836,6 +836,49 @@ and by the time we get there the hard part is already tested.
   recorded here so that "the sim owns state" is not read as finished when it is
   half finished.
 
+  **Slice C3, decided 2026-08-21: health and shields, for units and buildings
+  both, and why it needed no checker rule.** C2's chokepoint problem does not
+  repeat here. `Unit.health`/`Unit.shields` and `Building.health`/
+  `Building.shields` were already GDScript properties with `set(value)`
+  before this slice touched them, so every write in the project — about
+  fifteen call sites across five files (`unit.gd`, `building.gd`,
+  `building_survivors.gd`, and one reflection-based `.set("health", ...)` in
+  `building_repair_service.gd`), swept and confirmed, none bypassing —
+  already funneled through one setter per field per class. There was no
+  scattered `global_position`-style write surface to migrate and no second
+  name for the backing storage a caller could assign to instead of the
+  setter, so C3 makes the setter itself write the store: `SimEntityState.set_health()`/`set_shields()` first, the node's
+  field second, the same store-then-mirror order `set_simulation_position()`
+  established. `clampf(value, 0.0, max_health)` is computed once, in the
+  setter — the only place that knows `max_health` — and that same clamped
+  number is what both the store and the mirror receive, so a write above the
+  ceiling cannot land unclamped in one and clamped in the other. View work
+  that used to run after the clamp (`health_changed.emit()`, the two
+  `Building._refresh_*()` calls, `Unit._refresh_shield_visibility()`) still
+  runs last, after both the store and the mirror hold the same value it
+  reads.
+  `global-position-bypasses-store`'s pattern cannot be repeated for this
+  field: a regex has no way to tell the setter's own sanctioned
+  `health = clamped` from an external bypass, because outside the setter no
+  such bypass exists to distinguish it from — GDScript enforces the setter on
+  every assignment, full stop. A rule that cannot fire is not a rule, so none
+  was added.
+  Buildings rode along at effectively no extra cost: `SimEntityRegistry`
+  already allocates ids for `Kind.BUILDING` from the same id space
+  `Kind.UNIT` uses, so `SimEntityState`'s arrays already index them, and a
+  building's `_register_entity_id()`/`_ready()` ordering already matches a
+  unit's. C4 (owner) inherits both kinds covered for the identical reason.
+  Missing-id reads return `INF`, `0.0`'s replacement for a bare float the way
+  `Vector3.INF` replaced `Vector3.ZERO` for position in C1 — `0.0` health is
+  what a dead entity legitimately has, so it cannot also mean "no value."
+  `PackedFloat32Array` was kept, matching the `float` GDScript already
+  declares for these fields today and the identical reasoning position's
+  `PackedVector3Array` already rests on (decision 5). No previous-tick buffer
+  was added for either field: nothing has named a consumer for a previous
+  simulation tick's health or shields the way B4 names one for position, so
+  adding one now would be exactly the speculative generality this store's own
+  doc comment already declines for velocity.
+
 - **Phase 4 — determinism gate.** Portable math, RNG split, the static rules
   above wired into `check_architecture.py`, and the CI test that replays one
   command log twice in-process and then compares state hashes across native and
