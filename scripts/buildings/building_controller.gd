@@ -681,7 +681,11 @@ func _process_repairs() -> void:
 	var settings := _game_settings_catalog.settings()
 	var repair_health := float(settings.building_repair_rate) if settings != null else 12.0
 	var buildings: Array[Node] = []
-	buildings.assign(get_tree().get_nodes_in_group("buildings"))
+	# "sim_buildings", not "buildings": only called from advance_tick(), which
+	# Match._advance_simulation_tick() drives -- healing a building's health
+	# is a simulation write, so this must walk the same population the tick
+	# itself simulates, not everything the view layer can currently see.
+	buildings.assign(get_tree().get_nodes_in_group("sim_buildings"))
 	_repair_service.advance_tick(
 		buildings, repair_health, _local_player(), Callable(self, "_config_of")
 	)

@@ -11,6 +11,10 @@ extends SceneTree
 
 const LegacyRulesFixture := preload("res://tests/support/legacy_rules_fixture.gd")
 const MatchFixtureScene := preload("res://tests/fixtures/match_fixture.tscn")
+## Same scene tests/match/despawn_run.gd uses for the identical reason: the
+## fixture's own buildings (ATConYard, ATSmWindtrap) carry no CombatTurret to
+## observe.
+const HKGunTurretScene := preload("res://assets/converted/buildings/HKGunTurret/HKGunTurret.scn")
 
 var _assertions := 0
 var _failures := 0
@@ -38,6 +42,14 @@ func _initialize() -> void:
 	await _run_case(
 		"two simultaneously live matches each resolve their own fixture, not each other's",
 		_test_two_simultaneously_live_matches_each_resolve_their_own_fixture
+	)
+	await _run_case(
+		"every unit and building is in both its view group and its tick-only sim group",
+		_test_every_unit_and_building_is_in_both_its_view_group_and_its_sim_group
+	)
+	await _run_case(
+		"a node removed from its tick-only sim group, but left in the view group, stops being ticked",
+		_test_removing_sim_group_membership_stops_ticking_without_touching_the_view_group
 	)
 
 	if _failures > 0:
@@ -347,4 +359,152 @@ func _test_freed_entity_releases_and_never_reissues_its_id() -> void:
 	# Without waiting for it here, the next case's fresh Match could lose the
 	# race for get_first_node_in_group() to this one on its way out, and its
 	# entities would silently register into the wrong (dying) index.
+	await process_frame
+
+
+## Slice C6a's own suite -- see docs/architecture/network-multiplayer.md,
+## "Slice C6, decided 2026-08-22: deferred spawn, and the group that had to
+## be split first." A suite that only checked group membership at rest would
+## pass identically whether Unit._ready()/Building._ready() ever called
+## add_to_group(SIM_UNITS_GROUP)/add_to_group(SIM_BUILDINGS_GROUP) at all --
+## as long as "units"/"buildings" themselves stayed correct, nothing here
+## would fail, because C6a's own claim is that the two groups are identical
+## at every instant. This case is that claim, checked directly rather than
+## assumed: every member of "units" must also be a member of "sim_units",
+## and vice versa, so a future reader adding a unit kind that skips one of
+## the two calls sees a failure here, not silence.
+func _test_every_unit_and_building_is_in_both_its_view_group_and_its_sim_group() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	get_root().add_child(match_instance)
+	await process_frame
+
+	var tree := get_root().get_tree()
+	var view_units := tree.get_nodes_in_group("units")
+	var sim_units := tree.get_nodes_in_group("sim_units")
+	_expect(not view_units.is_empty(), "the fixture must have at least one unit to make this assertion meaningful")
+	_expect(
+		view_units.size() == sim_units.size(),
+		"\"units\" has %d members, \"sim_units\" has %d -- C6a's own claim is that membership is identical" \
+			% [view_units.size(), sim_units.size()]
+	)
+	for unit in view_units:
+		_expect(sim_units.has(unit), "%s is in \"units\" but missing from \"sim_units\"" % unit.name)
+	for unit in sim_units:
+		_expect(view_units.has(unit), "%s is in \"sim_units\" but missing from \"units\"" % unit.name)
+
+	var view_buildings := tree.get_nodes_in_group("buildings")
+	var sim_buildings := tree.get_nodes_in_group("sim_buildings")
+	_expect(
+		not view_buildings.is_empty(), "the fixture must have at least one building to make this assertion meaningful"
+	)
+	_expect(
+		view_buildings.size() == sim_buildings.size(),
+		"\"buildings\" has %d members, \"sim_buildings\" has %d" % [view_buildings.size(), sim_buildings.size()]
+	)
+	for building in view_buildings:
+		_expect(sim_buildings.has(building), "%s is in \"buildings\" but missing from \"sim_buildings\"" % building.name)
+	for building in sim_buildings:
+		_expect(view_buildings.has(building), "%s is in \"sim_buildings\" but missing from \"buildings\"" % building.name)
+
+	match_instance.queue_free()
+	await process_frame
+
+
+## The property C6b will actually depend on, and the one a suite that only
+## checks membership at rest (the case above) cannot see at all: membership
+## in "units"/"buildings" is identical to "sim_units"/"sim_buildings" at
+## every instant *today*, because nothing yet defers one from the other.
+## C6b changes exactly that -- an entity's entry into the tick-only group
+## alone -- so this proves the tick already keys off the tick-only group,
+## not the shared one, ahead of that split actually landing.
+##
+## Unit half: _previous_global_position is the observable.
+## Unit._advance_locomotion_tick(), called once per tick from sim_tick() with
+## no early-out before this line, unconditionally overwrites it with that
+## tick's global_position -- so a sentinel value written directly into it
+## survives untouched exactly when, and only when, sim_tick() does not run
+## this unit this tick. Chosen over reload_ticks_remaining for this half
+## because ScoutA (the fixture's plain scout) is not guaranteed to carry a
+## weapon, while every Unit, armed or not, runs _advance_locomotion_tick().
+##
+## Building half: reload_ticks_remaining is the observable, the same one
+## tests/match/despawn_run.gd already uses and for the identical reason --
+## the fixture's own buildings carry no CombatTurret, so a HKGunTurret is
+## added for this case alone.
+##
+## Both halves drive match_instance.call("_advance_simulation_tick") directly
+## rather than await process_frame, so the case controls exactly one tick per
+## call instead of however many FrameTickDriver decides a frame owes.
+func _test_removing_sim_group_membership_stops_ticking_without_touching_the_view_group() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	get_root().add_child(match_instance)
+	await process_frame
+
+	var scout := match_instance.get_node("Units/ScoutA")
+	_expect(
+		scout.is_in_group("units") and scout.is_in_group("sim_units"),
+		"ScoutA must start in both \"units\" and \"sim_units\""
+	)
+	var sentinel := Vector3(4321.5, 4321.5, 4321.5)
+	scout.set("_previous_global_position", sentinel)
+	scout.remove_from_group("sim_units")
+	_expect(scout.is_in_group("units"), "removing \"sim_units\" must not remove \"units\" too")
+	match_instance.call("_advance_simulation_tick")
+	var after_removal: Vector3 = scout.get("_previous_global_position")
+	_expect(
+		after_removal == sentinel,
+		"a unit left in \"units\" but removed from \"sim_units\" must not be ticked"
+	)
+	# Positive control -- without it, a suite where ScoutA was never ticked at
+	# all (e.g. because "sim_units" was wired to nothing, or this fixture's
+	# Match never reaches the tick loop) would pass the assertion above for
+	# the wrong reason: not because removal stopped the tick, but because
+	# nothing was ever ticking ScoutA in the first place.
+	scout.add_to_group("sim_units")
+	match_instance.call("_advance_simulation_tick")
+	var after_rejoin: Vector3 = scout.get("_previous_global_position")
+	_expect(
+		after_rejoin != sentinel,
+		"sanity check: rejoining \"sim_units\" must make the unit tick again"
+	)
+
+	var building := HKGunTurretScene.instantiate() as Building
+	building.owner_player_id = 1
+	match_instance.get_node("Buildings").add_child(building)
+	# One frame so _ready() runs: add_to_group("buildings")/add_to_group(
+	# "sim_buildings") and turret construction all happen there.
+	await process_frame
+	_expect(building.combat_turrets.size() == 1, "HKGunTurret must create one runtime turret to observe")
+	if building.combat_turrets.is_empty():
+		match_instance.queue_free()
+		await process_frame
+		return
+	# Bare CombatTurret annotation, not `:=`: Building.combat_turrets is a
+	# plain untyped Array (scripts/buildings/building.gd), so indexing it
+	# returns Variant -- project.godot makes Variant-inferred `var x :=
+	# untyped.method()` a parse error that fails this whole file, not merely
+	# a failed assertion.
+	var turret: CombatTurret = building.combat_turrets[0]
+	_expect(
+		building.is_in_group("buildings") and building.is_in_group("sim_buildings"),
+		"a freshly placed building must start in both \"buildings\" and \"sim_buildings\""
+	)
+
+	turret.reload_ticks_remaining = 5
+	building.remove_from_group("sim_buildings")
+	_expect(building.is_in_group("buildings"), "removing \"sim_buildings\" must not remove \"buildings\" too")
+	match_instance.call("_advance_simulation_tick")
+	_expect(
+		turret.reload_ticks_remaining == 5,
+		"a building left in \"buildings\" but removed from \"sim_buildings\" must not be ticked"
+	)
+	# Positive control, same reason as the unit half above.
+	building.add_to_group("sim_buildings")
+	match_instance.call("_advance_simulation_tick")
+	_expect(
+		turret.reload_ticks_remaining == 4,
+		"sanity check: rejoining \"sim_buildings\" must make the building tick again"
+	)
+
+	match_instance.queue_free()
 	await process_frame

@@ -108,7 +108,12 @@ func setup(source_grid: MapNavigationGrid) -> bool:
 	air_navigation.setup(self, runtime_map, avoidance, _agents, spatial_hash, slot_allocator)
 	_refresh_building_blockers()
 	if is_inside_tree():
-		for node in get_tree().get_nodes_in_group("units"):
+		# Reads "sim_units", not "units": navigation is a simulation system --
+		# it runs from Match._advance_simulation_tick() via sim_tick() below --
+		# so its registry must agree with the tick about who is currently
+		# simulated. Reading "units" here would register an agent for a unit
+		# C6b's admission queue has not yet let the tick simulate.
+		for node in get_tree().get_nodes_in_group("sim_units"):
 			if node is Node3D and _owns_node(node):
 				register_unit(node)
 	return true
@@ -151,7 +156,12 @@ func can_place_transport_cargo(unit: Node3D, world_target: Vector3, ignored_carr
 		return false
 	var cargo_radius := float(unit.call("navigation_collision_radius", 0.25)) \
 		if unit.has_method("navigation_collision_radius") else 0.25
-	for candidate in get_tree().get_nodes_in_group("units"):
+	# "sim_units", not "units" -- this probe runs from
+	# AdvancedCarryallTransport.advance(), called from
+	# Unit._advance_locomotion_tick() on the simulation tick, so it must agree
+	# with the tick about who occupies the drop point, the same reasoning as
+	# setup()'s registration loop above.
+	for candidate in get_tree().get_nodes_in_group("sim_units"):
 		var other := candidate as Node3D
 		if other == null or other == unit or other == ignored_carrier or not is_instance_valid(other):
 			continue

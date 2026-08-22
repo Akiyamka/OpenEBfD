@@ -1140,6 +1140,35 @@ and by the time we get there the hard part is already tested.
   now free, and here is what used to require it" -- and leaves the order
   untouched.
 
+  **Two things C6a's own sweep turned up, both handed to C6b rather than
+  guessed at.** The sweep that decides, per call site, whether a group read
+  is simulation or view is the substance of this slice, and it is the part a
+  wrong answer hides until C6b defers membership. Two sites resisted a clean
+  verdict, and both matter more than the reclassification that found them.
+
+  `UnitNavigationSystem._on_tree_node_added()` stays on `"units"`/
+  `"buildings"`, and must: `SceneTree`'s `node_added` fires while
+  `_enter_tree()` propagates, before `_ready()` runs anywhere in the subtree,
+  and the tick-only groups are joined *in* `_ready()`. A unit scene's static
+  `"units"` declaration is already present at that moment; `"sim_units"` is
+  not and cannot be. Switching this check would have made it permanently
+  false and silently killed live navigation registration -- the exact class
+  of change C6a promises not to make.
+
+  Reading that handler turned up the sharper problem, which is not about
+  groups at all: it registers through `register_unit.call_deferred(node)`.
+  Deferred calls flush at the end of the engine **frame**, while ticks run
+  inside it -- up to `FrameTickDriver.MAX_TICKS_PER_FRAME`'s five. A unit
+  spawned during the first tick of a frame is therefore not navigable for the
+  second and third ticks of that same frame, while on a machine whose frame
+  carries one tick it is navigable by the very next one. **How many ticks a
+  unit waits before navigation can see it is decided by frame rate**, which
+  is a divergence of exactly the kind lockstep exists to prevent, and it was
+  not on any list here before this sweep. C6b inherits it: the admission
+  queue's drain is the tick-domain moment this registration belongs to, and
+  moving it there is what makes the wait a fixed number of ticks on every
+  machine.
+
 - **Phase 4 — determinism gate.** Portable math, RNG split, the static rules
   above wired into `check_architecture.py`, and the CI test that replays one
   command log twice in-process and then compares state hashes across native and

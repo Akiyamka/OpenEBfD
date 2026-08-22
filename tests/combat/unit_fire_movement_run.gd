@@ -182,7 +182,10 @@ func _test_fire_while_moving_capability() -> void:
 	)
 	autonomous_target.owner_player_id = 2
 	root.add_child(autonomous_target)
+	# "sim_units" too: CombatTargetAcquisition.target_for() reads that group,
+	# not "units", as of slice C6a (scripts/combat/combat_target_acquisition.gd).
 	autonomous_target.add_to_group(&"units")
+	autonomous_target.add_to_group(&"sim_units")
 	for frame in 600:
 		mongoose_pump.advance(mongoose, 1.0 / 60.0)
 		if autonomous_target in fired_targets:
@@ -307,7 +310,9 @@ func _test_independent_side_turrets() -> void:
 		)
 		target.owner_player_id = 2
 		root.add_child(target)
+		# "sim_units" too -- see the identical comment above.
 		target.add_to_group(&"units")
+		target.add_to_group(&"sim_units")
 		side_targets.append(target)
 
 	var target_for_weapon: Dictionary = {}

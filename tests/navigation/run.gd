@@ -347,8 +347,14 @@ func _test_transport_drop_probe_uses_destination_not_reachability(grid: MapNavig
 	for y in MapNavigationGrid.NAV_SIZE:
 		wall[Vector2i(128, y)] = true
 	navigation.runtime_map.replace_blocked_cells(wall)
+	# FakeUnit/FakeAirborneUnit stand in for a real Unit here, so they join
+	# both groups a real Unit's _ready() joins as of slice C6a: "units", read
+	# by can_place_transport_cargo()'s own occupancy scan below only for
+	# view/selection purposes elsewhere, and "sim_units", the group that scan
+	# now actually reads (scripts/units/navigation/unit_navigation_system.gd).
 	var cargo := FakeUnit.new()
 	cargo.add_to_group("units")
+	cargo.add_to_group("sim_units")
 	root.add_child(cargo)
 	cargo.global_position = Vector3(100.5, 0.0, 100.5)
 	var destination := Vector3(150.5, 0.0, 100.5)
@@ -358,6 +364,7 @@ func _test_transport_drop_probe_uses_destination_not_reachability(grid: MapNavig
 	)
 	var ground_blocker := FakeUnit.new()
 	ground_blocker.add_to_group("units")
+	ground_blocker.add_to_group("sim_units")
 	root.add_child(ground_blocker)
 	ground_blocker.global_position = destination
 	_expect(
@@ -372,6 +379,7 @@ func _test_transport_drop_probe_uses_destination_not_reachability(grid: MapNavig
 	await process_frame
 	var airborne_blocker := FakeAirborneUnit.new()
 	airborne_blocker.add_to_group("units")
+	airborne_blocker.add_to_group("sim_units")
 	root.add_child(airborne_blocker)
 	airborne_blocker.global_position = destination
 	_expect(
@@ -678,6 +686,11 @@ func _test_building_marker_navigation_semantics(grid: MapNavigationGrid) -> void
 	var building := FakeBuilding.new(["BDPS"])
 	building.position = Vector3(100.0, 0.0, 100.0)
 	building.add_to_group("buildings")
+	# FakeBuilding stands in for a real Building here, so it joins
+	# "sim_buildings" too -- NavBlockerTracker.refresh_building_blockers()
+	# reads that group, not "buildings", as of slice C6a (see
+	# scripts/units/navigation/shared/nav_blocker_tracker.gd).
+	building.add_to_group("sim_buildings")
 	match_root.add_child(building)
 	var navigation := NavigationSystemScript.new()
 	match_root.add_child(navigation)
@@ -715,6 +728,9 @@ func _test_map_change_prunes_freed_units(grid: MapNavigationGrid) -> void:
 	var building := FakeBuilding.new(["B"])
 	building.position = Vector3(100.0, 0.0, 100.0)
 	building.add_to_group("buildings")
+	# See _test_building_marker_navigation_semantics() above for why this
+	# fake also needs "sim_buildings".
+	building.add_to_group("sim_buildings")
 	match_root.add_child(building)
 	navigation.call("_refresh_building_blockers")
 	_expect(
@@ -825,6 +841,9 @@ func _test_rotated_building_blockers(grid: MapNavigationGrid) -> void:
 	building.position = Vector3(10.0, 0.0, 10.0)
 	building.rotation.y = PI / 2.0
 	building.add_to_group("buildings")
+	# See _test_building_marker_navigation_semantics() above for why this
+	# fake also needs "sim_buildings".
+	building.add_to_group("sim_buildings")
 	match_root.add_child(building)
 	var navigation := NavigationSystemScript.new()
 	match_root.add_child(navigation)

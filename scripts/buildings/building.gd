@@ -45,6 +45,21 @@ const WALL_BUILDING_GROUP := "Wall"
 const REFINERY_DOCK_RELEASE_DELAY_SECONDS := 3.0
 const MAX_COMBAT_HULL_VERTICES := CombatHullScript.MAX_VERTICES
 const RALLY_POINT_LINE_HEIGHT := BuildingRallyPointScript.LINE_HEIGHT
+## Tick-only twin of "buildings", the same split Unit.SIM_UNITS_GROUP makes
+## for units and for the identical reason: "buildings" is read far outside
+## the simulation -- selection, the side panel, availability tracking,
+## blocker refresh, navigation -- so the tick cannot read it directly without
+## turning every one of those into a simulation reader by accident.
+## SIM_BUILDINGS_GROUP is what Match._advance_simulation_tick() and the other
+## simulation systems walk instead, joined alongside "buildings" in _ready()
+## below rather than replacing it. Slice C6a
+## (docs/architecture/network-multiplayer.md) introduces this split; C6b is
+## what makes it pay for itself, by deferring an entity's entry into this
+## group -- and only this group -- until the tick is ready to simulate it.
+## Deferring "buildings" itself would leave a freshly placed building
+## unselectable and invisible to the UI for a tick, a view regression no
+## simulation ordering question should be able to cause.
+const SIM_BUILDINGS_GROUP := "sim_buildings"
 
 ## Refinery dock upgrades are visual states of the refinery itself, not
 ## separate Building nodes. The first/left upgrade unfolds ~~3SmallPad01 and
@@ -257,6 +272,10 @@ func _init() -> void:
 
 func _ready() -> void:
 	add_to_group("buildings")
+	# Additional membership, not a replacement -- see SIM_BUILDINGS_GROUP's own
+	# comment for why the tick needs a group of its own rather than reading
+	# "buildings" directly.
+	add_to_group(SIM_BUILDINGS_GROUP)
 	_register_entity_id()
 	# The three model-facing modules were already configured in _init() -- see
 	# the comment there. Only _rally and _combat_hull are configured below,

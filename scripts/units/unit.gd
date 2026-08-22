@@ -60,6 +60,23 @@ const RULE_MOVEMENT_UPDATES_PER_SECOND := UnitTerrainAlignmentScript.MOVEMENT_UP
 ## Mirrors UnitCombat.BAKED_MODEL_FRAMES_PER_SECOND; kept here too because
 ## tests/combat/fire_sequence_run.gd reads it as UnitScript.<const>.
 const BAKED_MODEL_FRAMES_PER_SECOND := 20.0
+## Tick-only twin of the "units" group 99 .tscn files declare statically.
+## "units" is read far outside the simulation -- selection, the side panel,
+## availability tracking, blocker refresh, navigation -- so the tick cannot
+## be pointed at it without also making every one of those a simulation
+## reader by accident. SIM_UNITS_GROUP is what Match._advance_simulation_tick()
+## and the other simulation systems walk instead, joined alongside "units" in
+## _ready() below rather than replacing it. Slice C6a
+## (docs/architecture/network-multiplayer.md) introduces this split; C6b is
+## what makes it pay for itself, by deferring an entity's entry into this
+## group -- and only this group -- until the tick is ready to simulate it.
+## Deferring "units" itself would leave a freshly spawned unit unselectable
+## and invisible to the UI for a tick, a view regression no simulation
+## ordering question should be able to cause. Mirrors
+## CombatProjectile.SIM_PROJECTILES_GROUP and CombatLingerEffect.SIM_LINGER_GROUP,
+## which already separate their tick-only membership from anything a view or
+## command reads, because nothing outside the tick ever wanted to list them.
+const SIM_UNITS_GROUP := "sim_units"
 ## Drives the per-turret reload/cooldown ticks in _process() below, which stay
 ## on the facade the same way Building._process() keeps its own copy next to
 ## BuildingCombat (see scripts/buildings/building.gd). Also mirrored on
@@ -314,6 +331,12 @@ func _init() -> void:
 
 
 func _ready() -> void:
+	# "units" itself comes from the .tscn (99 scene files declare it
+	# statically, unlike Building's own add_to_group("buildings") call below
+	# in building.gd) and stays untouched -- this is additional membership,
+	# not a replacement. See SIM_UNITS_GROUP's own comment for why the tick
+	# needs a group of its own rather than reading "units" directly.
+	add_to_group(SIM_UNITS_GROUP)
 	_register_entity_id()
 	# The authored rest pose only exists once visual_root has resolved.
 	_terrain_alignment.capture_rest_pose()

@@ -94,8 +94,17 @@ func target_for(turret, hull_aim: HullAim = HullAim.NONE) -> Variant:
 	var best_target: Node3D = null
 	var best_distance := INF
 	var candidates: Array[Node] = []
-	candidates.append_array(tree.get_nodes_in_group(&"units"))
-	candidates.append_array(tree.get_nodes_in_group(&"buildings"))
+	# "sim_units"/"sim_buildings", not "units"/"buildings": choosing what to
+	# shoot is a simulation decision -- the shot it leads to changes health,
+	# which no view/UI reader does -- even though this call currently still
+	# reaches here from UnitCombat.advance()/BuildingCombat.advance() on frame
+	# delta rather than the tick (a separate, already-recorded gap; see
+	# docs/architecture/network-multiplayer.md's "turret aim and target
+	# acquisition ... unmoved" notes). Reading "units"/"buildings" here would
+	# let a shooter target-acquire an entity C6b's admission queue has not yet
+	# let the tick simulate.
+	candidates.append_array(tree.get_nodes_in_group(&"sim_units"))
+	candidates.append_array(tree.get_nodes_in_group(&"sim_buildings"))
 	for candidate_node in candidates:
 		if not candidate_node is Node3D or candidate_node == _shooter:
 			continue

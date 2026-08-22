@@ -178,11 +178,15 @@ func _apply_damage(source_cell: Vector2i) -> int:
 	var tree := Engine.get_main_loop() as SceneTree
 	if tree == null:
 		return 0
+	# "sim_units", not "units": this runs from sim_tick() (MapSpiceLayer.sim_tick(),
+	# itself walked by Match._advance_simulation_tick()), so damaging an
+	# infantry unit here is a simulation decision and must not reach a unit
+	# the tick does not yet simulate.
 	return damage_infantry_in_cells(
 		hazard.get("cells", {}) as Dictionary,
 		float(hazard.get(
 			"damage",
 			DEFAULT_DAMAGE * float(TICKS_PER_HAZARD_PULSE) * MatchClockScript.SECONDS_PER_TICK
 		)),
-		tree.get_nodes_in_group(&"units")
+		tree.get_nodes_in_group(&"sim_units")
 	)

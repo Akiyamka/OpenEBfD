@@ -51,7 +51,12 @@ func refresh_building_blockers() -> void:
 		return
 	var blocked := {}
 	var no_stop := {}
-	for node in _facade.get_tree().get_nodes_in_group("buildings"):
+	# "sim_buildings", not "buildings": this rebuilds the blocked-cell grid
+	# from UnitNavigationSystem.sim_tick() (periodically) and setup() (once),
+	# both simulation-side call sites. A building "buildings" lists but
+	# "sim_buildings" does not (post C6b, not yet admitted) must not yet
+	# block a cell the tick's own movement can still route through.
+	for node in _facade.get_tree().get_nodes_in_group("sim_buildings"):
 		var building := node as Node3D
 		if building == null or not _owns_node.call(building):
 			continue

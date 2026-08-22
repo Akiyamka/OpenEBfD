@@ -566,8 +566,12 @@ func _test_combat_deploy_toggle() -> void:
 	)
 	world.add_child(near_enemy)
 	world.add_child(far_enemy)
+	# "sim_units" too: CombatTargetAcquisition.target_for() reads that group,
+	# not "units", as of slice C6a.
 	near_enemy.add_to_group(&"units")
+	near_enemy.add_to_group(&"sim_units")
 	far_enemy.add_to_group(&"units")
+	far_enemy.add_to_group(&"sim_units")
 	unit.combat().advance(0.1)
 	var selected_target: WeakRef = unit.combat()._target_acquisition._targets.get(
 		deployed_turret.weapon_index()

@@ -552,20 +552,26 @@ func _test_full_harvester_auto_unload(token: int, player: PlayerData) -> int:
 	var layer := FakeSpiceLayer.new()
 	var target_cell := Vector2i(4, 4)
 	layer.values[target_cell] = 100
+	# "sim_buildings" too, on all three: HarvesterController._nearest_owned_refinery()
+	# reads that group, not "buildings", as of slice C6a
+	# (scripts/units/harvester_controller.gd).
 	var near_owned := FakeRefinery.new()
 	near_owned.position = Vector3(5.0, 0.0, 0.0)
 	near_owned.owner_player_id = player.player_id
 	near_owned.add_to_group("buildings")
+	near_owned.add_to_group("sim_buildings")
 	root.add_child(near_owned)
 	var far_owned := FakeRefinery.new()
 	far_owned.position = Vector3(20.0, 0.0, 0.0)
 	far_owned.owner_player_id = player.player_id
 	far_owned.add_to_group("buildings")
+	far_owned.add_to_group("sim_buildings")
 	root.add_child(far_owned)
 	var enemy := FakeRefinery.new()
 	enemy.position = Vector3(1.0, 0.0, 0.0)
 	enemy.owner_player_id = player.player_id + 1
 	enemy.add_to_group("buildings")
+	enemy.add_to_group("sim_buildings")
 	root.add_child(enemy)
 	var harvester := TestHarvester.new()
 	harvester.owner_player_id = player.player_id

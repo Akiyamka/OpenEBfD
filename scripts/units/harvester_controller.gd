@@ -592,7 +592,11 @@ func _nearest_owned_refinery() -> Node:
 		return null
 	var nearest: Node = null
 	var nearest_distance_squared := INF
-	for candidate_variant in _unit.get_tree().get_nodes_in_group("buildings"):
+	# "sim_buildings", not "buildings": reached only from
+	# advance_harvest_cycle(), called from advance() which Unit.sim_tick()
+	# drives -- picking an auto-unload destination is a simulation decision
+	# and must not target a refinery the tick does not yet simulate.
+	for candidate_variant in _unit.get_tree().get_nodes_in_group("sim_buildings"):
 		var candidate := candidate_variant as Node
 		if not _is_valid_owned_refinery(candidate) or not candidate is Node3D:
 			continue

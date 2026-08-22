@@ -309,7 +309,13 @@ func _complete_global_upgrade(order: UpgradeOrder) -> void:
 		player.grant_upgrade(order.upgrade_id)
 		var buildings: Array = []
 		if is_inside_tree():
-			buildings.assign(get_tree().get_nodes_in_group("buildings"))
+			# "sim_buildings", not "buildings": reached only from
+			# advance_tick() -> _process_upgrade_order() -> the queue's own
+			# order_ready signal, all inside the simulation tick's call graph
+			# -- applying an upgrade's stat change to existing buildings is a
+			# simulation write and must not reach one the tick does not yet
+			# simulate.
+			buildings.assign(get_tree().get_nodes_in_group("sim_buildings"))
 		UpgradeEffectsScript.apply_to_existing_buildings(buildings, player.player_id, order.upgrade_id)
 	status_changed.emit("%s upgraded" % order.display_name)
 	_refresh_upgrade_option_states()
@@ -370,7 +376,17 @@ func _refinery_for_dock_upgrade(dock_building_id: StringName) -> Node3D:
 	var player := _local_player()
 	if player == null:
 		return null
-	for node in get_tree().get_nodes_in_group("buildings"):
+	# "sim_buildings", not "buildings": reached both from
+	# execute_upgrade_order_command() (a command's execution-time verdict,
+	# recomputed on the tick against the world as it stands then -- see
+	# phase 2's "input versus verdict" reasoning) and from the availability
+	# poll below, which shares this same lookup rather than a second copy of
+	# it. The verdict path is the one that must not choose a refinery the
+	# tick does not yet simulate; the poll path reading the same tick-only
+	# group costs it nothing it does not already accept elsewhere (a
+	# newly-placed refinery becomes an eligible dock target one tick later
+	# than it becomes selectable).
+	for node in get_tree().get_nodes_in_group("sim_buildings"):
 		var building := node as Node3D
 		if building == null:
 			continue
@@ -423,7 +439,13 @@ func _poll_upgrade_availability() -> void:
 func _player_owns_building_type(player_id: int, building_id: StringName) -> bool:
 	if not is_inside_tree():
 		return false
-	for node in get_tree().get_nodes_in_group("buildings"):
+	# "sim_buildings", not "buildings" -- reached from _is_upgrade_available(),
+	# itself reached both from the availability poll and from
+	# _start_global_upgrade_order() on the command-execution verdict path
+	# (_on_slot_pressed() <- execute_upgrade_order_command()); see
+	# _refinery_for_dock_upgrade()'s comment above for the identical
+	# dual-caller reasoning.
+	for node in get_tree().get_nodes_in_group("sim_buildings"):
 		var building := node as Node3D
 		if building == null:
 			continue

@@ -286,7 +286,10 @@ func _test_idle_turret_engages_during_attack_order() -> void:
 		devastator.global_position + forward.rotated(Vector3.UP, deg_to_rad(-30.0)) * 10.0
 	)
 	root.add_child(ground_enemy)
+	# "sim_units" too: CombatTargetAcquisition.target_for() reads that group,
+	# not "units", as of slice C6a.
 	ground_enemy.add_to_group(&"units")
+	ground_enemy.add_to_group(&"sim_units")
 
 	var fired_targets: Dictionary = {}
 	var fired: Array = []

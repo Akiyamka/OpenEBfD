@@ -122,6 +122,9 @@ func _test_defensive_building_auto_fire() -> void:
 		var target := Doubles.PhysicsCombatTarget.new(target_position)
 		target.owner_player_id = 2
 		target.add_to_group(&"units")
+		# "sim_units" too: CombatTargetAcquisition.target_for() reads that
+		# group, not "units", as of slice C6a.
+		target.add_to_group(&"sim_units")
 		root.add_child(target)
 		var fired: Array = []
 		building.weapon_fired.connect(
@@ -197,6 +200,8 @@ func _test_hkflame_turret_direct_friendly_fire() -> void:
 	)
 	target.owner_player_id = building.owner_player_id
 	target.add_to_group(&"units")
+	# "sim_units" too -- see the comment near this file's first Doubles.PhysicsCombatTarget above.
+	target.add_to_group(&"sim_units")
 	root.add_child(target)
 	# CombatProjectile no longer advances itself from _physics_process() (B3a
 	# moved flight onto Match._advance_simulation_tick()'s "sim_projectiles"
@@ -325,6 +330,8 @@ func _test_atrocket_turret_muzzle_matches_authored_animation() -> void:
 	var target := Doubles.PhysicsCombatTarget.new(target_position)
 	target.owner_player_id = 2
 	target.add_to_group(&"units")
+	# "sim_units" too -- see the comment near this file's first Doubles.PhysicsCombatTarget above.
+	target.add_to_group(&"sim_units")
 	root.add_child(target)
 	var fired: Array = []
 	# The muzzle markers themselves animate (barrel recoil), so their world
@@ -408,6 +415,8 @@ func _test_defensive_turret_stop_clears_muzzle_flash() -> void:
 		)
 		target.owner_player_id = 2
 		target.add_to_group(&"units")
+		# "sim_units" too -- see the comment near this file's first Doubles.PhysicsCombatTarget above.
+		target.add_to_group(&"sim_units")
 		root.add_child(target)
 		var fired: Array = []
 		building.weapon_fired.connect(
@@ -572,6 +581,8 @@ func _test_building_attack_order() -> void:
 	)
 	target.owner_player_id = 2
 	target.add_to_group(&"units")
+	# "sim_units" too -- see the comment near this file's first Doubles.PhysicsCombatTarget above.
+	target.add_to_group(&"sim_units")
 	root.add_child(target)
 	var fired: Array = []
 	building.weapon_fired.connect(
@@ -633,10 +644,14 @@ func _test_building_obstructed_targets() -> void:
 	var covered := Doubles.PhysicsCombatTarget.new(muzzle + direction * 8.0)
 	covered.owner_player_id = 2
 	covered.add_to_group(&"units")
+	# "sim_units" too -- see the comment near this file's first Doubles.PhysicsCombatTarget above.
+	covered.add_to_group(&"sim_units")
 	root.add_child(covered)
 	var exposed := Doubles.PhysicsCombatTarget.new(muzzle + side * 8.0)
 	exposed.owner_player_id = 2
 	exposed.add_to_group(&"units")
+	# "sim_units" too -- see the comment near this file's first Doubles.PhysicsCombatTarget above.
+	exposed.add_to_group(&"sim_units")
 	root.add_child(exposed)
 	var obstacle := Doubles.PhysicsBuildingBlocker.new(muzzle + direction * 4.0, 2.5)
 	obstacle.owner_player_id = 1

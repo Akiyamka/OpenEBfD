@@ -459,16 +459,32 @@ func _process(delta: float) -> void:
 ## decrementing the maturity countdown that replaced its old MaturityTimer
 ## (see spice_mound.gd). What is centrally maintained here
 ## is the list of *systems*, not of entities: group membership maintains
-## itself (Building.gd calls add_to_group("buildings") in code; unit scenes
-## declare "units" in their .tscn; CombatLingerEffect adds itself to
-## "sim_linger_effects" in its own configure(); CombatProjectile adds itself
-## to "sim_projectiles" in its own _ready(); SpiceMound adds itself to
-## "sim_spice_mounds" in its own _ready()), so adding a new unit or building
-## type, spawning another linger effect or projectile, or placing another
-## mound needs no change in this function. The units group is walked twice,
-## by two different functions, rather than being two systems -- see the
-## "Firing" paragraphs below for why one Unit needs two sim_tick-shaped calls
-## at two different points in this order today.
+## itself (Unit.gd calls add_to_group(SIM_UNITS_GROUP) and Building.gd calls
+## add_to_group(SIM_BUILDINGS_GROUP), both in code, in _ready(), alongside the
+## view-facing membership each already had -- unit scenes declare "units" in
+## their .tscn, Building.gd calls add_to_group("buildings") in code;
+## CombatLingerEffect adds itself to "sim_linger_effects" in its own
+## configure(); CombatProjectile adds itself to "sim_projectiles" in its own
+## _ready(); SpiceMound adds itself to "sim_spice_mounds" in its own
+## _ready()), so adding a new unit or building type, spawning another linger
+## effect or projectile, or placing another mound needs no change in this
+## function. The units group is walked twice, by two different functions,
+## rather than being two systems -- see the "Firing" paragraphs below for why
+## one Unit needs two sim_tick-shaped calls at two different points in this
+## order today.
+##
+## Slice C6a (docs/architecture/network-multiplayer.md) is why the two loops
+## below read "sim_units"/"sim_buildings" instead of "units"/"buildings"
+## directly, the way they did before. "units" and "buildings" are not this
+## function's alone to read: selection, the side panel, availability
+## tracking, blocker refresh and navigation all read them too, none of which
+## this function owns or orders. C6b (deferred spawn, the reason the split
+## exists at all) needs to change when an entity starts being simulated
+## without changing when it becomes selectable or visible to the UI -- which
+## it can only do if the tick's iteration source is a group nothing else
+## reads. Membership is identical to "units"/"buildings" at every instant as
+## of this slice, so this alone changes no behaviour; it is C6b that spends
+## the separation.
 ##
 ## What this buys, stated honestly: the tick order is now these few lines in
 ## one function instead of whatever order the scene tree happened to hand
@@ -684,7 +700,7 @@ func _advance_simulation_tick() -> void:
 		_building_upgrade_controller.advance_tick()
 	if _unit_roster_controller != null:
 		_unit_roster_controller.advance_tick()
-	for unit in get_tree().get_nodes_in_group("units"):
+	for unit in get_tree().get_nodes_in_group("sim_units"):
 		if is_instance_valid(unit):
 			unit.sim_tick()
 	for linger_effect in get_tree().get_nodes_in_group("sim_linger_effects"):
@@ -693,14 +709,14 @@ func _advance_simulation_tick() -> void:
 	for projectile in get_tree().get_nodes_in_group("sim_projectiles"):
 		if is_instance_valid(projectile):
 			projectile.sim_tick()
-	for building in get_tree().get_nodes_in_group("buildings"):
+	for building in get_tree().get_nodes_in_group("sim_buildings"):
 		if is_instance_valid(building):
 			building.sim_tick()
-	# Second pass over "units" -- see the "Firing" paragraphs above for why
+	# Second pass over "sim_units" -- see the "Firing" paragraphs above for why
 	# this cannot be folded into the first pass near the top of this
 	# function: committing a shot here can add a new member to
 	# "sim_projectiles" walked above, so this has to run after that walk.
-	for unit in get_tree().get_nodes_in_group("units"):
+	for unit in get_tree().get_nodes_in_group("sim_units"):
 		if is_instance_valid(unit):
 			unit.sim_tick_combat()
 	if terrain != null and terrain.spice_layer != null:

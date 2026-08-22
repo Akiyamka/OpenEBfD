@@ -328,7 +328,14 @@ func _production_building_for(building_id: StringName, player_id: int) -> Node3D
 		if _is_owned_production_building(primary, building_id, player_id):
 			return primary
 
-	for node in get_tree().get_nodes_in_group("buildings"):
+	# "sim_buildings", not "buildings": reached both from advance_tick() (via
+	# _process_unit_orders() -> _spawn_completed_unit(), choosing which
+	# building releases a finished unit) and from the unit-order command's
+	# execution-time verdict (_on_unit_slot_left_pressed() <-
+	# execute_unit_order_command()); both are simulation-tick call paths, so
+	# a production building the tick does not yet simulate must not be
+	# picked as the source of a spawn or an order.
+	for node in get_tree().get_nodes_in_group("sim_buildings"):
 		var candidate := node as Node3D
 		if not _is_owned_production_building(candidate, building_id, player_id):
 			continue
@@ -433,8 +440,12 @@ func _units_parent(building: Node3D) -> Node:
 
 
 func _owned_unit_count(player_id: int) -> int:
+	# "sim_units", not "units": the only caller is _spawn_completed_unit()'s
+	# population-cap check, itself only reached from advance_tick() ->
+	# _process_unit_orders(). A unit the tick does not yet simulate must not
+	# count against, or be missed from, a cap the tick itself enforces.
 	var count := 0
-	for node in get_tree().get_nodes_in_group("units"):
+	for node in get_tree().get_nodes_in_group("sim_units"):
 		if EntityQueryScript.is_owned_by(node, player_id):
 			count += 1
 	return count
