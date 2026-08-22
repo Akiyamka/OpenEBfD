@@ -500,11 +500,16 @@ func sim_tick() -> void:
 ## one. Split from sim_tick() above into its own function, and its own later
 ## position in Match._advance_simulation_tick()'s group-loop order, rather
 ## than folded into that call: committing a shot here parents a
-## CombatProjectile synchronously, which joins "sim_projectiles" in _ready()
-## before this call returns, so this has to run *after* Match has already
-## walked "sim_projectiles" for this tick -- otherwise a shot fired this tick
-## would also travel this tick (see combat_projectile.gd and B3b's identical
-## finding for buildings). sim_tick() above cannot simply move down there with
+## CombatProjectile synchronously, and a shot fired this tick must not also
+## travel this tick. Until slice C6b that projectile joined "sim_projectiles"
+## in its own _ready() before this call returned, so running this pass *after*
+## Match had already walked "sim_projectiles" was the only thing enforcing
+## that (see combat_projectile.gd and B3b's identical finding for buildings).
+## C6b's admission queue enforces it independently of where any loop sits --
+## nothing is admitted until the next tick's drain -- so this pass's late
+## position is now free rather than required. It stays put because moving it
+## would be a different, silently-chosen simulation, not because moving it
+## would reopen the hazard. sim_tick() above cannot simply move down there with
 ## it: locomotion's freshness requirement pulls the other way (see that
 ## function's comment), and nothing this function does sets global_position,
 ## changes health, or changes hit geometry -- it only reads _owner's current
@@ -512,8 +517,9 @@ func sim_tick() -> void:
 ## velocity via stop_at_current_position(), or hands the navigation system a
 ## pursuit request that takes effect on a later tick regardless of where in
 ## this tick it was requested -- so running it after this tick's damage
-## resolution costs the position freshness nothing while still fixing the
-## same-tick travel hazard. Never call this from Unit itself.
+## resolution costs the position freshness nothing, which is what made this
+## split the available fix back when loop order was still what had to enforce
+## the invariant. Never call this from Unit itself.
 func sim_tick_combat() -> void:
 	if _simulation_halted:
 		return

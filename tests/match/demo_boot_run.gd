@@ -933,24 +933,44 @@ func _test_match_loop_drives_projectile_flight() -> void:
 ## it -- the same way _test_real_forced_friendly_attack proves it for a
 ## unit's own weapon.
 ##
-## It also proves the ordering fix the move required, not merely that firing
-## happens. Committing a shot inside Building.sim_tick() parents a new
-## CombatProjectile synchronously, which joins "sim_projectiles" in its own
-## _ready() before try_fire_at() returns -- so if the "buildings" loop still
-## ran *before* "sim_projectiles" (its position from before B3a until B3b),
-## that same _advance_simulation_tick() call would immediately walk the shot
-## it had just fired, one tick of flight it should not yet have. Recording
-## current_tick() from inside the weapon_fired handler -- which runs
-## synchronously from within that same tick's buildings loop -- captures
-## exactly which tick fired the shot; comparing the probe projectile's
-## elapsed_seconds against (current tick - fired tick) * SECONDS_PER_TICK
-## afterward is then exact, not approximate, for the identical reason the
-## turret-reload and linger-effect cases above are exact: every quantity in
-## the comparison comes from the same due-tick loop. Reverting the "buildings"
-## loop to run before "sim_projectiles" again fails this specific assertion
-## (elapsed_seconds reads one SECONDS_PER_TICK ahead of what it should),
-## exactly the shape of proof B3a's own such case used
-## ("advanced by 0.000000 against 5 clock ticks").
+## It also binds an invariant, not merely "firing happens": a shot committed
+## inside Building.sim_tick() must not also be flown by the
+## _advance_simulation_tick() call that fired it. Recording current_tick()
+## from inside the weapon_fired handler -- which runs synchronously from
+## within that same tick's buildings loop -- captures exactly which tick
+## fired the shot; comparing the probe projectile's elapsed_seconds against
+## (current tick - fired tick) * SECONDS_PER_TICK afterward is then exact,
+## not approximate, for the identical reason the turret-reload and
+## linger-effect cases above are exact: every quantity in the comparison
+## comes from the same due-tick loop.
+##
+## What *preserves* that invariant is no longer what this comment used to
+## say it was. Until slice C6b it was loop order: try_fire_at() parented a
+## CombatProjectile that joined "sim_projectiles" synchronously in its own
+## _ready(), so B3b had to move the "buildings" loop to run *after*
+## "sim_projectiles" -- it sat before it from before B3a until B3b -- or the
+## same call would immediately walk the shot it had just fired, one tick of
+## flight it should not yet have. Reverting that move really did fail this
+## assertion then, elapsed_seconds reading one SECONDS_PER_TICK ahead of
+## what it should, the shape of proof B3a's own such case used
+## ("advanced by 0.000000 against 5 clock ticks"). C6b took that job away
+## from loop order: _ready() now only *requests* the group
+## (MatchLookup.request_sim_entry()), and the request is not drained until
+## the next tick's apply_pending_entries(), the first statement of
+## _advance_simulation_tick(). A shot is therefore un-admitted, and
+## un-ticked, for the remainder of the tick that fired it no matter which
+## loop fired it or where that loop sits.
+##
+## Measured, not inferred, so the next reader does not re-derive it: with
+## C6b in place and the "sim_buildings" loop moved back to its pre-B3b
+## position (before "sim_projectiles"), this suite still passed all 364 of
+## its assertions, this case included. Reverting the loop order no longer
+## fails anything here. The case is kept anyway, and deliberately: it binds
+## the invariant itself, which is what a reader actually cares about, and it
+## would catch a regression in the admission queue exactly as it once caught
+## one in the loop order. The history above is kept for the reason
+## Match._advance_simulation_tick()'s own doc comment keeps it -- it is why
+## the loop order still looks the way it does.
 ##
 ## ATRocketTurret, not HKGunTurret, is the probe deliberately: Rocket_B is a
 ## real homing bullet with a positive speed (28 units/s, rules.db) and a
@@ -1035,10 +1055,13 @@ func _test_match_loop_drives_building_fire() -> void:
 			(
 				"a shot a real building fires must not itself travel on the tick "
 				+ "that fired it: elapsed_seconds is %.6f, expected %.6f for a "
-				+ "shot fired on tick %d observed at tick %d -- this is exactly "
-				+ "the invariant Match._advance_simulation_tick()'s doc comment "
-				+ "requires the \"buildings\" loop to run after \"sim_projectiles\" "
-				+ "to preserve"
+				+ "shot fired on tick %d observed at tick %d -- since slice C6b "
+				+ "what preserves this is deferred admission, not loop order: a "
+				+ "projectile only requests \"sim_projectiles\" when it is built "
+				+ "and is not admitted until the next tick's "
+				+ "apply_pending_entries() drain, so suspect the admission queue "
+				+ "(scripts/match/sim_admission_queue.gd) here, not where the "
+				+ "\"buildings\" loop sits"
 			) % [
 				probe.elapsed_seconds, expected_elapsed, probe_fired_tick,
 				match_instance.current_tick()
@@ -1053,24 +1076,36 @@ func _test_match_loop_drives_building_fire() -> void:
 
 
 ## The unit-firing counterpart to _test_match_loop_drives_building_fire above
-## -- same failure mode, same shape, but for the other half of B3c's move.
+## -- same invariant, same probe idiom, but for the other half of B3c's move.
 ## _test_real_forced_friendly_attack below already proves a real unit fires
 ## through the real match loop at all (it was already doing so before B3c,
-## just from Unit._process() rather than a tick); it does not probe the
-## specific ordering hazard B3c's move reopens, the same one B3b's own move
-## reopened for buildings. Committing a shot inside Unit.sim_tick_combat()
-## parents a new CombatProjectile synchronously, which joins "sim_projectiles"
-## in its own _ready() before try_fire_at() returns -- so if the second
-## "units" pass Match._advance_simulation_tick() now makes (see that
-## function's doc comment) ran *before* "sim_projectiles" instead of after it,
-## that same _advance_simulation_tick() call would immediately walk the shot
-## it had just fired, one tick of flight it should not yet have. Same probe
-## idiom as the building case: record current_tick() from inside the
-## synchronous weapon_fired handler, then compare the fired projectile's
-## elapsed_seconds against (current tick - fired tick) * SECONDS_PER_TICK once
-## a few more ticks have run. Reverting the second "units" pass to run before
-## "sim_projectiles" fails this specific assertion, the same shape of proof
-## _test_match_loop_drives_building_fire uses.
+## just from Unit._process() rather than a tick); it does not probe whether a
+## shot committed inside Unit.sim_tick_combat() also travels on the tick that
+## committed it, which is what this case binds. Same probe idiom as the
+## building case: record current_tick() from inside the synchronous
+## weapon_fired handler, then compare the fired projectile's elapsed_seconds
+## against (current tick - fired tick) * SECONDS_PER_TICK once a few more
+## ticks have run.
+##
+## What preserves that invariant has changed, exactly as it has for the
+## building case above -- read that case's comment for the full argument,
+## not repeated here. In short: until slice C6b, committing a shot here
+## parented a CombatProjectile that joined "sim_projectiles" synchronously in
+## its own _ready(), so running this second "units" pass *after*
+## "sim_projectiles" was the only thing stopping this same
+## _advance_simulation_tick() call from immediately walking the shot it had
+## just fired -- the ordering hazard B3c inherited from B3b's own move, and
+## why the pass sits where it does. C6b's admission queue enforces the
+## invariant independently of loop order, so reverting this pass to run
+## before "sim_projectiles" no longer fails this assertion.
+##
+## Precision about what was actually measured: the recorded 364-assertion
+## run above was of the "sim_buildings" revert specifically, not of a revert
+## of this pass. This case is covered by the same argument rather than the
+## same measurement -- admission is deferred by *where the drain runs* (the
+## first statement of _advance_simulation_tick()), which is independent of
+## which loop fired the shot, so no loop position below that drain can admit
+## a shot into its own tick. Stated as reasoning, because that is what it is.
 ##
 ## ATMongoose/HEAT_B is the probe deliberately, for the identical reason
 ## _test_match_loop_drives_building_fire picks ATRocketTurret/Rocket_B: a
@@ -1149,10 +1184,13 @@ func _test_match_loop_drives_unit_fire() -> void:
 			(
 				"a shot a real unit fires must not itself travel on the tick "
 				+ "that fired it: elapsed_seconds is %.6f, expected %.6f for a "
-				+ "shot fired on tick %d observed at tick %d -- this is exactly "
-				+ "the invariant Match._advance_simulation_tick()'s doc comment "
-				+ "requires the second \"units\" pass to run after "
-				+ "\"sim_projectiles\" to preserve"
+				+ "shot fired on tick %d observed at tick %d -- since slice C6b "
+				+ "what preserves this is deferred admission, not where the "
+				+ "second \"units\" pass sits: a projectile only requests "
+				+ "\"sim_projectiles\" when it is built and is not admitted "
+				+ "until the next tick's apply_pending_entries() drain, so "
+				+ "suspect the admission queue "
+				+ "(scripts/match/sim_admission_queue.gd) here, not loop order"
 			) % [
 				probe.elapsed_seconds, expected_elapsed, probe_fired_tick,
 				match_instance.current_tick()

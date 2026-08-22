@@ -1124,11 +1124,35 @@ and by the time we get there the hard part is already tested.
     made structural instead of aspirational. No scene file is touched: the
     static `"units"` declaration stays exactly where it is and keeps meaning
     what it has always meant.
-  - **C6b** routes all five sim-group joins through one queue, drained at the
-    **start** of `_advance_simulation_tick()` -- admit, simulate, retire,
-    with C5's despawn drain already at the other end. An entity with no
-    `Match` in the tree joins immediately, the same fallback and the same
-    reason `request_despawn()` carries.
+  - **C6b** builds the queue and routes the three joins nothing but the tick
+    reads -- `"sim_projectiles"`, `"sim_linger_effects"`, `"sim_spice_mounds"`
+    -- through it, drained at the **start** of `_advance_simulation_tick()`:
+    admit, simulate, retire, with C5's despawn drain already at the other
+    end. An entity with no `Match` in the tree joins immediately, the same
+    fallback and the same reason `request_despawn()` carries, routed through
+    one shared `MatchLookup.request_sim_entry()` so three callers do not
+    each keep that null-check correct separately.
+  - **C6c** takes `"sim_units"` and `"sim_buildings"`, together with
+    `UnitNavigationSystem`'s own registration. Split out of C6b rather than
+    sequenced arbitrarily: deferring a unit's admission while navigation
+    still picks it up off `"units"` would leave navigation driving a unit
+    the tick does not simulate, which is precisely the inconsistency this
+    property exists to remove. The `call_deferred` finding below is C6c's
+    other half.
+
+  **What C6b proved, and one thing it could not.** The load-bearing case is a
+  real shot from a real building inside a real match: the projectile is not in
+  `"sim_projectiles"` for the remainder of the tick that fired it, and travels
+  on the next -- with a positive control, so it cannot pass for a projectile
+  that never moves at all. What the suite deliberately does **not** assert is
+  admission *order*. The first attempt did, by copying the despawn queue's own
+  ordering case, and it failed: `take_pending_releases()` returns a
+  `PackedInt32Array`, whose order is observable and worth pinning, while
+  `apply_pending_entries()`'s only effect is `add_to_group()` -- group
+  membership, a set. The queue does walk its requests in order, but that order
+  is unobservable through `get_nodes_in_group()`, whose own iteration order is
+  Godot's to decide and is already this document's known phase 4 gap. A test
+  asserting it would have been asserting the engine, not this code.
 
   **The tick order stays exactly as it is.** Once entry is deferred, the
   ordering arguments in `Match._advance_simulation_tick()`'s doc comment stop

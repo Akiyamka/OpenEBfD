@@ -44,10 +44,11 @@ const PIERCING_SWEEP_RADIUS := 1.4
 const MissileTrailScript := preload("res://scripts/combat/fx/missile_trail.gd")
 const LaserBeamScript := preload("res://scripts/combat/fx/laser_beam.gd")
 const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
+const MatchLookupScript := preload("res://scripts/match/match_lookup.gd")
 
 ## Match._advance_simulation_tick() drives every live projectile's sim_tick()
 ## by walking this group, the same way it walks "units", "buildings" and
-## "sim_linger_effects" -- see _ready() below for why this joins the group
+## "sim_linger_effects" -- see _ready() below for why this requests the group
 ## itself rather than being registered centrally.
 const SIM_PROJECTILES_GROUP := "sim_projectiles"
 
@@ -82,16 +83,25 @@ func _init() -> void:
 	_missile_trail.configure(self)
 
 
-## Joins SIM_PROJECTILES_GROUP unconditionally, in _ready() rather than
+## Requests SIM_PROJECTILES_GROUP unconditionally, in _ready() rather than
 ## launch(): a projectile whose launch() call later fails (an out-of-range
 ## shot, a target that died between muzzle selection and this call) is freed
 ## the same frame by its caller (see combat_turret.gd's try_fire_at()), so a
-## brief, never-ticked group membership on a doomed instance costs nothing --
+## brief, never-admitted queue entry on a doomed instance costs nothing --
 ## the same tolerance the is_instance_valid() guard in
 ## Match._advance_simulation_tick() already extends to a unit or building that
-## gives itself away mid-frame.
+## gives itself away mid-frame, and SimAdmissionQueue.apply_pending_entries()
+## (scripts/match/sim_admission_queue.gd) extends to exactly this call site by
+## name in its own doc comment.
+##
+## As of slice C6b this no longer joins the group directly: it *requests* to
+## become live, through MatchLookupScript.request_sim_entry(), and the tick's
+## admission-queue drain (Match._advance_simulation_tick(), first statement)
+## is what actually admits it -- on the tick after this one, never this same
+## tick. See that function's doc comment for why the ordering arguments that
+## used to depend on this happening synchronously no longer do.
 func _ready() -> void:
-	add_to_group(SIM_PROJECTILES_GROUP)
+	MatchLookupScript.request_sim_entry(self, SIM_PROJECTILES_GROUP)
 
 
 func launch(

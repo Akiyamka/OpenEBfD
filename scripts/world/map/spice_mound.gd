@@ -17,10 +17,11 @@ extends Area3D
 signal activated(mound: SpiceMound, early_activation: bool, maturity_fraction: float)
 
 const RuleTicksScript := preload("res://scripts/rules/rule_ticks.gd")
+const MatchLookupScript := preload("res://scripts/match/match_lookup.gd")
 
 ## Match._advance_simulation_tick() drives every live mound's sim_tick() by
 ## walking this group, the same way it walks "units", "buildings" and
-## "sim_linger_effects" -- see _ready() below for why the mound joins it
+## "sim_linger_effects" -- see _ready() below for why the mound requests it
 ## itself.
 const SIM_SPICE_MOUND_GROUP := "sim_spice_mounds"
 
@@ -83,8 +84,8 @@ func _ready() -> void:
 	_apply_footprint()
 	body_entered.connect(_on_body_entered)
 	# The mound finds Match's central loop, not the other way around: it
-	# joins the sim group itself, right here, the same point CombatLingerEffect
-	# joins SIM_LINGER_GROUP in its own configure(). No matching registration
+	# requests the sim group itself, right here, the same point CombatLingerEffect
+	# requests SIM_LINGER_GROUP in its own configure(). No matching registration
 	# call is needed at any spawn site (see map_spice_layer.gd's
 	# _spawn_spice_mound()). There is no matching remove_from_group() on
 	# teardown, unlike CombatLingerEffect: this mound never frees itself --
@@ -93,7 +94,18 @@ func _ready() -> void:
 	# is_instance_valid() in the central loop is what guards a freed mound
 	# still listed this frame, exactly as it already does for units and
 	# buildings.
-	add_to_group(SIM_SPICE_MOUND_GROUP)
+	#
+	# The shared "spice_mounds" group above stays an immediate add_to_group()
+	# call -- untouched by C6b, on purpose: it is the view-facing group
+	# (map_spice_layer.gd's own bookkeeping and anything else that lists
+	# mounds), not the tick's iteration source, and deferring it would make a
+	# freshly placed mound invisible to that bookkeeping for a tick, the exact
+	# regression C6a's own doc comment (see match.gd) rejected for units and
+	# buildings. Only SIM_SPICE_MOUND_GROUP -- what the tick actually walks --
+	# goes through the admission queue: MatchLookupScript.request_sim_entry()
+	# queues it, and the running Match's SimAdmissionQueue admits it on the
+	# *next* tick's drain, never this same call.
+	MatchLookupScript.request_sim_entry(self, SIM_SPICE_MOUND_GROUP)
 	restart_maturity_cycle()
 
 

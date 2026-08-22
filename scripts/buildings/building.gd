@@ -379,11 +379,18 @@ func _release_entity_id() -> void:
 ##   own doc comment: it never reads the AnimationPlayer's playback position,
 ##   so this is a change of delta source and nothing more). A shot fired here
 ##   calls turret.try_fire_at(), which parents a new CombatProjectile
-##   synchronously (see combat_turret.gd's try_fire_at()) -- it joins
-##   "sim_projectiles" in its own _ready() before this call returns, which is
-##   exactly why Match._advance_simulation_tick() walks that group before this
-##   one: a shot fired this tick must not also be flown by this same tick's
-##   already-completed projectile loop;
+##   synchronously (see combat_turret.gd's try_fire_at()), and that shot must
+##   not also be flown by the tick that fired it. Until slice C6b the
+##   projectile joined "sim_projectiles" in its own _ready() before this call
+##   returned, so loop order was the only thing enforcing that -- which is why
+##   Match._advance_simulation_tick() walks that group before this one, and
+##   why it still does. Since C6b the admission queue enforces it instead:
+##   _ready() only requests the group, and nothing is admitted until the next
+##   tick's drain, so the ordering is now free rather than required (see that
+##   function's doc comment for the full argument, and
+##   tests/match/demo_boot_run.gd's _test_match_loop_drives_building_fire for
+##   the measurement that the revert no longer fails). It is kept because
+##   changing it would be a different, silently-chosen simulation;
 ## - the refinery dock departure cooldown (BuildingRefineryDocks.advance()).
 func sim_tick() -> void:
 	if _simulation_halted:

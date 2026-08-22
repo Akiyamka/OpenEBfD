@@ -15,10 +15,11 @@ extends Node3D
 ## conversion: no authored LingerDuration changes meaning.
 
 const CombatTargetScript := preload("res://scripts/combat/combat_target.gd")
+const MatchLookupScript := preload("res://scripts/match/match_lookup.gd")
 
 ## Match._advance_simulation_tick() drives every live effect's sim_tick() by
 ## walking this group, the same way it walks "units" and "buildings" -- see
-## configure() below for why the effect joins it itself.
+## configure() below for why the effect requests it itself.
 const SIM_LINGER_GROUP := "sim_linger_effects"
 
 var bullet
@@ -59,13 +60,23 @@ func configure(
 		_follow_target()
 	_create_visual()
 	# The effect finds Match's central loop, not the other way around: it
-	# joins the sim group itself, right here, at the one point it becomes
+	# requests the sim group itself, right here, at the one point it becomes
 	# live. This mirrors how units and buildings already join their groups
 	# (Building.gd calls add_to_group("buildings") in code; unit scenes
 	# declare "units" in their .tscn) so that Match._advance_simulation_tick()
 	# keeps listing *systems*, never entities -- spawning a linger effect
 	# needs no matching registration call anywhere else.
-	add_to_group(SIM_LINGER_GROUP)
+	#
+	# As of slice C6b this is a request, not a join: MatchLookupScript.
+	# request_sim_entry() queues it on the running Match's SimAdmissionQueue,
+	# which admits it on the *next* tick's drain (Match._advance_simulation_tick(),
+	# first statement) -- never this same tick, and never synchronously with
+	# this call. A CombatProjectile's impact can configure() a fresh linger
+	# effect from inside this same tick's "sim_projectiles" loop; that effect
+	# now provably will not receive its first sim_tick() until the tick after,
+	# where before C6b the loop order (linger effects walked before
+	# projectiles) was what made that true instead.
+	MatchLookupScript.request_sim_entry(self, SIM_LINGER_GROUP)
 	set_process(true)
 	return true
 

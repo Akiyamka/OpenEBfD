@@ -22,6 +22,7 @@ const TerrainProbeScript := preload("res://scripts/world/terrain_probe.gd")
 const EntityQueryScript := preload("res://scripts/world/entity_query.gd")
 const MatchLookupScript := preload("res://scripts/match/match_lookup.gd")
 const EntityNodeIndexScript := preload("res://scripts/match/entity_node_index.gd")
+const SimAdmissionQueueScript := preload("res://scripts/match/sim_admission_queue.gd")
 const SimEntityStateScript := preload("res://scripts/sim/entity_state.gd")
 const AbilityBarScript := preload("res://scripts/ui/ability_bar.gd")
 const AdvancedCarryallAbilityScript := preload("res://scripts/match/advanced_carryall_ability.gd")
@@ -118,6 +119,18 @@ var _entity_index: EntityNodeIndex
 ## of C2, write their position) from their own _ready(), which the engine runs
 ## only after _enter_tree() has finished for the whole freshly-added subtree.
 var _entity_state: SimEntityState
+## Nodes waiting to enter the simulation -- the creation-side mirror of
+## _entity_index's despawn queue (scripts/match/entity_node_index.gd,
+## apply_pending_releases(), slice C5). Constructed here, alongside
+## _entity_index and _entity_state and for the identical reason: any node
+## built inside this match's subtree can reach it, via
+## MatchLookupScript.admission_queue(), from its own _ready(), which the
+## engine only runs after _enter_tree() has finished for the whole
+## freshly-added subtree. See scripts/match/sim_admission_queue.gd's own doc
+## comment and "Slice C6, decided 2026-08-22" in
+## docs/architecture/network-multiplayer.md for why entry into the
+## simulation is deferred here rather than node creation itself.
+var _admission_queue: SimAdmissionQueue
 ## Shared between _command_executor and _unit_command_controller (see both
 ## setup call sites below) so a target ability id resolves to the same
 ## handler on both sides of the command bus -- SelectionTargetAbilityController.
@@ -142,6 +155,7 @@ func _enter_tree() -> void:
 	add_to_group(MatchLookupScript.GROUP)
 	_entity_index = EntityNodeIndexScript.new()
 	_entity_state = SimEntityStateScript.new(_entity_index.registry())
+	_admission_queue = SimAdmissionQueueScript.new()
 	# Children initialize their owner visuals in _ready(), so the player
 	# roster must exist before buildings and units enter the scene tree.
 	# The Rules autoload's catalog, in contrast, only loads in its own
@@ -462,13 +476,16 @@ func _process(delta: float) -> void:
 ## itself (Unit.gd calls add_to_group(SIM_UNITS_GROUP) and Building.gd calls
 ## add_to_group(SIM_BUILDINGS_GROUP), both in code, in _ready(), alongside the
 ## view-facing membership each already had -- unit scenes declare "units" in
-## their .tscn, Building.gd calls add_to_group("buildings") in code;
-## CombatLingerEffect adds itself to "sim_linger_effects" in its own
-## configure(); CombatProjectile adds itself to "sim_projectiles" in its own
-## _ready(); SpiceMound adds itself to "sim_spice_mounds" in its own
-## _ready()), so adding a new unit or building type, spawning another linger
-## effect or projectile, or placing another mound needs no change in this
-## function. The units group is walked twice, by two different functions,
+## their .tscn, Building.gd calls add_to_group("buildings") in code -- slice
+## C6b (below) leaves both of these untouched; CombatLingerEffect requests
+## "sim_linger_effects" in its own configure(); CombatProjectile requests
+## "sim_projectiles" in its own _ready(); SpiceMound requests
+## "sim_spice_mounds" in its own _ready(), all three via
+## MatchLookupScript.request_sim_entry() rather than add_to_group() directly
+## as of C6b -- see that slice's own paragraphs further down), so adding a
+## new unit or building type, spawning another linger effect or projectile,
+## or placing another mound needs no change in this function. The units
+## group is walked twice, by two different functions,
 ## rather than being two systems -- see the "Firing" paragraphs below for why
 ## one Unit needs two sim_tick-shaped calls at two different points in this
 ## order today.
@@ -548,6 +565,29 @@ func _process(delta: float) -> void:
 ## applied here to the other pair of systems in this function that can spawn
 ## one another mid-loop.
 ##
+## Slice C6b (docs/architecture/network-multiplayer.md, "Slice C6, decided
+## 2026-08-22: deferred spawn") changes what actually protects "a shot fired
+## this tick must not also travel this tick", and the four paragraphs below
+## are kept as history rather than deleted or rewritten, because they explain
+## why the code still looks the way it does. Firing a shot no longer joins
+## "sim_projectiles" (or "sim_linger_effects") synchronously at all:
+## CombatProjectile._ready() and CombatLingerEffect.configure() now call
+## MatchLookupScript.request_sim_entry(), which queues the join on
+## _admission_queue instead of calling add_to_group() directly, and that
+## queue is not drained until the *next* tick's apply_pending_entries() call
+## -- the first statement of this function, run before any loop below can
+## queue a new request of its own (see this function's own top-of-body
+## comment). A shot fired from any point in this function this tick is
+## therefore un-admitted, and un-ticked, for the remainder of this same call,
+## regardless of which loop fired it or where that loop sits relative to
+## "sim_projectiles". So the ordering the paragraphs below argue for is now
+## *free*, not required: the "buildings" loop could move back to directly
+## after "units" and a building's own shot would still not travel on the tick
+## that fired it, because the queue -- not the loop position -- is what stops
+## it now. It stays exactly where B3b and B3c put it anyway; moving it back
+## would be a different, silently-chosen simulation, which phase 3 does not
+## do.
+##
 ## Firing used to be split across two clocks. B3a put projectile flight on
 ## the tick while both unit_combat.gd and building_combat.gd still launched a
 ## shot from their facade's own _process(), which the scene tree runs after
@@ -600,10 +640,22 @@ func _process(delta: float) -> void:
 ## directly following "sim_projectiles", which the paragraphs above already
 ## justify, untouched.
 ##
-## Reverting either "buildings" or the new "units combat" pass to run before
-## "sim_projectiles" reintroduces the same-tick travel bug for that system's
-## own shots; see the wiring test that proves this loop's position is load-
-## bearing rather than incidental.
+## Before C6b, reverting either "buildings" or the new "units combat" pass to
+## run before "sim_projectiles" reintroduced the same-tick travel bug for
+## that system's own shots -- the loop position was the only thing enforcing
+## the invariant, so moving it really did break it, and the wiring test this
+## paragraph used to point to proved exactly that. C6b's admission queue
+## enforces the same invariant independently of loop order (see the paragraph
+## above), so that specific failure mode is gone; what remains is simply that
+## this order is the one phase 3 has run since B3b/B3c, and changing it now
+## would be a different, silently-chosen simulation for no reason this slice
+## was asked to supply. Measured rather than reasoned about: with C6b in
+## place and the "sim_buildings" loop moved back to its pre-B3b position,
+## tests/match/demo_boot_run.gd passed all 364 of its assertions, including
+## the two wiring cases that used to fail on exactly that revert. Those cases
+## are kept and now say what they actually bind -- the invariant, preserved
+## by deferred admission -- rather than the loop order; see their own doc
+## comments.
 ##
 ## Like the five group loops above it, this one inherits the
 ## get_nodes_in_group() ordering caveat recorded above: which projectile in a
@@ -666,6 +718,15 @@ func _process(delta: float) -> void:
 ## it finally ran.
 func _advance_simulation_tick() -> void:
 	var tick := _clock.advance()
+	# First statement in the function, before even the replay/command drain:
+	# admit -> simulate -> retire, with apply_pending_releases() (slice C5)
+	# already the last statement below. Draining here, before any of this
+	# tick's own systems can queue a new request_entry() call, is what makes
+	# "created during tick N, not simulated until tick N+1" hold regardless of
+	# which system created the entity or where that system's own loop sits --
+	# see this function's ordering comment further down for the full argument
+	# and the history of what used to enforce this instead.
+	_admission_queue.apply_pending_entries()
 	# Must run before drain(tick) below, not after: a replay command
 	# targeting `tick` has to be queued while _last_tick_drained is still
 	# tick - 1, or SimCommandBus.submit_at() (scripts/sim/command_bus.gd)
@@ -769,6 +830,15 @@ func entity_index() -> EntityNodeIndex:
 ## preloading match.gd's entire dependency chain.
 func entity_state() -> SimEntityState:
 	return _entity_state
+
+
+## The queue every Unit/Building/CombatProjectile/CombatLingerEffect/SpiceMound
+## asks to join a sim group through, when one exists -- exposed the same way
+## entity_index()/entity_state() are, for the same reason: MatchLookupScript.
+## admission_queue() (duck-typed, see its own comment) reaches this without
+## preloading match.gd's entire dependency chain.
+func admission_queue() -> SimAdmissionQueue:
+	return _admission_queue
 
 
 func _unhandled_input(event: InputEvent) -> void:

@@ -142,3 +142,45 @@ static func entity_state(node: Node) -> Variant:
 	if match_node == null:
 		return null
 	return match_node.call("entity_state")
+
+
+## The SimAdmissionQueue the running Match owns (scripts/match/sim_admission_queue.gd),
+## or null under the identical conditions entity_index()/entity_state() return
+## null -- same lookup, same null-tolerance, for the same reason: most
+## combat/effect suites build a CombatProjectile, CombatLingerEffect or
+## SpiceMound directly, with no Match anywhere in the tree.
+static func admission_queue(node: Node) -> Variant:
+	if node == null or not node.is_inside_tree():
+		return null
+	var match_node := _live_match(node, &"admission_queue")
+	if match_node == null:
+		return null
+	return match_node.call("admission_queue")
+
+
+## The one call every group join C6b defers goes through: resolves the
+## running Match's SimAdmissionQueue for `node` and asks it to request entry
+## into `group`, or, when there is no queue -- no Match anywhere in `node`'s
+## tree -- adds `node` to `group` immediately instead of queueing at all.
+##
+## That fallback mirrors Unit.request_despawn()'s own (scripts/units/unit.gd):
+## most combat and effect suites in this repo build a CombatProjectile,
+## CombatLingerEffect or SpiceMound with no Match anywhere in the tree (see
+## tests/combat/*), and nothing would ever call apply_pending_entries() to
+## drain a queue for them -- a node that requested entry and was never
+## admitted would simply never simulate, which is a regression these suites
+## would have no way to notice short of every assertion timing out. Joining
+## immediately in that case is exactly what these nodes did before C6b, so
+## behaviour there is unchanged.
+##
+## This is the one place all three C6b call sites (combat_projectile.gd,
+## combat_linger_effect.gd, spice_mound.gd) route through, rather than each
+## repeating admission_queue(node)'s null check itself: three call sites
+## duplicating that check would be three places to keep correct if the
+## fallback's reasoning ever changed; this is one.
+static func request_sim_entry(node: Node, group: StringName) -> void:
+	var queue: Variant = admission_queue(node)
+	if queue == null:
+		node.add_to_group(group)
+		return
+	queue.request_entry(node, group)
