@@ -1069,6 +1069,77 @@ and by the time we get there the hard part is already tested.
   to be rediscovered through five unexplained `is_queued_for_deletion()`
   failures in a suite about corpses and animation clips.
 
+  **Slice C6, decided 2026-08-22: deferred spawn, and the group that had to
+  be split first.** Decision 3's third ECS property, creation half. C5 took
+  destruction; this takes the other side, and the forks were answered the
+  same way: the queue defers **entry into the simulation**, not the creation
+  of the node, and it covers everything the tick walks rather than only the
+  two kinds that carry an entity id.
+
+  Deferring entry rather than creation is what keeps every call site's shape.
+  `CombatTurret.try_fire_at()` constructs a `CombatProjectile`, parents it,
+  configures it, and calls `launch()` -- which can *fail*, on an out-of-range
+  shot or a target that died between muzzle selection and the call, after
+  which the caller frees the node it still holds. A queue that owned creation
+  would have to model that failure path; a queue that owns only the moment
+  something becomes simulated does not have to know the path exists. This is
+  the exact mirror of C5's answer, where death also takes effect immediately
+  and the queue owns only the structural half.
+
+  The defect that grounds it, found by reading the tick order rather than by
+  a failing test: `BuildingSurvivors.spawn_for_destroyed_building()` spawns
+  infantry from a building's death, and that death arrives from inside the
+  projectile loop or the linger loop. `Unit.sim_tick()`'s pass over `"units"`
+  has already run by then; `Unit.sim_tick_combat()`'s has not. So a survivor
+  **misses the locomotion pass but catches the combat pass on its own birth
+  tick** -- it can acquire a target and commit a shot in the tick it was
+  created, while not yet being able to move. Nothing chose that; it is where
+  two loop positions happened to land relative to a third.
+
+  **What made this bigger than it looks, and the split it forced.** The
+  obvious implementation -- defer the `add_to_group()` that makes an entity
+  live -- cannot be applied to units and buildings as they stand.
+  `"units"` is declared statically in 99 scene files under `scenes/units/`,
+  and neither it nor `"buildings"` belongs to the tick: selection, the side
+  panel, availability tracking, blocker refresh and `UnitNavigationSystem`
+  all read them too. Deferring membership in a group that shared would make a
+  newly spawned unit unselectable and invisible to the UI for a tick, which
+  is a view regression bought to fix a simulation ordering question.
+
+  The pattern that resolves it is already in the codebase rather than
+  invented for this slice: `SpiceMound._ready()` joins **two** groups, the
+  shared `"spice_mounds"` everything else reads and the tick-only
+  `"sim_spice_mounds"`, and `CombatProjectile`/`CombatLingerEffect` have
+  tick-only groups by construction because nothing else ever wanted to list
+  them. Three of the five kinds the tick walks already have their iteration
+  source separated from the view layer's; units and buildings are the two
+  that do not. So C6 splits in two:
+
+  - **C6a** introduces `"sim_units"` and `"sim_buildings"`, joined in code
+    beside the existing scene-declared membership, and moves the tick's three
+    loops -- and `UnitNavigationSystem`'s own reads of `"units"` -- onto
+    them. Membership is identical at every instant, so this changes no
+    behaviour; what it changes is that the simulation stops sharing its
+    iteration source with the view layer, which is decision 3's own sentence
+    made structural instead of aspirational. No scene file is touched: the
+    static `"units"` declaration stays exactly where it is and keeps meaning
+    what it has always meant.
+  - **C6b** routes all five sim-group joins through one queue, drained at the
+    **start** of `_advance_simulation_tick()` -- admit, simulate, retire,
+    with C5's despawn drain already at the other end. An entity with no
+    `Match` in the tree joins immediately, the same fallback and the same
+    reason `request_despawn()` carries.
+
+  **The tick order stays exactly as it is.** Once entry is deferred, the
+  ordering arguments in `Match._advance_simulation_tick()`'s doc comment stop
+  being load-bearing: a projectile fired this tick cannot travel this tick
+  because it is not in the group yet, not because the buildings loop was
+  moved past the projectile loop in B3b. Moving anything back would be a
+  different, silently-chosen simulation, which phase 3 does not do. C6b
+  rewrites the *argument* -- from "this order is required" to "this order is
+  now free, and here is what used to require it" -- and leaves the order
+  untouched.
+
 - **Phase 4 — determinism gate.** Portable math, RNG split, the static rules
   above wired into `check_architecture.py`, and the CI test that replays one
   command log twice in-process and then compares state hashes across native and
