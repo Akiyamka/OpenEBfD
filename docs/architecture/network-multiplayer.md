@@ -1557,13 +1557,27 @@ and by the time we get there the hard part is already tested.
 
   The rule matches **qualified** reads only — `X.global_position`, one system
   asking where another entity is — and that is a measurement rather than a
-  concession. Re-measured on the tree R2 started from — 279 `global_position`
-  occurrences over 268 lines in 55 files, not the 266 R1's paragraph above
+  concession. Re-measured on the tree R2 started from — 270 `global_position`
+  occurrences over 262 lines in 55 files, not the 266 R1's paragraph above
   records, because R1 measured the tree it *started* from and its own migration
-  has landed since — the reads split into 195 qualified occurrences across 49
+  has landed since — the reads split into at least 195 qualified occurrences across 49
   files and 47 bare ones in only 7 (`unit.gd`, `building.gd`, `rts_camera.gd`,
   and four combat effect files). Qualified `global_transform` reads add 24 more
-  across 15 files. A bare read is a node reading its own mirror, and that node is
+  across 15 files.
+
+  Those counts are worth stating with the command that produced them, because
+  three separate numbers in this program's own paragraphs disagreed before this
+  one was pinned down: the totals here are
+  `grep -ro '\bglobal_position\b' --include='*.gd' scripts/ | wc -l` for
+  occurrences and `grep -rn` piped the same way for lines, both including
+  matches inside comments. "At least 195 qualified" is a floor rather than a
+  count: the sweep matched `X.global_position` with a word-shaped receiver, so a
+  read through a parenthesised expression — `(candidate as Node3D).global_position`,
+  which the harvester migration below turned up — is invisible to it. The rule
+  itself does not share that blind spot, which is why the queue is sized by the
+  rule's own matches at the bottom of this paragraph rather than by the sweep.
+
+  A bare read is a node reading its own mirror, and that node is
   the one
   thing already guaranteed to have written the store it is mirroring, so the
   question it raises is both different and much smaller than "who told this
