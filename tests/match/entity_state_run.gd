@@ -67,6 +67,23 @@ extends SceneTree
 ## Building.set_simulation_position() so that the node's half of that
 ## contract -- it still moves, keeping the symptom loud -- is pinned too.
 ## That last case pushes exactly one deliberate "write refused" error.
+##
+## Slice R2 adds the read half -- Unit.simulation_position() and
+## Building.simulation_position() -- and its three cases are shaped by the
+## same argument the C2 cases above are, one step further on. Agreement
+## proves nothing: an accessor that simply returned `global_position` would
+## pass a test asserting store and answer match, and that accessor is exactly
+## the one this program exists to remove. So
+## _test_simulation_position_outlives_a_direct_node_poke reuses the rogue
+## write the C2 and R1 poke cases already perform and then asks the *node*
+## where it is -- the answer must be the store's value and must differ from
+## the node's own field, for a unit and for a building both.
+## _test_simulation_position_falls_back_with_no_match covers the other half
+## of the accessor's contract, the one its doc comment calls its one danger:
+## with no Match in the tree there is no store to be authoritative, entity_id
+## is 0, and the method must answer from the node without reaching
+## SimEntityState.position() for an id it has no entry for -- which would
+## push an error rather than return.
 
 const LegacyRulesFixture := preload("res://tests/support/legacy_rules_fixture.gd")
 const MatchFixtureScene := preload("res://tests/fixtures/match_fixture.tscn")
@@ -135,6 +152,19 @@ func _initialize() -> void:
 		"a building position write for an id the registry reports dead is refused, the node still "
 			+ "moves, and no other id's stored position is disturbed",
 		_test_building_position_write_to_a_dead_id_is_refused
+	)
+	await _run_case(
+		"simulation_position() answers from the store for a unit and for a building",
+		_test_simulation_position_answers_from_the_store
+	)
+	await _run_case(
+		"simulation_position() keeps answering the store's value after global_position is poked "
+			+ "behind its back -- for a unit and for a building",
+		_test_simulation_position_outlives_a_direct_node_poke
+	)
+	await _run_case(
+		"simulation_position() falls back to the node for a unit with no Match in the tree",
+		_test_simulation_position_falls_back_with_no_match
 	)
 
 	if _failures > 0:
@@ -852,4 +882,153 @@ func _test_building_position_write_to_a_dead_id_is_refused() -> void:
 
 	doomed.queue_free()
 	match_instance.queue_free()
+	await process_frame
+
+
+## Slice R2's positive case. Deliberately weak on its own -- it cannot tell an
+## accessor that reads the store from one that returns `global_position`,
+## because boot leaves the two in agreement. It is here for the reason the
+## boot cases above are: it fails if the method is not wired to the store at
+## all, for either kind, and it fails before the disagreement case below can
+## report something more confusing.
+func _test_simulation_position_answers_from_the_store() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	get_root().add_child(match_instance)
+	for _warmup in 5:
+		await process_frame
+
+	var store = match_instance.entity_state()
+	_expect(store != null, "Match must expose a live SimEntityState")
+	if store == null:
+		match_instance.queue_free()
+		return
+
+	var unit := match_instance.get_node("Units/OrdosAPC") as Unit
+	_expect(
+		store.has_position(unit.entity_id),
+		"OrdosAPC must already have a store position from boot"
+	)
+	if store.has_position(unit.entity_id):
+		_expect(
+			unit.simulation_position().is_equal_approx(store.position(unit.entity_id)),
+			"Unit.simulation_position() must answer with the store's position"
+		)
+
+	var building := match_instance.get_node("Buildings/ATConYard") as Building
+	_expect(
+		store.has_position(building.entity_id),
+		"ATConYard must already have a store position from boot"
+	)
+	if store.has_position(building.entity_id):
+		_expect(
+			building.simulation_position().is_equal_approx(store.position(building.entity_id)),
+			"Building.simulation_position() must answer with the store's position"
+		)
+
+	match_instance.queue_free()
+	await process_frame
+
+
+## The case that carries the meaning, and the one the mutation "make
+## simulation_position() return global_position unconditionally" must break.
+## The poke is the same bypassing write _test_store_outlives_a_direct_node_poke
+## and its building twin perform, but what is asserted afterwards is different:
+## those two ask the *store* and prove it did not follow the node, while this
+## one asks the *node* and proves it does not answer for itself. A test that
+## only checked store and accessor agree would pass against an accessor that
+## never touches the store at all.
+func _test_simulation_position_outlives_a_direct_node_poke() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	get_root().add_child(match_instance)
+	for _warmup in 5:
+		await process_frame
+
+	var store = match_instance.entity_state()
+	_expect(store != null, "Match must expose a live SimEntityState")
+	if store == null:
+		match_instance.queue_free()
+		return
+
+	var unit := match_instance.get_node("Units/OrdosAPC") as Unit
+	var building := match_instance.get_node("Buildings/ATConYard") as Building
+	_expect(
+		store.has_position(unit.entity_id) and store.has_position(building.entity_id),
+		"both entities must already have a store position before this case pokes them"
+	)
+	if not (store.has_position(unit.entity_id) and store.has_position(building.entity_id)):
+		match_instance.queue_free()
+		return
+
+	var trusted_unit_position: Vector3 = store.position(unit.entity_id)
+	var trusted_building_position: Vector3 = store.position(building.entity_id)
+	var unit_poke := trusted_unit_position + Vector3(777.0, 0.0, -777.0)
+	var building_poke := trusted_building_position + Vector3(-555.0, 0.0, 555.0)
+	# Bypasses set_simulation_position() on purpose, exactly as the C2 and R1
+	# poke cases above do -- global-position-bypasses-store forbids this shape
+	# in scripts/, and tests/ is deliberately outside the checker's zone.
+	unit.global_position = unit_poke
+	building.global_position = building_poke
+
+	_expect(
+		unit.global_position.is_equal_approx(unit_poke)
+			and building.global_position.is_equal_approx(building_poke),
+		"the nodes must show the rogue writes -- otherwise this case tests no real disagreement"
+	)
+	_expect(
+		unit.simulation_position().is_equal_approx(trusted_unit_position),
+		"Unit.simulation_position() must keep answering the store's value, not the poked node's"
+	)
+	_expect(
+		not unit.simulation_position().is_equal_approx(unit.global_position),
+		"Unit.simulation_position() must actually differ from global_position here -- an answer that "
+			+ "agrees with the node is an answer that came from the node"
+	)
+	_expect(
+		building.simulation_position().is_equal_approx(trusted_building_position),
+		"Building.simulation_position() must keep answering the store's value, not the poked node's"
+	)
+	_expect(
+		not building.simulation_position().is_equal_approx(building.global_position),
+		"Building.simulation_position() must actually differ from global_position here, for the same "
+			+ "reason the unit's must"
+	)
+
+	match_instance.queue_free()
+	await process_frame
+
+
+## The fallback, which the accessor's own doc comment names as its one danger
+## and which is nonetheless required: most of tests/units/* and tests/combat/*
+## build a Unit with no Match anywhere, entity_id stays 0 for its whole life,
+## and there is no store to be authoritative over. Two things are pinned. The
+## answer is the node's own position, and it keeps tracking the node when the
+## node moves -- so a unit outside a match behaves exactly as it did before
+## this method existed. And nothing reaches SimEntityState: with entity_id 0
+## the accessor never calls position(), which would push an error for an id
+## with no entry rather than return one. That second half is why the guard is
+## `has_position()` and not merely a null check on the store.
+func _test_simulation_position_falls_back_with_no_match() -> void:
+	var unit := UnitScene.instantiate() as Unit
+	unit.position = Vector3(11.0, 2.0, -4.0)
+	get_root().add_child(unit)
+	await process_frame
+
+	_expect(
+		unit.entity_id == 0,
+		"sanity check: with no Match in the tree the unit must never have been given an entity id"
+	)
+	_expect(
+		unit.simulation_position().is_equal_approx(unit.global_position),
+		"with no store to answer from, simulation_position() must return the node's own position"
+	)
+
+	var moved := unit.global_position + Vector3(3.0, 0.0, 9.0)
+	unit.global_position = moved
+	_expect(
+		unit.simulation_position().is_equal_approx(moved),
+		"the fallback must keep tracking the node, so a unit outside a match behaves exactly as it "
+			+ "did before this method existed"
+	)
+
+	unit.queue_free()
 	await process_frame

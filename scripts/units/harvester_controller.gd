@@ -226,7 +226,7 @@ func advance_harvest_cycle(delta := 0.0) -> void:
 		_return_main_base = null
 		_start_unload_order(refinery, _cycle_grid)
 		return
-	var origin: Vector2i = _cycle_grid.call("world_to_grid", _unit.global_position)
+	var origin: Vector2i = _cycle_grid.call("world_to_grid", _unit.simulation_position())
 	var next_cell: Vector2i = _cycle_spice_layer.call(
 		"nearest_spice_cell", origin, 1, -1, _auto_spice_cell_filter
 	)
@@ -549,7 +549,7 @@ func _try_resume_harvest_from_dock() -> bool:
 	# the departing harvester. This lets the player steer the automatic
 	# economy loop toward a preferred spice field without making the harvester
 	# visit the flag first.
-	var search_origin := _unit.global_position
+	var search_origin: Vector3 = _unit.simulation_position()
 	if is_instance_valid(_unload_refinery) \
 	and _unload_refinery.has_method("rally_point_position"):
 		search_origin = _unload_refinery.call("rally_point_position") as Vector3
@@ -600,7 +600,12 @@ func _nearest_owned_refinery() -> Node:
 		var candidate := candidate_variant as Node
 		if not _is_valid_owned_refinery(candidate) or not candidate is Node3D:
 			continue
-		var offset := (candidate as Node3D).global_position - _unit.global_position
+		# simulation_position(), not global_position, since slice R2: this
+		# picks an unload destination inside the tick, so it must read the
+		# store rather than the node's mirror. Every "sim_buildings" member is
+		# a Building, which answers it; a stand-in double in a test has to
+		# implement it too (tests/units/harvester_run.gd's FakeRefinery does).
+		var offset: Vector3 = (candidate as Node3D).simulation_position() - _unit.simulation_position()
 		offset.y = 0.0
 		var distance_squared := offset.length_squared()
 		if distance_squared < nearest_distance_squared:
@@ -620,7 +625,7 @@ func _return_to_primary_main_base() -> bool:
 		return true
 	_return_main_base = main_base
 	_issuing_main_base_move = true
-	_unit.move_to(main_base.global_position)
+	_unit.move_to(main_base.simulation_position())
 	_issuing_main_base_move = false
 	return true
 
@@ -660,7 +665,7 @@ func _is_close_to_harvest_cell(cell: Vector2i) -> bool:
 	var footprint_cells := float(_unit.unit_definition.size) if _unit.unit_definition != null else 1.0
 	var approach_cells := maxf(HARVEST_APPROACH_RADIUS_CELLS, footprint_cells)
 	var approach_radius := maxf(cell_dimensions.x, cell_dimensions.y) * approach_cells
-	var offset := target - _unit.global_position
+	var offset: Vector3 = target - _unit.simulation_position()
 	offset.y = 0.0
 	if offset.length() <= maxf(approach_radius, _unit.arrival_radius):
 		return true
@@ -706,7 +711,7 @@ func _issue_dock_move(position: Vector3) -> void:
 
 
 func _is_close_to_world(target: Vector3) -> bool:
-	var offset := target - _unit.global_position
+	var offset: Vector3 = target - _unit.simulation_position()
 	offset.y = 0.0
 	var tolerance: float = _unit.navigation_arrival_tolerance(maxf(_unit.arrival_radius, 0.35))
 	return offset.length() <= tolerance
@@ -788,7 +793,7 @@ func _execute_pending_order() -> void:
 	_pending_order_data.clear()
 	match kind:
 		PendingOrder.MOVE:
-			var position := data.get("position", _unit.global_position) as Vector3
+			var position := data.get("position", _unit.simulation_position()) as Vector3
 			var exit_point := data.get("exit_point", Vector3.INF) as Vector3
 			var move_mode := int(data.get("move_mode", 0))
 			# Outside the navigation system this goes through the unit's own

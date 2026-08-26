@@ -1,0 +1,10 @@
+extends RefCounted
+
+## `X.global_position = v` in its whole-vector, component and compound
+## spellings. All three belong to global-position-bypasses-store, and the read
+## rule's negative lookahead exists so that none of them is reported twice.
+
+func place(unit: Node3D, value: Vector3) -> void:
+	unit.global_position = value
+	unit.global_position.y = value.y
+	unit.global_position += value

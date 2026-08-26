@@ -1,0 +1,9 @@
+extends RefCounted
+
+## MatchSnapshot._restore_entities()'s shape: a whole-transform write, which
+## moves the node exactly as writing global_position would. The rule's pattern
+## could not see it until slice R2 widened the alternation, which is how this
+## one survived slice C2's migration unnoticed.
+
+func restore(entity: Node3D, world_transform: Transform3D) -> void:
+	entity.global_transform = world_transform

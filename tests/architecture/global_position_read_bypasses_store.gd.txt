@@ -1,0 +1,9 @@
+extends RefCounted
+
+## A qualified read of another entity's position: this module asks the node's
+## mirror where a unit is instead of asking SimEntityState, which is the shape
+## slice R2 moved HarvesterController off
+## (docs/architecture/network-multiplayer.md, phase 3's R2 paragraph).
+
+func offset_to(unit: Node3D, target: Vector3) -> Vector3:
+	return target - unit.global_position

@@ -417,6 +417,35 @@ func set_simulation_position(value: Vector3) -> void:
 	global_position = value
 
 
+## The read counterpart of set_simulation_position(), added by slice R2, and
+## the exact counterpart of Unit.simulation_position() -- read that method's
+## doc comment for the full argument, including why a reader calls this on the
+## node rather than holding the store, and why the `global_position` fallback
+## is both required and the one dangerous thing here. Only what differs on the
+## building side is restated below.
+##
+## A building is written once, at placement, and then does not move, so the
+## window in which the id exists but the store has no entry for it yet is
+## wider here than for a unit rather than narrower: it lasts from _ready()
+## until Match._place_on_map() or BuildingPlacement.try_place_at_hover_cell()
+## makes the one write this building will ever get. Everything a building
+## exposes in world space -- rally point, refinery docks, footprint cells --
+## is derived from that position, so a reader that arrives inside that window
+## and silently gets the node's authored, un-snapped spot is a real
+## possibility rather than a theoretical one. It is still the right answer:
+## the node's value in that window *is* the only value anyone has, and the
+## alternative -- Vector3.INF, the store's own no-value marker -- would
+## propagate an unusable number into a footprint or a dock offset instead of
+## the authored one those call sites already coped with before this method
+## existed.
+func simulation_position() -> Vector3:
+	if _entity_id != 0:
+		var store = MatchLookupScript.entity_state(self)
+		if store != null and store.has_position(_entity_id):
+			return store.position(_entity_id)
+	return global_position
+
+
 ## This entity's simulation half. Called once per simulation tick by
 ## Match._advance_simulation_tick() -- see its doc comment for why the tick is
 ## driven centrally instead of from this node's own _process(), and for why

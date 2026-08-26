@@ -1,0 +1,8 @@
+extends Node3D
+
+## A node reading its own global_position -- its own mirror, and the one node
+## guaranteed to have written the store it mirrors. Deliberately outside the
+## read rule: see that rule's `why` for the measurement behind the split.
+
+func offset_to(target: Vector3) -> Vector3:
+	return target - global_position

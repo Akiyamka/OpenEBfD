@@ -144,7 +144,11 @@ instead = "read the clip's authored length once (flight_clip_length()) and compl
 [[rules]]
 id = "global-position-bypasses-store"
 zone = "all"
-pattern = '\b(?:\w+\.)?global_position(?:\.[xyz])?\s*[-+]?=(?!=)'
+# `global_transform` was added to the alternation by slice R2. Until then this
+# pattern said `global_position` only, and a whole-transform write was simply
+# invisible to it -- see the MatchSnapshot entry in the exempt list below for
+# the defect that blindness was hiding, and the design doc's R2 paragraph.
+pattern = '\b(?:\w+\.)?global_(?:position|transform)(?:\.[xyz])?\s*[-+]?=(?!=)'
 exempt = [
 	# The sanctioned mirror-write chokepoint itself. Unit.set_simulation_position()
 	# (its own doc comment) is the one place slice C2 permits a direct write --
@@ -206,18 +210,208 @@ exempt = [
 	"scripts/combat/fx/authored_fx_bank.gd",
 	"scripts/combat/fx/impact_debris.gd",
 	"scripts/combat/turret/combat_turret_fx.gd",
+	# --- Below here: exempted when slice R2 widened the pattern to
+	# `global_transform`. None of these was newly written; each is a whole-
+	# transform write that the `global_position`-only pattern simply could not
+	# see. All but one are view-layer nodes that were never entities and never
+	# will be -- a ground decal placed on the terrain it scorched, a laser beam
+	# spanning muzzle to impact, a corpse stamped into world space after
+	# add_child(), two navigation debug overlays, a unit's authored collision
+	# shape copied off the converted model, and the map's directional sun.
+	"scripts/combat/combat_ground_decal.gd",
+	"scripts/combat/fx/laser_beam.gd",
+	"scripts/effects/death_corpse.gd",
+	"scripts/units/navigation/navigation_grid_debug.gd",
+	"scripts/units/navigation/unit_navigation_debug.gd",
+	"scripts/units/unit_authored_collision.gd",
+	"scripts/world/map/map_loader.gd",
+	# Proven defective, awaiting a slice -- the one entry here that is a
+	# backlog item rather than a decision, labelled the way
+	# animation-completes-simulation labels UnitLocomotion.
+	# MatchSnapshot._restore_entities() restores a unit's or a building's
+	# position by writing `entity.global_transform` after add_child(), and the
+	# store never learns about it: Unit._register_entity_id() and
+	# Building._register_entity_id() push owner only, so has_position() answers
+	# false for a live, restored entity and position() push_errors. It survived
+	# slice C2's migration precisely because this pattern said `global_position`
+	# and this line says `global_transform` -- the same write under a second
+	# spelling, which is why R2 widened the pattern rather than leave the hole
+	# open for the next one. R1's sweep found it; R2 exempts it without fixing
+	# it, because a snapshot restore is not R2's scope. Delete this entry when
+	# the write routes through set_simulation_position(). See
+	# docs/architecture/network-multiplayer.md, phase 3's R1 and R2 paragraphs.
+	"scripts/match/match_snapshot.gd",
 ]
-summary = "global_position written directly instead of through SimEntityState"
+summary = "global_position or global_transform written directly instead of through SimEntityState"
 why = """
 Decision 3 makes the simulation's hot-state store authoritative for a unit's \
 or a building's position and the node a mirror of it. A direct write that \
 bypasses the store diverges from it silently, and the mirror makes that \
 divergence look correct right up until a snapshot or a checksum disagrees -- \
 the store keeps answering with the value it was last told, not the value the \
-node actually holds. See docs/architecture/network-multiplayer.md, phase 3's \
-C2 paragraph for units and its R1 paragraph for buildings.
+node actually holds. `global_transform` is the same write under a second \
+spelling and is matched for that reason: writing it moves the node exactly as \
+writing `global_position` does, and slice R2 found one such write (see \
+MatchSnapshot in the exempt list) that had been invisible to this rule since \
+C2. See docs/architecture/network-multiplayer.md, phase 3's C2 paragraph for \
+units, its R1 paragraph for buildings and its R2 paragraph for the widened \
+pattern.
 """
 instead = "Unit.set_simulation_position(value) or Building.set_simulation_position(value), which write SimEntityState first and mirror the result into global_position"
+
+[[rules]]
+id = "global-position-read-bypasses-store"
+zone = "all"
+# Qualified reads only: `X.global_position`, one system asking where *another*
+# entity is. A bare `global_position` -- a node reading its own mirror -- is a
+# different and much smaller question and is deliberately not matched; see
+# `why`. The negative lookahead is this rule's half of a partition with
+# global-position-bypasses-store above: it mirrors that rule's own assignment
+# tail (`(?:\.[xyz])?\s*[-+]?=(?!=)`) exactly, so every `X.global_position = v`,
+# `X.global_position.y = v` and `X.global_position += v` is reported there, by
+# the write rule, and never twice. `==`, `!=`, `<=` and `>=` survive the
+# lookahead and stay reads, which they are. The leading character class also
+# accepts `)` and `]` so that `(candidate as Node3D).global_position` and
+# `agents[i].global_position` are not a way around the rule.
+pattern = '[\w)\]]\.global_(?:position|transform)\b(?!(?:\.[xyz])?\s*[-+]?=(?!=))'
+exempt = [
+	# ===================================================================
+	# PERMANENT -- 19 files, 33 reads. These should keep asking the node
+	# forever and are not work anyone owes. Three reasons cover all of them,
+	# and none is a scheduling excuse:
+	#
+	#  1. The reader is view code. A camera unproject, an FX or debris
+	#     emitter, a positional audio emitter, a UI halo, a debug overlay, a
+	#     corpse or death sequence, a wall's mesh-variant choice: all of it
+	#     runs on frame time and produces pixels or sound, never a number the
+	#     tick reads back. Asking the store there would buy nothing and would
+	#     make the view lag the mirror it is drawing.
+	#  2. The thing being read deliberately has no store entry. Projectiles,
+	#     linger effects and spice mounds never get entity ids -- that is a
+	#     decision, recorded in the write rule's exempt list above and in the
+	#     design doc's R1 paragraph -- so there is no stored position for a
+	#     reader to prefer.
+	#  3. The read is of a rotation, not a position. `global_transform.basis`
+	#     and `global_transform.affine_inverse()` ask for orientation, and
+	#     SimEntityState holds no rotation at all (see its own doc comment):
+	#     position, health, shields and owner. There is nothing to migrate to.
+	#
+	# Exemption is by file, which is coarser than the reasons above: a few of
+	# these are simulation files whose *only* qualified read happens to be an
+	# audio or FX emitter placement (authored_fire_controller.gd,
+	# unit_deploy_state.gd, unit_movement_sounds.gd). Their entry buys silence
+	# for a future simulation read too. That is the same imprecision the write
+	# rule already accepts for unit.gd and building.gd, and for the same
+	# reason: a file-level rule cannot tell a sanctioned read from a future
+	# accidental one any more precisely than this.
+	"scripts/buildings/building_construction_sound.gd",
+	"scripts/buildings/building_death_sequence.gd",
+	"scripts/buildings/building_wall_visual.gd",
+	"scripts/combat/authored_fire_controller.gd",
+	"scripts/combat/combat_ground_decal.gd",
+	"scripts/combat/combat_projectile.gd",
+	"scripts/combat/fx/impact_debris.gd",
+	"scripts/combat/turret/combat_turret_fx.gd",
+	"scripts/match/unit_command_controller.gd",
+	"scripts/ui/selection_halo_binding.gd",
+	"scripts/units/navigation/navigation_grid_debug.gd",
+	"scripts/units/unit_authored_collision.gd",
+	"scripts/units/unit_death_sequence.gd",
+	"scripts/units/unit_deploy_state.gd",
+	"scripts/units/unit_movement_sounds.gd",
+	"scripts/world/authored_model.gd",
+	"scripts/world/camera/rts_camera.gd",
+	"scripts/world/map/map_spice_layer.gd",
+	"scripts/world/spatial_orientation.gd",
+	#
+	# ===================================================================
+	# QUEUED -- 33 files, 157 reads. Simulation code that should ask
+	# SimEntityState and does not yet. R3 and the slices after it empty this
+	# half one subsystem at a time; deleting a line is the visible event that
+	# records progress, exactly as it is for animation-completes-simulation.
+	# The counts are what make this a plan rather than a list: navigation is
+	# two thirds of the remaining debt and is the only group that needs
+	# splitting further before it can be a slice.
+	#
+	# Navigation -- 12 files, 103 reads. The largest group by far, and the one
+	# whose reads run inside the tick every tick. These modules take a `Node3D`
+	# and never a `Unit`; that duck typing is why simulation_position() lives
+	# on the node instead of a reader holding the store.
+	"scripts/units/navigation/ground/ground_slot_allocator.gd",  # 23
+	"scripts/units/navigation/unit_flight_controller.gd",  # 21
+	"scripts/units/navigation/ground/ground_navigation.gd",  # 20
+	"scripts/units/navigation/unit_navigation_system.gd",  # 14
+	"scripts/units/navigation/ground/steering_stabilizer.gd",  # 10
+	"scripts/units/navigation/air/air_navigation.gd",  # 3
+	"scripts/units/navigation/shared/nav_agent_registry.gd",  # 3
+	"scripts/units/navigation/ground/attack_arc_allocator.gd",  # 2
+	"scripts/units/navigation/ground/ground_path_follower.gd",  # 2
+	"scripts/units/navigation/ground/orca_avoidance.gd",  # 2
+	"scripts/units/navigation/shared/nav_blocker_tracker.gd",  # 2
+	"scripts/units/navigation/shared/nav_spatial_hash.gd",  # 1
+	# Combat -- 6 files, 19 reads. Target acquisition, aim and the shared
+	# CombatTarget.position_of() helper every shooter routes through, which is
+	# the single highest-leverage line in this half.
+	"scripts/combat/combat_turret.gd",  # 8
+	"scripts/combat/combat_target_acquisition.gd",  # 3
+	"scripts/units/unit_attack_order.gd",  # 3
+	"scripts/units/unit_combat.gd",  # 3
+	"scripts/buildings/building_combat.gd",  # 1
+	"scripts/combat/combat_target.gd",  # 1
+	# Buildings -- 5 files, 11 reads. Rally points, refinery docks, footprint
+	# cells and survivor spawns, all derived from a building's own position.
+	"scripts/buildings/building_rally_point.gd",  # 6
+	"scripts/buildings/building_refinery_docks.gd",  # 2
+	"scripts/buildings/building_footprint.gd",  # 1
+	"scripts/buildings/building_survivors.gd",  # 1
+	"scripts/buildings/unit_push_aside.gd",  # 1
+	# Units -- 5 files, 16 reads. Transport docking, terrain snapping,
+	# deployment and production exits, plus Unit's own single qualified read
+	# (a carryall's pickup target).
+	"scripts/units/advanced_carryall_transport.gd",  # 6
+	"scripts/units/unit_terrain_alignment.gd",  # 5
+	"scripts/units/unit_deployment_controller.gd",  # 2
+	"scripts/units/unit_roster_controller.gd",  # 2
+	"scripts/units/unit.gd",  # 1
+	# Match and world -- 5 files, 8 reads. Command execution, the carryall
+	# ability's nearest-candidate search, the snap-to-ground seeding loop in
+	# Match._place_on_map(), and spice hazard damage. match_snapshot.gd is
+	# here for its *read* half -- _capture_entity() saves the node's
+	# global_transform rather than the store's position -- the mirror image of
+	# the restore-side defect the write rule's exempt list above describes; one
+	# slice should take both.
+	"scripts/match/advanced_carryall_ability.gd",  # 2
+	"scripts/match/match.gd",  # 2
+	"scripts/world/map/map_spice_hazard.gd",  # 2
+	"scripts/match/command_executor.gd",  # 1
+	"scripts/match/match_snapshot.gd",  # 1
+	#
+	# Migrated and gone from this list, which is the point of keeping it:
+	# scripts/units/harvester_controller.gd (7 reads), by slice R2 itself.
+]
+summary = "another entity's position read off the node instead of SimEntityState"
+why = """
+Decision 3 makes the store authoritative and the node a mirror, and slices C2 \
+and R1 delivered only the write half: readers still ask the node, so the \
+design's promise is kept by convention at every call site rather than by \
+structure. A mirror answers plausibly right up until it is stale, and B4 made \
+staleness real rather than theoretical -- the view already moves on frame time \
+between ticks, so anything that starts blending the node's own transform feeds \
+a frame-rate-dependent number straight back into the simulation. \
+This rule matches **qualified** reads only, and that is a measurement rather \
+than a compromise. Measured across scripts/**/*.gd when R2 was written: 195 \
+qualified `X.global_position` reads in 49 files, plus 24 qualified \
+`X.global_transform` reads in 15 more, against only 47 bare occurrences in 7 \
+files. A bare read is a node reading its own mirror, and that node is the one \
+thing already guaranteed to have written the store it mirrors, so it is a \
+different and much smaller question. Sorting the qualified reads into a queue \
+is worth a rule; chasing 47 self-reads would make this one noise before it \
+made anything correct. This rule matches 190 lines across the 52 files listed \
+below, all exempted, which is the size of the queue R3 inherits. See \
+docs/architecture/network-multiplayer.md, phase 3's R2 paragraph.
+"""
+instead = "Unit.simulation_position() or Building.simulation_position() on the node you are asking about, which answer from SimEntityState and fall back to global_position only where there is no match to be authoritative"
+
 
 [[rules]]
 id = "bare-class-name-reference"

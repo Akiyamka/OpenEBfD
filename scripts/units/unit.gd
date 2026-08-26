@@ -511,6 +511,47 @@ func set_simulation_position(value: Vector3) -> void:
 	global_position = value
 
 
+## The read counterpart of set_simulation_position(), added by slice R2: the
+## one way simulation code is meant to ask where this unit is. Answers from
+## the running match's SimEntityState, which decision 3 makes authoritative,
+## so a reader gets the tick's own value rather than whatever the node's
+## mirror happens to hold -- and, from B4 onwards, that distinction is not
+## academic: _advance_visual_interpolation() above already moves `visual_root`
+## on frame time, and the next thing that moves on frame time will be read
+## back into the tick by anything still asking the node.
+##
+## A reader calls this **on the node**, not on the store, deliberately. The
+## navigation modules take a `Node3D` and never a `Unit` -- that duck typing
+## is load-bearing there and predates this program -- so handing them a store
+## and an id would mean giving them an entity model they were written not to
+## need. A method on the node keeps their signature and makes the
+## global-position-reads-node rule in tools/architecture_rules.toml possible
+## at the same time: "call this instead" is checkable, "hold the store" is
+## not.
+##
+## The fallback to `global_position` is required and is also this method's one
+## danger, so it is stated rather than buried. Required: _entity_id is 0 for
+## the whole life of a unit built with no Match in the tree, which is most of
+## tests/units/* and tests/combat/* (see _register_entity_id()'s own comment),
+## and there is a window inside a real match too -- between _ready() and this
+## unit's first set_simulation_position() -- where the id exists but the store
+## has no position for it yet. Dangerous: a silent fallback answers from the
+## node, which is the exact thing this program exists to remove, so a bug that
+## drops the store entry degrades into "reads the mirror" instead of failing.
+## What makes it acceptable is that the store is authoritative only inside a
+## match: outside one there is no store to be authoritative, and both fallback
+## cases are precisely "no store, or no entry yet". Inside a match, after the
+## first write, this method never reaches the fallback -- that is what
+## tests/match/entity_state_run.gd's divergence case pins, by poking
+## global_position directly and asserting this still answers the store.
+func simulation_position() -> Vector3:
+	if _entity_id != 0:
+		var store = MatchLookupScript.entity_state(self)
+		if store != null and store.has_position(_entity_id):
+			return store.position(_entity_id)
+	return global_position
+
+
 ## This entity's simulation half: advances every turret's reload/burst
 ## countdown, then ground/generic locomotion and terrain snapping (see
 ## _advance_locomotion_tick()), then -- for a harvester -- the economy, all by

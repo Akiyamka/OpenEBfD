@@ -153,6 +153,14 @@ class FakeRefinery extends Node3D:
 	func is_owned_by(player_id: int) -> bool:
 		return owner_player_id == player_id
 
+	# HarvesterController._nearest_owned_refinery() asks every "sim_buildings"
+	# candidate for its simulation position since slice R2, and in the running
+	# game every one of them is a Building, which answers from SimEntityState.
+	# This double stands in for a Building with no match around it, which is
+	# exactly the case Building.simulation_position() answers from the node.
+	func simulation_position() -> Vector3:
+		return global_position
+
 	func refinery_front_position() -> Vector3:
 		return front
 
@@ -193,6 +201,11 @@ class FakeMainBase extends Node3D:
 
 	func is_owned_by(player_id: int) -> bool:
 		return owner_player_id == player_id
+
+	# See FakeRefinery.simulation_position(): the main base a full harvester
+	# falls back to is read the same way since slice R2.
+	func simulation_position() -> Vector3:
+		return global_position
 
 
 class FakeMultiDockRefinery extends FakeRefinery:

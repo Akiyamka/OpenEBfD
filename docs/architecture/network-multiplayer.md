@@ -1545,6 +1545,129 @@ and by the time we get there the hard part is already tested.
   `MatchSnapshot`, and R2's read rule should widen its pattern to cover
   `global_transform` rather than repeat this.
 
+  **Slice R2, decided 2026-08-26: the read accessor, the rule that makes the
+  read debt a queue, and one subsystem moved to prove the accessor works.**
+  `Unit.simulation_position()` and `Building.simulation_position()` return the
+  store's position for this entity's id, and a new `all`-zone rule,
+  `global-position-read-bypasses-store`, forbids reading `global_position` or
+  `global_transform` off another entity's node. The rule's exempt list is the
+  work queue R3 and its successors empty, which is the same object serving as
+  the enforcement — the ratchet `global-position-bypasses-store` and
+  `animation-completes-simulation` already are.
+
+  The rule matches **qualified** reads only — `X.global_position`, one system
+  asking where another entity is — and that is a measurement rather than a
+  concession. Re-measured on the tree R2 started from — 279 `global_position`
+  occurrences over 268 lines in 55 files, not the 266 R1's paragraph above
+  records, because R1 measured the tree it *started* from and its own migration
+  has landed since — the reads split into 195 qualified occurrences across 49
+  files and 47 bare ones in only 7 (`unit.gd`, `building.gd`, `rts_camera.gd`,
+  and four combat effect files). Qualified `global_transform` reads add 24 more
+  across 15 files. A bare read is a node reading its own mirror, and that node is
+  the one
+  thing already guaranteed to have written the store it is mirroring, so the
+  question it raises is both different and much smaller than "who told this
+  system where that unit is". Sorting 195 qualified reads into a queue is worth
+  the rule; chasing 47 self-reads would make the rule noise before it made
+  anything correct. After the harvester migration below, the rule matches 190
+  lines in 52 files, every one of them exempted, which is the size of the queue
+  R3 inherits. The same measurement decided where the accessor lives: the
+  qualified reads cluster in collaborator modules that are cleanly simulation or
+  cleanly view — `unit.gd` itself has exactly one and `building.gd` has none —
+  so the migration is per-module, not a rewrite of the two big entity files.
+
+  A reader calls `simulation_position()` **on the node** rather than holding the
+  store and an id. That is deliberate and it costs something: the accessor is a
+  second way to reach state that a reader could already reach directly, which is
+  usually how a facade rots. It buys two things worth more. Navigation's modules
+  take a `Node3D` and never a `Unit` — duck typing that predates this program and
+  that keeps the navigation suites able to drive a bare `Node3D` — so handing
+  them a store and an id would mean giving them an entity model they were
+  written not to need. And "call this method instead" is checkable by a regex
+  where "hold the store" is not, which is what turns the remaining debt into a
+  list that shrinks visibly instead of a paragraph that ages.
+
+  **The accessor's fallback to `global_position` is required, and it is also the
+  one dangerous thing in this slice.** It is required twice over: `entity_id`
+  stays 0 for the whole life of an entity built with no `Match` in the tree,
+  which is most of `tests/units/*` and `tests/combat/*`, and even inside a real
+  match there is a window between `_ready()` and the first
+  `set_simulation_position()` where the id exists and the store has no entry
+  yet — wider for a building, which is written once at placement, than for a
+  unit. It is dangerous because a silent fallback answers from the node, which is
+  precisely the behaviour this program is removing: a bug that loses the store
+  entry degrades into "reads the mirror" rather than failing. What makes it
+  acceptable is that the store is authoritative only inside a match — outside one
+  there is nothing for it to be authoritative over — and both fallback conditions
+  are exactly "no store, or no entry yet". The alternative, returning the store's
+  `Vector3.INF` no-value marker, would push an unusable number into a footprint
+  or a dock offset in the one window where the node's value is the only value
+  anyone has. The tests pin the distinction rather than the agreement:
+  `tests/match/entity_state_run.gd` pokes `global_position` behind the accessor's
+  back and asserts it still answers the store's value *and* that the two
+  genuinely differ, because an accessor that simply returned `global_position`
+  passes every test that only checks the two agree.
+
+  **The write rule was blind to `global_transform`, and that blindness was
+  hiding a defect.** `global-position-bypasses-store` said `global_position`
+  only, so a whole-transform write — the same write under a second spelling —
+  was invisible to it. R2 widens the pattern, which was not speculative:
+  `MatchSnapshot._restore_entities()` restores a unit's or a building's position
+  by writing `entity.global_transform` after `add_child()`, and the store never
+  learns about it. `_register_entity_id()` pushes owner only, so after a
+  snapshot load `has_position()` answers false for a live entity, `position()`
+  push_errors, and the node is at the saved place while the store believes it has
+  no place at all. That is a defect in C2's own scope that survived C2's
+  migration because of the spelling, and it is on the write rule's exempt list
+  labelled as one — the way `animation-completes-simulation` labels
+  `UnitLocomotion` "proven defective" — not fixed here, because a snapshot
+  restore is not R2's scope. Its read-side mirror image, `_capture_entity()`
+  saving `entity.global_transform` instead of the store's position, is on the
+  read rule's queued list; one slice should take both. Widening the pattern cost
+  eight further exemptions, all of them view nodes that were never entities: a
+  ground decal, a laser beam, a corpse, two debug overlays, a unit's authored
+  collision shape and the map's sun.
+
+  **The exempt list is sorted into two labelled groups, because a list that
+  mixes them stops being a queue.** Permanent — 19 files, 33 reads — is code that
+  should keep asking the node forever, for one of three reasons: the reader is
+  view code (camera, FX, positional audio, UI halo, debug overlay, death
+  sequence, a wall's mesh-variant choice), or the thing being read deliberately
+  has no store entry (projectiles, linger effects and spice mounds never get
+  entity ids, which R1 settled), or the read is of a rotation, which
+  `SimEntityState` does not hold at all. Queued — 33 files, 157 reads — is
+  simulation code R3 and after will migrate, grouped by subsystem with counts so
+  the list doubles as the plan: navigation 103 across 12 files, combat 19 across
+  6, buildings 11 across 5, units 16 across 5, match and world 8 across 5.
+  Navigation is two thirds of the remaining debt and is the only group that
+  needs splitting again before it can be a slice. The exemptions are per file,
+  which is coarser than those reasons: three simulation files
+  (`authored_fire_controller.gd`, `unit_deploy_state.gd`,
+  `unit_movement_sounds.gd`) are on the permanent list because their only
+  qualified read is an audio emitter placement, and their entry buys silence for
+  a future simulation read too. That is the same imprecision the write rule
+  already accepts for `unit.gd` and `building.gd`, for the same reason: a
+  file-level rule cannot tell a sanctioned read from a future accidental one.
+
+  **One subsystem was migrated in this slice rather than left to R3, and the
+  reason is a specific mistake this project has already paid for.**
+  `SimEntityState.previous_position()` was added in C1, sat unused until B4 read
+  it, and was found to have been wrong the whole time — with a passing test the
+  entire way, because nothing consumed it. An accessor with no caller is the same
+  shape of claim. `HarvesterController` was the migration: seven lines, all
+  simulation, covered by `tests/units/harvester_run.gd`, and now gone from the
+  queued list, because an emptying list is the progress report. Two of those
+  seven turned out not to be `_unit.global_position` as recorded but reads of
+  *another* entity — `(candidate as Node3D).global_position` in the nearest-owned-
+  refinery search and `main_base.global_position` in the return-to-base fallback.
+  They are simulation reads of a `Building` and were migrated with the rest, but
+  they cost something the six self-reads did not: the suite's `FakeRefinery` and
+  `FakeMainBase` doubles extend `Node3D` and had to grow a `simulation_position()`
+  of their own. That is the honest price of an accessor reached by duck typing,
+  and it is worth stating because R3's navigation work will pay it at a much
+  larger scale — every navigation fixture that drives a bare `Node3D` becomes a
+  double that has to implement this method.
+
 - **Phase 4 — determinism gate.** Portable math, RNG split, the static rules
   above wired into `check_architecture.py`, and the CI test that replays one
   command log twice in-process and then compares state hashes across native and

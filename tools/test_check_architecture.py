@@ -179,6 +179,55 @@ CASES: tuple[Case, ...] = (
         {"scripts/units/unit.gd": "global_position_bypasses_store"},
         EXIT_CLEAN,
     ),
+    Case(
+        # Slice R2 widened this rule's pattern from `global_position` to
+        # `global_(?:position|transform)`. MatchSnapshot._restore_entities()
+        # had been writing the second spelling since before C2 and the rule
+        # could not see it, which is the whole argument for the widening.
+        "global_transform is the same write under a second spelling",
+        scripts("global_transform_bypasses_store"),
+        EXIT_FINDINGS,
+        expect_rules=("global-position-bypasses-store",),
+    ),
+    Case(
+        # The partition between the write rule and R2's read rule: a qualified
+        # write, in all three spellings the write rule matches, must be
+        # reported by the write rule and by that rule ONLY. A read rule that
+        # also fired here would double every write finding and make its own
+        # exempt list -- the R3+ queue -- lie about how much reading is left.
+        "a qualified write is the write rule's alone, never reported twice",
+        scripts("global_position_qualified_write"),
+        EXIT_FINDINGS,
+        expect_rules=("global-position-bypasses-store",),
+        forbid_rules=("global-position-read-bypasses-store",),
+    ),
+    Case(
+        "another entity's position read off the node instead of the store",
+        scripts("global_position_read_bypasses_store"),
+        EXIT_FINDINGS,
+        expect_rules=("global-position-read-bypasses-store",),
+        expect_text=("simulation_position()",),
+    ),
+    Case(
+        # The measured half of the rule's `why`: 47 of the tree's remaining
+        # reads are a node reading its own mirror, in only 7 files, and that
+        # node is the one guaranteed to have written the store. The rule is
+        # deliberately blind to them, so something has to prove it stays blind.
+        "a node reading its own global_position is not a qualified read",
+        scripts("global_position_bare_read"),
+        EXIT_CLEAN,
+        forbid_rules=("global-position-read-bypasses-store",),
+    ),
+    Case(
+        # The read rule's exempt list is two lists in one: permanent view code
+        # and the R3+ migration queue. This proves an entry really does
+        # silence the rule -- so that deleting a queued one is a meaningful
+        # event, and so that the permanent half is genuinely being scanned
+        # rather than skipped by a zone that never reached it.
+        "the qualified read is allowed where the exempt list already covers it",
+        {"scripts/world/camera/rts_camera.gd": "global_position_read_bypasses_store"},
+        EXIT_CLEAN,
+    ),
     # -- simulation determinism rules ----------------------------------------
     Case(
         "scene tree API in sim",
