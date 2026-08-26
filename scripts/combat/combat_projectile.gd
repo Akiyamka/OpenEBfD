@@ -77,6 +77,25 @@ var _trajectory_initial_velocity := Vector3.ZERO
 var _maximum_flight_distance := 0.0
 var _missile_trail := MissileTrailScript.new()
 var _impact_resolver = CombatImpactResolverScript.new()
+## Slice B4's view interpolation, projectile side. A projectile has no entity
+## id at all -- _register_entity_id() exists only on Unit and Building -- so
+## SimEntityState holds nothing for it and there is no previous_position() to
+## read. It keeps the one previous tick it needs itself, which is the whole of
+## the bookkeeping the store would otherwise have done.
+##
+## `_visual` is the child _create_visual() adds, named "Visual" on both of its
+## branches; null for a hitscan bullet, which creates none (see that method).
+var _visual: Node3D
+var _visual_rest_position := Vector3.ZERO
+## global_position as it stood at the start of the most recent sim_tick(), and
+## whether any sim_tick() has run at all. The flag is not redundant with a
+## zero check: a projectile is created, and _ready() runs, one whole tick
+## before the admission queue lets it travel (slice C6b), and launch() moves
+## it from wherever it was constructed to the muzzle in between. Interpolating
+## before the first tick would blend from that construction-time position, so
+## nothing is interpolated until there are genuinely two ticks to blend.
+var _previous_tick_position := Vector3.ZERO
+var _has_tick_history := false
 
 
 func _init() -> void:
@@ -226,6 +245,8 @@ func _create_visual() -> void:
 		if authored_visual != null:
 			authored_visual.name = "Visual"
 			add_child(authored_visual)
+			_visual = authored_visual
+			_visual_rest_position = authored_visual.position
 			_hide_switched_off_fx_objects(authored_visual)
 			return
 	# Model-authored particle banks provide the visible gas/flame stream for
@@ -259,6 +280,8 @@ func _create_visual() -> void:
 	visual.mesh = bolt_mesh
 	visual.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(visual)
+	_visual = visual
+	_visual_rest_position = visual.position
 
 
 ## Switches off the helper objects the projectile's own model never shows.
@@ -319,7 +342,38 @@ func _hide_fx_object(node: Node, object_name: String) -> void:
 ## sim_tick() call, the same single step a 20 Hz-or-faster physics frame used
 ## to hand it.
 func sim_tick() -> void:
+	# Before the advance, not after: this is the position the *previous* tick
+	# left behind, which is one half of what _process() blends between. Taken
+	# here rather than inside advance() because advance() is also reached
+	# directly by tests and by nothing else on the tick, and a "previous tick"
+	# that some other caller could move is not a tick value at all.
+	_previous_tick_position = global_position
+	_has_tick_history = true
 	advance(MatchClockScript.SECONDS_PER_TICK)
+
+
+## Slice B4's view interpolation for one projectile -- the same argument
+## Unit._advance_visual_interpolation() carries, with the same limit: only the
+## "Visual" child moves, and global_position stays the tick-authoritative
+## value every other reader (hit resolution, _missile_trail.sample(), the
+## impact position handed to effects) already depends on.
+##
+## Nothing happens before the first sim_tick(), for a hitscan bullet (which
+## has no "Visual" child at all -- see _create_visual() -- and never reaches
+## State.FLYING, so no tick history is ever recorded for it either), or with
+## no Match in the tree. Most tests/combat/* suites build a projectile with no
+## Match at all, and those must render exactly as they did before B4.
+func _process(_delta: float) -> void:
+	if _visual == null or not _has_tick_history:
+		return
+	var fraction := MatchLookupScript.interpolation_fraction(self)
+	if not is_finite(fraction):
+		return
+	# The projectile node's own basis is the flight heading (_face_direction),
+	# and "Visual" is a direct child of it, so the world-space offset has to be
+	# rotated into that local frame the same way Unit's is.
+	var offset := (_previous_tick_position - global_position) * (1.0 - fraction)
+	_visual.position = _visual_rest_position + global_transform.basis.inverse() * offset
 
 
 func advance(delta: float) -> void:

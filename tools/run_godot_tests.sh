@@ -55,6 +55,7 @@ readonly SUITES=(
 	tests/match/entity_state_run.gd
 	tests/match/despawn_run.gd
 	tests/match/admission_run.gd
+	tests/match/interpolation_run.gd
 	tests/match/command_bus_wiring_run.gd tests/maps/run.gd
 	tests/navigation/run.gd
 	tests/net/loopback_run.gd

@@ -144,6 +144,29 @@ static func entity_state(node: Node) -> Variant:
 	return match_node.call("entity_state")
 
 
+## The running Match's sub-tick interpolation fraction in [0, 1]
+## (Match.interpolation_fraction()), or INF when `node` is not in a tree yet,
+## or no live Match anywhere in that tree answers to it -- same lookup and
+## same null-tolerance as entity_index()/entity_state() above.
+##
+## INF rather than 0.0 for the no-Match answer, for the reason
+## SimEntityState's own float fields already use it (scripts/sim/entity_state.gd):
+## 0.0 is a legal fraction -- it is what every reader sees on the frame a tick
+## has just landed -- so returning it for "there is no Match here" would make
+## "sitting exactly on the tick boundary" and "there is no simulation at all"
+## the same answer, and a view would silently interpolate against a store it
+## has no business reading. Callers check is_finite() and leave their visuals
+## untouched, which is what keeps a Unit built with no Match in the tree (most
+## unit and combat suites) behaving exactly as it did before B4.
+static func interpolation_fraction(node: Node) -> float:
+	if node == null or not node.is_inside_tree():
+		return INF
+	var match_node := _live_match(node, &"interpolation_fraction")
+	if match_node == null:
+		return INF
+	return float(match_node.call("interpolation_fraction"))
+
+
 ## The SimAdmissionQueue the running Match owns (scripts/match/sim_admission_queue.gd),
 ## or null under the identical conditions entity_index()/entity_state() return
 ## null -- same lookup, same null-tolerance, for the same reason: most

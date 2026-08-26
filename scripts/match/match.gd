@@ -718,7 +718,16 @@ func _process(delta: float) -> void:
 ## it finally ran.
 func _advance_simulation_tick() -> void:
 	var tick := _clock.advance()
-	# First statement in the function, before even the replay/command drain:
+	# The tick boundary SimEntityState.previous_position() is measured from,
+	# and therefore the one thing that has to happen before any system in this
+	# function can write a position -- including a command handler, which is
+	# the earliest writer below. From here until the next call, the first
+	# position write for an id shifts and the rest do not, which is what makes
+	# "previous tick" mean the tick rather than "the write before the last
+	# one". Slice B4 measured the difference; see that store's own doc comment
+	# and the design doc's B4 entry.
+	_entity_state.begin_tick()
+	# First statement to touch an entity, before even the replay/command drain:
 	# admit -> simulate -> retire, with apply_pending_releases() (slice C5)
 	# already the last statement below. Draining here, before any of this
 	# tick's own systems can queue a new request_entry() call, is what makes
@@ -792,6 +801,21 @@ func _advance_simulation_tick() -> void:
 ## to observe it without reaching into _clock directly.
 func current_tick() -> int:
 	return _clock.current_tick()
+
+
+## How far this frame has advanced into the tick the simulation has not run
+## yet, in [0, 1] -- the blend factor slice B4's view layer interpolates
+## between an entity's previous and current tick positions with. Exposed here
+## the same way current_tick() is, and for the same reason: the view needs a
+## way to observe the driver without reaching into _tick_driver itself.
+##
+## _process() calls _tick_driver.pending_ticks() as its very first statement,
+## which consumes every whole tick due this frame, so by the time anything
+## else in the tree runs its own _process() this answers with the sub-tick
+## remainder alone -- see FrameTickDriver.interpolation_fraction()'s own doc
+## comment for why reading it before that call would answer 1.0 instead.
+func interpolation_fraction() -> float:
+	return _tick_driver.interpolation_fraction()
 
 
 ## The earliest tick a command submitted right now can still legally target.

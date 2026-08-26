@@ -60,6 +60,25 @@ const RULE_MOVEMENT_UPDATES_PER_SECOND := UnitTerrainAlignmentScript.MOVEMENT_UP
 ## Mirrors UnitCombat.BAKED_MODEL_FRAMES_PER_SECOND; kept here too because
 ## tests/combat/fire_sequence_run.gd reads it as UnitScript.<const>.
 const BAKED_MODEL_FRAMES_PER_SECOND := 20.0
+## Above this distance between two consecutive ticks' positions, slice B4's
+## view interpolation snaps instead of blending -- see
+## _advance_visual_interpolation() for what that protects against.
+##
+## 4.0 world units, chosen against the data rather than by feel. The fastest
+## unit in assets/converted/rules.db has speed 40.0, which is 40 world units
+## per second and therefore 1.6 per 25 Hz tick (MatchClock.SECONDS_PER_TICK);
+## every flight transition moves at that same navigation_move_speed() plus a
+## vertical component of the same order. So 4.0 leaves better than a factor of
+## two above anything ordinary motion can produce, while a relocation -- a
+## transport drop, a factory exit, a scattered survivor -- moves a unit by
+## tens of units and is nowhere near it.
+##
+## Getting this wrong in the tight direction is cheap and in the loose
+## direction is not, which is why the margin sits where it does: a threshold
+## below some real motion merely stops interpolating it, leaving that unit
+## exactly as steppy as it was before B4, while a threshold above a real
+## teleport slides a model across the map over the following 40 ms.
+const MAX_INTERPOLATION_DISTANCE := 4.0
 ## Tick-only twin of the "units" group 99 .tscn files declare statically.
 ## "units" is read far outside the simulation -- selection, the side panel,
 ## availability tracking, blocker refresh, navigation -- so the tick cannot
@@ -278,6 +297,23 @@ var _death_sequence := UnitDeathSequenceScript.new()
 ## holds the unit's position at the start of the most recent simulation
 ## tick, regardless of which movement path is active.
 var _previous_global_position := Vector3.ZERO
+## `visual_root`'s authored rest position, captured once in _ready() before
+## anything can have moved it -- the translation counterpart of
+## UnitTerrainAlignment._visual_root_rest_basis, taken once and for the same
+## reason (scripts/units/unit_terrain_alignment.gd's capture_rest_pose(): "re-
+## reading an already tilted root would bake the tilt into the rest pose").
+##
+## Required, not tidiness. From slice B4 on, `visual_root.position` is a
+## per-frame interpolation value, not a constant, so every reader that used to
+## treat it as "the authored offset of the model inside the unit" has to read
+## this instead or it silently picks up whatever this frame's blend happened
+## to hold. There was exactly one such reader --
+## _set_transport_anchor_offset() below, which computes
+## `unit_local_offset - visual_root.position` -- and it now reads this field.
+## Every shipped unit scene authors (0, 0, 0) here today (all 99 checked), so
+## the *value* changes nothing; what changes is that the arithmetic no longer
+## drifts by up to one tick of travel while the carrier is moving.
+var _visual_root_rest_position := Vector3.ZERO
 ## Set once request_despawn() below has run -- including on the branch where
 ## prepare_model_for_corpse() already handed the model to a corpse first;
 ## that function itself never touches this flag (see its own comment for
@@ -352,6 +388,8 @@ func _ready() -> void:
 	_register_entity_id()
 	# The authored rest pose only exists once visual_root has resolved.
 	_terrain_alignment.capture_rest_pose()
+	if visual_root != null:
+		_visual_root_rest_position = visual_root.position
 	_apply_unit_definition()
 	target_position = global_position
 	_previous_global_position = global_position
@@ -603,6 +641,12 @@ func _process(delta: float) -> void:
 	# snapping back to a looping authored Stationary/Move/Deploy_Gun_Hold clip's
 	# rest pose on a frame with no tick of its own.
 	restore_combat_turret_poses()
+	# Slice B4, and the same "repeat the paint between ticks" argument
+	# restore_combat_turret_poses() above makes, applied to translation
+	# instead of to a turret angle: global_position is a tick value and moves
+	# in whole 25 Hz steps, so this is what places the *rendered* model
+	# between two of those steps on every frame that has no tick of its own.
+	_advance_visual_interpolation()
 	# Same ordering requirement as restore_combat_turret_poses() above: the
 	# looping Deploy_Gun_Hold clip keys the turret pivot every frame, so
 	# recentering it must also run after the AnimationPlayers apply this
@@ -618,6 +662,61 @@ func _process(delta: float) -> void:
 	# after the AnimationPlayers have run.
 	_movement_sounds.advance(delta)
 	_shader_fx.advance(delta, shields)
+
+
+## Slice B4's view-layer interpolation for one unit: places `visual_root`
+## between the previous and the current simulation tick's positions, by the
+## fraction of a tick this frame has advanced into
+## (Match.interpolation_fraction(), reached the same way the store is).
+##
+## Only the visual subtree moves. `global_position` is deliberately untouched
+## and stays the exact mirror of SimEntityState.position() that slice C2 made
+## it: C2 recorded a debt of roughly 260 global_position *read* sites that
+## still ask the node instead of the store, and simulation code is among them,
+## so blending the node's own position would feed a frame-rate-dependent
+## number straight into the tick -- the divergence lockstep exists to prevent.
+## B4 does not wait for that debt to be paid, and does not add to it.
+##
+## Interpolation, never extrapolation: the blend runs between two ticks that
+## have already happened, so the model renders up to one tick (40 ms) behind
+## the simulation and can neither overshoot nor snap back. See the design
+## doc's B4 entry for why one tick of lag is the cheaper of the two errors.
+##
+## Left completely alone -- no write at all, not even a rest-position reset --
+## for a unit with no visual root, no entity id, no store entry yet, or no
+## Match anywhere in its tree. That last one is the common case in this repo's
+## suites (most tests/combat/* and tests/units/* build a Unit directly), and
+## such a unit has no previous tick to blend from in the first place, so it
+## must behave exactly as it did before this method existed.
+func _advance_visual_interpolation() -> void:
+	if visual_root == null or _entity_id == 0:
+		return
+	var fraction := MatchLookupScript.interpolation_fraction(self)
+	if not is_finite(fraction):
+		return
+	var store = MatchLookupScript.entity_state(self)
+	if store == null or not store.has_position(_entity_id):
+		return
+	var current: Vector3 = store.position(_entity_id)
+	var previous: Vector3 = store.previous_position(_entity_id)
+	var offset := Vector3.ZERO
+	# A jump larger than any tick of movement could produce is a relocation,
+	# not motion: a transport drop (transport_mark_released() below), an
+	# undeployed unit appearing at a factory exit, a survivor scattered out of
+	# a dying building. Blending across one of those would slide the model
+	# through everything between the two points over the next 40 ms. Snapping
+	# instead costs exactly one tick of smoothing on an event that was already
+	# instantaneous in the simulation.
+	if previous.distance_to(current) <= MAX_INTERPOLATION_DISTANCE:
+		# lerp(previous, current, fraction) - current, expressed as an offset
+		# from the tick-authoritative position the node already holds, then
+		# rotated out of world space into this unit's own local space --
+		# visual_root is a direct child of Unit, so its `position` is measured
+		# there, and the hull yaw would otherwise skew the offset.
+		offset = global_transform.basis.inverse() * ((previous - current) * (1.0 - fraction))
+	visual_root.position = _visual_root_rest_position + offset
+	if is_instance_valid(_selection_halo):
+		_selection_halo.set_visual_offset(offset)
 
 
 ## Ground/generic locomotion's simulation half: driven from sim_tick() above,
@@ -1550,8 +1649,13 @@ func _set_transport_anchor_offset(anchor: Node3D, unit_local_offset: Vector3) ->
 	# but its authored offset is expressed in Unit-local coordinates. Undo the
 	# model conversion rest basis when assigning that point, just as the anchor
 	# basis itself is corrected in _ensure_transport_cargo_anchor().
+	# _visual_root_rest_position, not visual_root.position: from slice B4 the
+	# latter carries this frame's interpolation offset on top of the authored
+	# rest offset, and subtracting a value that changes every frame would make
+	# a docked passenger's anchor drift by up to one tick of the carrier's
+	# travel. See that field's own doc comment.
 	anchor.position = _terrain_alignment.visual_rest_basis_inverse() \
-		* (unit_local_offset - visual_root.position)
+		* (unit_local_offset - _visual_root_rest_position)
 
 
 func _transport_carrier() -> Node3D:

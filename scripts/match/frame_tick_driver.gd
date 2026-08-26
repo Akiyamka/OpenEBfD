@@ -53,6 +53,32 @@ func pending_ticks(delta: float) -> int:
 	return MAX_TICKS_PER_FRAME
 
 
+## How far the simulation has advanced into the tick it has not yet run, as a
+## fraction of one tick in [0, 1] -- what slice B4's view layer blends the
+## previous and current tick's positions by (see
+## docs/architecture/network-multiplayer.md, phase 3's B4 entry).
+##
+## Read this *after* the frame's pending_ticks() call, not before: that call
+## subtracts every whole tick it returns from the accumulator, so what is left
+## afterward is exactly the sub-tick remainder this returns -- 0.0 right after
+## a tick boundary, approaching 1.0 just before the next one. Read before it,
+## the accumulator still holds the whole ticks that frame is about to run, and
+## the clamp below would flatten every one of them into 1.0. Match._process()
+## calls pending_ticks() as its first statement for this reason, and the scene
+## tree runs a Match before any of its descendants (measured, see the B4
+## entry), so a unit reading this from its own _process() is reading the
+## fraction of the tick that frame already advanced into.
+##
+## Clamped rather than trusted: pending_ticks() leaves a remainder below one
+## tick on every path it takes, including the MAX_TICKS_PER_FRAME clamp above
+## (which subtracts all `due` ticks, not just the ones it returns), so a value
+## outside [0, 1] would be a bug in this class. Clamping keeps that bug from
+## reaching the view as a visual that renders *past* the current tick, which
+## is extrapolation -- the thing B4 deliberately does not do.
+func interpolation_fraction() -> float:
+	return clampf(_accumulator / MatchClockScript.SECONDS_PER_TICK, 0.0, 1.0)
+
+
 ## Total ticks discarded by the clamp in pending_ticks() since this driver
 ## was constructed. Dropped ticks are simulated time that never happened --
 ## in a lockstep match, every client must run the same number of ticks, so a

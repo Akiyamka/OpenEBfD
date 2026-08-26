@@ -32,6 +32,14 @@ var _movement_direction := Vector3.ZERO
 var _movement_debug_visible := false
 var _indicator_radius := 1.0
 var _position_anchor: Node3D
+## The unit-local position configure() was given -- the authored resting spot
+## of this halo, with no interpolation offset in it. Only the no-anchor
+## fallback in _process() below reads it; see set_visual_offset().
+var _rest_position := Vector3.ZERO
+## Slice B4's per-frame view-interpolation offset, in the same unit-local
+## space as `position`, pushed by Unit._advance_visual_interpolation(). Only
+## consumed on the fallback path -- see set_visual_offset().
+var _visual_offset := Vector3.ZERO
 
 
 func configure(
@@ -43,6 +51,7 @@ func configure(
 	_entity = entity
 	_position_anchor = position_anchor
 	_indicator_radius = maxf(radius, 0.1)
+	_rest_position = local_position
 	position = local_position
 	var diameter := maxf(radius * 2.0, 0.1)
 	_layers[&"outline"] = _add_layer(&"Outline", HALO_TEXTURE, diameter, 0.000, false, ADDITIVE_SHADER)
@@ -87,6 +96,30 @@ func set_movement_direction(value: Vector3) -> void:
 	_refresh_visibility()
 
 
+## Slice B4: the offset Unit._advance_visual_interpolation() has just applied
+## to `visual_root` this frame, in unit-local space.
+##
+## The halo was deliberately **not** re-parented under `visual_root` to make it
+## follow the interpolated model, for two reasons. `visual_root` carries the
+## slope-alignment tilt (UnitTerrainAlignment.advance_slope_alignment()), which
+## would tip a ground decal off the ground; and the horizontality rule in
+## _process() below, `rotation.y = -_entity.rotation.y`, is written against
+## Unit being this node's parent and would cancel the wrong yaw under any
+## other one.
+##
+## It does not need re-parenting anyway on the ordinary path: `_position_anchor`
+## is the authored #^^0 attachment *inside* the model, so
+## `_entity.to_local(_position_anchor.to_global(...))` below already re-derives
+## the interpolated position every frame at no cost. 90 of this project's 99
+## unit scenes have that anchor. The remaining 9 -- the two worms, the storm
+## unit, the Death Hand and the five story/hero characters, whose source XBF
+## carries no #^^0 at all -- fall through to a fixed local position instead,
+## and would otherwise be the one thing on a unit that does not follow its own
+## interpolated model. This is what carries the offset to them explicitly.
+func set_visual_offset(value: Vector3) -> void:
+	_visual_offset = value
+
+
 func set_movement_debug_visible(value: bool) -> void:
 	_movement_debug_visible = value
 	_refresh_visibility()
@@ -104,6 +137,12 @@ func _process(delta: float) -> void:
 	# position every frame while keeping the indicator itself horizontal.
 	if is_instance_valid(_position_anchor):
 		position = _entity.to_local(_position_anchor.to_global(Vector3.ZERO))
+	else:
+		# No authored #^^0 on this model: nothing above re-derives the halo's
+		# position from inside the interpolated subtree, so apply slice B4's
+		# offset by hand. See set_visual_offset() for why re-parenting under
+		# visual_root was rejected instead.
+		position = _rest_position + _visual_offset
 	# Units rotate while moving, but the original indicators retain their north
 	# orientation.  The parent only rotates around Y, so cancel just that axis.
 	rotation.y = -_entity.rotation.y

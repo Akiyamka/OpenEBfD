@@ -1308,6 +1308,154 @@ and by the time we get there the hard part is already tested.
   destination the transport-drop case probes, `queue_free()`d but not yet
   freed. That case now waits a frame for the frees to land.
 
+  **Slice B4, decided 2026-08-26: the view interpolates, and the store it
+  interpolates from turned out to be measuring the wrong thing.** The
+  justification is the one recorded at the top of this section rather than the
+  obvious one: interpolation is not repairing steppiness phase 3 introduced,
+  because ground locomotion was never on frame `delta`. It is here because
+  phase 5 delivers ticks irregularly — the turn scheduler, adaptive input delay
+  and stall policy all mean a client can go several frames with no tick and
+  then catch up — and because the view now needs a read path across the
+  sim/view boundary at all.
+
+  **Only the visual subtree moves; `global_position` is not touched.** It stays
+  the exact tick-authoritative mirror C2 made it. That is not caution: C2
+  recorded a debt of roughly 260 `global_position` *read* sites that still ask
+  the node rather than the store, and simulation code is among them, so a
+  blended `global_position` would feed a frame-rate-dependent number straight
+  into the tick — precisely the divergence lockstep exists to prevent. Paying
+  that debt is its own slice, and B4 is deliberately built so that it does not
+  wait for it and does not add to it. What moves instead is `visual_root`, by
+  an offset written from `Unit._process()` beside `restore_combat_turret_poses()`,
+  which was already there making the same argument for a turret angle.
+
+  The blend is between `previous_position(id)` and `position(id)`, never past
+  the latter, so the model renders up to one tick — 40 ms — behind the
+  simulation. That is the cheaper of the two errors available. Extrapolating
+  forward removes the lag but overshoots whenever a unit stops, turns or dies,
+  and then snaps back; at 25 Hz the snap is visible and the lag is not. It also
+  costs nothing anyone can act on: selection, orders and hit resolution all
+  read `global_position`, which is exactly on the tick.
+
+  **The selection halo was not re-parented under `visual_root`, and the request
+  to do so rested on an incomplete description of how it already works.**
+  `SelectionHalo._process()` re-derives its position every frame as
+  `_entity.to_local(_position_anchor.to_global(Vector3.ZERO))`, where
+  `_position_anchor` is the authored `#^^0` attachment *inside* the model —
+  which is to say inside `visual_root`. Wherever that anchor exists the
+  interpolation offset reaches the halo for free, with no change at all.
+  Re-parenting would also have been actively wrong twice over: `visual_root`
+  carries the slope-alignment tilt, which would tip a ground decal off the
+  ground, and the halo's own `rotation.y = -_entity.rotation.y` horizontality
+  rule is written against `Unit` being its parent. What did need handling is
+  the fallback, and it is not hypothetical: **9 of this project's 99 unit
+  scenes** use a model whose source XBF carries no `#^^0` at all — the two
+  worms, the storm unit, the Death Hand, and the five story/hero characters —
+  and those halos hold a fixed local position that would not have followed. The
+  offset is pushed to them explicitly, and the anchored path is left untouched.
+
+  **`visual_root`'s authored rest position is captured once in `_ready()`, and
+  that is required rather than tidy.** `Unit._set_transport_anchor_offset()`
+  computes `unit_local_offset - visual_root.position` and treats what it reads
+  as the authored offset of the model inside the unit. The moment
+  `visual_root.position` becomes a per-frame interpolation value that
+  arithmetic silently picks up whatever the current frame happened to hold, and
+  a docked passenger's anchor drifts by up to one tick of the carrier's travel.
+  The capture mirrors `UnitTerrainAlignment._visual_root_rest_basis`, which
+  takes the rest *basis* once for the same reason. Every shipped unit scene
+  authors `(0, 0, 0)` there today — all 99 checked — so the value changes
+  nothing; what changes is that the arithmetic stops reading a moving target.
+
+  A relocation is snapped rather than blended, above
+  `Unit.MAX_INTERPOLATION_DISTANCE` = 4.0 world units. The threshold is set
+  against the data: the fastest unit in `assets/converted/rules.db` has speed
+  40.0, which is 1.6 world units per 25 Hz tick, and flight transitions move at
+  the same `navigation_move_speed()` plus a vertical component of the same
+  order. Getting it wrong in the tight direction costs one tick of smoothing on
+  whatever it excludes — that unit renders exactly as it did before B4 — while
+  getting it wrong in the loose direction slides a model across the map over
+  40 ms after a transport drop or a factory exit, so the margin sits where it
+  does deliberately.
+
+  Projectiles are in scope and keep their own previous position, because they
+  have no entity id at all: `_register_entity_id()` exists only on `Unit` and
+  `Building`, so `SimEntityState` holds nothing for them. `CombatProjectile`
+  records `global_position` at the top of `sim_tick()`, before the trajectory
+  advance, and interpolates the `"Visual"` child both branches of
+  `_create_visual()` build. Nothing blends before the first `sim_tick()` has
+  run, which matters because C6b's admission queue means a shot does not travel
+  on the tick that fired it and `launch()` moves the node from wherever it was
+  constructed to the muzzle in between. A hitscan bullet builds no `"Visual"`
+  at all and never reaches `State.FLYING`, so it is untouched, and
+  `MissileTrail.sample()` keeps reading the authoritative `global_position`.
+
+  **What the sweep found, and it is the reason this slice is bigger than it
+  looks: `previous_position()` was not returning the previous tick.** B4 is the
+  first code ever to read it, and the first thing it measured was that a moving
+  ScoutA had a blend span of 0.005 world units while covering 0.24 per tick,
+  with the X axis — where all of the movement was — identical between the two
+  values. The cause is stated as an assumption in `entity_state.gd`'s own doc
+  comment, where C1 wrote that shifting current into previous inside
+  `set_position()` "assumes exactly one write per entity per tick, which matches
+  how every per-entity system already joins the tick". It does not match, and
+  did not when it was written: every managed ground unit is written twice per
+  tick from one call stack — `Unit.navigation_step()` writes the horizontal
+  step and then `_snap_to_terrain()` reaches
+  `UnitTerrainAlignment.snap_body_to_terrain()`, which writes the vertical
+  correction. `previous_position()` therefore held a mid-tick intermediate, and
+  an interpolating view would have smoothed the terrain snap and nothing else.
+
+  The fix moves the shift to where "previous tick" is actually defined:
+  `SimEntityState.begin_tick()`, called once by
+  `Match._advance_simulation_tick()` immediately after the clock advances and
+  before any system can write. The first write for an id in a tick shifts; every
+  later one does not. It is O(1), not a copy of the position array — a per-id
+  `PackedInt32Array` records which tick sequence number last shifted that id and
+  `begin_tick()` increments the counter it is compared against — which matters
+  because that array grows with every id ever allocated, so a per-tick
+  `duplicate()` would be up to 2.3 MB copied 25 times a second late in a long
+  match. The alternative, making every writer write exactly once, is a real
+  option and a larger one: it means folding the terrain snap into
+  `navigation_step()`'s own arithmetic across every path that reaches it, which
+  is locomotion's shape rather than the store's, and it would still leave the
+  store trusting a convention no test can see. Two cases in
+  `tests/sim/entity_state_run.gd` now state the corrected contract, one of them
+  driving exactly the two-writes-in-one-tick shape that was broken.
+
+  The ordering B4 depends on was measured rather than assumed. A view reading
+  the interpolation fraction must read it after `Match._process()` has advanced
+  the accumulator for that frame, and Godot is documented to process ancestors
+  before descendants — but that is a claim about the engine, not about this
+  scene tree. Instrumenting both callbacks and printing the fraction on either
+  side of `pending_ticks()` showed, on every frame sampled: Match enters at the
+  previous frame's remainder, `pending_ticks()` leaves 0.528333, and all three
+  fixture units then read 0.528333 — including on the frame where a tick came
+  due, where Match entered at 0.943833 and every unit read the post-tick
+  0.360333. The pull direction is therefore sound and no push from `Match` was
+  needed.
+
+  **One exposure this slice widens rather than creates, recorded because
+  slice B1's inventory clears it and should not.** That inventory lists the
+  visual slope tilt under "stays on frame `delta`, and should", on the grounds
+  that "none of these are readable by a command or a checksum". That is not
+  true of `visual_root`, and was not true before B4: `CombatTurret.bind_model()`
+  is handed `_owner.visual_root` and collects its muzzles from inside it, so
+  `emission_points()` reads `muzzle.global_transform` — a world position derived
+  from a subtree whose orientation is already advanced on frame `delta`, and
+  which is a simulation input, since it becomes a projectile's
+  `_launch_position`. B4 adds a translation term to that existing rotation term.
+  The magnitude is bounded and small: the offset a tick actually sees is the one
+  the *previous* frame wrote, and the frame immediately before a tick boundary
+  is by construction the frame with the largest fraction and therefore the
+  smallest offset. Measured on a ScoutA moving at 6 world units per second
+  (0.24 per tick), sampled at every `sim_tick()` for two seconds: median 0.0,
+  maximum 0.0044 world units, under 2% of one tick's travel. It grows as frame
+  rate falls, bounded above by one tick of travel — 1.6 world units for the
+  fastest unit in the rules. It is not fixed here because the fix is not B4's
+  shape: either the muzzle read subtracts the offset, or the model's
+  presentation transform stops being the thing the simulation measures from.
+  Whichever slice claims it should also correct B1's inventory line.
+
 - **Phase 4 — determinism gate.** Portable math, RNG split, the static rules
   above wired into `check_architecture.py`, and the CI test that replays one
   command log twice in-process and then compares state hashes across native and

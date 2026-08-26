@@ -47,8 +47,12 @@ func _initialize() -> void:
 		_test_first_write_seeds_previous
 	)
 	_run_case(
-		"a second write shifts the old current value into previous_position()",
-		_test_second_write_shifts_previous
+		"the first write of each tick shifts the old current value into previous_position()",
+		_test_first_write_of_a_tick_shifts_previous
+	)
+	_run_case(
+		"a second write inside the same tick leaves previous_position() on the tick's start value",
+		_test_second_write_in_one_tick_does_not_shift
 	)
 	_run_case("capacity() grows to cover the highest id written", _test_capacity_grows)
 	_run_case("capture() then restore() round-trips every written id's position", _test_snapshot_round_trip)
@@ -227,21 +231,65 @@ func _test_first_write_seeds_previous() -> void:
 	)
 
 
-func _test_second_write_shifts_previous() -> void:
+## Slice B4 corrected what "previous" is measured from -- see this store's own
+## doc comment. It used to be "the write before the most recent one", which is
+## only the previous tick for an entity written exactly once per tick, and no
+## managed ground unit is. It is now the tick boundary begin_tick() marks, so
+## these cases drive begin_tick() explicitly where they used to rely on the
+## write count alone.
+func _test_first_write_of_a_tick_shifts_previous() -> void:
 	var registry := SimEntityRegistryScript.new()
 	var state := SimEntityStateScript.new(registry)
 	var id := registry.allocate(SimEntityRegistryScript.Kind.UNIT)
+	state.begin_tick()
 	state.set_position(id, Vector3(1.0, 0.0, 0.0))
+	state.begin_tick()
 	state.set_position(id, Vector3(2.0, 0.0, 0.0))
 	_expect(state.position(id) == Vector3(2.0, 0.0, 0.0), "position() must be the most recent write")
 	_expect(
 		state.previous_position(id) == Vector3(1.0, 0.0, 0.0),
-		"previous_position() must be the write before the most recent one"
+		"previous_position() must be the value this id had when the current tick started"
 	)
+	state.begin_tick()
 	state.set_position(id, Vector3(3.0, 0.0, 0.0))
 	_expect(
 		state.previous_position(id) == Vector3(2.0, 0.0, 0.0),
-		"a third write must shift previous_position() again, not accumulate history beyond one tick back"
+		"a third tick must shift previous_position() again, not accumulate history beyond one tick back"
+	)
+
+
+## The case the correction exists for. Two writes inside one tick is not a
+## hypothetical shape: Unit.navigation_step() writes the horizontal step and
+## then UnitTerrainAlignment.snap_body_to_terrain() writes the vertical
+## correction, both from the same call stack, on every tick, for every managed
+## ground unit. Under the old shift-per-write rule previous_position() came
+## back holding the horizontal step -- a mid-tick intermediate -- so a view
+## blending between the two got only the terrain snap.
+func _test_second_write_in_one_tick_does_not_shift() -> void:
+	var registry := SimEntityRegistryScript.new()
+	var state := SimEntityStateScript.new(registry)
+	var id := registry.allocate(SimEntityRegistryScript.Kind.UNIT)
+	state.begin_tick()
+	state.set_position(id, Vector3(1.0, 0.0, 0.0))
+	state.begin_tick()
+	# The horizontal step, then the vertical correction, exactly as one tick of
+	# managed locomotion writes them.
+	state.set_position(id, Vector3(2.0, 0.0, 0.0))
+	state.set_position(id, Vector3(2.0, 0.5, 0.0))
+	_expect(
+		state.position(id) == Vector3(2.0, 0.5, 0.0),
+		"position() must be the last write of the tick, corrections included"
+	)
+	_expect(
+		state.previous_position(id) == Vector3(1.0, 0.0, 0.0),
+		"previous_position() must still be where the tick started, not the intermediate value the "
+			+ "first write of this same tick left behind"
+	)
+	# A third write in the same tick must not shift it either.
+	state.set_position(id, Vector3(2.0, 0.5, 0.25))
+	_expect(
+		state.previous_position(id) == Vector3(1.0, 0.0, 0.0),
+		"a third write inside the same tick must leave previous_position() alone as well"
 	)
 
 

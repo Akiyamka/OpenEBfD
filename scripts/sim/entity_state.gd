@@ -193,16 +193,59 @@ extends RefCounted
 ## grow its arrays; it would end up as a second, shadow copy of this store,
 ## indexed by the same ids, resized on the same schedule, and liable to
 ## drift from it. This store already knows the one moment that matters --
-## the write that replaces one tick's value with the next -- so it shifts
-## "current" into "previous" right there, in set_position(), once per write.
-## That assumes exactly one write per entity per tick, which matches how
-## every per-entity system already joins the tick (see
-## docs/architecture/network-multiplayer.md, "The simulation tick": "Per-entity
-## systems join a group... and get a sim_tick() from a loop"). Deciding this
-## now instead of after B4 lands matters because the alternative would mean
-## touching every reader B4 introduces to insert a second store underneath
-## it; previous_position() exists from the start instead, unused until B4
-## calls it, so no caller written before B4 has to change when it does.
+## the tick boundary -- so it shifts "current" into "previous" exactly there.
+## Deciding this now instead of after B4 lands matters because the alternative
+## would mean touching every reader B4 introduces to insert a second store
+## underneath it; previous_position() exists from the start instead, unused
+## until B4 calls it, so no caller written before B4 has to change when it
+## does.
+##
+## **Corrected by slice B4, 2026-08-26, the first code that actually read
+## previous_position() -- and measured it wrong.** C1 shifted current into
+## previous inside set_position(), once per write, on the stated assumption of
+## "exactly one write per entity per tick, which matches how every per-entity
+## system already joins the tick". That assumption was false before it was
+## written: every managed ground unit is written **twice** per tick, from one
+## call stack -- Unit.navigation_step() does
+## `set_simulation_position(global_position + velocity * delta)` and then
+## immediately `_snap_to_terrain()`, which reaches
+## UnitTerrainAlignment.snap_body_to_terrain()'s own
+## `set_simulation_position(snapped)` for the vertical correction. So
+## previous_position() held a mid-tick intermediate rather than the previous
+## tick. Measured on the match fixture with ScoutA moving at 6 world units per
+## second: position() and previous_position() differed by 0.005 world units --
+## the terrain snap's Y correction alone -- while the unit was actually
+## covering 0.24 units per tick. An interpolating view got 2% of the span it
+## exists to smooth, and the X axis, where all of the movement was, never
+## moved at all.
+##
+## The fix keeps the fields and the accessor exactly as they were and moves
+## the shift to where "previous tick" is actually defined: begin_tick(), which
+## Match._advance_simulation_tick() calls once, immediately after the clock
+## advances and before any system can write. Within one tick the first write
+## shifts and every later write does not, so a system that writes twice -- or
+## five times -- still leaves previous_position() holding the value the tick
+## started from. The alternative, making every writer write exactly once, is a
+## real option and a larger one: it would mean folding the terrain snap into
+## navigation_step()'s own arithmetic across every path that reaches it, which
+## is locomotion's shape rather than this store's, and it would still leave
+## this class trusting a convention no test can see. This way the store is
+## correct whatever the writers do.
+##
+## begin_tick() is O(1), not a copy of the position array: a per-id
+## PackedInt32Array records which tick sequence number last shifted that id,
+## and begin_tick() only increments the counter that number is compared
+## against. That matters for the reason this file's indexing section already
+## gives -- these arrays grow with every id ever allocated, not with the live
+## count -- so a per-tick `_position.duplicate()` would be a copy of up to
+## 2.3 MB, 25 times a second, late in a long match.
+##
+## With no Match in the tree there is no tick and nothing calls begin_tick(),
+## so previous_position() stays at the id's first written value. That is not a
+## degradation to work around: "the previous tick" has no meaning where no
+## tick exists, and the one reader of this field (B4's view interpolation) is
+## switched off in exactly that case, because it resolves its blend fraction
+## through the same absent Match.
 
 ## No-value marker for owner_player_id -- see this file's "Owner player id"
 ## section above for why neither 0 nor PlayerDataScript.NEUTRAL_PLAYER_ID
@@ -228,6 +271,16 @@ var _position_previous: PackedVector3Array = PackedVector3Array()
 ## sitting in a not-yet-written gap would silently read back as a
 ## plausible-looking Vector3.ZERO without this flag.
 var _has_value: PackedByteArray = PackedByteArray()
+## The tick sequence number in force when each id's position was last shifted
+## into _position_previous. Compared against _tick_sequence below rather than
+## cleared per tick, which is what keeps begin_tick() O(1) -- see this class's
+## doc comment on why a per-tick array copy was rejected.
+var _position_tick_sequence: PackedInt32Array = PackedInt32Array()
+## Incremented once per simulation tick by begin_tick(). Never reset, and
+## never read as a tick number -- only compared for equality against
+## _position_tick_sequence, so its absolute value carries no meaning and any
+## drift from MatchClock's own tick count cannot matter.
+var _tick_sequence := 0
 
 ## Health as of the most recent set_health() call for each id. No
 ## "previous" buffer -- see this file's doc comment on why. Grows and is
@@ -258,11 +311,29 @@ func _init(registry: SimEntityRegistry) -> void:
 	_registry = registry
 
 
-## Writes `value` as `id`'s position for the tick this call represents,
-## shifting the previous current value into previous_position() first. A
-## no-op, loudly, if `id` is not currently alive -- see this class's doc
-## comment on why a write to a dead id refuses rather than corrupting
-## whatever the array's stale slot for that id currently holds.
+## Opens a new simulation tick: from here until the next call, the first
+## set_position() for any id shifts that id's current value into
+## previous_position(), and every later write in the same tick leaves it
+## alone. Called once per tick by Match._advance_simulation_tick(),
+## immediately after the clock advances and before any system has had a chance
+## to write.
+##
+## This is what makes previous_position() mean "the position this entity had
+## when the tick started" rather than "the value before the most recent
+## write". Those are the same thing only for an entity written exactly once
+## per tick, and no managed ground unit is -- see this class's doc comment for
+## the measurement that found the difference, and for why this is one counter
+## increment rather than a copy of the position array.
+func begin_tick() -> void:
+	_tick_sequence += 1
+
+
+## Writes `value` as `id`'s position for the tick in progress, shifting the
+## value that tick started from into previous_position() if this is the first
+## write for `id` since begin_tick(). A no-op, loudly, if `id` is not
+## currently alive -- see this class's doc comment on why a write to a dead id
+## refuses rather than corrupting whatever the array's stale slot for that id
+## currently holds.
 func set_position(id: int, value: Vector3) -> void:
 	if not _registry.is_alive(id):
 		push_error(
@@ -270,14 +341,19 @@ func set_position(id: int, value: Vector3) -> void:
 		)
 		return
 	_ensure_position_capacity(id)
-	if _has_value[id] == 1:
-		_position_previous[id] = _position[id]
-	else:
+	if _has_value[id] == 0:
 		# First write for this id ever: previous == current, so an
 		# interpolating reader never blends from a spawn-time Vector3.ZERO
 		# it was never actually at.
 		_position_previous[id] = value
 		_has_value[id] = 1
+		_position_tick_sequence[id] = _tick_sequence
+	elif _position_tick_sequence[id] != _tick_sequence:
+		# First write for this id in this tick: what the array holds right now
+		# is the value the tick started from, which is exactly what
+		# previous_position() promises.
+		_position_previous[id] = _position[id]
+		_position_tick_sequence[id] = _tick_sequence
 	_position[id] = value
 
 
@@ -604,6 +680,15 @@ func restore(data: Dictionary) -> bool:
 	_position = new_position
 	_position_previous = new_position.duplicate()
 	_has_value = new_has_value
+	# Sized with the arrays it indexes and zero-filled: no id in a freshly
+	# restored store has been written in the tick in progress, so the next
+	# write for each of them shifts, exactly as the first write after any
+	# other tick boundary does. Zero is safe as "not written this tick" even
+	# when _tick_sequence is itself still 0, because previous == current right
+	# after a restore -- shifting or not shifting produces the same value.
+	_position_tick_sequence = PackedInt32Array()
+	_position_tick_sequence.resize(new_position.size())
+
 	_health = new_health
 	_health_has_value = new_health_has_value
 	_shields = new_shields
@@ -620,6 +705,7 @@ func _ensure_position_capacity(id: int) -> void:
 	_position.resize(new_size)
 	_position_previous.resize(new_size)
 	_has_value.resize(new_size)
+	_position_tick_sequence.resize(new_size)
 
 
 func _ensure_health_capacity(id: int) -> void:
