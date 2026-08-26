@@ -15,12 +15,84 @@ extends SceneTree
 ## semantics (mirroring tests/sim/entity_registry_run.gd's despawn-queue
 ## cases) and the one shared entry point every C6b call site routes through,
 ## MatchLookup.request_sim_entry() (scripts/match/match_lookup.gd).
+##
+## Slice C6c's cases live here too rather than in a suite of their own: C6c
+## is admission for units and buildings, which is exactly this file's
+## subject, and its navigation half is a consequence of that admission rather
+## than a separate topic. Those cases carry the same claim to the two kinds
+## the tick walks that also have a view-side group -- a unit and a building
+## created mid-tick -- and then to the system that has to agree with the tick
+## about who is simulated: UnitNavigationSystem, which since C6c registers an
+## agent from a tick-domain drain instead of a frame-domain call_deferred(),
+## and refuses to register a node the tick has not admitted at all.
 
 const LegacyRulesFixture := preload("res://tests/support/legacy_rules_fixture.gd")
 const MatchFixtureScene := preload("res://tests/fixtures/match_fixture.tscn")
 const ATRocketTurretScene := preload("res://assets/converted/buildings/ATRocketTurret/ATRocketTurret.scn")
 const CombatProjectileScript := preload("res://scripts/combat/combat_projectile.gd")
 const SimAdmissionQueueScript := preload("res://scripts/match/sim_admission_queue.gd")
+const UnitScene := preload("res://scenes/units/unit.tscn")
+const BuildingFootprintScript := preload("res://scripts/buildings/building_footprint.gd")
+
+
+## Stands in for ReplayPlayer at ReplayPlayer's own, named position in
+## Match._advance_simulation_tick(): play_tick() runs after
+## apply_pending_entries() (the admission drain, the tick's first statement)
+## and before both the command loop and UnitNavigationSystem.sim_tick(). That
+## is the only property the C6c cases below need from it, and it is exactly
+## where a building placed by a real command is created -- one statement
+## later, inside the command loop the stub sits directly above.
+##
+## Why a stand-in rather than the real path: reaching that point in the tick
+## through a genuine SimPlaceBuildingCommand needs a ready build order, the
+## credits for it, and a legal placement cell, none of which this suite is
+## about. Match's own _replay_player field is used nowhere else in match.gd
+## except its construction, so swapping it costs nothing else in the tick.
+##
+## The hook fires once and clears itself: the cases below advance two ticks
+## and only the first may create anything.
+class TickHookReplayPlayer extends ReplayPlayer:
+	var hook := Callable()
+
+	func play_tick(_command_bus: SimCommandBus, _tick: int) -> void:
+		if not hook.is_valid():
+			return
+		var once := hook
+		hook = Callable()
+		once.call()
+
+
+## Duck-typed stand-in for a SpiceMound, joined to "sim_spice_mounds" so
+## Match._advance_simulation_tick()'s walk of that group calls sim_tick() on
+## it. That walk is the *last* group loop of the tick -- only
+## apply_pending_releases() follows it -- so whatever this probe samples is
+## the state of the tick at its very end. "Not admitted for the remainder of
+## the tick that created it" is a claim about that moment, and this is the
+## cheapest honest way to stand there.
+class TickEndProbe extends Node:
+	var on_tick := Callable()
+
+	func sim_tick() -> void:
+		if on_tick.is_valid():
+			on_tick.call()
+
+
+## A Node3D in no group at all, for the gate case: NavAgentRegistry.
+## register_unit() must refuse it. Deliberately not a Unit -- a Unit would
+## join "sim_units" through the admission queue and stop being the thing
+## under test.
+##
+## The two no-op tick methods are not decoration: the case's positive control
+## puts this node into "sim_units" by hand, and from that moment
+## Match._advance_simulation_tick()'s two walks of that group call both of
+## them on it.
+class UnregisteredProbeUnit extends Node3D:
+	func sim_tick() -> void:
+		pass
+
+	func sim_tick_combat() -> void:
+		pass
+
 
 var _assertions := 0
 var _failures := 0
@@ -49,6 +121,30 @@ func _initialize() -> void:
 	await _run_case(
 		"a projectile built with no Match in the tree joins its group immediately",
 		_test_no_match_fallback_joins_immediately
+	)
+	await _run_case(
+		"a unit created mid-tick inside a real Match is not in \"sim_units\" for the rest of "
+			+ "that tick, and is on the next",
+		_test_unit_admission_deferred_to_next_tick
+	)
+	await _run_case(
+		"a building created mid-tick inside a real Match is not in \"sim_buildings\" for the "
+			+ "rest of that tick, and is on the next",
+		_test_building_admission_deferred_to_next_tick
+	)
+	await _run_case(
+		"navigation holds no agent for a unit the tick has not admitted, and holds one once "
+			+ "the drain has run",
+		_test_navigation_agent_waits_for_admission
+	)
+	await _run_case(
+		"NavAgentRegistry.register_unit() refuses a node outside \"sim_units\" and creates no agent",
+		_test_registry_refuses_a_node_outside_sim_units
+	)
+	await _run_case(
+		"a building whose admission is still pending survives navigation's drain and gets its "
+			+ "blocker refresh on the tick that admits it",
+		_test_pending_building_blocker_refresh_survives_a_drain
 	)
 
 	if _failures > 0:
@@ -348,3 +444,459 @@ func _test_no_match_fallback_joins_immediately() -> void:
 	)
 	projectile.queue_free()
 	await process_frame
+
+
+## Installs the two tick-position stand-ins declared at the top of this file
+## into `match_instance` and returns them as [spawner, probe]: a
+## TickHookReplayPlayer standing where ReplayPlayer stands (after the
+## admission drain, before navigation and the command loop) and a
+## TickEndProbe standing in the tick's last group loop. Between them they
+## bracket everything Match._advance_simulation_tick() does, which is what
+## "for the remainder of the tick that created it" needs in order to mean
+## anything.
+func _install_tick_hooks(match_instance: Node) -> Array:
+	var spawner := TickHookReplayPlayer.new()
+	match_instance.set("_replay_player", spawner)
+	var probe := TickEndProbe.new()
+	match_instance.add_child(probe)
+	# Joined directly rather than through request_sim_entry(): this probe is
+	# scaffolding, not a subject, and it has to be sampling from the very
+	# first tick these cases drive.
+	probe.add_to_group(&"sim_spice_mounds")
+	return [spawner, probe]
+
+
+## Slice C6c's load-bearing case for units, the direct counterpart of this
+## suite's opening projectile case. The unit is created from inside a tick,
+## between the admission drain and every one of that tick's own systems, so
+## the whole rest of the tick runs after it exists -- including both passes
+## over "sim_units". If admission were still the synchronous add_to_group()
+## Unit._ready() used to make, this unit would be simulated on the tick that
+## created it.
+##
+## Two positive controls, because the load-bearing assertion is a negative
+## and a negative passes for free if the unit never really came into being:
+## entity_id proves _ready() ran to completion inside a live Match (identity
+## is not deferred, only the tick's iteration source), and the "units"
+## membership proves the shared, view-side group was joined on the birth
+## frame exactly as before. The reference unit sampled alongside is the third
+## control, on the probe itself: ScoutA must read as a "sim_units" member on
+## both ticks, or the probe is not running and every sample below is
+## vacuously false.
+func _test_unit_admission_deferred_to_next_tick() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	root.add_child(match_instance)
+	for _warmup in 5:
+		await process_frame
+
+	var reference := match_instance.get_node("Units/ScoutA") as Unit
+	var hooks := _install_tick_hooks(match_instance)
+	var spawner: TickHookReplayPlayer = hooks[0]
+	var probe: TickEndProbe = hooks[1]
+
+	var spawned: Array[Unit] = []
+	var sim_group_at_birth: Array[bool] = []
+	var view_group_at_birth: Array[bool] = []
+	var entity_id_at_birth: Array[int] = []
+	spawner.hook = func() -> void:
+		var unit := UnitScene.instantiate() as Unit
+		unit.owner_player_id = 1
+		unit.position = reference.global_position + Vector3(6.0, 0.0, 6.0)
+		match_instance.get_node("Units").add_child(unit)
+		spawned.append(unit)
+		sim_group_at_birth.append(unit.is_in_group(Unit.SIM_UNITS_GROUP))
+		view_group_at_birth.append(unit.is_in_group("units"))
+		entity_id_at_birth.append(unit.entity_id)
+
+	var samples: Array[bool] = []
+	var reference_samples: Array[bool] = []
+	probe.on_tick = func() -> void:
+		samples.append(
+			not spawned.is_empty() and spawned[0].is_in_group(Unit.SIM_UNITS_GROUP)
+		)
+		reference_samples.append(reference.is_in_group(Unit.SIM_UNITS_GROUP))
+
+	# No await between these two: an awaited frame drives ticks of its own
+	# (Match._process -> FrameTickDriver), and "the next tick" has to mean the
+	# next one, not the next few.
+	match_instance.call("_advance_simulation_tick")
+	match_instance.call("_advance_simulation_tick")
+
+	_expect(spawned.size() == 1, "the stand-in replay player must have created exactly one unit")
+	_expect(samples.size() == 2, "the tick-end probe must have sampled exactly the two ticks driven above")
+	if spawned.size() != 1 or samples.size() != 2:
+		match_instance.queue_free()
+		await process_frame
+		return
+
+	_expect(
+		entity_id_at_birth[0] != 0,
+		"positive control: the unit must already hold an entity id at the instant it is created -- "
+			+ "identity is not what C6c defers, only the tick's iteration source"
+	)
+	_expect(
+		view_group_at_birth[0],
+		"positive control: the unit must be in the shared \"units\" group on its birth frame -- "
+			+ "deferring that group too would leave a freshly spawned unit unselectable and "
+			+ "invisible to the UI, which is the view regression C6c refuses to buy"
+	)
+	_expect(
+		not sim_group_at_birth[0],
+		"a unit created mid-tick must not already be in \"sim_units\" at the instant it is created: "
+			+ "Unit._ready() requests admission, it does not grant it"
+	)
+	_expect(
+		not samples[0],
+		"the unit must still be outside \"sim_units\" at the tick's last group loop -- the whole "
+			+ "remainder of the tick that created it ran without it being simulated"
+	)
+	_expect(
+		samples[1],
+		"the unit must be in \"sim_units\" on the very next tick, whose apply_pending_entries() "
+			+ "admits it -- without this the case above would also pass for a unit never admitted at all"
+	)
+	_expect(
+		reference_samples.size() == 2 and reference_samples[0] and reference_samples[1],
+		"positive control: a unit that was already in the match must read as a \"sim_units\" member "
+			+ "on both ticks, or the probe is not running and every sample above is vacuous"
+	)
+
+	match_instance.queue_free()
+	await process_frame
+
+
+## The building half of the case above, same shape and same controls.
+## Buildings matter separately rather than by analogy: Building._ready()
+## joins the shared "buildings" group with an add_to_group() call of its own
+## (units inherit theirs from 99 .tscn files), so the two halves of the split
+## sit next to each other there and a single wrong edit collapses both.
+func _test_building_admission_deferred_to_next_tick() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	root.add_child(match_instance)
+	for _warmup in 5:
+		await process_frame
+
+	var reference := match_instance.get_node("Buildings/ATConYard") as Building
+	var anchor := match_instance.get_node("Units/ScoutA") as Unit
+	var hooks := _install_tick_hooks(match_instance)
+	var spawner: TickHookReplayPlayer = hooks[0]
+	var probe: TickEndProbe = hooks[1]
+
+	var spawned: Array[Building] = []
+	var sim_group_at_birth: Array[bool] = []
+	var view_group_at_birth: Array[bool] = []
+	var entity_id_at_birth: Array[int] = []
+	spawner.hook = func() -> void:
+		var building := ATRocketTurretScene.instantiate() as Building
+		building.owner_player_id = 1
+		building.position = anchor.global_position + Vector3(0.0, 0.0, -12.0)
+		match_instance.get_node("Buildings").add_child(building)
+		spawned.append(building)
+		sim_group_at_birth.append(building.is_in_group(Building.SIM_BUILDINGS_GROUP))
+		view_group_at_birth.append(building.is_in_group("buildings"))
+		entity_id_at_birth.append(building.entity_id)
+
+	var samples: Array[bool] = []
+	var reference_samples: Array[bool] = []
+	probe.on_tick = func() -> void:
+		samples.append(
+			not spawned.is_empty() and spawned[0].is_in_group(Building.SIM_BUILDINGS_GROUP)
+		)
+		reference_samples.append(reference.is_in_group(Building.SIM_BUILDINGS_GROUP))
+
+	match_instance.call("_advance_simulation_tick")
+	match_instance.call("_advance_simulation_tick")
+
+	_expect(spawned.size() == 1, "the stand-in replay player must have created exactly one building")
+	_expect(samples.size() == 2, "the tick-end probe must have sampled exactly the two ticks driven above")
+	if spawned.size() != 1 or samples.size() != 2:
+		match_instance.queue_free()
+		await process_frame
+		return
+
+	_expect(
+		entity_id_at_birth[0] != 0,
+		"positive control: the building must already hold an entity id at the instant it is created"
+	)
+	_expect(
+		view_group_at_birth[0],
+		"positive control: the building must be in the shared \"buildings\" group on its birth "
+			+ "frame -- placement, selection and the side panel all read that group"
+	)
+	_expect(
+		not sim_group_at_birth[0],
+		"a building created mid-tick must not already be in \"sim_buildings\" at the instant it is created"
+	)
+	_expect(
+		not samples[0],
+		"the building must still be outside \"sim_buildings\" at the tick's last group loop"
+	)
+	_expect(
+		samples[1],
+		"the building must be in \"sim_buildings\" on the very next tick, whose "
+			+ "apply_pending_entries() admits it"
+	)
+	_expect(
+		reference_samples.size() == 2 and reference_samples[0] and reference_samples[1],
+		"positive control: the fixture's own ATConYard must read as a \"sim_buildings\" member on "
+			+ "both ticks, or the probe is not running"
+	)
+
+	match_instance.queue_free()
+	await process_frame
+
+
+## The other half of C6c, and the reason it could not be split off into its
+## own slice: deferring a unit's admission while UnitNavigationSystem still
+## picked it up off "units" at the end of the engine frame would leave
+## navigation driving a unit the tick does not simulate.
+##
+## The negative here is the interesting one -- navigation must hold no agent
+## for a unit whose admission is still pending -- and it needs both controls
+## to mean anything: the reference unit must hold an agent throughout (the
+## navigation system is alive and holding agents at all), and the spawned
+## unit must hold one on the admitting tick (the pending list really does
+## register it, rather than dropping it on the floor).
+func _test_navigation_agent_waits_for_admission() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	root.add_child(match_instance)
+	for _warmup in 5:
+		await process_frame
+
+	var reference := match_instance.get_node("Units/ScoutA") as Unit
+	var navigation: UnitNavigationSystem = match_instance.get_node("UnitNavigationSystem")
+	var hooks := _install_tick_hooks(match_instance)
+	var spawner: TickHookReplayPlayer = hooks[0]
+	var probe: TickEndProbe = hooks[1]
+
+	var spawned: Array[Unit] = []
+	spawner.hook = func() -> void:
+		var unit := UnitScene.instantiate() as Unit
+		unit.owner_player_id = 1
+		unit.position = reference.global_position + Vector3(6.0, 0.0, 6.0)
+		match_instance.get_node("Units").add_child(unit)
+		spawned.append(unit)
+
+	var agent_samples: Array[bool] = []
+	var reference_samples: Array[bool] = []
+	probe.on_tick = func() -> void:
+		var has_agent: bool = not spawned.is_empty() \
+			and navigation._agents.has(spawned[0].get_instance_id())
+		agent_samples.append(has_agent)
+		var reference_has_agent: bool = navigation._agents.has(reference.get_instance_id())
+		reference_samples.append(reference_has_agent)
+
+	match_instance.call("_advance_simulation_tick")
+	match_instance.call("_advance_simulation_tick")
+
+	_expect(agent_samples.size() == 2, "the tick-end probe must have sampled exactly the two ticks driven above")
+	if agent_samples.size() != 2:
+		match_instance.queue_free()
+		await process_frame
+		return
+
+	_expect(
+		reference_samples[0] and reference_samples[1],
+		"positive control: a unit the match started with must hold a navigation agent on both "
+			+ "ticks -- if it does not, the negative below proves nothing about admission"
+	)
+	_expect(
+		not agent_samples[0],
+		"navigation must hold no agent for a unit the tick has not admitted: _on_tree_node_added() "
+			+ "only queues it, and the drain at the top of sim_tick() refuses to register a node "
+			+ "outside \"sim_units\""
+	)
+	_expect(
+		agent_samples[1],
+		"navigation must hold an agent for that unit on the tick that admits it -- the pending "
+			+ "entry is re-tried, not dropped, which is what stops the negative above from passing "
+			+ "for a unit navigation simply forgot"
+	)
+
+	match_instance.queue_free()
+	await process_frame
+
+
+## The gate itself, in isolation from any tick: NavAgentRegistry.register_unit()
+## (scripts/units/navigation/shared/nav_agent_registry.gd) refuses a node
+## outside "sim_units" the same way it already refuses a unit whose transform
+## a transport anchor owns. This is what makes "navigation never drives a unit
+## the tick does not simulate" structural rather than a convention every
+## caller has to remember -- command_move(), command_dock(),
+## assign_attack_arcs() and resume_unit() all call register_unit()
+## unconditionally and obey it without knowing it exists.
+##
+## Driven through the navigation system a real Match owns, because the
+## registry needs a live grid to derive a movement profile from and the
+## fixture already has one. The same node is registered twice, before and
+## after joining the group: the second call is the positive control, without
+## which the first would also pass for a node the registry rejects for some
+## unrelated reason.
+func _test_registry_refuses_a_node_outside_sim_units() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	root.add_child(match_instance)
+	for _warmup in 5:
+		await process_frame
+
+	var navigation: UnitNavigationSystem = match_instance.get_node("UnitNavigationSystem")
+	var probe := UnregisteredProbeUnit.new()
+	match_instance.get_node("Units").add_child(probe)
+	probe.global_position = (match_instance.get_node("Units/ScoutA") as Unit).global_position \
+		+ Vector3(10.0, 0.0, 10.0)
+
+	_expect(
+		not probe.is_in_group(Unit.SIM_UNITS_GROUP),
+		"the probe must start outside \"sim_units\", or this case tests nothing"
+	)
+	_expect(
+		navigation.register_unit(probe) == 0,
+		"register_unit() must return 0 for a node the tick does not simulate"
+	)
+	_expect(
+		not navigation._agents.has(probe.get_instance_id()),
+		"a refused registration must leave no agent behind -- returning 0 while still building the "
+			+ "agent dictionary entry would be the same defect with a politer return value"
+	)
+
+	probe.add_to_group(Unit.SIM_UNITS_GROUP)
+	var agent_id := navigation.register_unit(probe)
+	_expect(
+		agent_id != 0,
+		"positive control: the identical node must register once it is in \"sim_units\" -- without "
+			+ "this the refusal above could be any other rejection in register_unit()"
+	)
+	_expect(
+		navigation._agents.has(probe.get_instance_id()),
+		"positive control: the accepted registration must actually create an agent"
+	)
+
+	match_instance.queue_free()
+	await process_frame
+
+
+## The case that proves UnitNavigationSystem's pending list *waits* rather
+## than dropping what it cannot register yet, which is the one rule in C6c
+## that is required rather than defensive.
+##
+## The ordering it reproduces is the one a command-placed building really has:
+## created after the tick's admission drain and before
+## UnitNavigationSystem.sim_tick(), so at the moment navigation drains, the
+## building is in "buildings" (its _ready() joined that immediately) but not
+## yet in "sim_buildings" (the admission queue admits it at the start of the
+## *next* tick). A drain that discarded what it could not register would leave
+## the building's cells open until the periodic BLOCKER_REFRESH_SECONDS sweep
+## happened to come round -- a delay measured in seconds, and in frames rather
+## than ticks.
+##
+## That periodic sweep is deliberately parked out of the way below: without
+## that, a sweep landing on the admitting tick would block the cells for a
+## reason that has nothing to do with the drain, and the case would pass with
+## the pending list removed entirely.
+##
+## The controls: the fixture's own ATConYard must read as blocked on both
+## ticks (the blocked-cell probe works and the blocker set is populated at
+## all), and the new building's own cells must read as *unblocked* on the
+## first tick and blocked on the second -- each rules out the other's
+## degenerate answer.
+func _test_pending_building_blocker_refresh_survives_a_drain() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	root.add_child(match_instance)
+	for _warmup in 5:
+		await process_frame
+
+	var navigation: UnitNavigationSystem = match_instance.get_node("UnitNavigationSystem")
+	var anchor := match_instance.get_node("Units/ScoutA") as Unit
+	var reference := match_instance.get_node("Buildings/ATConYard") as Building
+	var reference_cells := _body_cells(reference, navigation)
+	# Twelve ticks of headroom at MatchClock's 25 Hz against
+	# BLOCKER_REFRESH_SECONDS' 0.5 s, for the two ticks driven below.
+	navigation._blocker_refresh_remaining = UnitNavigationSystem.BLOCKER_REFRESH_SECONDS
+
+	var hooks := _install_tick_hooks(match_instance)
+	var spawner: TickHookReplayPlayer = hooks[0]
+	var probe: TickEndProbe = hooks[1]
+
+	var spawned: Array[Building] = []
+	var spawned_cells: Array[Vector2i] = []
+	spawner.hook = func() -> void:
+		var building := ATRocketTurretScene.instantiate() as Building
+		building.owner_player_id = 1
+		building.position = anchor.global_position + Vector3(0.0, 0.0, -12.0)
+		match_instance.get_node("Buildings").add_child(building)
+		spawned.append(building)
+		spawned_cells.append_array(_body_cells(building, navigation))
+
+	var blocked_samples: Array[bool] = []
+	var pending_samples: Array[int] = []
+	var reference_samples: Array[bool] = []
+	probe.on_tick = func() -> void:
+		blocked_samples.append(_any_blocked(navigation, spawned_cells))
+		pending_samples.append(navigation._pending_building_entries.size())
+		reference_samples.append(_any_blocked(navigation, reference_cells))
+
+	match_instance.call("_advance_simulation_tick")
+	match_instance.call("_advance_simulation_tick")
+
+	_expect(spawned.size() == 1, "the stand-in replay player must have created exactly one building")
+	_expect(blocked_samples.size() == 2, "the tick-end probe must have sampled exactly the two ticks driven above")
+	_expect(not reference_cells.is_empty(), "ATConYard must contribute at least one solid \"b\" cell to sample")
+	_expect(not spawned_cells.is_empty(), "the placed ATRocketTurret must contribute at least one solid \"b\" cell")
+	if spawned.size() != 1 or blocked_samples.size() != 2 \
+	or reference_cells.is_empty() or spawned_cells.is_empty():
+		match_instance.queue_free()
+		await process_frame
+		return
+
+	_expect(
+		reference_samples[0] and reference_samples[1],
+		"positive control: a building the match started with must keep its cells blocked across "
+			+ "both ticks, or the blocked-cell probe is reading nothing"
+	)
+	_expect(
+		not blocked_samples[0],
+		"the new building's cells must still be open at the end of the tick that created it: "
+			+ "NavBlockerTracker rebuilds from \"sim_buildings\", which does not list it yet"
+	)
+	_expect(
+		pending_samples[0] == 1,
+		"navigation's pending list must still be holding that building after a drain that could "
+			+ "not register it -- this is the \"stays queued\" rule, and the only assertion in this "
+			+ "suite that fails if the drain discards what it cannot yet admit"
+	)
+	_expect(
+		blocked_samples[1],
+		"the building's cells must be blocked on the tick that admits it, from the drain's own "
+			+ "refresh rather than from the periodic sweep parked out of range above"
+	)
+	_expect(
+		pending_samples[1] == 0,
+		"and the pending entry must be gone once it has been handled"
+	)
+
+	match_instance.queue_free()
+	await process_frame
+
+
+## The solid ("b") navigation cells `building` occupies, computed exactly the
+## way NavBlockerTracker.refresh_building_blockers() computes them so the
+## comparison below is against the same cells that code would block.
+func _body_cells(building: Building, navigation: UnitNavigationSystem) -> Array[Vector2i]:
+	var cells: Array[Vector2i] = []
+	var config := building.building_definition
+	if config == null:
+		return cells
+	var rows: Array = config.occupy_rows
+	var footprint: Dictionary = BuildingFootprintScript.nav_cells_by_marker(
+		building, rows, navigation.runtime_map.grid, UnitNavigationSystem.OCCUPY_CELL_SPAN
+	)
+	for cell in footprint:
+		if String(footprint[cell]).to_lower() == "b":
+			cells.append(cell)
+	return cells
+
+
+func _any_blocked(navigation: UnitNavigationSystem, cells: Array[Vector2i]) -> bool:
+	for cell in cells:
+		if navigation.runtime_map.is_blocked(cell):
+			return true
+	return false

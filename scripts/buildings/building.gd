@@ -275,7 +275,16 @@ func _ready() -> void:
 	# Additional membership, not a replacement -- see SIM_BUILDINGS_GROUP's own
 	# comment for why the tick needs a group of its own rather than reading
 	# "buildings" directly.
-	add_to_group(SIM_BUILDINGS_GROUP)
+	#
+	# Slice C6c: entry into SIM_BUILDINGS_GROUP -- and only that group -- goes
+	# through the admission queue, exactly as Unit._ready() does for
+	# SIM_UNITS_GROUP. A building placed by a command is created during step 2
+	# of Match._advance_simulation_tick() and first ticked on the next one; the
+	# "buildings" join above stays immediate so placement, selection and the
+	# side panel see it on its birth frame.
+	MatchLookupScript.request_sim_entry(self, SIM_BUILDINGS_GROUP)
+	# Identity is not deferred, only the tick's iteration source -- same
+	# reasoning as Unit._ready()'s.
 	_register_entity_id()
 	# The three model-facing modules were already configured in _init() -- see
 	# the comment there. Only _rally and _combat_hull are configured below,

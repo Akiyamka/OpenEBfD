@@ -66,7 +66,15 @@ class TestHarvester extends UnitScript:
 	var stop_count := 0
 
 	func _ready() -> void:
-		pass
+		# Deliberately does not call super(): this stand-in skips the whole
+		# of Unit._ready(), which needs an authored visual tree this suite
+		# does not build. The one thing it cannot skip is the group the
+		# navigation registry gates on -- since slice C6c
+		# NavAgentRegistry.register_unit() refuses a node outside "sim_units",
+		# and _test_crowded_harvester_group() registers these directly. A
+		# real Unit with no Match in the tree reaches the same state through
+		# MatchLookup.request_sim_entry()'s immediate-join fallback.
+		add_to_group(UnitScript.SIM_UNITS_GROUP)
 
 	func move_to(world_position: Vector3, _exit_point := Vector3.INF) -> void:
 		move_targets.append(world_position)

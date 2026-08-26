@@ -1138,7 +1138,7 @@ and by the time we get there the hard part is already tested.
     still picks it up off `"units"` would leave navigation driving a unit
     the tick does not simulate, which is precisely the inconsistency this
     property exists to remove. The `call_deferred` finding below is C6c's
-    other half.
+    other half, and what C6c actually cost is recorded after it.
 
   **What C6b proved, and one thing it could not.** The load-bearing case is a
   real shot from a real building inside a real match: the projectile is not in
@@ -1188,10 +1188,125 @@ and by the time we get there the hard part is already tested.
   carries one tick it is navigable by the very next one. **How many ticks a
   unit waits before navigation can see it is decided by frame rate**, which
   is a divergence of exactly the kind lockstep exists to prevent, and it was
-  not on any list here before this sweep. C6b inherits it: the admission
+  not on any list here before this sweep. C6c inherits it: the admission
   queue's drain is the tick-domain moment this registration belongs to, and
   moving it there is what makes the wait a fixed number of ticks on every
   machine.
+
+  **What C6c built, and the three things that were not on any list.**
+  `Unit._ready()` and `Building._ready()` now *request* entry into
+  `"sim_units"`/`"sim_buildings"` through `MatchLookup.request_sim_entry()`
+  instead of joining them, and nothing else in either function moves. The
+  shared `"units"`/`"buildings"` joins stay immediate, so a newly spawned
+  unit is still selectable and visible to the UI on its birth frame, and
+  `_register_entity_id()` stays immediate too: an entity needs its id the
+  instant it exists, because every write it makes from that point resolves
+  through that id. Only the tick's iteration source is deferred.
+
+  `UnitNavigationSystem` gets an ordered pending list drained at the top of
+  `sim_tick()`, replacing the `register_unit.call_deferred()` above, and
+  `NavAgentRegistry.register_unit()` gets a gate: a node outside
+  `"sim_units"` is refused with a `0`, exactly the way the
+  `navigation_is_suspended()` check beside it already refuses a unit whose
+  transform a transport anchor owns. The gate lives in the registry rather
+  than in the facade because the facade's `register_unit()` is the registry
+  method's only caller, so both placements cover the same population, and
+  because that is where refusals of this class already live. What it buys is
+  that `command_move()`, `command_dock()`, `assign_attack_arcs()` and
+  `resume_unit()` all call `register_unit()` unconditionally and obey the
+  rule without knowing it exists -- "navigation never drives a unit the tick
+  does not simulate" as a structural fact rather than four call sites
+  remembering.
+
+  The pending list's order is load-bearing, and this is the one place C6b's
+  reasoning about queue order does *not* carry over. `SimAdmissionQueue`'s
+  own order is unobservable because its only effect is `add_to_group()`, a
+  set. This list's is not: `NavAgentRegistry.register_unit()` hands out `id`
+  from `_next_agent_id` in call order, and `command_move()` sorts the units
+  of one order by their `navigation_agent_id` meta -- so the order agents are
+  created in reaches the simulation. Taking the drain's order from
+  `get_nodes_in_group("sim_units")` instead would have put Godot's group
+  iteration order, the known and still-open phase 4 gap, straight into that
+  sort.
+
+  An entry the tick has not admitted stays queued for the next drain rather
+  than being dropped, and that is required rather than defensive. A building
+  placed by a command is created during the command loop, step 2 of
+  `Match._advance_simulation_tick()`, while navigation's drain runs from step
+  3 -- so at that drain it is in `"buildings"` but not yet in
+  `"sim_buildings"`, because the admission queue admits it at the start of
+  the *next* tick. Discarding it there would leave its cells open until the
+  periodic `BLOCKER_REFRESH_SECONDS` sweep came round: 0.5 s, or twelve ticks
+  at `MatchClock`'s 25 Hz, against the one tick waiting costs. The only
+  entries that can linger indefinitely are nodes that join
+  `"units"`/`"buildings"` by hand and are never admitted at all, which today
+  exist only in tests.
+
+  The first thing the sweep turned up is that the branch this rule was
+  written for had never once run. `_on_tree_node_added()`'s building half
+  tested `node.is_in_group("buildings")`, and `"buildings"` -- unlike
+  `"units"`, which 99 `.tscn` files declare statically -- is joined by
+  `Building._ready()`'s own `add_to_group()` call. `node_added` fires while
+  `_enter_tree()` propagates, before any `_ready()` in the subtree, so a real
+  building is in *no* group at that instant. Measured against a live match: a
+  freshly instanced `ATRocketTurret` reports `buildings=false`,
+  `sim_buildings=false` at `node_added`, and `true` for `"buildings"` the
+  moment `add_child()` returns. The branch's intent -- refresh blockers when a
+  building appears -- was only ever satisfied by the periodic sweep. This is
+  the same argument that keeps the unit half off `"sim_units"`, applied one
+  group further: the test now asks for the footprint property
+  `NavBlockerTracker.refresh_building_blockers()` itself reads, which is
+  present from instantiation and keeps the module duck-typed the way the rest
+  of navigation deliberately is. It is not a determinism fix -- the periodic
+  sweep counts down in tick domain and was already frame-independent -- it is
+  a latency fix that makes the building half of the pending list mean
+  anything at all.
+
+  The second is that deferring the join breaks navigation's initial
+  population, and no test would have said so. `UnitNavigationSystem.setup()`
+  runs from `Match._ready()`, after every node of a freshly instanced match
+  scene has already entered the tree and therefore after `_on_tree_node_added()`
+  could ever have seen them -- so for an authored match its group walk *is*
+  the starting units. It walked `"sim_units"`, which C6c leaves empty at that
+  moment. Measured on `tests/fixtures/match_fixture.tscn`: the navigation
+  system held 0 agents for its whole life against 3 before C6c, and no later
+  frame recovered them -- the starting units simply stopped participating in
+  avoidance until something commanded them. The walk now reads `"units"` and
+  branches: a unit the tick has already admitted registers immediately (every
+  suite that builds a navigation system with no `Match` in the tree, where
+  `request_sim_entry()` joins the group at once), and one that has not is
+  queued for the first drain. That leaves a one-tick delay before a match's
+  starting units are navigable, which the gate makes unavoidable rather than
+  chosen: `setup()` could not register them early even if it wanted to,
+  because they are not yet in `"sim_units"`. Three `demo_boot_run.gd` cases
+  and `entity_id_run.gd`'s group-mirror case now drive one explicit
+  `_advance_simulation_tick()` for that reason, rather than an awaited frame
+  -- an awaited frame advances the clock by however much wall time it
+  happened to take and is not guaranteed to produce a tick at all.
+
+  The third is a claim this document made that is no longer true as written.
+  C6a's sentence was that `"units"` and `"sim_units"` are identical *at every
+  instant*; C6c narrows it, deliberately and by exactly one drain, to
+  identical once the tick has run. Between an entity's creation and the next
+  `apply_pending_entries()` the two memberships differ by that entity -- which
+  is the entire point of C6b and C6c, and is what
+  `tests/match/admission_run.gd` asserts directly. `entity_id_run.gd`'s
+  mirror case now states the narrower claim rather than the old one.
+
+  Two smaller things the test sweep found, both worth naming because the
+  first contradicts what the slice was expected to cost. The gate's price was
+  supposed to be one line in `tests/navigation/run.gd`'s `FakeUnit._init()`,
+  covering all 84 registration sites at once, and it mostly was. But
+  `tests/units/harvester_run.gd`'s `TestHarvester` overrides `Unit._ready()`
+  with `pass` -- it skips the authored visual tree that suite does not build
+  -- so it never joined any group at all, and the immediate-join fallback the
+  gate was expected to rely on never ran for it. It joins `"sim_units"`
+  explicitly now. And putting every `FakeUnit` in `"sim_units"` made one
+  navigation case visible to another: `can_place_transport_cargo()` scans
+  that group across the whole tree with no ownership filter, and
+  `_test_disconnected_island_orders()` parks a unit at exactly the
+  destination the transport-drop case probes, `queue_free()`d but not yet
+  freed. That case now waits a frame for the frees to land.
 
 - **Phase 4 — determinism gate.** Portable math, RNG split, the static rules
   above wired into `check_architecture.py`, and the CI test that replays one

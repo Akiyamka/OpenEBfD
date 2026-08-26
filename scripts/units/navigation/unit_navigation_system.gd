@@ -73,6 +73,29 @@ var _navigation_tick_index := 0
 var _blocker_refresh_remaining := 0.0
 var _command_log: Array[Dictionary] = []
 var _debug_enabled := false
+## Units _on_tree_node_added() has seen but not yet registered, oldest first,
+## drained by _drain_pending_entries() at the top of sim_tick() below. Slice
+## C6c; this replaces a register_unit.call_deferred(), which flushed at the
+## end of the engine *frame* while up to FrameTickDriver.MAX_TICKS_PER_FRAME's
+## five ticks ran inside one -- so how many ticks a unit waited before
+## navigation could see it was decided by frame rate.
+##
+## The order of this array is load-bearing, unlike SimAdmissionQueue._pending's
+## (scripts/match/sim_admission_queue.gd), whose own comment explains why its
+## order is deliberately unobservable. NavAgentRegistry.register_unit() hands
+## out `id` from _next_agent_id in call order, and command_move() below sorts
+## the units of one order by their `navigation_agent_id` meta -- so the order
+## agents are created in reaches the simulation. Taking the drain's order from
+## get_nodes_in_group("sim_units") instead would put Godot's group iteration
+## order, a known and still-open phase 4 gap, straight into that sort.
+var _pending_unit_entries: Array[Node3D] = []
+## Buildings _on_tree_node_added() has seen but whose admission the tick has
+## not drained yet, same drain, same reason. Kept as a list rather than a
+## single flag because an entry has to be re-checked on later ticks (see
+## _drain_pending_entries()), but the refresh they ask for collapses: N
+## buildings admitted on one tick need one _refresh_building_blockers() call,
+## not N, and the call rebuilds every blocker from the group anyway.
+var _pending_building_entries: Array[Node] = []
 func _ready() -> void:
 	if navigation_debug.get_parent() == null:
 		navigation_debug.name = "NavigationDebug"
@@ -108,14 +131,46 @@ func setup(source_grid: MapNavigationGrid) -> bool:
 	air_navigation.setup(self, runtime_map, avoidance, _agents, spatial_hash, slot_allocator)
 	_refresh_building_blockers()
 	if is_inside_tree():
-		# Reads "sim_units", not "units": navigation is a simulation system --
-		# it runs from Match._advance_simulation_tick() via sim_tick() below --
-		# so its registry must agree with the tick about who is currently
-		# simulated. Reading "units" here would register an agent for a unit
-		# C6b's admission queue has not yet let the tick simulate.
-		for node in get_tree().get_nodes_in_group("sim_units"):
-			if node is Node3D and _owns_node(node):
-				register_unit(node)
+		# The initial population: every unit that was already in the tree
+		# before this system existed, and which _on_tree_node_added() below
+		# therefore never saw. Match builds this system in its own _ready(),
+		# after every node of a freshly instanced match scene has already
+		# entered the tree, so for an authored match that is *all* of its
+		# starting units.
+		#
+		# Read off "units" rather than "sim_units", because of the order those
+		# two facts land in. Since slice C6c a unit's "sim_units" join is
+		# deferred to the admission queue's next drain (Unit._ready()), which
+		# is the first statement of Match._advance_simulation_tick() -- so at
+		# this moment, during Match._ready(), "sim_units" is empty and walking
+		# it registers nothing at all. Measured directly on
+		# tests/fixtures/match_fixture.tscn: walking "sim_units" here left the
+		# navigation system holding 0 agents for its whole life, against 3
+		# before C6c, and no later frame recovered them -- the starting units
+		# simply stopped participating in avoidance until something commanded
+		# them.
+		#
+		# A unit the tick has already admitted still registers here and now,
+		# unchanged: that is every unit in the suites that build a navigation
+		# system with no Match in the tree, where request_sim_entry() joined
+		# the group immediately (MatchLookup.request_sim_entry()'s no-queue
+		# fallback). One that has not been admitted is queued instead and
+		# registers on the first tick, after that tick has admitted it -- the
+		# real-match case, and a one-tick delay at match start that
+		# register_unit()'s own gate makes unavoidable rather than chosen.
+		#
+		# The order this walk produces is Godot's group iteration order, which
+		# is the known phase 4 gap -- but that was equally true of the
+		# "sim_units" walk this replaces, so nothing here is newly
+		# order-dependent. Everything added after match start comes through
+		# _on_tree_node_added() instead, whose order is the tree's.
+		for node in get_tree().get_nodes_in_group("units"):
+			if not (node is Node3D) or not _owns_node(node):
+				continue
+			if node.is_in_group("sim_units"):
+				register_unit(node as Node3D)
+			else:
+				_pending_unit_entries.append(node as Node3D)
 	return true
 
 
@@ -780,6 +835,7 @@ func command_log() -> Array[Dictionary]:
 func sim_tick() -> void:
 	if runtime_map.grid == null:
 		return
+	_drain_pending_entries()
 	_navigation_tick()
 	# Counts down by exactly one tick's worth of wall-clock time per call,
 	# the tick-domain replacement for the old frame-delta countdown -- see
@@ -977,13 +1033,88 @@ func _slowest_speed(units: Array[Node3D]) -> float:
 	return speed
 
 
+## The unit test reads "units", not "sim_units", and must:
+## SceneTree.node_added fires while _enter_tree() propagates, before _ready()
+## runs anywhere in the subtree, and the sim-group join happens *in* _ready().
+## A unit scene's static "units" declaration is already present at this
+## instant; "sim_units" cannot be. Switching this check to the sim group would
+## make it permanently false and silently kill live registration altogether --
+## see docs/architecture/network-multiplayer.md, slice C6a.
+##
+## The building test cannot use a group at all, and this is where C6c's own
+## sweep found something. Unlike "units", "buildings" is not declared in any
+## scene file: Building._ready() joins it with an add_to_group() call of its
+## own -- so at node_added a Building is in *no* group whatsoever, and the
+## `is_in_group("buildings")` this branch used to test has therefore never
+## once been true for a real building. Measured directly against a live
+## match: a freshly instanced ATRocketTurret reports buildings=false,
+## sim_buildings=false at node_added, and true for "buildings" immediately
+## after add_child() returns. The branch's register-a-blocker-refresh intent
+## was only ever satisfied by the periodic BLOCKER_REFRESH_SECONDS sweep in
+## sim_tick(). Testing for the footprint property NavBlockerTracker.
+## refresh_building_blockers() itself reads is what actually holds at this
+## instant, and it keeps this system duck-typed the way the rest of the
+## navigation module deliberately is (which is why tests can drive it with a
+## FakeBuilding at all). The group test stays beside it for a node that has
+## the group but not the property.
+##
+## The tick-domain half of the answer is _drain_pending_entries() below: this
+## handler only records what it saw, in the order it saw it, and the drain
+## decides -- on a tick, not on a frame -- when that node actually becomes a
+## navigation agent or a blocker.
 func _on_tree_node_added(node: Node) -> void:
 	if not _owns_node(node):
 		return
 	if node.is_in_group("units") and node is Node3D:
-		register_unit.call_deferred(node)
-	elif node.is_in_group("buildings"):
-		_refresh_building_blockers.call_deferred()
+		_pending_unit_entries.append(node as Node3D)
+	elif node.is_in_group("buildings") or "building_definition" in node:
+		_pending_building_entries.append(node)
+
+
+## Registers every unit the tick has admitted since the last drain, in
+## _on_tree_node_added() order, and refreshes building blockers once if any
+## queued building has been admitted.
+##
+## An entry the tick has not admitted yet stays queued for the next drain. That
+## is required rather than defensive: a building placed by a command is created
+## during the command loop, step 2 of Match._advance_simulation_tick(), while
+## this drain runs from step 3 -- so at this moment it is in "buildings" but
+## not yet in "sim_buildings", because the admission queue admits it at the
+## start of the *next* tick. Dropping it here instead of waiting would leave
+## its cells unblocked until the periodic BLOCKER_REFRESH_SECONDS sweep
+## happened to come round: 0.5 s, or 12 ticks at MatchClock's 25 Hz, against
+## the one tick waiting costs.
+##
+## The only entries that can linger indefinitely are nodes that join
+## "units"/"buildings" by hand and are never admitted into the sim groups at
+## all. Those exist today only in tests that drive this system with no Match
+## in the tree; in a match every such node reaches the admission queue from its
+## own _ready(). An entry whose node has been freed or removed from the tree is
+## dropped outright, which is what keeps a never-admitted test node from
+## outliving its own suite.
+func _drain_pending_entries() -> void:
+	var still_pending_units: Array[Node3D] = []
+	for unit in _pending_unit_entries:
+		if not is_instance_valid(unit) or not unit.is_inside_tree():
+			continue
+		if not unit.is_in_group("sim_units"):
+			still_pending_units.append(unit)
+			continue
+		register_unit(unit)
+	_pending_unit_entries = still_pending_units
+
+	var still_pending_buildings: Array[Node] = []
+	var admitted_building := false
+	for building in _pending_building_entries:
+		if not is_instance_valid(building) or not building.is_inside_tree():
+			continue
+		if not building.is_in_group("sim_buildings"):
+			still_pending_buildings.append(building)
+			continue
+		admitted_building = true
+	_pending_building_entries = still_pending_buildings
+	if admitted_building:
+		_refresh_building_blockers()
 
 
 func _owns_node(node: Node) -> bool:

@@ -124,6 +124,14 @@ func _test_authored_collision_meshes() -> void:
 	var match_instance := MatchFixtureScene.instantiate()
 	get_root().add_child(match_instance)
 	await physics_frame
+	# One explicit tick, because navigation registration is a tick-domain
+	# event since slice C6c: UnitNavigationSystem.setup() runs from
+	# Match._ready(), before the admission queue has admitted anything into
+	# "sim_units", so the match's starting units are queued there and become
+	# agents on the first drain. Driven directly rather than awaited, because
+	# an awaited frame only advances the clock by however much wall time it
+	# happened to take and is not guaranteed to produce a tick at all.
+	match_instance.call("_advance_simulation_tick")
 	var navigation := match_instance.get_node_or_null("UnitNavigationSystem")
 
 	for unit_name in [&"ScoutA", &"OrdosAPC", &"NIABTank"]:
@@ -364,6 +372,10 @@ func _test_mech_gait_speeds() -> void:
 	var match_instance := MatchFixtureScene.instantiate()
 	get_root().add_child(match_instance)
 	await physics_frame
+	# See _test_authored_collision_meshes() above: the navigation arrival
+	# tolerance read further down needs ScoutA to actually hold an agent, and
+	# since slice C6c that happens on the first tick, not in Match._ready().
+	match_instance.call("_advance_simulation_tick")
 
 	var unit := match_instance.get_node("Units/ScoutA") as Unit
 	unit.setup(&"ATMongoose")
@@ -2154,6 +2166,9 @@ func _test_real_harvester_unload_trip() -> void:
 	get_root().add_child(match_instance)
 	await physics_frame
 	await physics_frame
+	# See _test_authored_collision_meshes(): the harvester becomes a
+	# navigation agent on the first tick, not in Match._ready().
+	match_instance.call("_advance_simulation_tick")
 
 	var navigation = match_instance.get_node("UnitNavigationSystem")
 	harvester.set_process(false)

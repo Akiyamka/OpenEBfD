@@ -336,7 +336,19 @@ func _ready() -> void:
 	# in building.gd) and stays untouched -- this is additional membership,
 	# not a replacement. See SIM_UNITS_GROUP's own comment for why the tick
 	# needs a group of its own rather than reading "units" directly.
-	add_to_group(SIM_UNITS_GROUP)
+	#
+	# Slice C6c: entry into SIM_UNITS_GROUP -- and only that group -- goes
+	# through the admission queue, so a unit created during tick N is first
+	# simulated on tick N+1 no matter which system created it or where that
+	# system's loop sits inside Match._advance_simulation_tick(). The static
+	# "units" membership is untouched by that: a freshly spawned unit stays
+	# selectable and visible to the UI on its birth frame, which deferring
+	# the shared group would have cost. With no Match in the tree,
+	# request_sim_entry() joins immediately instead -- see its own comment.
+	MatchLookupScript.request_sim_entry(self, SIM_UNITS_GROUP)
+	# Identity is not deferred, only the tick's iteration source: an entity
+	# needs its id the instant it exists, because every write it makes from
+	# here on resolves through that id.
 	_register_entity_id()
 	# The authored rest pose only exists once visual_root has resolved.
 	_terrain_alignment.capture_rest_pose()

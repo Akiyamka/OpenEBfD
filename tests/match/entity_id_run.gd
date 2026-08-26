@@ -365,18 +365,32 @@ func _test_freed_entity_releases_and_never_reissues_its_id() -> void:
 ## Slice C6a's own suite -- see docs/architecture/network-multiplayer.md,
 ## "Slice C6, decided 2026-08-22: deferred spawn, and the group that had to
 ## be split first." A suite that only checked group membership at rest would
-## pass identically whether Unit._ready()/Building._ready() ever called
-## add_to_group(SIM_UNITS_GROUP)/add_to_group(SIM_BUILDINGS_GROUP) at all --
-## as long as "units"/"buildings" themselves stayed correct, nothing here
-## would fail, because C6a's own claim is that the two groups are identical
-## at every instant. This case is that claim, checked directly rather than
-## assumed: every member of "units" must also be a member of "sim_units",
-## and vice versa, so a future reader adding a unit kind that skips one of
-## the two calls sees a failure here, not silence.
+## pass identically whether Unit._ready()/Building._ready() ever reached the
+## tick-only group at all -- as long as "units"/"buildings" themselves stayed
+## correct, nothing here would fail. This case is that claim, checked
+## directly rather than assumed: every member of "units" must also be a
+## member of "sim_units", and vice versa, so a future reader adding a unit
+## kind that skips one of the two sees a failure here, not silence.
+##
+## C6a's own wording for the claim was "identical at every instant". Slice
+## C6c narrowed it, deliberately and by exactly one drain: Unit._ready() and
+## Building._ready() now *request* entry into the tick-only group through the
+## admission queue instead of joining it themselves, so between an entity's
+## creation and the next apply_pending_entries() the two memberships differ
+## by that entity. What is still true, and what this case asserts, is that
+## they are identical once the tick has run -- which is why the explicit tick
+## below is part of the assertion rather than setup noise. The narrower claim
+## is the whole point of C6b/C6c; the divergence *during* a tick has its own
+## cases in tests/match/admission_run.gd.
 func _test_every_unit_and_building_is_in_both_its_view_group_and_its_sim_group() -> void:
 	var match_instance := MatchFixtureScene.instantiate()
 	get_root().add_child(match_instance)
 	await process_frame
+	# Driven directly rather than left to the awaited frame above: an awaited
+	# frame advances the clock by however much wall time it happened to take
+	# and is not guaranteed to produce a tick at all, which would leave this
+	# case asserting the mid-tick divergence instead of the settled state.
+	match_instance.call("_advance_simulation_tick")
 
 	var tree := get_root().get_tree()
 	var view_units := tree.get_nodes_in_group("units")
@@ -384,7 +398,7 @@ func _test_every_unit_and_building_is_in_both_its_view_group_and_its_sim_group()
 	_expect(not view_units.is_empty(), "the fixture must have at least one unit to make this assertion meaningful")
 	_expect(
 		view_units.size() == sim_units.size(),
-		"\"units\" has %d members, \"sim_units\" has %d -- C6a's own claim is that membership is identical" \
+		"\"units\" has %d members, \"sim_units\" has %d -- membership must be identical once the tick has run" \
 			% [view_units.size(), sim_units.size()]
 	)
 	for unit in view_units:

@@ -38,6 +38,15 @@ class FakeUnit extends Node3D:
 		unit_definition.infantry = infantry
 		unit_definition.can_fly = false
 		unit_definition.terrain_ids = [&"Rock"]
+		# Slice C6c's gate: NavAgentRegistry.register_unit() refuses a node
+		# outside "sim_units", so every FakeUnit this suite hands to
+		# navigation has to stand where a real Unit stands after the
+		# admission queue has admitted it. Joined here, in _init(), rather
+		# than at each of this file's ~84 registration sites -- and joining
+		# before the node enters the tree is enough: a group joined this
+		# early is visible to get_nodes_in_group() the instant the node
+		# enters the tree, with no frame delay.
+		add_to_group(&"sim_units")
 
 	func set_navigation_managed(active: bool) -> void:
 		managed = active
@@ -340,6 +349,14 @@ func _test_disconnected_island_orders(grid: MapNavigationGrid) -> void:
 
 
 func _test_transport_drop_probe_uses_destination_not_reachability(grid: MapNavigationGrid) -> void:
+	# can_place_transport_cargo() scans "sim_units" across the whole tree,
+	# with no ownership filter, and since slice C6c every FakeUnit is in that
+	# group from _init(). queue_free() only takes effect at the end of the
+	# frame, so without this the unit the previous case parked at exactly this
+	# case's destination -- _test_disconnected_island_orders()'s `reachable`,
+	# which ends within 1.0 of (150.5, 0, 100.5) -- is still a live member and
+	# occupies the drop point.
+	await process_frame
 	var navigation := NavigationSystemScript.new()
 	root.add_child(navigation)
 	_expect(navigation.setup(grid), "navigation must initialize for transport drop footprint probe")
@@ -352,9 +369,10 @@ func _test_transport_drop_probe_uses_destination_not_reachability(grid: MapNavig
 	# by can_place_transport_cargo()'s own occupancy scan below only for
 	# view/selection purposes elsewhere, and "sim_units", the group that scan
 	# now actually reads (scripts/units/navigation/unit_navigation_system.gd).
+	# Only "units" is joined here: FakeUnit._init() joins "sim_units" for
+	# every instance, since slice C6c's gate needs it on all of them.
 	var cargo := FakeUnit.new()
 	cargo.add_to_group("units")
-	cargo.add_to_group("sim_units")
 	root.add_child(cargo)
 	cargo.global_position = Vector3(100.5, 0.0, 100.5)
 	var destination := Vector3(150.5, 0.0, 100.5)
@@ -364,7 +382,6 @@ func _test_transport_drop_probe_uses_destination_not_reachability(grid: MapNavig
 	)
 	var ground_blocker := FakeUnit.new()
 	ground_blocker.add_to_group("units")
-	ground_blocker.add_to_group("sim_units")
 	root.add_child(ground_blocker)
 	ground_blocker.global_position = destination
 	_expect(
@@ -379,7 +396,6 @@ func _test_transport_drop_probe_uses_destination_not_reachability(grid: MapNavig
 	await process_frame
 	var airborne_blocker := FakeAirborneUnit.new()
 	airborne_blocker.add_to_group("units")
-	airborne_blocker.add_to_group("sim_units")
 	root.add_child(airborne_blocker)
 	airborne_blocker.global_position = destination
 	_expect(

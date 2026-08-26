@@ -10,6 +10,15 @@ const MapNavigationGridScript := preload("res://scripts/world/map/map_navigation
 ## Dictionaries are reference types, so this module receives it as a parameter
 ## on every call instead of holding its own copy.
 
+## The tick's own iteration source for units (Unit.SIM_UNITS_GROUP, slice
+## C6a). Repeated as a literal rather than preloaded from unit.gd on purpose:
+## this module is handed duck-typed Node3Ds, not Unit instances -- every
+## navigation suite registers a FakeUnit -- so depending on unit.gd's whole
+## preload chain to name one string would be a dependency the registry
+## otherwise does not have. UnitNavigationSystem.setup() reads the same
+## literal for the same reason.
+const SIM_UNITS_GROUP := &"sim_units"
+
 ## GROUND also covers a flying unit that is currently grounded/landed: it acts
 ## as a stationary hold-obstacle for ground avoidance until it takes off again
 ## (see `domain_for`), never as a routed ground agent.
@@ -30,10 +39,35 @@ func setup(facade: Node, runtime_map, planner, avoidance) -> void:
 	_next_agent_id = 1
 
 
+## Returns the agent id `unit` now holds, or 0 when it holds none.
+##
+## The SIM_UNITS_GROUP refusal below is slice C6c's gate, and it lives here
+## rather than in UnitNavigationSystem.register_unit() for two reasons. The
+## facade's register_unit() is this function's only caller, so the two
+## placements cover the same population; and this is already where refusals
+## of this class live -- navigation_is_suspended() next door refuses a unit
+## whose transform a transport anchor owns, which is the same sentence about
+## a different owner.
+##
+## What it buys: command_move(), command_dock(), assign_attack_arcs() and
+## resume_unit() all call register_unit() unconditionally, so "navigation
+## never drives a unit the tick does not simulate" holds for all four without
+## any of them checking. A unit whose admission the queue has not yet drained
+## (see Unit._ready() and scripts/match/sim_admission_queue.gd) simply gets no
+## agent until it has, and UnitNavigationSystem's pending list re-tries it on
+## the next tick rather than dropping it.
+##
+## Ahead of the agents.has(key) fast path deliberately: nothing ever removes a
+## unit from SIM_UNITS_GROUP -- despawn frees the node instead, and
+## prune_agents() collects the agent -- so an already-registered unit always
+## passes this check, and putting the gate second would only make the refusal
+## depend on registration history.
 func register_unit(agents: Dictionary, unit: Node3D, debug_enabled: bool) -> int:
 	if unit == null:
 		return 0
 	if unit.has_method("navigation_is_suspended") and bool(unit.call("navigation_is_suspended")):
+		return 0
+	if not unit.is_in_group(SIM_UNITS_GROUP):
 		return 0
 	var key := unit.get_instance_id()
 	if agents.has(key):

@@ -26,6 +26,12 @@ class ProbeUnit extends Node3D:
 		unit_definition.infantry = false
 		unit_definition.can_fly = false
 		unit_definition.terrain_ids = [&"Rock"]
+		# Same reason tests/navigation/run.gd's FakeUnit joins here: slice
+		# C6c's NavAgentRegistry.register_unit() gate refuses a node outside
+		# "sim_units", and this probe registers through command_move() below.
+		# This file is not in tools/run_godot_tests.sh's suite list, so no
+		# suite would have caught it going stale.
+		add_to_group(&"sim_units")
 
 	func set_navigation_managed(_active: bool) -> void:
 		pass
