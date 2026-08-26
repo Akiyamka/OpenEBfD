@@ -293,10 +293,33 @@ func try_place_at_hover_cell(
 	building.rotate_y(float(_rotation_quarter_turns) * QUARTER_TURN_RADIANS)
 	_buildings_root.add_child(building)
 	var placement_position := _snap_to_ground(_world_center(_anchor_cell))
-	if building.is_inside_tree():
-		building.global_position = placement_position
-	else:
+	if not building.is_inside_tree():
+		# A node outside the tree has never reached _ready(), so
+		# Building._register_entity_id() has not run and there is no entity id
+		# to write a store entry under -- and Node3D.global_position is not
+		# even readable there, which is why this branch has always existed.
+		# A local write is therefore both all that is available and all that
+		# is correct: whatever puts this node in the tree later runs _ready(),
+		# and the store learns nothing from this call either way. Reachable
+		# only with a _buildings_root that is itself detached, which Match's
+		# own $Buildings never is.
 		building.position = placement_position
+	elif building.has_method("set_simulation_position"):
+		# Routes through Building.set_simulation_position() (its own doc
+		# comment) rather than writing global_position directly. add_child()
+		# above has already run this node's _ready(), so _register_entity_id()
+		# has run and entity_id is nonzero -- this placement snap is this
+		# building's very first write into the running match's SimEntityState.
+		# Same reasoning Match._place_on_map()'s two loops spell out for the
+		# scene-authored entities they snap.
+		building.call("set_simulation_position", placement_position)
+	else:
+		# Not a Building at all. This file has never assumed the placed scene's
+		# root is one -- see the has_method() guards around setup() and
+		# set_owner_player_id() above, and tests/buildings/placement_run.gd,
+		# which places a packed bare Node3D. Nothing that is not a Building has
+		# a store entry to write, so the direct write stands.
+		building.global_position = placement_position
 	building.set_meta(&"placement_anchor_cell", _anchor_cell)
 	if owner_player_id != null and building.has_method("set_owner_player_id"):
 		building.call("set_owner_player_id", owner_player_id)

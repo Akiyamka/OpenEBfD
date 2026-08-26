@@ -155,20 +155,28 @@ exempt = [
 	# cannot tell "the one sanctioned writer" from "a future accidental one"
 	# any more precisely than that rule can.
 	"scripts/units/unit.gd",
+	# The same chokepoint for the other kind, added by slice R1:
+	# Building.set_simulation_position() (its own doc comment) is now the one
+	# place a building's position may be written, and both of C2's building
+	# write sites route through it. Exempted as a whole file for the reason
+	# unit.gd is, not because anything else in it writes a position -- nothing
+	# does.
+	"scripts/buildings/building.gd",
 	# Units caught in a footprint that is not (yet, or ever) a Unit -- nothing
 	# in this project puts a non-Unit Node3D in the "units" group today, but
 	# this function has never assumed only Units reach it (see its own
 	# comment) -- fall back to a direct write. The guarded branch above it
 	# routes every real Unit through set_simulation_position().
 	"scripts/buildings/unit_push_aside.gd",
-	# Building placement and preview meshes -- not simulation, and buildings
-	# are out of C2's scope by design (see the design doc's C2 paragraph:
-	# "Do not attempt buildings unless a unit write path forces it"). Also
-	# covers match.gd's own building.global_position write in _place_on_map();
-	# that file's *unit* placement two lines below it already routes through
-	# set_simulation_position().
+	# Placement preview meshes (the footprint cell markers and the facing
+	# arrow), plus one fallback for a placed scene whose root is not a
+	# Building at all -- tests/buildings/placement_run.gd packs a bare Node3D
+	# and this file has never assumed otherwise. The building write itself is
+	# gone from this list's reason: since slice R1 it routes through
+	# Building.set_simulation_position(). match.gd left this list entirely in
+	# the same slice, its _place_on_map() building loop now doing what the
+	# unit loop directly below it already did.
 	"scripts/buildings/building_placement.gd",
-	"scripts/match/match.gd",
 	# A wall-preview marker: presentation only, not a simulated entity.
 	"scripts/buildings/wall_line_session.gd",
 	# The RTS camera. Never a unit, explicitly called out in the design doc's
@@ -180,11 +188,16 @@ exempt = [
 	"scripts/world/map/map_spice_layer.gd",
 	# Cosmetic audio emitter placement -- the view layer, not the simulation.
 	"scripts/audio/death_sound_player.gd",
-	# Combat projectiles and linger effects are sim-tick-driven entities, but
-	# they are not units: C1/C2 only build and wire a position store for
-	# units (docs/architecture/network-multiplayer.md, phase 3's C1 and C2
-	# paragraphs). Giving them their own SimEntityState slice is real,
-	# scheduled work, not something C2 does as a side effect.
+	# Combat projectiles and linger effects are sim-tick-driven entities that
+	# deliberately never get an entity id, so there is no store entry for
+	# their position to bypass. This is a decision, not a backlog entry --
+	# C2's own wording here used to call it "real, scheduled work", and slice
+	# R1 settled it the other way: SimEntityRegistry never reuses an id and
+	# every SimEntityState array is indexed by id, so tens of thousands of
+	# short-lived projectiles per match would grow those arrays without bound
+	# at ~44 bytes per id. Their position is already written only from
+	# sim_tick(). How they get into a snapshot is phase 5's question. See
+	# docs/architecture/network-multiplayer.md, phase 3's R1 paragraph.
 	"scripts/combat/combat_projectile.gd",
 	"scripts/combat/combat_linger_effect.gd",
 	# Pure cosmetic VFX/particles/impact debris -- the view layer's own
@@ -197,13 +210,14 @@ exempt = [
 summary = "global_position written directly instead of through SimEntityState"
 why = """
 Decision 3 makes the simulation's hot-state store authoritative for a unit's \
-position and the node a mirror of it. A direct write that bypasses the store \
-diverges from it silently, and the mirror makes that divergence look correct \
-right up until a snapshot or a checksum disagrees -- the store keeps \
-answering with the value it was last told, not the value the node actually \
-holds. See docs/architecture/network-multiplayer.md, phase 3's C2 paragraph.
+or a building's position and the node a mirror of it. A direct write that \
+bypasses the store diverges from it silently, and the mirror makes that \
+divergence look correct right up until a snapshot or a checksum disagrees -- \
+the store keeps answering with the value it was last told, not the value the \
+node actually holds. See docs/architecture/network-multiplayer.md, phase 3's \
+C2 paragraph for units and its R1 paragraph for buildings.
 """
-instead = "Unit.set_simulation_position(value), which writes SimEntityState first and mirrors the result into global_position"
+instead = "Unit.set_simulation_position(value) or Building.set_simulation_position(value), which write SimEntityState first and mirror the result into global_position"
 
 [[rules]]
 id = "bare-class-name-reference"

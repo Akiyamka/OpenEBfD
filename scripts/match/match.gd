@@ -341,9 +341,23 @@ func _place_on_map() -> void:
 	await get_tree().physics_frame
 	await get_tree().physics_frame
 	for building in get_tree().get_nodes_in_group("buildings"):
-		if building is Node3D:
+		# `is Building`, not the `is Node3D` this loop tested before slice R1:
+		# the method below is Building's, and only Building._ready() ever joins
+		# "buildings" (swept and confirmed -- nothing else calls
+		# add_to_group("buildings")), so nothing that used to be snapped here
+		# stops being snapped.
+		if building is Building:
 			var spot: Vector3 = building.global_position
-			building.global_position = _snap_to_ground(spot)
+			# Routes through Building.set_simulation_position() (its own doc
+			# comment) rather than writing global_position directly, for the
+			# identical reason the unit loop below does: by this point every
+			# scene-authored building has already run its own _ready() (see
+			# _entity_index's and _entity_state's comments on why both are
+			# built in _enter_tree(), before any child's _ready() runs), so
+			# entity_id is already set and this initial snap-to-ground is this
+			# building's very first write into the running match's
+			# SimEntityState.
+			building.set_simulation_position(_snap_to_ground(spot))
 
 	for unit in get_tree().get_nodes_in_group("units"):
 		var spot: Vector3 = unit.global_position

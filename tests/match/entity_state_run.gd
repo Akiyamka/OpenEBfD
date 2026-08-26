@@ -53,6 +53,20 @@ extends SceneTree
 ## registration-time push (scripts/sim/entity_state.gd's own "Registration-
 ## time push" section) regresses, independent of whatever the fixture scene
 ## happens to author.
+##
+## Slice R1 gives buildings the one field C2 gave only units -- position --
+## and the three cases it adds at the bottom of this file are deliberately
+## shaped as the building-side copies of the unit cases at the top, because
+## the claim being proved is the same claim: the store is authoritative and
+## the node is a view. _test_building_position_reaches_the_store is the
+## positive half, _test_building_store_outlives_a_direct_node_poke is the
+## disagreement that proves which side wins, and
+## _test_building_position_write_to_a_dead_id_is_refused is the refusal path
+## tests/sim/entity_state_run.gd's _test_write_released_id_refused states
+## against a bare store, restated here through
+## Building.set_simulation_position() so that the node's half of that
+## contract -- it still moves, keeping the symptom loud -- is pinned too.
+## That last case pushes exactly one deliberate "write refused" error.
 
 const LegacyRulesFixture := preload("res://tests/support/legacy_rules_fixture.gd")
 const MatchFixtureScene := preload("res://tests/fixtures/match_fixture.tscn")
@@ -106,6 +120,21 @@ func _initialize() -> void:
 		"a unit or building whose owner_player_id is assigned before add_child() still ends up "
 			+ "with the right owner in the store once it registers",
 		_test_owner_assigned_before_registration_reaches_the_store
+	)
+	await _run_case(
+		"every fixture building already has a store position once the match finishes booting, "
+			+ "and a building added afterward lands in the store exactly where it was told to",
+		_test_building_position_reaches_the_store
+	)
+	await _run_case(
+		"a direct write to a building's global_position that bypasses set_simulation_position "
+			+ "does not move the store -- disagreement resolves in the store's favour",
+		_test_building_store_outlives_a_direct_node_poke
+	)
+	await _run_case(
+		"a building position write for an id the registry reports dead is refused, the node still "
+			+ "moves, and no other id's stored position is disturbed",
+		_test_building_position_write_to_a_dead_id_is_refused
 	)
 
 	if _failures > 0:
@@ -616,5 +645,211 @@ func _test_owner_assigned_before_registration_reaches_the_store() -> void:
 
 	unit.queue_free()
 	building.queue_free()
+	match_instance.queue_free()
+	await process_frame
+
+
+## Slice R1's positive case, in two halves that fail for different reasons.
+## The first half is Match._place_on_map()'s snap-to-ground loop over
+## scene-authored buildings, the exact counterpart of the unit loop
+## _test_boot_populates_the_store above covers -- if R1 had routed only the
+## placement path and left that loop writing global_position directly, every
+## fixture building would boot with no store position at all and nothing else
+## in this suite would notice.
+## The second half is the setter's own contract, on a building the boot loop
+## never touched, and it asserts an exact value rather than agreement with the
+## node: a store that blindly followed whatever the node held would also show
+## the two agreeing, so agreement alone proves nothing about who wrote what.
+## The "no store position yet" check before the write is what makes the
+## after-the-write assertion mean this call and not the fixture's own boot.
+func _test_building_position_reaches_the_store() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	get_root().add_child(match_instance)
+	for _warmup in 5:
+		await process_frame
+
+	var store = match_instance.entity_state()
+	_expect(store != null, "Match must expose a live SimEntityState")
+	if store == null:
+		match_instance.queue_free()
+		return
+
+	for building_name in ["ATConYard", "ATSmWindtrap"]:
+		var building := match_instance.get_node("Buildings/%s" % building_name) as Building
+		_expect(building.entity_id != 0, "%s must have a nonzero entity_id by boot" % building_name)
+		_expect(
+			store.has_position(building.entity_id),
+			"%s must already have a store position once the match has booted" % building_name
+		)
+		if store.has_position(building.entity_id):
+			_expect(
+				store.position(building.entity_id).is_equal_approx(building.global_position),
+				"%s's store position must match its mirrored global_position after boot" % building_name
+			)
+
+	var placed := ConYardScene.instantiate() as Building
+	placed.owner_player_id = 1
+	match_instance.get_node("Buildings").add_child(placed)
+	await process_frame
+	_expect(placed.entity_id != 0, "a building added to a running match must register on entering the tree")
+	_expect(
+		not store.has_position(placed.entity_id),
+		"sanity check: a building added after _place_on_map() has already run must have no store position yet"
+	)
+
+	var target := Vector3(12.5, 3.25, -7.75)
+	placed.set_simulation_position(target)
+	_expect(
+		store.has_position(placed.entity_id),
+		"set_simulation_position() must give the building a store position"
+	)
+	if store.has_position(placed.entity_id):
+		_expect(
+			store.position(placed.entity_id).is_equal_approx(target),
+			"the store must hold exactly the position set_simulation_position() was handed"
+		)
+	_expect(
+		placed.global_position.is_equal_approx(target),
+		"the node must mirror the same position the store was given"
+	)
+
+	placed.queue_free()
+	match_instance.queue_free()
+	await process_frame
+
+
+## The building-side copy of _test_store_outlives_a_direct_node_poke, and it
+## pins why global-position-bypasses-store exists rather than merely that
+## Building.set_simulation_position() works. A suite in which store and node
+## always agree cannot tell an authoritative store from a store that copies
+## the node; this forces the disagreement the checker rule forbids in
+## scripts/ and shows the store keeps answering with its own last written
+## value. Reading the store, not the node, is how a snapshot, a checksum or a
+## replay would settle it.
+func _test_building_store_outlives_a_direct_node_poke() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	get_root().add_child(match_instance)
+	for _warmup in 5:
+		await process_frame
+
+	var building := match_instance.get_node("Buildings/ATConYard") as Building
+	var store = match_instance.entity_state()
+	_expect(store != null, "Match must expose a live SimEntityState")
+	if store == null:
+		match_instance.queue_free()
+		return
+	_expect(
+		store.has_position(building.entity_id),
+		"ATConYard must already have a store position from boot before this case pokes it"
+	)
+	if not store.has_position(building.entity_id):
+		match_instance.queue_free()
+		return
+
+	var trusted_position: Vector3 = store.position(building.entity_id)
+	var rogue_position := trusted_position + Vector3(999.0, 0.0, 999.0)
+	# Bypasses set_simulation_position() on purpose -- this is exactly the
+	# direct write the architecture rule forbids in scripts/, reproduced here
+	# to prove what the store does when it happens anyway.
+	building.global_position = rogue_position
+
+	_expect(
+		building.global_position.is_equal_approx(rogue_position),
+		"the node itself must show the rogue write -- otherwise this case is not testing a real disagreement"
+	)
+	_expect(
+		store.position(building.entity_id).is_equal_approx(trusted_position),
+		"the store must keep its own last written value instead of silently following a direct node write"
+	)
+	_expect(
+		not store.position(building.entity_id).is_equal_approx(building.global_position),
+		"store and node must actually disagree here, and the store's answer -- not the node's -- must be trusted"
+	)
+
+	match_instance.queue_free()
+	await process_frame
+
+
+## The refusal path, stated through the node rather than the bare store the
+## way tests/sim/entity_state_run.gd's _test_write_released_id_refused states
+## it. Two things are being pinned that the bare-store case cannot see. First,
+## SimEntityState.set_position() refuses a dead id instead of writing into
+## whatever stale slot the array still holds for it, and refusing does not
+## disturb any other id's slot -- the neighbour check is what would catch a
+## refusal that resized or shifted the array on its way out. Second,
+## Building.set_simulation_position() writes the node anyway, which is a
+## deliberate choice with its own paragraph in that method's doc comment: the
+## push_error is the signal, and a building that quietly failed to move would
+## be a second bug stacked on the logged one.
+##
+## The id is killed through EntityNodeIndex.release_id() rather than
+## request_despawn(): request_release() only queues the kill for the next
+## tick's drain, which would make this case depend on tick timing to prove
+## something that has nothing to do with ticks. release_id() is the same
+## release_id() Building._exit_tree() already calls, applied one step early.
+##
+## This case pushes exactly one "write refused" error, deliberately. It is
+## the only one this suite produces.
+func _test_building_position_write_to_a_dead_id_is_refused() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	get_root().add_child(match_instance)
+	for _warmup in 5:
+		await process_frame
+
+	var store = match_instance.entity_state()
+	var index = match_instance.entity_index()
+	_expect(store != null, "Match must expose a live SimEntityState")
+	_expect(index != null, "Match must expose a live EntityNodeIndex")
+	if store == null or index == null:
+		match_instance.queue_free()
+		return
+
+	var neighbour := match_instance.get_node("Buildings/ATSmWindtrap") as Building
+	_expect(
+		store.has_position(neighbour.entity_id),
+		"the neighbouring building must have a store position for the no-corruption check to mean anything"
+	)
+	if not store.has_position(neighbour.entity_id):
+		match_instance.queue_free()
+		return
+	var neighbour_position: Vector3 = store.position(neighbour.entity_id)
+
+	var doomed := ConYardScene.instantiate() as Building
+	doomed.owner_player_id = 1
+	match_instance.get_node("Buildings").add_child(doomed)
+	await process_frame
+	var doomed_id: int = doomed.entity_id
+	_expect(doomed_id != 0, "the building must be registered before its id can be killed")
+
+	var accepted := Vector3(20.0, 1.0, 20.0)
+	doomed.set_simulation_position(accepted)
+	_expect(
+		store.has_position(doomed_id) and store.position(doomed_id).is_equal_approx(accepted),
+		"positive control: while the id is alive the same call must land in the store"
+	)
+
+	index.release_id(doomed_id)
+	_expect(
+		not index.registry().is_alive(doomed_id),
+		"sanity check: the released id must be dead before the refused write is attempted"
+	)
+
+	var refused := accepted + Vector3(500.0, 0.0, 500.0)
+	doomed.set_simulation_position(refused)
+
+	_expect(
+		not store.has_position(doomed_id),
+		"a write for a dead id must be refused, leaving nothing readable for that id"
+	)
+	_expect(
+		doomed.global_position.is_equal_approx(refused),
+		"the node must still move on a refused write, keeping the symptom loud rather than quiet"
+	)
+	_expect(
+		store.position(neighbour.entity_id).is_equal_approx(neighbour_position),
+		"a refused write must leave every other id's stored position exactly as it was"
+	)
+
+	doomed.queue_free()
 	match_instance.queue_free()
 	await process_frame

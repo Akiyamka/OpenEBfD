@@ -1456,6 +1456,95 @@ and by the time we get there the hard part is already tested.
   presentation transform stops being the thing the simulation measures from.
   Whichever slice claims it should also correct B1's inventory line.
 
+  **Slice R1, decided 2026-08-26: buildings get a store-backed position, and
+  the read debt becomes a scheduled program instead of a paragraph.** C2's debt
+  above says the honest thing — reads "come back honestly only when a later
+  slice moves readers onto the store, which is a real slice someone has to
+  schedule". This is that schedule. R1 gives buildings the write path units got
+  in C2. R2 adds a `simulation_position()` accessor on the node and a checker
+  rule forbidding `global_position` *reads* in simulation code, with its exempt
+  list as the work queue, the same ratchet
+  `global-position-bypasses-store` and `animation-completes-simulation` already
+  use. R3 and whatever follows it empty that list one subsystem at a time. The
+  debt is real and current: measured on the tree R1 started from,
+  `global_position` appears 266 times across 55 files, and the
+  `global-position-bypasses-store` pattern matches 33 of those lines — 29
+  whole-vector writes plus four component writes on the RTS camera. C2's own
+  count of "260 times, 49 of them writes" was taken before its migration
+  landed, so the write half has since shrunk by a third while the read half
+  has not moved at all, which is the shape of the debt R2 and R3 exist to
+  clear.
+
+  R1 itself is small, which is the point of splitting it out. `Building` gains
+  `set_simulation_position()`, the same shape and the same store-then-mirror
+  order as `Unit`'s: `SimEntityState.set_position()` first, `global_position`
+  second. Buildings already carried an entity id from C3 and already had
+  health, shields and owner in the store; position was the one field missing,
+  and it was missing only because C2 scoped itself to units. There were exactly
+  two direct writes to a building's `global_position` in `scripts/` —
+  `Match._place_on_map()`'s snap-to-ground loop and
+  `BuildingPlacement.try_place_at_hover_cell()` — and both now route through
+  the method, so `scripts/match/match.gd` leaves the rule's exempt list
+  entirely and `scripts/buildings/building_placement.gd` stays on it for its
+  preview meshes alone. `scripts/buildings/building.gd` joins the list as the
+  sanctioned chokepoint, exactly as `scripts/units/unit.gd` is on it.
+
+  Both write sites run after `add_child()`, so `_ready()` and therefore
+  `_register_entity_id()` have already run and the id is nonzero — the same
+  argument `match.gd` already spells out for the unit loop directly below the
+  building loop. `BuildingPlacement`'s other branch, for a node that is not in
+  the tree, keeps writing local `position`: outside the tree a node has never
+  reached `_ready()`, so it has no id to write a store entry under, and
+  `Node3D.global_position` is not even readable there, which is why that branch
+  exists at all.
+
+  A building is written once, at placement, and then does not move, so
+  `previous_position()` equals `position()` for its whole life and no
+  previous-tick concern was added. The sweep looked for a moving building —
+  walls, upgrades, refinery docks, the sale and refund paths, survivors — and
+  found none: every other position write near a building moves a *child* marker
+  in local space (the rally-point line, the repair effect, the wall and
+  footprint previews), never the building itself.
+
+  **Projectiles and linger effects deliberately do not get entity ids, in this
+  program or any later part of it, and this is a decision rather than a
+  backlog entry.** C2's exempt-list comment used to call it "real, scheduled
+  work"; that wording was wrong and is now corrected in
+  `tools/architecture_rules.toml`. `SimEntityRegistry` allocates ids
+  sequentially from 1 and never reuses one — that is a promise, tested by
+  `_test_freed_entity_releases_and_never_reissues_its_id` — and every
+  `SimEntityState` array is indexed directly by id, so the arrays grow with
+  every id ever allocated rather than with the live count. That trade was
+  costed for units and buildings and it is cheap there: the store now holds 44
+  bytes per id across its ten arrays, and a long match allocates on the order
+  of a hundred thousand of them. Projectiles break the arithmetic that makes it
+  cheap, not by a little: a match produces tens of thousands of them, each
+  alive for a fraction of a second, so an id-indexed store would spend those 44
+  bytes forever on entities that existed for a few ticks. An id-indexed array is simply the wrong shape for a
+  high-churn, short-lived entity. Nothing is lost in the meantime, because a
+  projectile's position is already written only from the simulation tick —
+  `sim_tick()`, plus the `launch()` the tick's own fire committal calls
+  synchronously — so it is deterministic today without a store entry. What a snapshot does with them is
+  phase 5's design question, and it is a different question: it wants a
+  compact serialization of a transient population, not a permanent slot per
+  shot.
+
+  **What the sweep turned up that was on nobody's list:
+  `MatchSnapshot._restore_entities()` restores position by writing
+  `entity.global_transform`, for units as well as buildings, and the store
+  never learns about it.** It is not a rule violation because the rule's
+  pattern matches `global_position`, and `global_transform` is a different
+  spelling of the same write — which is exactly why it survived C2's
+  migration unnoticed. The consequence is concrete: after a snapshot load, a
+  restored entity's node is at the saved position while `SimEntityState` has
+  no position for it at all until something writes one, so
+  `has_position()` answers false for a live entity and the registration-time
+  push added in C4 does not help, because it pushes owner only. It is left
+  unfixed here on purpose — R1 is the building write path and a snapshot
+  restore is not it — but it belongs to whichever slice next touches
+  `MatchSnapshot`, and R2's read rule should widen its pattern to cover
+  `global_transform` rather than repeat this.
+
 - **Phase 4 — determinism gate.** Portable math, RNG split, the static rules
   above wired into `check_architecture.py`, and the CI test that replays one
   command log twice in-process and then compares state hashes across native and

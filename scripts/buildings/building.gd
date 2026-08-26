@@ -367,6 +367,56 @@ func _release_entity_id() -> void:
 	_entity_id = 0
 
 
+## The one sanctioned way to move a building, and the only place in this
+## project permitted to write a building's global_position -- see the
+## global-position-bypasses-store rule in tools/architecture_rules.toml, whose
+## exempt list now names this file for exactly the reason it already names
+## scripts/units/unit.gd. The counterpart of Unit.set_simulation_position()
+## (its own doc comment), same shape and same store-then-mirror order: the
+## running match's SimEntityState (scripts/sim/entity_state.gd) takes the
+## write first, then the node mirrors it, because decision 3 makes the store
+## authoritative and the node a view over it
+## (docs/architecture/network-multiplayer.md, phase 3's R1 paragraph).
+##
+## Two call sites, both at placement: Match._place_on_map()'s snap-to-ground
+## loop over scene-authored buildings, and
+## BuildingPlacement.try_place_at_hover_cell() for one the player builds. That
+## is the whole write surface, because a building is written once and then
+## does not move -- which is why nothing here has to think about the
+## several-writes-in-one-tick shape SimEntityState.begin_tick() exists for on
+## the unit side, and why previous_position() equals position() for a
+## building's whole life. If a building ever does start moving, this is still
+## the method it moves through, and that store already handles it.
+##
+## _entity_id is 0 for the whole life of a building built with no Match in the
+## tree -- most building and combat tests instantiate a Building directly (see
+## _entity_id's own comment) -- and that is not an error: there is no store to
+## be authoritative over, so this simply writes the node, exactly as both call
+## sites did before this method existed.
+##
+## The node is written even when the store refuses the write, the same choice
+## Unit.set_simulation_position() makes -- but the argument for it is not
+## identical on this side, so it is restated rather than inherited. A refusal
+## means an id SimEntityRegistry reports dead, which for a building being
+## placed cannot happen without a deeper bug having happened first, and
+## SimEntityState.set_position() already push_errors it by id. What differs
+## from a unit is the symptom: skipping the node write would not produce the
+## quiet failure Unit warns about -- a building left at its pre-snap authored
+## spot hovers above or sinks into the terrain, which is loud by itself. It
+## would instead stack a second, differently shaped failure on top of the
+## logged one, with the building's visible footprint disagreeing with a
+## placement decision that has already been committed: cells reserved, units
+## pushed out of the way, the anchor cell stamped into metadata. One contract
+## shared by both kinds is worth more than a second rule for the same
+## operation, so this writes the node unconditionally.
+func set_simulation_position(value: Vector3) -> void:
+	if _entity_id != 0:
+		var store = MatchLookupScript.entity_state(self)
+		if store != null:
+			store.set_position(_entity_id, value)
+	global_position = value
+
+
 ## This entity's simulation half. Called once per simulation tick by
 ## Match._advance_simulation_tick() -- see its doc comment for why the tick is
 ## driven centrally instead of from this node's own _process(), and for why
