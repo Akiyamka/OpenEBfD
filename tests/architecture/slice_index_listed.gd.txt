@@ -1,0 +1,16 @@
+extends RefCounted
+
+## Every reference here names a slice the index lists, in the shapes the tree
+## actually writes: plain, capitalised, possessive, and a run of ids after one
+## prefix.
+##
+## Slice C2 made the store authoritative for a unit's position, and slice B4's
+## interpolation reads it. See slice C1/C2 for the split.
+## The tick domain closed first, in slices A1a and A1b.
+## Slices C1-C4 built the hot-state arrays.
+var _position_owner := "SimEntityState"
+
+
+func owner_name() -> String:
+	# slice R2: the read accessor landed here.
+	return _position_owner

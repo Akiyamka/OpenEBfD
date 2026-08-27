@@ -81,9 +81,10 @@ files by glob; a **rule** forbids something inside exactly one zone:
 - **zone `all`** — every `scripts/**/*.gd`. Holds the module boundary rules:
   private owner access (`_unit._x`, `_facade._x`, `_owner._x`, `_source._x`),
   navigation sibling access through the facade, bare `class_name` references
-  without a `preload` (see "Code rules" above for the failure this caused), and
+  without a `preload` (see "Code rules" above for the failure this caused),
   direct `/root/Players` autoload lookups outside
-  `scripts/players/autoload_lookup.gd`.
+  `scripts/players/autoload_lookup.gd`, and `unindexed-slice-reference` — see
+  "The slice index" below.
 - **zone `sim`** — `scripts/sim/**`, live since `match_clock.gd` landed there;
   `allow_empty` is gone, so an empty zone is now an error rather than a
   silently toothless glob. Holds the determinism rules for lockstep
@@ -117,14 +118,50 @@ down as hatches are removed, never up, the same idiom as `max-file-lines` in
 `stale-arch-allow`, so the budget cannot quietly drift into lying about how much
 is suppressed.
 
+### The slice index
+
+Phase 3 was built as numbered slices (`A1a`, `B3d`, `C6b`, `R2b`), and 178
+comments across `scripts/`, `tests/` and `tools/` carry their justification in
+one of those numbers. [`docs/architecture/slices.md`](docs/architecture/slices.md)
+maps each id to the commit that made the change, its date, one clause of what it
+did, and its paragraph in `network-multiplayer.md` where it has one. It is
+history: a slice gets a row when it lands. What is still *owed* lives in the
+`exempt` lists in the manifest, where a queued group shrinks as slices empty it.
+
+Two checks keep it honest, split along what each tool can see:
+
+- `unindexed-slice-reference` (kind `slice-index`) reports any `slice <id>` in
+  `scripts/**/*.gd` whose id has no row. Only the `slice`/`slices` prefix makes
+  a reference a reference — bare `B4` and `C5` are ordinary prose, and a rule
+  that reported those would be switched off within a day. The rule sees its
+  zone only, so references under `tests/` and `tools/` are not covered by it.
+- `check_slice_index_hashes()` in the self-test runs `git rev-parse` over every
+  hash in the table and compares each row's date against its commit. It is in
+  the self-test because the checker itself touches nothing but the filesystem —
+  giving it a git dependency would make its exit code depend on repository
+  state rather than on source content.
+
+**New work carries its slice id as a commit trailer**, which nothing ever asked
+for before and is the reason this had to be reconstructed out of prose:
+
+```
+Slice: R5
+```
+
+Only slice commits need it. The trailer is what makes the index auditable
+(`git log --format='%h %ad %s%n%b' --date=short | grep -B0 '^Slice: '`); the
+ratchet that actually bites is the rule, since the first comment under
+`scripts/` that says `slice R5` fails until `R5` has a row.
+
 ### The checker's own self-test
 
 `tools/test_check_architecture.py` drives the checker over the fixtures in
 `tests/architecture/*.gd.txt`. Run it if a clean result looks suspicious — a
 passing self-test is what makes "no output" trustworthy. Beyond exit codes it
 asserts which rule fired, that zones actually scope (the same fixture is clean
-outside its zone), and, crucially, that **every rule in the manifest has a
-fixture that violates it**. A rule with no failing fixture cannot be told apart
+outside its zone), that every commit hash in the slice index still resolves,
+and, crucially, that **every rule in the manifest has a fixture that violates
+it**. A rule with no failing fixture cannot be told apart
 from a rule that silently stopped matching, so the self-test fails when a new
 rule arrives without one.
 

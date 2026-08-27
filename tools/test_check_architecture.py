@@ -10,6 +10,10 @@ Three things are verified, in increasing order of importance:
     failing fixture is indistinguishable from a rule that silently stopped
     matching, which is the specific way checkers like this rot.
 
+One check here is not about the checker at all: `check_slice_index_hashes()`
+resolves every commit named in `docs/architecture/slices.md` against git. That
+lives here rather than in the `slice-index` rule on purpose — see its docstring.
+
 Fixtures are the `tests/architecture/*.gd.txt` files. Each case copies a few of
 them into a throwaway tree at chosen paths, runs the checker against the real
 manifest, and asserts the exit code plus what the report says.
@@ -18,6 +22,7 @@ manifest, and asserts the exit code plus what the report says.
 from __future__ import annotations
 
 import dataclasses
+import re
 import shutil
 import subprocess
 import sys
@@ -70,6 +75,10 @@ class Case:
     forbid_rules: tuple[str, ...] = ()
     allow_budget: int | None = None
     manifest: str | None = None
+    # Inline docs/architecture/slices.md for this case. Cases that leave it
+    # None get the repo's real index copied in, so a fixture may cite any slice
+    # that actually happened.
+    index: str | None = None
 
 
 def sim(fixture: str) -> dict[str, str]:
@@ -393,6 +402,87 @@ CASES: tuple[Case, ...] = (
         manifest=MINIMAL_MANIFEST.replace("allow_budget = 0", "allow_budget = -1"),
         expect_text=("must be an integer >= 0",),
     ),
+    # -- slice index ----------------------------------------------------------
+    Case(
+        "a slice reference with no row in the index",
+        scripts("slice_index_unlisted"),
+        EXIT_FINDINGS,
+        expect_rules=("unindexed-slice-reference",),
+        expect_text=("(Z9)", "docs/architecture/slices.md"),
+    ),
+    Case(
+        # Guards the pattern from the other direction: every shape the tree
+        # writes -- plain, capitalised, possessive, `slice C1/C2`, `slices A1a
+        # and A1b`, `Slices C1-C4` -- must resolve against the real index. A
+        # pattern that stopped matching would pass the case above by accident
+        # and only this one catches it.
+        "every reference shape the tree writes resolves against the real index",
+        scripts("slice_index_listed"),
+        EXIT_CLEAN,
+    ),
+    Case(
+        # `B4` and `C5` are two characters of ordinary English. Without the
+        # `slice`/`slices` prefix requirement this rule would report prose and
+        # be switched off within a day.
+        "bare ids and ordinary prose about slices are not references",
+        scripts("slice_index_prose"),
+        EXIT_CLEAN,
+    ),
+    Case(
+        # Two properties in one case, against the fixture that fails above:
+        # adding Z9's row silences the rule (so the index is what the rule
+        # reads, not something it approximates), and Q1's row -- which nothing
+        # in the tree references -- is not itself a finding, because the index
+        # is history and history stays.
+        "a row silences the reference, and an unreferenced row is not an error",
+        scripts("slice_index_unlisted"),
+        EXIT_CLEAN,
+        index=(
+            "| slice | commit | date |\n"
+            "| --- | --- | --- |\n"
+            "| `Z9` | `deadbee` | 2026-01-01 |\n"
+            "| `Q1` | `deadbee` | 2026-01-01 |\n"
+        ),
+    ),
+    Case(
+        "a missing slice index is a broken check, not a finding",
+        scripts("clean"),
+        EXIT_BROKEN_CONFIG,
+        index="",
+        expect_text=("slice index not found",),
+    ),
+    Case(
+        "a slice index with no rows is a broken check, not a finding",
+        scripts("clean"),
+        EXIT_BROKEN_CONFIG,
+        index="# Phase 3 slice index\n\nNothing here yet.\n",
+        expect_text=("no slice rows found",),
+    ),
+    Case(
+        "slice-index takes no pattern",
+        scripts("clean"),
+        EXIT_BROKEN_CONFIG,
+        manifest=MINIMAL_MANIFEST.replace(
+            "pattern = 'foo'", 'kind = "slice-index"\nindex = "x.md"\npattern = \'foo\''
+        ),
+        expect_text=("`slice-index` takes no `pattern`",),
+    ),
+    Case(
+        "slice-index without an index path is an error",
+        scripts("clean"),
+        EXIT_BROKEN_CONFIG,
+        manifest=MINIMAL_MANIFEST.replace("pattern = 'foo'", 'kind = "slice-index"'),
+        expect_text=("needs `index`",),
+    ),
+    Case(
+        "index on a kind that has no use for it is an error",
+        scripts("clean"),
+        EXIT_BROKEN_CONFIG,
+        manifest=MINIMAL_MANIFEST.replace(
+            "pattern = 'foo'", "pattern = 'foo'\nindex = \"x.md\""
+        ),
+        expect_text=("only meaningful for `slice-index`",),
+    ),
 )
 
 
@@ -413,6 +503,22 @@ def run_case(case: Case) -> list[str]:
             destination.startswith("scripts/sim/") for destination in files
         ):
             files["scripts/sim/_zone_filler.gd"] = "sim_clean"
+        # Same shape as the zone filler above, for the same reason. The real
+        # manifest's `unindexed-slice-reference` resolves its index against the
+        # scanned root, so a throwaway tree needs one or the checker errors out
+        # on a missing index before it reaches what the case is testing. Cases
+        # that set `index` supply their own (`""` deletes it, which is how the
+        # missing-index case is written); cases with their own manifest do not
+        # declare the rule at all and need nothing.
+        if case.manifest is None and case.index != "":
+            index_path = root / "docs" / "architecture" / "slices.md"
+            index_path.parent.mkdir(parents=True, exist_ok=True)
+            index_path.write_text(
+                case.index
+                if case.index is not None
+                else (ROOT / "docs/architecture/slices.md").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
         for destination, fixture in files.items():
             target = root / destination
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -473,6 +579,101 @@ def check_glob_translation() -> list[str]:
     return failures
 
 
+SLICE_INDEX = ROOT / "docs/architecture/slices.md"
+
+
+def git_root() -> Path | None:
+    """Find a repository to resolve the index's hashes against, or None.
+
+    Tried in two places because this file does not always run from a clone.
+    `tools/hooks/pre-commit` extracts the *staged* tree with `git
+    checkout-index` into a temp directory and runs this copy of the self-test
+    from there, so `ROOT` is a directory with no `.git` in it -- while the
+    process's working directory is still the real repository, which is where
+    the staged table's hashes have to exist anyway. Falling back to the cwd is
+    what makes the hook check the staged table against real history.
+    """
+    for candidate in (["-C", str(ROOT)], []):
+        found = subprocess.run(
+            ["git", *candidate, "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True,
+        )
+        if found.returncode == 0 and found.stdout.strip():
+            return Path(found.stdout.strip())
+    return None
+
+
+def check_slice_index_hashes(repo: Path) -> list[str]:
+    """Every commit named in the slice index must still resolve, with its date.
+
+    This is here rather than in the `slice-index` rule because the checker
+    touches nothing but the filesystem: no subprocess, no git. Teaching it to
+    shell out would make its exit code depend on repository state rather than
+    on source content — it would fail in a shallow clone, in an exported
+    tarball, and in this file's own throwaway fixture trees, which are not git
+    repositories at all. The rule keeps the half that is about the code (a
+    reference must name a row); this keeps the half that is about the history
+    (a row must name a commit), and a rotted hash is exactly the failure the
+    index would otherwise develop quietly.
+
+    `—` in the commit cell is a deliberate absence — a parent slice delivered
+    entirely through its lettered children — and is checked as such, so it
+    cannot be used to hide a hash nobody could find.
+    """
+    rows = [
+        line
+        for line in SLICE_INDEX.read_text(encoding="utf-8").splitlines()
+        if check_architecture.SLICE_INDEX_ROW_RE.match(line)
+    ]
+    if not rows:
+        return [f"{SLICE_INDEX}: no slice rows found"]
+
+    failures: list[str] = []
+    seen: set[str] = set()
+    for line in rows:
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        slice_id = cells[0].strip("`")
+        if slice_id in seen:
+            failures.append(f"{slice_id}: listed twice")
+        seen.add(slice_id)
+        commits, date = cells[1], cells[2]
+        hashes = re.findall(r"`([0-9a-f]{7,40})`", commits)
+        if not hashes:
+            if commits != "—":
+                failures.append(
+                    f"{slice_id}: commit cell {commits!r} holds neither a hash "
+                    "nor the `—` that means the slice deliberately had none"
+                )
+            continue
+        for index, commit in enumerate(hashes):
+            shown = subprocess.run(
+                ["git", "show", "-s", "--format=%h %ad", "--date=short",
+                 f"{commit}^{{commit}}"],
+                cwd=repo, capture_output=True, text=True,
+            )
+            if shown.returncode != 0:
+                failures.append(
+                    f"{slice_id}: `{commit}` does not resolve to a commit "
+                    f"({shown.stderr.strip()})"
+                )
+                continue
+            # Only the leading commit dates the row; the companions in the
+            # same cell are scope records and corrections, which may land on
+            # other days by definition.
+            if index == 0:
+                actual = shown.stdout.split()[1]
+                if actual != date:
+                    failures.append(
+                        f"{slice_id}: row says {date}, `{commit}` is dated {actual}"
+                    )
+    if failures:
+        failures.append(
+            f"Fix {SLICE_INDEX.relative_to(ROOT)} — a row that points at nothing "
+            "is worse than no row, because it reads like a citation."
+        )
+    return failures
+
+
 def check_rule_coverage() -> list[str]:
     """Every rule in the real manifest must have a case that expects it to fire."""
     manifest = check_architecture.load_manifest(RULES)
@@ -495,10 +696,25 @@ def check_rule_coverage() -> list[str]:
 def main() -> int:
     failed = 0
 
-    for name, failures in (
+    checks = [
         ("glob translation", check_glob_translation()),
         ("rule coverage", check_rule_coverage()),
-    ):
+    ]
+    # Reported, and subtracted from the count, rather than passed quietly: a
+    # check that cannot run must not look like one that ran and was happy.
+    skipped: list[str] = []
+    repo = git_root()
+    if repo is None:
+        skipped.append(
+            "slice index hashes — no git repository found from "
+            f"{ROOT} or {Path.cwd()}, so the commit hashes in "
+            "docs/architecture/slices.md went unverified. Any run inside a "
+            "clone, including CI, does check them."
+        )
+    else:
+        checks.append(("slice index hashes", check_slice_index_hashes(repo)))
+
+    for name, failures in checks:
         if failures:
             failed += 1
             print(f"FAIL {name}", file=sys.stderr)
@@ -513,10 +729,12 @@ def main() -> int:
             for failure in failures:
                 print(f"  {failure}", file=sys.stderr)
 
-    total = len(CASES) + 2
+    total = len(CASES) + len(checks)
     if failed:
         print(f"\n{failed} of {total} architecture checker tests failed", file=sys.stderr)
         return 1
+    for note in skipped:
+        print(f"SKIP {note}", file=sys.stderr)
     print(f"architecture checker self-test: {total} checks passed")
     return 0
 

@@ -1,0 +1,15 @@
+extends RefCounted
+
+## Ordinary prose that must not be mistaken for a slice reference. `B4` and
+## `C5` are two characters long and turn up by accident, which is why only the
+## `slice`/`slices` prefix makes a reference a reference.
+##
+## This node sits in the tree between two slices. Write slices do not migrate
+## readers. The buffer is cut into equal slices of real time for later slices
+## and tests that need a way to measure them. B4 made staleness real rather
+## than theoretical, and C5 changed nothing here.
+var _buffer := []
+
+
+func slices() -> int:
+	return _buffer.size()

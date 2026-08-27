@@ -439,6 +439,13 @@ on nothing but attention.
 The ordering is deliberate: **nothing on this list needs a socket until phase 5**,
 and by the time we get there the hard part is already tested.
 
+Phase 3's work is numbered in slices, and the paragraphs below argue them
+rather than list them: 11 of the ids mentioned here get a paragraph of their
+own and the rest appear only inside someone else's. [`slices.md`](slices.md) is
+the lookup — every slice id, the commit that made the change, and a link back
+to the paragraph here where there is one. Start there when a comment in the
+source cites a number you cannot place.
+
 - **Phase 0 — plumbing. Done 2026-08-18.** Transport interface, in-memory
   loopback, relay skeleton with a container image. No game logic touched.
   Shipped as `scripts/net/`: `net_transport.gd` (the contract),

@@ -455,6 +455,23 @@ test failure.
 instead = 'const XScript := preload("res://path/to/script.gd") in this file'
 
 
+[[rules]]
+id = "unindexed-slice-reference"
+zone = "all"
+kind = "slice-index"
+# Read against the scanned root, so pointing the checker at a fixture tree
+# judges that tree by its own index. The reference pattern itself is in the
+# checker, next to the code that splits `slice C1/C2` into two ids: the two
+# have to agree exactly, and a manifest that could set them out of step would
+# be a rule matching nothing.
+index = "docs/architecture/slices.md"
+summary = "comment cites a slice with no row in the slice index"
+why = """
+178 comments across scripts/, tests/ and tools/ carry their justification in a slice number, and for most of phase 3 nothing mapped a number to the change that made it -- commit subjects almost never named their own slice, and the design doc gives only 11 of 18 mentioned ids a paragraph. A number that resolves to nothing is worse than no number: it reads like a citation and costs a reader the search before they find out it is not one. docs/architecture/slices.md is that mapping, and this rule is what stops it falling behind the code that cites it -- the first comment naming a new slice fails until the slice has a row.
+"""
+instead = "add the slice to docs/architecture/slices.md with its commit, date and one clause, or drop the id from the comment and say what changed instead"
+
+
 # ---------------------------------------------------------------------------
 # Determinism rules for the simulation layer
 #

@@ -1,0 +1,13 @@
+extends RefCounted
+
+## A comment that justifies itself by citing a slice with no row in
+## docs/architecture/slices.md. The number reads like a citation and resolves
+## to nothing, which costs a reader the search before they find that out.
+var _pending := 0
+
+
+## Since slice Z9 the caller owns the drain, so this may run mid-tick.
+func drain() -> int:
+	var drained := _pending
+	_pending = 0
+	return drained

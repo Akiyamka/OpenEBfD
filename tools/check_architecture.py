@@ -3,12 +3,13 @@
 
 Rules live as data in tools/architecture_rules.toml: a *zone* selects files by
 glob, a *rule* forbids something inside one zone. This module supplies the
-scanning, the escape-hatch bookkeeping and the three rule kinds a rule can ask
+scanning, the escape-hatch bookkeeping and the four rule kinds a rule can ask
 for:
 
     forbid              regex over source with comments and string bodies removed
     forbid-in-strings   regex over source with comments removed, strings kept
     require-preload     every `SomeClass.` needs a preload of its script
+    slice-index         every `slice <id>` reference names a row in the index
 
 Findings are reported as `path:line: rule-id: summary`, so editors and CI can
 jump to them, followed by indented `why`, `instead` and the offending line.
@@ -50,12 +51,14 @@ EXIT_BROKEN_CONFIG = 2
 DEFAULT_RULES_PATH = "tools/architecture_rules.toml"
 SCAN_GLOB = "scripts/**/*.gd"
 
-RULE_KINDS = frozenset({"forbid", "forbid-in-strings", "require-preload"})
+RULE_KINDS = frozenset(
+    {"forbid", "forbid-in-strings", "require-preload", "slice-index"}
+)
 
 SETTINGS_KEYS = frozenset({"allow_budget", "min_reason_length"})
 ZONE_KEYS = frozenset({"description", "include", "exclude", "allow_empty"})
 RULE_KEYS = frozenset(
-    {"id", "zone", "kind", "pattern", "exempt", "summary", "why", "instead"}
+    {"id", "zone", "kind", "pattern", "index", "exempt", "summary", "why", "instead"}
 )
 
 RULE_ID_RE = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
@@ -64,6 +67,35 @@ PRELOAD_RE = re.compile(r"""preload\s*\(\s*["'](res://[^"']+)["']\s*\)""")
 HATCH_RE = re.compile(r"#\s*arch-allow\s*:\s*(?P<body>.+)$")
 HATCH_SEPARATOR_RE = re.compile(r"\s*(?:—|–|--|:)\s*")
 HATCH_IDS_RE = re.compile(r"^[a-z0-9-]+(?:\s*,\s*[a-z0-9-]+)*$")
+
+# --- slice references ------------------------------------------------------
+#
+# A phase 3 slice id is an uppercase group letter, a number, and an optional
+# lowercase sub-letter: A1a, B3d, C6b, R2b. Bare ids are NOT matched, and that
+# is the whole design: `B4` and `C5` are two characters of ordinary prose, and
+# a rule that reported every one of them would be turned off within a day. The
+# `slice`/`slices` prefix is what makes a reference a reference.
+#
+# Ids may come in a run after one prefix -- the tree writes `slice C1/C2`, and
+# `slices A1a and A1b` and `slices C1-C4` are the same shape -- so the prefix
+# match captures the whole run and every id inside it is checked. A range is
+# read as its endpoints, not expanded: `slices C1-C4` asks for C1 and C4, which
+# is what the text literally says.
+#
+# These live in code rather than in the manifest, unlike `forbid`'s pattern,
+# because the run-splitting below has to agree with them exactly. A manifest
+# that could set the two out of step is a rule that silently matches nothing,
+# which is the failure this checker exists to prevent -- the same reason
+# `require-preload` keeps its regexes here too.
+_SLICE_ID = r"[A-Z][0-9]+[a-z]?"
+SLICE_REFERENCE_RE = re.compile(
+    rf"\b[Ss]lices?\s+({_SLICE_ID}(?:\s*(?:/|,|-|\u2013|and)\s*{_SLICE_ID})*)"
+    r"(?![A-Za-z0-9])"
+)
+SLICE_ID_RE = re.compile(_SLICE_ID)
+# A row in docs/architecture/slices.md: the first table cell is the id, with or
+# without the backticks the table happens to wrap it in today.
+SLICE_INDEX_ROW_RE = re.compile(rf"^\|\s*`?({_SLICE_ID})`?\s*\|")
 
 REPORT_WIDTH = 96
 
@@ -106,6 +138,7 @@ class Rule:
     why: str
     instead: str
     pattern: re.Pattern[str] | None
+    index: str | None
     exempt: tuple[re.Pattern[str], ...]
 
     def applies_to(self, relative: str) -> bool:
@@ -249,9 +282,9 @@ def load_manifest(path: Path) -> Manifest:
             )
 
         pattern_source = table.get("pattern")
-        if kind == "require-preload":
+        if kind in ("require-preload", "slice-index"):
             if pattern_source is not None:
-                raise ConfigError(f"{where}: `require-preload` takes no `pattern`")
+                raise ConfigError(f"{where}: `{kind}` takes no `pattern`")
             pattern = None
         else:
             if not isinstance(pattern_source, str) or not pattern_source:
@@ -260,6 +293,17 @@ def load_manifest(path: Path) -> Manifest:
                 pattern = re.compile(pattern_source)
             except re.error as error:
                 raise ConfigError(f"{where}: invalid pattern: {error}") from error
+
+        index = table.get("index")
+        if kind == "slice-index":
+            if not isinstance(index, str) or not index.strip():
+                raise ConfigError(
+                    f"{where}: `slice-index` needs `index`, the path to the slice "
+                    "index it checks references against"
+                )
+            index = index.strip()
+        elif index is not None:
+            raise ConfigError(f"{where}: `index` is only meaningful for `slice-index`")
 
         rules.append(
             Rule(
@@ -270,6 +314,7 @@ def load_manifest(path: Path) -> Manifest:
                 why=_text(table, "why", where),
                 instead=_text(table, "instead", where),
                 pattern=pattern,
+                index=index,
                 exempt=tuple(
                     glob_to_regex(item)
                     for item in _string_list(table.get("exempt", []), f"{where}.exempt")
@@ -510,6 +555,84 @@ def _require_preload(
     return findings
 
 
+def load_slice_index(path: Path) -> frozenset[str]:
+    """Read the slice ids listed in docs/architecture/slices.md.
+
+    Resolved against the *scanned* root, not against this script's repository,
+    for the same reason zones are: `--rules` exists so the checker can be
+    pointed at a throwaway fixture tree, and an index read from somewhere else
+    would judge that tree by another tree's history.
+
+    A missing or rowless index is a ConfigError rather than a finding. Exit 1
+    would say the code is wrong; the code is not wrong, the check is -- and a
+    slice-index rule with nothing to compare against would silently accept
+    every reference in the tree, which is precisely the shape of failure this
+    checker exists to make impossible.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError as error:
+        raise ConfigError(
+            f"slice index not found: {path}. The `slice-index` rule cannot "
+            "check references against a file that does not exist."
+        ) from error
+    ids = {
+        match.group(1)
+        for line in text.splitlines()
+        if (match := SLICE_INDEX_ROW_RE.match(line)) is not None
+    }
+    if not ids:
+        raise ConfigError(
+            f"{path}: no slice rows found. Rows are table lines whose first "
+            "cell is a slice id (`| `C5` | ... |`); an index that parses to "
+            "nothing would accept every reference in the tree."
+        )
+    return frozenset(ids)
+
+
+def _slice_index(
+    rule: Rule, sources: list[Source], indexed: frozenset[str]
+) -> list[Finding]:
+    """Report `slice <id>` references whose id has no row in the index.
+
+    Scans `raw` rather than `code`, unlike every other kind: slice references
+    live in comments almost without exception, so the comment-stripped views
+    the forbid kinds use would see none of them.
+
+    The reverse direction is deliberately not checked. An index row that
+    nothing references is not an error -- the index is history, and history
+    stays after the last comment citing it is deleted.
+
+    Line-based like every other kind, which costs one thing worth naming: a
+    run wrapped across a line break (`slices C2` / `and R1`, as the manifest's
+    own prose does it) has only the ids before the break checked. Paragraph
+    scanning would fix that and would cost the line number every finding is
+    reported at; in practice a continuation id is cited on a line of its own
+    somewhere else in the tree.
+    """
+    findings: list[Finding] = []
+    for source in sources:
+        for number, line in enumerate(source.raw, 1):
+            missing: list[str] = []
+            for match in SLICE_REFERENCE_RE.finditer(line):
+                for slice_id in SLICE_ID_RE.findall(match.group(1)):
+                    if slice_id not in indexed and slice_id not in missing:
+                        missing.append(slice_id)
+            for slice_id in missing:
+                findings.append(
+                    Finding(
+                        relative=source.relative,
+                        line=number,
+                        rule_id=rule.id,
+                        summary=f"{rule.summary} ({slice_id})",
+                        why=rule.why,
+                        instead=rule.instead,
+                        code=line.strip(),
+                    )
+                )
+    return findings
+
+
 def collect_class_paths(sources: list[Source]) -> dict[str, str]:
     """Map every declared `class_name` to the script that declares it.
 
@@ -525,7 +648,7 @@ def collect_class_paths(sources: list[Source]) -> dict[str, str]:
     return class_paths
 
 
-def run_rules(manifest: Manifest, sources: list[Source]) -> list[Finding]:
+def run_rules(manifest: Manifest, sources: list[Source], root: Path) -> list[Finding]:
     class_paths = collect_class_paths(sources)
     findings: list[Finding] = []
     for rule in manifest.rules:
@@ -534,6 +657,11 @@ def run_rules(manifest: Manifest, sources: list[Source]) -> list[Finding]:
             continue
         if rule.kind == "require-preload":
             findings.extend(_require_preload(rule, in_scope, class_paths))
+        elif rule.kind == "slice-index":
+            assert rule.index is not None
+            findings.extend(
+                _slice_index(rule, in_scope, load_slice_index(root / rule.index))
+            )
         else:
             findings.extend(_forbid(rule, in_scope))
     return findings
@@ -611,7 +739,7 @@ def check(root: Path, rules_path: Path, allow_budget: int | None) -> int:
                 "`allow_empty = true` if the zone is staged ahead of the code."
             )
 
-    findings, hatches = apply_hatches(sources, run_rules(manifest, sources))
+    findings, hatches = apply_hatches(sources, run_rules(manifest, sources, root))
     findings.extend(stale_hatch_findings(hatches))
     findings.sort(key=lambda finding: finding.sort_key)
 
