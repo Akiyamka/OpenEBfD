@@ -89,6 +89,8 @@ const LegacyRulesFixture := preload("res://tests/support/legacy_rules_fixture.gd
 const MatchFixtureScene := preload("res://tests/fixtures/match_fixture.tscn")
 const UnitScene := preload("res://scenes/units/unit.tscn")
 const ConYardScene := preload("res://assets/converted/buildings/ATConYard/ATConYard.scn")
+const MatchSnapshotScript := preload("res://scripts/match/match_snapshot.gd")
+const SNAPSHOT_TEST_PATH := "user://entity_state_snapshot_test.json"
 
 var _assertions := 0
 var _failures := 0
@@ -165,6 +167,11 @@ func _initialize() -> void:
 	await _run_case(
 		"simulation_position() falls back to the node for a unit with no Match in the tree",
 		_test_simulation_position_falls_back_with_no_match
+	)
+	await _run_case(
+		"an entity MatchSnapshot restores into a live Match lands in the store, not only on "
+			+ "the node",
+		_test_snapshot_restore_reaches_the_store
 	)
 
 	if _failures > 0:
@@ -1031,4 +1038,93 @@ func _test_simulation_position_falls_back_with_no_match() -> void:
 	)
 
 	unit.queue_free()
+	await process_frame
+
+
+## MatchSnapshot's restore used to write `entity.global_transform` and stop
+## there, which left the store with no entry at all for a live entity: neither
+## Unit._register_entity_id() nor Building's pushes a position, only an owner.
+## The visible consequence was slice B4's interpolation silently skipping every
+## restored entity, because it checks has_position() first; the structural one
+## is that any migrated reader (slice R2 onward) would get Vector3.INF and a
+## push_error for an entity standing in plain sight.
+##
+## Driven inside a real Match rather than in tests/match/snapshot_run.gd,
+## deliberately: that suite's fixture (tests/fixtures/snapshot_fixture.tscn) is
+## a bare Node3D with no Match anywhere in it, so MatchLookup finds nothing,
+## entity_id stays 0 and the store is never involved -- the defect is invisible
+## there by construction, which is exactly why it survived slice C2.
+##
+## The control is the node's own transform: it must land where it was saved
+## whether or not the store hears about it, so asserting only that would pass
+## against the defect. What distinguishes them is has_position() and the store
+## agreeing with the node.
+func _test_snapshot_restore_reaches_the_store() -> void:
+	var snapshot = MatchSnapshotScript.new(SNAPSHOT_TEST_PATH)
+	snapshot.erase()
+
+	var source := MatchFixtureScene.instantiate()
+	get_root().add_child(source)
+	for _warmup in 5:
+		await process_frame
+	var saved_position: Vector3 = (source.get_node("Units/OrdosAPC") as Unit).global_position
+	var save_result: Dictionary = snapshot.save(source.get_node("Buildings"), source.get_node("Units"))
+	_expect(bool(save_result.get("ok", false)), "the snapshot must be written before it can be restored")
+	source.queue_free()
+	await process_frame
+
+	var match_instance := MatchFixtureScene.instantiate()
+	get_root().add_child(match_instance)
+	for _warmup in 5:
+		await process_frame
+	# The fixture boots with its own OrdosAPC, so clear the Units root first:
+	# restoring on top of it would leave two nodes contending for the name and
+	# make "the restored one" ambiguous.
+	for child in match_instance.get_node("Units").get_children():
+		match_instance.get_node("Units").remove_child(child)
+		child.queue_free()
+	await process_frame
+
+	var restore_result: Dictionary = snapshot.restore(
+		match_instance.get_node("Buildings"), match_instance.get_node("Units")
+	)
+	_expect(bool(restore_result.get("ok", false)), "the snapshot must restore into the live match")
+	await process_frame
+
+	var restored := match_instance.get_node_or_null("Units/OrdosAPC") as Unit
+	_expect(restored != null, "the saved OrdosAPC must exist after the restore")
+	if restored == null:
+		snapshot.erase()
+		match_instance.queue_free()
+		await process_frame
+		return
+
+	var store = match_instance.entity_state()
+	_expect(store != null, "Match must expose a live SimEntityState")
+	if store == null:
+		snapshot.erase()
+		match_instance.queue_free()
+		await process_frame
+		return
+
+	# Control: true with the defect present as well as absent.
+	_expect(
+		restored.global_position.is_equal_approx(saved_position),
+		"control: the restored node must stand where it was saved -- if this fails the case below "
+			+ "proves nothing about the store"
+	)
+	_expect(restored.entity_id != 0, "the restored entity must have registered an id")
+	_expect(
+		store.has_position(restored.entity_id),
+		"the store must hold a position for a restored entity -- writing global_transform alone "
+			+ "leaves has_position() false for something standing in plain sight"
+	)
+	if store.has_position(restored.entity_id):
+		_expect(
+			store.position(restored.entity_id).is_equal_approx(restored.global_position),
+			"the store's position for a restored entity must agree with the node it was mirrored from"
+		)
+
+	snapshot.erase()
+	match_instance.queue_free()
 	await process_frame

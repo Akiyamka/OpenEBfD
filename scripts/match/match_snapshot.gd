@@ -128,6 +128,18 @@ func _restore_entities(records: Array, root: Node3D, expected_type) -> int:
 		entity.set("owner_player_id", int(record.get("owner_player_id", 0)))
 		root.add_child(entity)
 		entity.global_transform = _decode_transform(record.get("transform", {}))
+		# The assignment above is the only way to restore *rotation* --
+		# SimEntityState holds a position and nothing else -- but on its own it
+		# left the store never hearing about a restored entity at all:
+		# _register_entity_id() (Unit's and Building's alike) pushes owner, not
+		# position, so has_position() answered false for a live entity and slice
+		# B4's interpolation skipped it. Pushing the landed position back
+		# through the sanctioned setter is what makes the node and the store
+		# agree again. Duck-typed because both kinds reach this loop and only
+		# `expected_type` tells them apart; harmlessly a node-only write when
+		# there is no Match in the tree, which is every snapshot suite.
+		if entity.has_method("set_simulation_position"):
+			entity.call("set_simulation_position", entity.global_position)
 		_restore_entity_details(entity, record)
 		restored += 1
 	return restored

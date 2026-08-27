@@ -225,21 +225,21 @@ exempt = [
 	"scripts/units/navigation/unit_navigation_debug.gd",
 	"scripts/units/unit_authored_collision.gd",
 	"scripts/world/map/map_loader.gd",
-	# Proven defective, awaiting a slice -- the one entry here that is a
-	# backlog item rather than a decision, labelled the way
-	# animation-completes-simulation labels UnitLocomotion.
-	# MatchSnapshot._restore_entities() restores a unit's or a building's
-	# position by writing `entity.global_transform` after add_child(), and the
-	# store never learns about it: Unit._register_entity_id() and
-	# Building._register_entity_id() push owner only, so has_position() answers
-	# false for a live, restored entity and position() push_errors. It survived
-	# slice C2's migration precisely because this pattern said `global_position`
-	# and this line says `global_transform` -- the same write under a second
-	# spelling, which is why R2 widened the pattern rather than leave the hole
-	# open for the next one. R1's sweep found it; R2 exempts it without fixing
-	# it, because a snapshot restore is not R2's scope. Delete this entry when
-	# the write routes through set_simulation_position(). See
-	# docs/architecture/network-multiplayer.md, phase 3's R1 and R2 paragraphs.
+	# Sanctioned, and no longer the backlog item R2 left here.
+	# MatchSnapshot._restore_entities() writes `entity.global_transform`
+	# because that is the only way to restore an entity's *rotation* --
+	# SimEntityState holds a position and nothing else. Until R2b the line
+	# stopped there, and the store never learned about a restored entity at
+	# all: _register_entity_id() pushes owner, not position, so has_position()
+	# answered false for something standing in plain sight and slice B4's
+	# interpolation skipped it. It had survived slice C2's migration precisely
+	# because that pattern said `global_position` while this line says
+	# `global_transform` -- the same write under a second spelling, which is
+	# why R2 widened the pattern. R2b pushes the landed position straight back
+	# through set_simulation_position(), so the write below is now followed by
+	# the store write it used to skip, and this entry exempts the rotation
+	# assignment rather than a defect. See
+	# docs/architecture/network-multiplayer.md, phase 3's R2b paragraph.
 	"scripts/match/match_snapshot.gd",
 ]
 summary = "global_position or global_transform written directly instead of through SimEntityState"
@@ -313,6 +313,16 @@ exempt = [
 	"scripts/combat/fx/impact_debris.gd",
 	"scripts/combat/turret/combat_turret_fx.gd",
 	"scripts/match/unit_command_controller.gd",
+	# MatchSnapshot._capture_entity() saves `entity.global_transform` rather
+	# than the store's position. Permanent rather than queued, decided with the
+	# tool's owner in slice R2b: F7/Shift+F7 snapshots are a throwaway debug
+	# convenience whose files are expected to be lost, and a real save/load
+	# system supersedes the whole file later -- migrating this read would buy
+	# nothing that survives that. The read is also correct as it stands, since
+	# inside a match the node's transform is the store's own mirror; what was
+	# actually broken was the restore side, and R2b fixed that rather than
+	# documenting it.
+	"scripts/match/match_snapshot.gd",
 	"scripts/ui/selection_halo_binding.gd",
 	"scripts/units/navigation/navigation_grid_debug.gd",
 	"scripts/units/unit_authored_collision.gd",
@@ -373,18 +383,15 @@ exempt = [
 	"scripts/units/unit_deployment_controller.gd",  # 2
 	"scripts/units/unit_roster_controller.gd",  # 2
 	"scripts/units/unit.gd",  # 1
-	# Match and world -- 5 files, 8 reads. Command execution, the carryall
+	# Match and world -- 4 files, 7 reads. Command execution, the carryall
 	# ability's nearest-candidate search, the snap-to-ground seeding loop in
-	# Match._place_on_map(), and spice hazard damage. match_snapshot.gd is
-	# here for its *read* half -- _capture_entity() saves the node's
-	# global_transform rather than the store's position -- the mirror image of
-	# the restore-side defect the write rule's exempt list above describes; one
-	# slice should take both.
+	# Match._place_on_map(), and spice hazard damage. match_snapshot.gd used to
+	# be counted here for its read half; slice R2b moved it up to the permanent
+	# group instead -- see its entry there.
 	"scripts/match/advanced_carryall_ability.gd",  # 2
 	"scripts/match/match.gd",  # 2
 	"scripts/world/map/map_spice_hazard.gd",  # 2
 	"scripts/match/command_executor.gd",  # 1
-	"scripts/match/match_snapshot.gd",  # 1
 	#
 	# Migrated and gone from this list, which is the point of keeping it:
 	# scripts/units/harvester_controller.gd (7 reads), by slice R2 itself.

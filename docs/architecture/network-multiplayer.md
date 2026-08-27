@@ -1637,7 +1637,8 @@ and by the time we get there the hard part is already tested.
   `UnitLocomotion` "proven defective" — not fixed here, because a snapshot
   restore is not R2's scope. Its read-side mirror image, `_capture_entity()`
   saving `entity.global_transform` instead of the store's position, is on the
-  read rule's queued list; one slice should take both. Widening the pattern cost
+  read rule's queued list. (Slice R2b below took the restore side and settled
+  the read side the other way; both entries now say so.) Widening the pattern cost
   eight further exemptions, all of them view nodes that were never entities: a
   ground decal, a laser beam, a corpse, two debug overlays, a unit's authored
   collision shape and the map's sun.
@@ -1681,6 +1682,39 @@ and by the time we get there the hard part is already tested.
   and it is worth stating because R3's navigation work will pay it at a much
   larger scale — every navigation fixture that drives a bare `Node3D` becomes a
   double that has to implement this method.
+
+  **Slice R2b, decided 2026-08-27: the snapshot restore, and a defect that
+  turned out to be one-sided.** R2 recorded `MatchSnapshot` as broken on both
+  sides. It is not. `_capture_entity()` reads `entity.global_transform`, and
+  inside a match that transform's translation *is* the store's own mirror, so
+  the value it saves is correct — the read violates the rule without producing a
+  wrong answer. Only the restore was a defect, and only in one line: the
+  `global_transform` assignment restores rotation, which nothing else can (the
+  store holds a position and nothing more), and then stopped, leaving
+  `has_position()` false for a live entity. The fix pushes the landed position
+  straight back through `set_simulation_position()`. The write rule's exemption
+  stays, because the rotation assignment itself is still a direct write and
+  still necessary; what changed is that it is labelled sanctioned rather than
+  defective.
+
+  The read side is deliberately *not* migrated, and that is a decision rather
+  than a deferral. F7/Shift+F7 snapshots are a throwaway debug convenience whose
+  files are expected to be lost, and a real save/load system supersedes the
+  whole file later, so a migrated read there buys nothing that outlives it. Its
+  entry moved from the read rule's queued group to the permanent one with that
+  reason attached, which is what keeps the queue meaning "work someone will do".
+
+  Two things worth keeping from how this was found. The test could not live in
+  `tests/match/snapshot_run.gd`, whose fixture is a bare `Node3D` with no
+  `Match` in it: `MatchLookup` finds nothing there, `entity_id` stays 0 and the
+  store is never involved, so the defect is invisible in the suite that owns the
+  feature — which is exactly why it survived C2. It lives in
+  `tests/match/entity_state_run.gd` instead, driven inside a real match, with
+  the restored node's own transform as the control, since that lands correctly
+  with the defect present as well as absent. And the defect's whole lifetime was
+  spent under a rule that could not see it: `global-position-bypasses-store`
+  said `global_position` while the line said `global_transform`. A rule is only
+  as wide as its spelling, and the cost of finding that out was two slices.
 
 - **Phase 4 — determinism gate.** Portable math, RNG split, the static rules
   above wired into `check_architecture.py`, and the CI test that replays one
