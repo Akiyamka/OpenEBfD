@@ -173,6 +173,11 @@ func _initialize() -> void:
 			+ "the node",
 		_test_snapshot_restore_reaches_the_store
 	)
+	await _run_case(
+		"a unit turret measures rules range from the store, not from the interpolated model "
+			+ "root it is bound to -- and a building turret is left exactly as it was",
+		_test_turret_range_origin_reads_the_store
+	)
 
 	if _failures > 0:
 		printerr("Entity state wiring tests: %d failures after %d assertions" % [_failures, _assertions])
@@ -1126,5 +1131,84 @@ func _test_snapshot_restore_reaches_the_store() -> void:
 		)
 
 	snapshot.erase()
+	match_instance.queue_free()
+	await process_frame
+
+## Slice B5. CombatTurret is bound to a unit's `visual_root` so it can find the
+## authored muzzle markers inside the model, and `_range_origin()` -- which
+## decides whether a target is in rules range at all, and therefore whether a
+## shot happens -- read a world position straight out of that subtree. Until
+## slice B4 that was faithful: visual_root sat at the unit's own origin and only
+## its basis was ever animated. B4 writes visual_root.position every frame, so
+## the verdict began to depend on how far the render had got when the tick ran.
+## Measured on a moving NIABTank before the fix: the offset a tick sees reaches
+## one full tick of the shooter's travel.
+##
+## The poke is the same rogue write _test_store_outlives_a_direct_node_poke
+## performs, used as a fixture: split the store from the node and ask the turret
+## where it thinks the unit is. A test that only checked the two agree would
+## pass against the defect, because inside a match they always do.
+##
+## The building half is not decoration. Only Unit answers
+## combat_range_origin(); Building deliberately does not, because its state root
+## sits at an authored offset from the building origin -- 0.583 world units on
+## HKGunTurret -- and asking the entity there would move every building turret's
+## effective range by that much. This case pins that asymmetry so a later reader
+## cannot "tidy" it into symmetry without a failing test.
+func _test_turret_range_origin_reads_the_store() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	get_root().add_child(match_instance)
+	for _warmup in 5:
+		await process_frame
+
+	var store = match_instance.entity_state()
+	var unit := match_instance.get_node("Units/NIABTank") as Unit
+	_expect(store != null and unit != null, "the fixture must give a live store and a turreted unit")
+	if store == null or unit == null:
+		match_instance.queue_free()
+		await process_frame
+		return
+	_expect(unit.combat_turrets.size() > 0, "NIABTank must carry a runtime turret to observe")
+	if unit.combat_turrets.is_empty():
+		match_instance.queue_free()
+		await process_frame
+		return
+
+	var turret: CombatTurret = unit.combat_turrets[0]
+	var poked: Vector3 = unit.global_position + Vector3(7.0, 0.0, 0.0)
+	store.set_position(unit.entity_id, poked)
+
+	var origin: Variant = turret.call("_range_origin")
+	_expect(origin is Vector3, "the turret must answer with a range origin")
+	if not (origin is Vector3):
+		match_instance.queue_free()
+		await process_frame
+		return
+	var range_origin: Vector3 = origin
+	_expect(
+		range_origin.is_equal_approx(poked),
+		"the turret must measure range from the store's position, not from the model root "
+			+ "B4's interpolation offsets every frame"
+	)
+	# The control has to be read from the store, not from the turret's answer.
+	# An earlier version asserted the turret's origin was far from the node,
+	# which is the same claim as the assertion above wearing a different hat --
+	# it failed alongside it under mutation instead of staying true, which is
+	# exactly what a control must not do. What needs establishing here is that
+	# the fixture really did split the two, whatever the turret then said.
+	_expect(
+		store.position(unit.entity_id).distance_to(unit.global_position) > 6.0,
+		"control: the poke must genuinely have split the store from the node, or the "
+			+ "assertion above proves nothing"
+	)
+
+	var building := match_instance.get_node("Buildings/ATConYard") as Building
+	_expect(
+		not building.has_method("combat_range_origin"),
+		"Building must not answer combat_range_origin(): its state root sits at an authored "
+			+ "offset from the building origin, and answering would move every building "
+			+ "turret's range by that offset"
+	)
+
 	match_instance.queue_free()
 	await process_frame

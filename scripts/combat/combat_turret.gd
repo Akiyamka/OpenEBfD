@@ -100,6 +100,11 @@ var _idle_scan_seconds_until_target := 0.0
 var _idle_scan_target_yaw := 0.0
 
 var _model_root: Node3D
+## The entity whose own combat_range_origin() this turret measures rules
+## ranges from, resolved in bind_model() by walking up from the model root.
+## Null for anything that does not offer that method, which is every building
+## and every bare model the tests/combat suites bind -- see _range_origin().
+var _range_entity: Node3D
 var _fx_model_root: Node3D
 var _weapon_index := -1
 var _root_pivot: Node3D
@@ -189,6 +194,7 @@ func bind_model(model_root: Node3D, model_weapon_index: int) -> bool:
 	if model_root == null or model_weapon_index < 0:
 		return false
 	_model_root = model_root
+	_range_entity = _resolve_range_entity(model_root)
 	_fx_model_root = _find_fx_model_root(model_root)
 
 	var pivot_candidates: Array[Node3D] = []
@@ -256,6 +262,7 @@ func bind_model(model_root: Node3D, model_weapon_index: int) -> bool:
 
 
 func unbind_model() -> void:
+	_range_entity = null
 	cancel_authored_fire_fx()
 	_restore_pivot_transforms()
 	_model_root = null
@@ -1695,9 +1702,45 @@ func _continuous_jet_reach_world() -> float:
 ## Using a muzzle here makes entering range depend on whether Move, Fire or an
 ## elevated trajectory pose happened to run on that frame.
 func _range_origin() -> Vector3:
+	# The entity's own answer when it offers one, since slice B5. The comment
+	# above has always said ranges belong to the gameplay entity; until B4 the
+	# model root was a faithful stand-in, because a unit's visual_root sat at
+	# the unit's own origin and only its basis was ever animated. B4's view
+	# interpolation writes visual_root.position every frame, so reading a world
+	# position out of that subtree makes an in-range verdict -- which decides
+	# whether a shot happens at all -- depend on how far the *render* had got
+	# when the tick ran. Measured on a moving NIABTank: the offset a tick sees
+	# reaches one full tick of the shooter's travel, 0.16 world units for that
+	# unit and up to 1.6 for the fastest in the rules.
+	#
+	# Only Unit offers combat_range_origin(). Building deliberately does not,
+	# and that asymmetry is the point rather than an omission: a building does
+	# not move, nothing interpolates its model, and its state root sits at an
+	# authored offset from the building origin -- measured at 0.583 world units
+	# on HKGunTurret. Asking the entity there would move every building
+	# turret's effective range by that much, which is a balance change this
+	# slice has no business making.
+	if _range_entity != null and is_instance_valid(_range_entity):
+		var origin: Variant = _range_entity.call("combat_range_origin")
+		if origin is Vector3:
+			return origin
 	if _model_root == null or not is_instance_valid(_model_root):
 		return Vector3.INF
 	return _model_root.global_position
+
+
+## Walks up from the model root rather than taking the entity as a parameter:
+## bind_model() has nineteen call sites in tests/combat that bind a bare model
+## with no entity anywhere above it, and a required parameter would make all of
+## them supply something they do not have. An ancestor walk also cannot be
+## forgotten by a future caller the way a second bind_entity() call could.
+func _resolve_range_entity(model_root: Node3D) -> Node3D:
+	var node: Node = model_root
+	while node != null:
+		if node is Node3D and node.has_method("combat_range_origin"):
+			return node as Node3D
+		node = node.get_parent()
+	return null
 
 
 func _aim_origin() -> Vector3:

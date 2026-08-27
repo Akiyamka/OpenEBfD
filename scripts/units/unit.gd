@@ -1888,6 +1888,17 @@ func combat_aim_position() -> Vector3:
 	return to_global(_selection_bounds().get_center())
 
 
+## Where this unit's weapons measure rules ranges from, asked by
+## CombatTurret._range_origin() (scripts/combat/combat_turret.gd). The store,
+## not the node and emphatically not visual_root: a turret is bound to
+## visual_root so it can find its authored muzzle markers, and since slice B4
+## that node carries a per-frame interpolation offset, which would make an
+## in-range verdict depend on frame pacing. Building offers no such method on
+## purpose -- see that function's own comment.
+func combat_range_origin() -> Vector3:
+	return simulation_position()
+
+
 func combat_is_alive() -> bool:
 	return health > 0.0 and not is_queued_for_deletion()
 

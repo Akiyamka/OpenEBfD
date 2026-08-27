@@ -1451,17 +1451,57 @@ source cites a number you cannot place.
   from a subtree whose orientation is already advanced on frame `delta`, and
   which is a simulation input, since it becomes a projectile's
   `_launch_position`. B4 adds a translation term to that existing rotation term.
-  The magnitude is bounded and small: the offset a tick actually sees is the one
-  the *previous* frame wrote, and the frame immediately before a tick boundary
-  is by construction the frame with the largest fraction and therefore the
-  smallest offset. Measured on a ScoutA moving at 6 world units per second
-  (0.24 per tick), sampled at every `sim_tick()` for two seconds: median 0.0,
-  maximum 0.0044 world units, under 2% of one tick's travel. It grows as frame
-  rate falls, bounded above by one tick of travel — 1.6 world units for the
-  fastest unit in the rules. It is not fixed here because the fix is not B4's
+  The magnitude is bounded by one tick of the shooter's travel — 1.6 world
+  units for the fastest unit in the rules — and how much of that bound a tick
+  actually sees depends entirely on how frames and ticks happen to interleave.
+  **Corrected by slice B5**, which measured the same subtree from the other
+  side. B4 recorded "median 0.0, maximum 0.0044 world units" for a ScoutA at 6
+  units per second and reasoned that the frame immediately before a tick
+  boundary has the largest fraction and therefore the smallest offset. B5's
+  probe on a moving NIABTank, sampling inside `sim_tick_combat()`, found median
+  0.083 and maximum 0.164 — the whole of that unit's per-tick travel. Neither
+  number is wrong about its own run and neither is a client measurement:
+  headless pacing is not 60 fps pacing, and the fraction distribution is
+  whatever the run happened to produce. The durable statement is the bound and
+  the dependence, not either figure. It is not fixed here because the fix is not B4's
   shape: either the muzzle read subtracts the offset, or the model's
   presentation transform stops being the thing the simulation measures from.
   Whichever slice claims it should also correct B1's inventory line.
+
+  **Slice B5, decided 2026-08-27: a firing decision stops being measured from
+  an interpolated node.** Found while sweeping the combat group for R6, and
+  taken first because it is a defect rather than a migration.
+  `CombatTurret._range_origin()` decides whether a target is in rules range,
+  and therefore whether a shot happens at all. It read
+  `_model_root.global_position`, and for a unit `_model_root` is `visual_root`
+  — the node B4 offsets every frame. The function's own comment has always said
+  the opposite of what it did: "Rules ranges belong to the gameplay entity, not
+  to an animated muzzle." Until B4 that was true anyway, because `visual_root`
+  sat at the unit's origin and only its basis was animated; B4 made the comment
+  false without touching the file.
+
+  `Unit` now answers `combat_range_origin()` with its store position and the
+  turret asks for it, resolving the entity by walking up from the model root at
+  `bind_model()` time rather than taking it as a parameter — that call has
+  nineteen sites in `tests/combat` binding bare models with no entity above
+  them, and an ancestor walk cannot be forgotten the way a second bind call
+  could.
+
+  **`Building` deliberately does not answer, and the asymmetry is the whole
+  scope decision.** A building does not move and nothing interpolates its
+  model, so it has no frame dependence to fix — but its state root sits at an
+  authored offset from the building origin, measured at 0.583 world units on
+  `HKGunTurret`. Making the entity authoritative there would have shifted every
+  building turret's effective range by that much, which is a balance change
+  this slice has no business making. The first attempt did exactly that, and
+  the measurement is the only reason it did not ship: the code read correctly
+  and the suites stayed green.
+
+  The muzzle half of the same finding stays open, and its entry above is now
+  corrected rather than merely inherited. It is a harder question than this
+  one: a range origin has an obvious right answer in the entity, while a launch
+  position genuinely belongs at the muzzle, so fixing it means deciding what a
+  muzzle position *is* in the simulation rather than moving a read.
 
   **Slice R1, decided 2026-08-26: buildings get a store-backed position, and
   the read debt becomes a scheduled program instead of a paragraph.** C2's debt
