@@ -49,9 +49,21 @@ func assign_arcs(
 	var result := {}
 	if units.is_empty():
 		return result
+	# simulation_position(), not global_position, since slice R4: which bearing
+	# each shooter is handed is a simulation decision taken on the command's own
+	# tick, so it must read the store rather than the node's mirror. Cached into
+	# `positions` here and reused by the bearing loop below rather than read
+	# twice per unit -- the accessor resolves the owning Match by walking each
+	# node's ancestors (MatchLookup._live_match) where a field read was free,
+	# and nothing between the two loops moves anybody. Every `unit` here stays a
+	# bare Node3D, so the call is duck-typed exactly as the rest of navigation's
+	# is and a test double standing in for a Unit has to answer it.
+	var positions: Array[Vector3] = []
 	var centroid := Vector3.ZERO
 	for unit in units:
-		centroid += unit.global_position
+		var unit_position: Vector3 = unit.simulation_position()
+		positions.append(unit_position)
+		centroid += unit_position
 	centroid /= float(units.size())
 	var base := centroid - world_target
 	base.y = 0.0
@@ -65,10 +77,11 @@ func assign_arcs(
 	# and cross the whole crowd to reach their slots.
 	var entries: Array[Dictionary] = []
 	var widest_radius := 0.0
-	for unit in units:
+	for index in units.size():
+		var unit: Node3D = units[index]
 		var agent: Dictionary = agents.get(unit.get_instance_id(), {})
 		widest_radius = maxf(widest_radius, float(agent.get("radius", DEFAULT_BODY_RADIUS)))
-		var offset := unit.global_position - world_target
+		var offset := positions[index] - world_target
 		offset.y = 0.0
 		var bearing := atan2(offset.z, offset.x) if offset.length_squared() > 0.0001 \
 			else base_angle

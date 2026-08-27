@@ -228,7 +228,13 @@ func can_place_transport_cargo(unit: Node3D, world_target: Vector3, ignored_carr
 			continue
 		var other_radius := float(other.call("navigation_collision_radius", 0.25)) \
 			if other.has_method("navigation_collision_radius") else 0.25
-		var offset := other.global_position - world_target
+		# simulation_position(), not global_position, since slice R4. This probe
+		# runs from AdvancedCarryallTransport.advance() on the simulation tick and
+		# has to agree with that tick about who occupies the drop point, which is
+		# the same reason the loop walks "sim_units" rather than "units" (see the
+		# comment above it). `other` is a bare Node3D, so the call is duck-typed.
+		var other_position: Vector3 = other.simulation_position()
+		var offset := other_position - world_target
 		offset.y = 0.0
 		if offset.length() < cargo_radius + other_radius:
 			return false
@@ -284,7 +290,12 @@ func set_hold_position(unit: Node3D, active: bool) -> void:
 			unit.call("flight_clear_circles_order")
 		avoidance.reset_agent(agent)
 		agent["path"] = [] as Array[Vector2i]
-		agent["destination"] = unit.global_position
+		# simulation_position(), not global_position, since slice R4:
+		# `destination` is simulation state the tick measures arrival against
+		# every tick afterwards (GroundNavigation.desired_velocity()), so pinning
+		# it to the node's mirror would seed a mirror value into the store's own
+		# decisions.
+		agent["destination"] = unit.simulation_position()
 		agent["exit_point"] = Vector3.INF
 		agent["yield_remaining"] = 0.0
 		agent["yield_direction"] = Vector3.ZERO
@@ -431,7 +442,12 @@ func command_move(units: Array, world_target: Vector3, mode := NavConstantsScrip
 		# wherever the unit happens to stand.
 		agent["yield_remaining"] = 0.0
 		agent["yield_direction"] = Vector3.ZERO
-		_route_agent(agent, unit.global_position, assignment["position"])
+		# simulation_position(), not global_position, since slice R4, here and at
+		# the two other _route_agent() call sites below: a route is planned from
+		# where the simulation says this unit stands, and
+		# GroundNavigation.route_agent() already decides the straight-line case
+		# against a store position everywhere else (slice R3).
+		_route_agent(agent, unit.simulation_position(), assignment["position"])
 		_agents[unit.get_instance_id()] = agent
 		if unit.has_method("set_navigation_destination"):
 			unit.call("set_navigation_destination", assignment["position"])
@@ -462,7 +478,7 @@ func command_depart(unit: Node3D, world_target: Vector3, allowed_cells: Dictiona
 	registry.set_agent_rotation_envelope(agent, false)
 	agent["allowed_cells"] = allowed_cells.duplicate()
 	agent["departure_access"] = true
-	_route_agent(agent, unit.global_position, agent["destination"])
+	_route_agent(agent, unit.simulation_position(), agent["destination"])
 	_agents[unit.get_instance_id()] = agent
 	return bool(agent["direct_path"]) or not (agent["path"] as Array).is_empty()
 
@@ -509,7 +525,7 @@ func command_dock(unit: Node3D, world_target: Vector3, allowed_cells: Dictionary
 	agent["no_stop_destination"] = false
 	agent["departure_access"] = false
 	agent["allowed_cells"] = allowed_cells.duplicate()
-	_route_agent(agent, unit.global_position, world_target)
+	_route_agent(agent, unit.simulation_position(), world_target)
 	_agents[unit.get_instance_id()] = agent
 	if unit.has_method("set_navigation_destination"):
 		unit.call("set_navigation_destination", world_target)
@@ -538,7 +554,10 @@ func stop(unit: Node3D) -> void:
 	agent["firing_anchor"] = false
 	if unit.has_method("flight_clear_circles_order"):
 		unit.call("flight_clear_circles_order")
-	agent["destination"] = unit.global_position
+	# simulation_position(), not global_position, since slice R4, for the same
+	# reason set_hold_position() above uses it: a stopped unit's destination is
+	# simulation state, not a note about where the node happens to be drawn.
+	agent["destination"] = unit.simulation_position()
 	agent["direct_path"] = false
 	agent["exit_point"] = Vector3.INF
 	agent["yield_remaining"] = 0.0
@@ -607,7 +626,12 @@ func destination_reached(
 	expected_offset.y = 0.0
 	if expected_offset.length_squared() > 0.0001:
 		return false
-	var remaining := assigned - unit.global_position
+	# simulation_position(), not global_position, since slice R4: arrival is a
+	# simulation answer -- Unit's own transitions and the transports gate on it
+	# -- and B4's sub-tick interpolation moves the view between ticks, so the
+	# node is exactly the wrong thing to measure it against.
+	var unit_position: Vector3 = unit.simulation_position()
+	var remaining := assigned - unit_position
 	remaining.y = 0.0
 	return remaining.length() <= maxf(arrival_tolerance(unit), maxf(acceptance_radius, 0.0))
 
@@ -794,12 +818,18 @@ func _firing_anchor_blockers(
 		var other_unit: Node3D = other["unit"]
 		if not is_instance_valid(other_unit):
 			continue
-		var offset := other_unit.global_position - world_target
+		# simulation_position(), not global_position, since slice R4: which perches
+		# a firing line already occupies decides where an arriving shooter is sent,
+		# which is a tick decision. Read once and used for both the range filter
+		# and the recorded blocker position -- nothing between them moves
+		# `other_unit`.
+		var other_position: Vector3 = other_unit.simulation_position()
+		var offset := other_position - world_target
 		offset.y = 0.0
 		if offset.length() > reach:
 			continue
 		result.append({
-			"position": other_unit.global_position, "radius": float(other["radius"])
+			"position": other_position, "radius": float(other["radius"])
 		})
 	return result
 
@@ -866,9 +896,16 @@ func _navigation_tick() -> void:
 			claimants.append(agent)
 	# Closest to the target claims first: the unit already standing next to a
 	# central block takes it, instead of a far unit crossing the whole pack.
+	# simulation_position(), not global_position, since slice R4: this ordering
+	# decides which agent gets first refusal on a contested parking block, which
+	# is a simulation outcome and not a cosmetic tie-break.
 	claimants.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
-		var a_offset: float = ((a["destination"] as Vector3) - (a["unit"] as Node3D).global_position).length()
-		var b_offset: float = ((b["destination"] as Vector3) - (b["unit"] as Node3D).global_position).length()
+		var a_unit: Node3D = a["unit"]
+		var b_unit: Node3D = b["unit"]
+		var a_position: Vector3 = a_unit.simulation_position()
+		var b_position: Vector3 = b_unit.simulation_position()
+		var a_offset: float = ((a["destination"] as Vector3) - a_position).length()
+		var b_offset: float = ((b["destination"] as Vector3) - b_position).length()
 		if is_equal_approx(a_offset, b_offset):
 			return int(a["id"]) < int(b["id"])
 		return a_offset < b_offset
@@ -895,6 +932,17 @@ func _desired_velocity(agent: Dictionary) -> Vector3:
 	return ground_navigation.desired_velocity(agent)
 
 
+## The two qualified position reads slice R4 deliberately did NOT migrate, and
+## the only ones in this file. Everything below produces one thing: the line
+## strip UnitNavigationDebug draws for a selected unit. Nothing here is read
+## back by a tick, and the height offset and route origin are measured off the
+## same node the overlay is drawn against -- asking SimEntityState for them
+## would buy nothing and would make the overlay describe a body it is not
+## drawing. That is reason 1 of the three the read rule's permanent group
+## already lists, which is why this file moves to that group rather than off
+## the exempt list entirely. The imprecision that buys silence for a future
+## simulation read in this file is the same one the permanent group's own
+## header states and accepts.
 func _refresh_navigation_debug() -> void:
 	if navigation_debug == null or not navigation_debug.is_inside_tree():
 		return
@@ -999,8 +1047,12 @@ func _ground_target_is_reachable(
 	) -> bool:
 	var span: int = int(agent["footprint"])
 	var anchor: Vector2i = slot_allocator.parking_anchor(world_target, span)
+	# simulation_position(), not global_position, since slice R4: reachability is
+	# asked from the connected component the unit is actually standing in, and
+	# command_move() rejects an order outright on this answer.
+	var unit_position: Vector3 = unit.simulation_position()
 	return slot_allocator.anchor_reachable(
-		anchor, agent, unit.global_position, allow_no_stop
+		anchor, agent, unit_position, allow_no_stop
 	)
 
 

@@ -73,6 +73,24 @@ func register_unit(agents: Dictionary, unit: Node3D, debug_enabled: bool) -> int
 	if agents.has(key):
 		return int(agents[key]["id"])
 	var profile := profile_for(unit)
+	# simulation_position(), not global_position, since slice R4. The three
+	# fields seeded from it below -- `destination`, `steering_target` and
+	# `claim_center` -- are read back by the tick every tick afterwards
+	# (GroundNavigation.desired_velocity() measures arrival against
+	# `destination`; GroundSlotAllocator's claim search centres on
+	# `claim_center`), so seeding them from the node would put a mirror value
+	# into simulation state and let every later store read inherit it.
+	#
+	# This is also the one site in R4 where the accessor's fallback is
+	# load-bearing rather than merely tolerated. A unit reaches here before
+	# anything has written its position to SimEntityState in real paths --
+	# Unit._register_entity_id() pushes owner_player_id and not position, so
+	# has_position() is false until that unit's first set_simulation_position()
+	# -- and simulation_position() answers from the node in exactly that case.
+	# Seeding from the node directly would be indistinguishable *today* and
+	# wrong the moment registration ever follows a store write, which is
+	# already the ordinary case for a unit that registers after match start.
+	var unit_position: Vector3 = unit.simulation_position()
 	var agent := {
 		"id": _next_agent_id,
 		"unit": unit,
@@ -93,7 +111,7 @@ func register_unit(agents: Dictionary, unit: Node3D, debug_enabled: bool) -> int
 		# `_agent_route_intersects`). Empty while on a direct line.
 		"corridor": PackedInt32Array(),
 		"path_points": [] as Array[Vector3],
-		"destination": unit.global_position,
+		"destination": unit_position,
 		# Distinct from destination: Circles aircraft continue along an idle
 		# orbit after this becomes false.
 		"active_order": false,
@@ -115,7 +133,7 @@ func register_unit(agents: Dictionary, unit: Node3D, debug_enabled: bool) -> int
 		# `v_pref`, when building this tick's reciprocal avoidance lines —
 		# see `ground/orca_avoidance.gd`).
 		"orca_velocity": Vector3.ZERO,
-		"steering_target": unit.global_position,
+		"steering_target": unit_position,
 		# Units issued one group order keep their initial cross-route ordering.
 		# The compact A* paths may share a corner cell, but the runtime follower
 		# treats it as a gate and gives each body a parallel lane through it.
@@ -128,7 +146,7 @@ func register_unit(agents: Dictionary, unit: Node3D, debug_enabled: bool) -> int
 		"exit_point": Vector3.INF,
 		"reserved": true,
 		"claim_radius": 0.0,
-		"claim_center": unit.global_position,
+		"claim_center": unit_position,
 		"swap_tick": -1000,
 		# An explicit ordinary order may deliberately end and remain on
 		# traversable no-stop space.

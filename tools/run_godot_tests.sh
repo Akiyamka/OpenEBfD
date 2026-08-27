@@ -58,6 +58,7 @@ readonly SUITES=(
 	tests/match/interpolation_run.gd
 	tests/match/command_bus_wiring_run.gd tests/maps/run.gd
 	tests/navigation/run.gd
+	tests/navigation/store_reads_run.gd
 	tests/net/loopback_run.gd
 	tests/net/relay_run.gd
 	tests/net/websocket_transport_run.gd

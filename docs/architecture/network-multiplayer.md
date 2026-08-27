@@ -1815,6 +1815,132 @@ and by the time we get there the hard part is already tested.
   `tests/navigation/jitter_probe.gd`'s `ProbeUnit`, which is not in the suite
   list at all and would simply have been found broken later, exactly as slice
   C6c's group gate found it.
+  **Slice R4, decided 2026-08-27: navigation's system-and-shared group, and the
+  first reads this program has deliberately decided to leave alone.** Six modules
+  — `shared/nav_agent_registry.gd` (3 reads), `shared/nav_blocker_tracker.gd`
+  (2), `ground/orca_avoidance.gd` (2), `ground/ground_path_follower.gd` (2),
+  `ground/attack_arc_allocator.gd` (2) and `shared/nav_spatial_hash.gd` (1) —
+  now ask `simulation_position()` instead of the node, and so do 12 of
+  `unit_navigation_system.gd`'s 14: the transport drop probe's occupancy scan,
+  the destination seeds in `stop()` and `set_hold_position()`, all three
+  `_route_agent()` starts (`command_move`, `command_depart`, `command_dock`),
+  `destination_reached()`'s arrival measurement, both reads in
+  `_firing_anchor_blockers()`, the parking-claim ordering inside `sim_tick()`,
+  and `_ground_target_is_reachable()`'s component test. Twenty-four of the
+  group's twenty-six reads moved, through nineteen accessor calls: where a
+  function read the same unit twice with nothing between the reads to move it,
+  R3's hoist is repeated and said out loud at the site, and
+  `assign_arcs()` now caches one position per unit for its two loops instead of
+  reading each unit twice.
+
+  **The two reads that stayed are what the sweep was for, not an exception to
+  it.** R3 found 53 of 53 reads were simulation, and this slice checked rather
+  than inherited that ratio; both survivors sit in
+  `UnitNavigationSystem._refresh_navigation_debug()`,
+  which builds the line strip `UnitNavigationDebug` draws for a selected unit and
+  produces nothing else. Nothing there is read back by a tick, and both numbers —
+  a height offset and the route's first point — are measured against the very
+  node the overlay is drawn on top of, so asking the store would buy nothing and
+  would make the overlay describe a body it is not drawing. That is reason 1 of
+  the three the read rule's permanent group already lists. It has a real price,
+  and hiding it would be worse than paying it: the rule exempts by file, so
+  moving `unit_navigation_system.gd` across to the permanent group instead of
+  deleting it means the checker no longer guards this file at all. Reverting any
+  one of the twelve migrated reads there leaves `check_architecture.py` green —
+  measured, not assumed, by doing exactly that — while the same revert in each of
+  the other six files is rejected. Those twelve are held by
+  `tests/navigation/store_reads_run.gd` alone. The alternative was to migrate the
+  two debug reads as well so the file could leave the exempt list, and that was
+  rejected on the merits rather than on effort: the overlay is the one thing in
+  this file that has a legitimate reason to be refreshed on frame time one day,
+  and a store read there is precisely the "view lags the mirror it is drawing"
+  failure the permanent group exists to name.
+
+  **`nav_spatial_hash.gd` had to travel with this group rather than after it.**
+  Its single read keys the neighbour buckets, and `GroundNavigation.tick()` —
+  migrated by R3 — has queried those buckets with a store position ever since.
+  Keying from the node while looking up from the store files an agent in one
+  bucket and searches for it in another the moment the two disagree. Inside a
+  match they never disagree, so nothing was broken at any point; leaving the hash
+  for a later slice would have parked a genuine inconsistency in the tree between
+  the two, which is a different thing from leaving work undone.
+
+  **`register_unit()`'s seeds read the store, and that is where the accessor's
+  fallback stops being a tolerated wart and becomes the mechanism.** The three
+  fields seeded from a unit's position at registration — `destination`,
+  `steering_target` and `claim_center` — are all simulation state the tick reads
+  back afterwards: arrival is measured against `destination` every tick and the
+  parking claim search centres on `claim_center`, so a mirror value entering
+  here is inherited by every store-side read downstream of it. The awkward fact
+  is that a unit genuinely can register before anything has written its position
+  to `SimEntityState`: `Unit._register_entity_id()` pushes `owner_player_id` and
+  not position, so `has_position()` answers false until that unit's first
+  `set_simulation_position()`. `simulation_position()` answers from the node in
+  exactly that window, which is what makes reading the store here safe rather
+  than merely harmless — the seeds get the store's value when there is one and
+  the node's when there is not, and seeding from the node directly would be
+  indistinguishable today and wrong the moment registration follows a store
+  write, which is already the ordinary case for anything built after match start.
+
+  **The accessor's cost, measured rather than asserted.** `simulation_position()`
+  is not a field read: it resolves the owning `Match` through
+  `MatchLookup._live_match`, which walks the node's ancestors testing
+  `is_in_group` and `has_method` at each level and then `call()`s the match, on
+  every invocation. Instrumenting it with a counter, booting
+  `tests/fixtures/match_fixture.tscn` and driving 100 simulation ticks gives
+  2800 calls, 28.0 per tick across the fixture's 3 navigation agents — 9.3 per
+  agent per tick — with every unit idle, and 4796 calls, 48.0 per tick and 16.0
+  per agent per tick, with the whole roster under one move order. That counter
+  is on `Unit.simulation_position()` itself and so covers every caller, but
+  every caller is navigation or `harvester_controller.gd` today, which is what
+  the migration has moved so far. What that does *not* imply is that anything
+  needs redesigning: the fixture is small, the numbers are per tick rather than
+  per frame, and no profile in this program has yet shown `_live_match` on a hot
+  path. What it does imply is a shape — the cost is proportional to agents times
+  reads-per-agent, and the two navigation files still on the queue
+  (`unit_flight_controller.gd` at 21 reads and `air_navigation.gd` at 3) will add
+  to the same product. The
+  point of measuring now is that the next slice inherits a number instead of a
+  worry, and a decision about caching the match reference belongs in whatever
+  slice can show the number matters.
+
+  **What the sweep turned up that was on nobody's list.** One test double broke
+  and was fixed here: `tests/units/advanced_carryall_run.gd`'s `FakeCarrier`, a
+  bare `Node3D` handed straight to the real navigation system, has no
+  `simulation_position()` and `destination_reached()` now calls it — the suite
+  failed one assertion and printed two "Nonexistent function" errors, which is
+  one better than R3's two doubles managed, both of which kept passing while
+  printing the same error every tick. The wider grep for unit stand-ins found no
+  others: the `sim_units` members in `tests/combat/*` and
+  `tests/units/deployment_run.gd` never reach a navigation system, and R3 had
+  already fixed the two that do. The read rule's arithmetic reproduced exactly
+  this time — 138 lines across 49 files at the commit R4 started from, both group
+  headers correct — which is the first slice in this program where it has, and
+  worth recording only because the previous three did not.
+
+  The queue is now 22 files and 77 reads, down from 29 and 103. Navigation is 2
+  files and 24 reads, down from 12 files and 103 when R3 started, and everything
+  left of it is flight. The binding went into a new suite,
+  `tests/navigation/store_reads_run.gd` (570 lines, 50 assertions in 13 cases),
+  rather than into `tests/navigation/run.gd`: that file is 3028 lines and already
+  one of the two standing `max-file-lines` offenders, and R3's argument that a
+  separate suite would duplicate ~60 lines of scaffolding for no net reduction
+  inverts at this volume. The new suite reuses `run.gd`'s own `FakeUnit` through
+  a preload rather than defining a second one, and that is load-bearing rather
+  than tidy: the mutation that proves these cases are real — making
+  `FakeUnit.simulation_position()` ignore the override and answer from the node —
+  has to fail all of them, and a second copy of the double would have left half
+  of them passing. It fails 25 assertions across all 13 cases, and R3's own three
+  cases in `run.gd` at the same time, 7 of 398. The other mutation is the one
+  that still fails to fail: making the real `Unit.simulation_position()` answer
+  from the node breaks the same two assertions in
+  `tests/match/entity_state_run.gd` R3 recorded and nothing else — 65 of the 66
+  suites still pass, `tests/navigation/run.gd` still reports 398,
+  `store_reads_run.gd` still reports 50, `demo_boot_run.gd` still 364. Inside a match the mirror is
+  correct, so no integration test can tell a store reader from a node reader, and
+  every slice off this queue will keep paying for its binding at a manufactured
+  disagreement instead.
+
 
 - **Phase 4 — determinism gate.** Portable math, RNG split, the static rules
   above wired into `check_architecture.py`, and the CI test that replays one

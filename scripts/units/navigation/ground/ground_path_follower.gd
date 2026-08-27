@@ -309,9 +309,18 @@ func release_departure_access_if_clear(agent: Dictionary) -> void:
 	agent["allowed_cells"] = {}
 	_registry.set_agent_rotation_envelope(agent, true)
 	var unit: Node3D = agent["unit"]
+	# simulation_position(), not global_position, since slice R4: whether the
+	# harvester's body has cleared the refinery apron is a tick decision, and
+	# the route it plans on clearing it starts from the same number the rest of
+	# the tick uses. Read once for both -- the accessor resolves the owning
+	# Match by walking this node's ancestors (MatchLookup._live_match) where a
+	# field read was free, and nothing between the two moves the unit
+	# (set_agent_rotation_envelope only rewrites agent keys). `unit` stays a
+	# bare Node3D, so the call is duck-typed and a test double has to answer it.
+	var unit_position: Vector3 = unit.simulation_position()
 	var slot_allocator = _slot_allocator_ref.get_ref()
 	var anchor: Vector2i = slot_allocator.parking_anchor(
-		unit.global_position, int(agent["footprint"])
+		unit_position, int(agent["footprint"])
 	)
 	if not slot_allocator.block_stoppable(anchor, int(agent["footprint"]), agent):
 		_registry.set_agent_rotation_envelope(agent, false)
@@ -319,7 +328,7 @@ func release_departure_access_if_clear(agent: Dictionary) -> void:
 		return
 	agent["departure_access"] = false
 	_ground_navigation_ref.get_ref().route_agent(
-		agent, unit.global_position, agent["destination"]
+		agent, unit_position, agent["destination"]
 	)
 
 

@@ -56,7 +56,15 @@ func resolve_velocity(
 	) -> Dictionary:
 	agent["_v_pref"] = desired
 	var unit: Node3D = agent["unit"]
-	var own_pos := _flat(unit.global_position)
+	# simulation_position(), not global_position, since slice R4: every
+	# half-plane built below is a steering decision taken inside the tick, and
+	# the neighbour candidate list this runs over is already keyed by store
+	# positions (NavSpatialHash.build(), same slice). `unit` stays a bare
+	# Node3D -- this module is duck-typed on the agent's node like the rest of
+	# navigation -- so the call is resolved at runtime and a test double has
+	# to answer it.
+	var unit_position: Vector3 = unit.simulation_position()
+	var own_pos := _flat(unit_position)
 	var max_speed := desired.length()
 	var v_pref := _flat(desired)
 	var route_direction := v_pref.normalized()
@@ -108,7 +116,10 @@ func resolve_velocity(
 		var other_unit: Node3D = other["unit"]
 		if other_unit == unit:
 			continue
-		var other_pos := _flat(other_unit.global_position)
+		# Same reasoning as own_pos above: whether this neighbour is inside
+		# `reach` at all is a tick decision, so it is measured from the store.
+		var other_position: Vector3 = other_unit.simulation_position()
+		var other_pos := _flat(other_position)
 		var relative := other_pos - own_pos
 		var combined_radius := float(agent["radius"]) + float(other["radius"])
 		var reach := combined_radius + max_speed * TAU

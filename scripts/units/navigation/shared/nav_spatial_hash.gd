@@ -6,11 +6,23 @@ extends RefCounted
 const NavConstantsScript := preload("res://scripts/units/navigation/shared/nav_constants.gd")
 
 
+## simulation_position(), not global_position, since slice R4, and this read
+## had to move with the ground-navigation group rather than after it: these
+## buckets are the neighbour candidate lists GroundNavigation.tick() queries,
+## and that query has asked the store since slice R3. Keying the buckets from
+## the node while looking them up with a store position would put an agent in
+## one bucket and search for it in another the moment the two disagreed.
+## Inside a match they never do, so nothing was broken -- which is exactly why
+## the pair had to travel together instead of leaving a real inconsistency
+## sitting in the tree between two slices. `unit` stays a bare Node3D: this
+## module is duck-typed on the agent's node like the rest of navigation, so
+## the call is resolved at runtime and a test double has to answer it.
 func build(agents: Array[Dictionary]) -> Dictionary:
 	var buckets := {}
 	for agent in agents:
 		var unit: Node3D = agent["unit"]
-		var key := bucket_key(unit.global_position)
+		var unit_position: Vector3 = unit.simulation_position()
+		var key := bucket_key(unit_position)
 		if not buckets.has(key):
 			buckets[key] = []
 		buckets[key].append(agent)

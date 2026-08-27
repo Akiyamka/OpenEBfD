@@ -137,7 +137,14 @@ func agent_route_intersects(agent: Dictionary, changed_lookup: Dictionary) -> bo
 		# blocker change invalidated its straight line is to re-run the exact
 		# predicate that approved it in the first place.
 		var unit: Node3D = agent["unit"]
-		return not _path_follower.has_clear_line(unit.global_position, destination, agent)
+		# simulation_position(), not global_position, since slice R4: this
+		# re-runs the exact predicate GroundNavigation.route_agent() used to
+		# approve the straight line, and that call has been handed a store
+		# position since R3. Asking the node here would let the two disagree
+		# about the same line. `unit` stays a bare Node3D, so the call is
+		# duck-typed and a test double has to answer it.
+		var unit_position: Vector3 = unit.simulation_position()
+		return not _path_follower.has_clear_line(unit_position, destination, agent)
 	var corridor: PackedInt32Array = agent.get("corridor", PackedInt32Array())
 	for index in corridor:
 		if changed_lookup.has(index):
@@ -188,9 +195,12 @@ func process_reroute_queue() -> void:
 					"unit": agent["unit"], "agent_id": agent["id"], "slot_id": -1,
 					"position": destination, "available": true,
 				})
-		_ground_navigation.route_agent(
-			agent, (agent["unit"] as Node3D).global_position, destination
-		)
+		# simulation_position(), not global_position, since slice R4: a reroute
+		# plans this agent's new route from where the simulation says it
+		# stands, exactly as command_move() and command_dock() now do.
+		var unit: Node3D = agent["unit"]
+		var unit_position: Vector3 = unit.simulation_position()
+		_ground_navigation.route_agent(agent, unit_position, destination)
 		_agents[key] = agent
 	for command_id in changed_by_command:
 		_facade.destination_slots_assigned.emit(command_id, changed_by_command[command_id])

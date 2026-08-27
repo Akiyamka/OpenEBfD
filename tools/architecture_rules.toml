@@ -276,10 +276,10 @@ zone = "all"
 pattern = '[\w)\]]\.global_(?:position|transform)\b(?!(?:\.[xyz])?\s*[-+]?=(?!=))'
 exempt = [
 	# ===================================================================
-	# PERMANENT -- 20 files, 35 reads (recounted in slice R3 with the rule's
-	# own pattern; the "19 files, 33 reads" this header used to claim was the
-	# pre-R2b figure and stayed behind when R2b moved match_snapshot.gd's 2
-	# reads up from the queued group). These should keep asking the node
+	# PERMANENT -- 21 files, 37 reads (recounted in slice R4 with the rule's
+	# own pattern; R4 moved unit_navigation_system.gd across from the queued
+	# group, migrating 12 of its 14 reads and leaving 2 that are view code --
+	# see its entry below). These should keep asking the node
 	# forever and are not work anyone owes. Three reasons cover all of them,
 	# and none is a scheduling excuse:
 	#
@@ -328,6 +328,19 @@ exempt = [
 	"scripts/match/match_snapshot.gd",
 	"scripts/ui/selection_halo_binding.gd",
 	"scripts/units/navigation/navigation_grid_debug.gd",
+	# Arrived here from the queued group in slice R4, which migrated 12 of this
+	# file's 14 reads and left 2. Both survivors are inside
+	# _refresh_navigation_debug(), which builds the line strip
+	# UnitNavigationDebug draws for a selected unit and nothing else -- reason 1
+	# above, view code, and the function's own doc comment says so at the site.
+	# This is the first entry here that is a simulation file kept for a view
+	# read rather than an FX or audio one, so it buys silence for a future
+	# simulation read in a facade that has plenty of them. That is the same
+	# file-level imprecision this header already accepts for
+	# authored_fire_controller.gd and friends, and it is stated rather than
+	# hidden: a reader adding a position read to this file has to decide for
+	# itself, because the rule will not.
+	"scripts/units/navigation/unit_navigation_system.gd",
 	"scripts/units/unit_authored_collision.gd",
 	"scripts/units/unit_death_sequence.gd",
 	"scripts/units/unit_deploy_state.gd",
@@ -338,35 +351,25 @@ exempt = [
 	"scripts/world/spatial_orientation.gd",
 	#
 	# ===================================================================
-	# QUEUED -- 29 files, 103 reads, down from 32 files and 156 reads before
-	# slice R3 took the ground-navigation group (the "33 files, 157 reads" this
-	# header used to claim was wrong twice over: pre-R2b, and one read short of
-	# what the pattern actually matched). Simulation code that should ask
-	# SimEntityState and does not yet. R4 and the slices after it empty this
-	# half one subsystem at a time; deleting a line is the visible event that
-	# records progress, exactly as it is for animation-completes-simulation.
-	# The counts are what make this a plan rather than a list: navigation was
-	# two thirds of the debt and is now under half of it, and what is left of
-	# it is no longer one indivisible lump.
+	# QUEUED -- 22 files, 77 reads, down from 29 files and 103 reads before
+	# slice R4 took navigation's system-and-shared group. Simulation code that
+	# should ask SimEntityState and does not yet. R5 and the slices after it
+	# empty this half one subsystem at a time; deleting a line is the visible
+	# event that records progress, exactly as it is for
+	# animation-completes-simulation. The counts are what make this a plan
+	# rather than a list: navigation was two thirds of the debt at 12 files and
+	# 103 reads, is now 2 files and 24, and every one of those is flight.
 	#
-	# Navigation -- 9 files, 50 reads, down from 12 files and 103 reads. R3
-	# took the three ground-steering modules; the two big remaining files are
-	# each a slice of their own. These modules take a `Node3D` and never a
-	# `Unit`; that duck typing is why simulation_position() lives on the node
-	# instead of a reader holding the store. nav_spatial_hash.gd's single read
-	# is not independent of the rest: it keys the neighbour buckets, and
-	# ground_navigation.gd (migrated by R3) queries those buckets with a store
-	# position, so the two must agree -- inside a match they do, but the pair
-	# should move together rather than the hash being left for last.
+	# Navigation -- 2 files, 24 reads, down from 9 files and 50. What is left is
+	# air movement and nothing else: R4 took the facade (12 of its 14 reads --
+	# the other 2 are view code and the file moved to the permanent group
+	# above), the agent registry, the blocker tracker, the spatial hash, ORCA,
+	# the path follower and the attack-arc allocator. These modules take a
+	# `Node3D` and never a `Unit`; that duck typing is why
+	# simulation_position() lives on the node instead of a reader holding the
+	# store, and it survived R3 and R4 intact.
 	"scripts/units/navigation/unit_flight_controller.gd",  # 21
-	"scripts/units/navigation/unit_navigation_system.gd",  # 14
 	"scripts/units/navigation/air/air_navigation.gd",  # 3
-	"scripts/units/navigation/shared/nav_agent_registry.gd",  # 3
-	"scripts/units/navigation/ground/attack_arc_allocator.gd",  # 2
-	"scripts/units/navigation/ground/ground_path_follower.gd",  # 2
-	"scripts/units/navigation/ground/orca_avoidance.gd",  # 2
-	"scripts/units/navigation/shared/nav_blocker_tracker.gd",  # 2
-	"scripts/units/navigation/shared/nav_spatial_hash.gd",  # 1
 	# Combat -- 6 files, 19 reads. Target acquisition, aim and the shared
 	# CombatTarget.position_of() helper every shooter routes through, which is
 	# the single highest-leverage line in this half.
@@ -405,7 +408,12 @@ exempt = [
 	# scripts/units/harvester_controller.gd (7 reads), by slice R2 itself;
 	# scripts/units/navigation/ground/ground_slot_allocator.gd (23),
 	# ground_navigation.gd (20) and steering_stabilizer.gd (10), by slice R3 --
-	# the whole ground-navigation group, every read of it simulation.
+	# the whole ground-navigation group, every read of it simulation;
+	# shared/nav_agent_registry.gd (3), shared/nav_blocker_tracker.gd (2),
+	# ground/orca_avoidance.gd (2), ground/ground_path_follower.gd (2),
+	# ground/attack_arc_allocator.gd (2) and shared/nav_spatial_hash.gd (1), by
+	# slice R4, which also took 12 of unit_navigation_system.gd's 14 and moved
+	# that file to the permanent group for the 2 view reads it left behind.
 ]
 summary = "another entity's position read off the node instead of SimEntityState"
 why = """
@@ -425,10 +433,11 @@ thing already guaranteed to have written the store it mirrors, so it is a \
 different and much smaller question. Sorting the qualified reads into a queue \
 is worth a rule; chasing 47 self-reads would make this one noise before it \
 made anything correct. This rule matched 191 lines across 52 files when R3 measured \
-it -- not the 190 R2's own paragraph recorded, which was one short -- and \
-matches 138 lines across the 49 files listed below now that R3 has taken the \
-ground-navigation group, all of them exempted. See \
-docs/architecture/network-multiplayer.md, phase 3's R2 and R3 paragraphs.
+it -- not the 190 R2's own paragraph recorded, which was one short -- 138 \
+across 49 files when R4 started, and matches 114 lines across the 43 files \
+listed below now that R4 has taken navigation's system-and-shared group. All \
+of them are exempted. See docs/architecture/network-multiplayer.md, phase 3's \
+R2, R3 and R4 paragraphs.
 """
 instead = "Unit.simulation_position() or Building.simulation_position() on the node you are asking about, which answer from SimEntityState and fall back to global_position only where there is no match to be authoritative"
 

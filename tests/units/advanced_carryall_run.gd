@@ -98,6 +98,20 @@ class FakeCarrier extends Node3D:
 	var landing_clearance := 0.0
 	var alignment_steps_remaining := 0
 
+	## Slice R4: UnitNavigationSystem.destination_reached() measures arrival
+	## against simulation_position() instead of the node, so this double -- a
+	## bare Node3D standing in for a Unit, handed straight to the real
+	## navigation system by _test_navigation_completion_contract -- has to
+	## answer it or every call prints a "Nonexistent function" error and the
+	## comparison silently reads Vector3(0, 0, 0). It is the same duck-typing
+	## bill slice R3 paid at tests/match/admission_run.gd's
+	## UnregisteredProbeUnit and tests/navigation/jitter_probe.gd's ProbeUnit.
+	## This carrier has no store of its own and no Match in the tree, so the
+	## honest answer is the node's own position -- exactly what a real
+	## Unit.simulation_position() returns under the same conditions.
+	func simulation_position() -> Vector3:
+		return global_position
+
 	func transport_move_toward(position: Vector3) -> void:
 		var offset := position - global_position
 		offset.y = 0.0
