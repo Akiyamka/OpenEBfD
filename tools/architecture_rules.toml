@@ -288,10 +288,15 @@ zone = "all"
 pattern = '[\w)\]]\.global_(?:position|transform)\b(?!(?:\.[xyz])?\s*[-+]?=(?!=))'
 exempt = [
 	# ===================================================================
-	# PERMANENT -- 21 files, 37 reads (recounted in slice R4 with the rule's
-	# own pattern; R4 moved unit_navigation_system.gd across from the queued
-	# group, migrating 12 of its 14 reads and leaving 2 that are view code --
-	# see its entry below). These should keep asking the node
+	# PERMANENT -- 20 files, 35 reads (re-measured in slice R5 with the rule's
+	# own pattern). This header said 21 files and 37 reads until then, which
+	# was R4's own correct count and went stale the same day: R4 moved
+	# unit_navigation_system.gd across from the queued group for the 2 view
+	# reads it left behind, and R4a took that file back out again in favour of
+	# two line-scoped hatches without lowering the total it had just been
+	# added to. The file and its 2 reads are therefore in neither group now --
+	# 41 files match the rule, 20 here, 20 queued, and unit_navigation_system.gd
+	# alone with its hatches. These should keep asking the node
 	# forever and are not work anyone owes. Three reasons cover all of them,
 	# and none is a scheduling excuse:
 	#
@@ -350,25 +355,16 @@ exempt = [
 	"scripts/world/spatial_orientation.gd",
 	#
 	# ===================================================================
-	# QUEUED -- 22 files, 77 reads, down from 29 files and 103 reads before
-	# slice R4 took navigation's system-and-shared group. Simulation code that
-	# should ask SimEntityState and does not yet. R5 and the slices after it
-	# empty this half one subsystem at a time; deleting a line is the visible
-	# event that records progress, exactly as it is for
-	# animation-completes-simulation. The counts are what make this a plan
-	# rather than a list: navigation was two thirds of the debt at 12 files and
-	# 103 reads, is now 2 files and 24, and every one of those is flight.
+	# QUEUED -- 20 files, 53 reads, down from 22 files and 77 before slice R5
+	# took the flight group. Simulation code that should ask SimEntityState and
+	# does not yet. The slices after R5 empty this half one subsystem at a time;
+	# deleting a line is the visible event that records progress, exactly as it
+	# is for animation-completes-simulation. The counts are what make this a
+	# plan rather than a list: navigation was two thirds of the debt at 12 files
+	# and 103 reads when R3 started, and is now gone from this half entirely --
+	# R3 took ground steering, R4 the system-and-shared group, R5 flight. Combat
+	# is what is left of the large groups.
 	#
-	# Navigation -- 2 files, 24 reads, down from 9 files and 50. What is left is
-	# air movement and nothing else: R4 took the facade (12 of its 14 reads --
-	# the other 2 are view code and the file moved to the permanent group
-	# above), the agent registry, the blocker tracker, the spatial hash, ORCA,
-	# the path follower and the attack-arc allocator. These modules take a
-	# `Node3D` and never a `Unit`; that duck typing is why
-	# simulation_position() lives on the node instead of a reader holding the
-	# store, and it survived R3 and R4 intact.
-	"scripts/units/navigation/unit_flight_controller.gd",  # 21
-	"scripts/units/navigation/air/air_navigation.gd",  # 3
 	# Combat -- 6 files, 19 reads. Target acquisition, aim and the shared
 	# CombatTarget.position_of() helper every shooter routes through, which is
 	# the single highest-leverage line in this half.
@@ -412,7 +408,10 @@ exempt = [
 	# ground/orca_avoidance.gd (2), ground/ground_path_follower.gd (2),
 	# ground/attack_arc_allocator.gd (2) and shared/nav_spatial_hash.gd (1), by
 	# slice R4, which also took 12 of unit_navigation_system.gd's 14 and moved
-	# that file to the permanent group for the 2 view reads it left behind.
+	# that file to the permanent group for the 2 view reads it left behind;
+	# unit_flight_controller.gd (21) and air/air_navigation.gd (3), by slice R5
+	# -- the flight group, every read of it simulation, which empties the
+	# navigation subgroup of this list.
 ]
 summary = "another entity's position read off the node instead of SimEntityState"
 why = """
@@ -433,10 +432,12 @@ different and much smaller question. Sorting the qualified reads into a queue \
 is worth a rule; chasing 47 self-reads would make this one noise before it \
 made anything correct. This rule matched 191 lines across 52 files when R3 measured \
 it -- not the 190 R2's own paragraph recorded, which was one short -- 138 \
-across 49 files when R4 started, and matches 114 lines across the 43 files \
-listed below now that R4 has taken navigation's system-and-shared group. All \
-of them are exempted. See docs/architecture/network-multiplayer.md, phase 3's \
-R2, R3 and R4 paragraphs.
+across 49 files when R4 started, 114 across 43 when R5 did, and matches 90 \
+lines across the 41 files listed below now that R5 has taken flight, the last \
+of navigation. All of them are exempted, plus the two line-scoped hatches in \
+unit_navigation_system.gd which the file counts above do not include. See \
+docs/architecture/network-multiplayer.md, phase 3's R2, R3, R4 and R5 \
+paragraphs.
 """
 instead = "Unit.simulation_position() or Building.simulation_position() on the node you are asking about, which answer from SimEntityState and fall back to global_position only where there is no match to be authoritative"
 

@@ -124,7 +124,15 @@ func desired_velocity(agent: Dictionary) -> Vector3:
 	if unit.has_method("flight_circles_enabled") and bool(unit.call("flight_circles_enabled")):
 		return unit.call("flight_circles_desired_velocity") as Vector3
 	var destination: Vector3 = agent["destination"]
-	var offset := destination - unit.global_position
+	# simulation_position(), not global_position, since slice R5: this offset is
+	# both the arrival test and the steering velocity for the whole tick, the
+	# air twin of the read GroundNavigation.desired_velocity() moved in R3.
+	# `unit` stays a bare Node3D -- this module is duck-typed on the agent's
+	# node like the rest of navigation, so the call resolves at runtime and a
+	# test double has to answer it. That is also why the type is written out
+	# rather than inferred: a dynamic call's result is a Variant, and
+	# project.godot promotes an inferred Variant to a parse error.
+	var offset: Vector3 = destination - unit.simulation_position()
 	offset.y = 0.0
 	if offset.length() <= _facade.arrival_tolerance(unit):
 		return Vector3.ZERO
@@ -144,8 +152,14 @@ func tick(delta: float, ordered: Array[Dictionary], buckets: Dictionary) -> void
 	for agent in ordered:
 		var unit: Node3D = agent["unit"]
 		var desired := desired_velocity(agent)
+		# simulation_position(), not global_position, since slice R5, and this
+		# read is not independent of R4: NavSpatialHash.build() has keyed these
+		# buckets from simulation_position() since that slice, so looking them up
+		# with a node position would file an agent in one bucket and search for
+		# it in another the moment the two disagreed. GroundNavigation.tick()
+		# already reads the store here; this is the same pairing on the air side.
 		var nearby: Array = _spatial_hash.nearby(
-			unit.global_position, buckets, float(agent["radius"]) + largest_radius
+			unit.simulation_position(), buckets, float(agent["radius"]) + largest_radius
 		)
 		var blockers := []
 		for other in nearby:
@@ -175,7 +189,18 @@ func tick(delta: float, ordered: Array[Dictionary], buckets: Dictionary) -> void
 		if unit.has_method("flight_consume_circles_order_completed") \
 		and bool(unit.call("flight_consume_circles_order_completed")):
 			agent["active_order"] = false
-			agent["destination"] = unit.global_position
+			# simulation_position(), not global_position, since slice R5. The
+			# destination is simulation state the tick reads back every tick
+			# afterwards, so it must not be seeded from the mirror -- and it is
+			# read here, after navigation_step() above has already moved the
+			# unit this tick, rather than hoisted with the two reads above.
+			# That ordering also makes this the one read of the 24 R5 moved
+			# that no test can bind: navigation_step() ends in
+			# Unit.set_simulation_position(), so store and node agree again by
+			# the time this line runs and a manufactured disagreement cannot
+			# survive to be observed here. The rule is what holds it -- see
+			# tests/navigation/store_reads_run.gd's header.
+			agent["destination"] = unit.simulation_position()
 		_agents[unit.get_instance_id()] = agent
 
 

@@ -1,6 +1,7 @@
 extends SceneTree
 
-## Slice R4's binding for the navigation system-and-shared migration.
+## Slice R4's binding for the navigation system-and-shared migration, extended
+## by slice R5 with the two air-navigation cases at the bottom.
 ##
 ## No integration suite can catch a mistake in this migration, and that is
 ## structural rather than an oversight. Inside a match SimEntityState and the
@@ -40,6 +41,20 @@ extends SceneTree
 ## assert the module followed the store. Most cases also assert the split is
 ## real -- that a node-side read would genuinely have answered differently --
 ## because a case where the two agree passes either way and proves nothing.
+##
+## Slice R5 added the last two cases, for air/air_navigation.gd, which is
+## duck-typed on the same doubles. Its third migrated read --
+## `agent["destination"] = unit.simulation_position()` when a Circles order
+## completes -- has no case here and cannot have one: it runs immediately after
+## `navigation_step()`, which ends in `Unit.set_simulation_position()` and
+## therefore closes any divergence before the read happens. A double that held
+## the split open across its own step would be modelling a state the simulation
+## cannot reach, which is the same reason FakeUnit.navigation_step() re-syncs.
+## That read is held by the architecture rule alone, and saying so is better
+## than a case that passes either way. UnitFlightController's own 21 reads are
+## bound on the real path instead, in tests/units/flight_store_reads_run.gd --
+## it is driven with a real Unit inside a real Match, so the disagreement can be
+## manufactured on the real object rather than at a double.
 
 const NavigationSuiteScript := preload("res://tests/navigation/run.gd")
 const NavigationSystemScript := preload("res://scripts/units/navigation/unit_navigation_system.gd")
@@ -64,6 +79,8 @@ func _initialize() -> void:
 	await _run(_test_firing_anchor_blockers_read_the_store_position.bind(grid))
 	await _run(_test_transport_cargo_probe_reads_the_store_position.bind(grid))
 	await _run(_test_reachability_reads_the_store_position.bind(grid))
+	await _run(_test_air_steering_reads_the_store_position.bind(grid))
+	await _run(_test_air_neighbour_search_reads_the_store_position.bind(grid))
 
 	if _failures > 0:
 		printerr(
@@ -533,6 +550,100 @@ func _test_reachability_reads_the_store_position(grid: MapNavigationGrid) -> voi
 
 	navigation.queue_free()
 	unit.queue_free()
+
+
+## The air-agent twin of _make_unit(): FakeLandedFlyer is FakeUnit with
+## `can_fly` set, which is what NavAgentRegistry.profile_for() reads to give the
+## agent PASS_AIR and put it on the air side of the tick. It inherits the same
+## `_simulation_position` override, so the disagreement mechanism is unchanged.
+func _make_flyer(navigation, node_position: Vector3, store_position: Vector3) -> Node3D:
+	var unit: Node3D = NavigationSuiteScript.FakeLandedFlyer.new()
+	root.add_child(unit)
+	unit.global_position = node_position
+	unit.call("set_simulation_position_override", store_position)
+	navigation.register_unit(unit)
+	return unit
+
+
+## AirNavigation.desired_velocity(). This offset is both the arrival test and
+## the steering velocity an air agent flies on for the whole tick -- the air
+## twin of the GroundNavigation read slice R3 moved. Both halves are asserted:
+## the bearing must be taken from the stored position, and an aircraft whose
+## store has already arrived must stop even though its node is forty metres
+## short of the destination.
+func _test_air_steering_reads_the_store_position(grid: MapNavigationGrid) -> void:
+	var navigation = _make_navigation(grid, "air steering")
+	var node_position := Vector3(100.5, 0.0, 100.5)
+	var store_position := Vector3(140.5, 0.0, 100.5)
+	var unit := _make_flyer(navigation, node_position, store_position)
+	var agent: Dictionary = navigation._agents[unit.get_instance_id()]
+	var destination := Vector3(140.5, 0.0, 160.5)
+	agent["destination"] = destination
+	agent["hold"] = false
+
+	var velocity: Vector3 = navigation.air_navigation.desired_velocity(agent)
+	var from_store := destination - store_position
+	from_store.y = 0.0
+	var from_node := destination - node_position
+	from_node.y = 0.0
+	_expect(not from_node.normalized().is_equal_approx(from_store.normalized()),
+		"the two readings must disagree about which way the destination lies")
+	_expect(not velocity.is_zero_approx()
+		and velocity.normalized().is_equal_approx(from_store.normalized()),
+		("an air agent must steer along the bearing from its stored position (got %s, wanted %s)")
+			% [velocity.normalized(), from_store.normalized()])
+
+	agent["destination"] = store_position
+	_expect(navigation.air_navigation.desired_velocity(agent).is_zero_approx(),
+		("an aircraft whose stored position is already on the destination must stop, "
+			+ "however far short of it the node happens to stand"))
+
+	navigation.queue_free()
+	unit.queue_free()
+
+
+## AirNavigation.tick()'s neighbour search. NavSpatialHash.build() has keyed
+## these buckets from simulation_position() since slice R4, so looking them up
+## from the node would file an agent in one bucket and search for it in another.
+## The observable is the outcome rather than the argument: lateral separation
+## can only push this aircraft if the neighbour was found at all, and the
+## neighbour's node is 141 m away -- far outside any search radius the agent's
+## own radius could produce.
+func _test_air_neighbour_search_reads_the_store_position(grid: MapNavigationGrid) -> void:
+	var navigation = _make_navigation(grid, "air neighbour search")
+	var base := Vector3(60.5, 0.0, 160.5)
+	var mover := _make_flyer(navigation, base + Vector3.RIGHT * 100.0, base)
+	var neighbour := _make_flyer(
+		navigation, base + Vector3.FORWARD * 100.0, base + Vector3.BACK * 0.5
+	)
+	var agent: Dictionary = navigation._agents[mover.get_instance_id()]
+	var other: Dictionary = navigation._agents[neighbour.get_instance_id()]
+	agent["destination"] = base + Vector3.RIGHT * 40.0
+	agent["hold"] = false
+
+	var node_separation := mover.global_position.distance_to(neighbour.global_position)
+	_expect(node_separation > 100.0,
+		("the two nodes must be nowhere near each other (%.1f m apart), so a node-side "
+			+ "search could not have found this neighbour") % node_separation)
+
+	var desired: Vector3 = navigation.air_navigation.desired_velocity(agent)
+	var agents: Array[Dictionary] = [agent, other]
+	var buckets: Dictionary = navigation.spatial_hash.build(agents)
+	var before := mover.global_position
+	# Typed literal: AirNavigation.tick() takes an Array[Dictionary], and an
+	# untyped array literal is rejected at the call rather than coerced.
+	var ordered: Array[Dictionary] = [agent]
+	navigation.air_navigation.tick(0.05, ordered, buckets)
+	var moved := mover.global_position - before
+
+	_expect(not moved.is_zero_approx(), "the ticked aircraft must actually have moved")
+	_expect(not moved.normalized().is_equal_approx(desired.normalized()),
+		("the step must be deflected by the neighbour the stored position stands beside "
+			+ "(moved %s, unseparated course %s)") % [moved.normalized(), desired.normalized()])
+
+	navigation.queue_free()
+	mover.queue_free()
+	neighbour.queue_free()
 
 
 ## Copied from tests/navigation/run.gd rather than shared, unlike FakeUnit: a

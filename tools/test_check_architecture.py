@@ -619,6 +619,14 @@ def check_slice_index_hashes(repo: Path) -> list[str]:
     `—` in the commit cell is a deliberate absence — a parent slice delivered
     entirely through its lettered children — and is checked as such, so it
     cannot be used to hide a hash nobody could find.
+
+    `pending` is the one other legal cell, and it exists because a commit
+    cannot contain its own hash. A slice's comments cite its id, the
+    `slice-index` rule fails until that id has a row, and the pre-commit hook
+    refuses a staged tree the checker rejects — so the row has to land *with*
+    the code while the hash it will eventually carry does not exist yet. At
+    most one row may be pending: more than one means somebody stopped filling
+    them in, which is how this file would rot into a list of promises.
     """
     rows = [
         line
@@ -629,6 +637,7 @@ def check_slice_index_hashes(repo: Path) -> list[str]:
         return [f"{SLICE_INDEX}: no slice rows found"]
 
     failures: list[str] = []
+    pending: list[str] = []
     seen: set[str] = set()
     for line in rows:
         cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
@@ -637,9 +646,12 @@ def check_slice_index_hashes(repo: Path) -> list[str]:
             failures.append(f"{slice_id}: listed twice")
         seen.add(slice_id)
         commits, date = cells[1], cells[2]
+        if commits == "pending":
+            pending.append(slice_id)
+            continue
         hashes = re.findall(r"`([0-9a-f]{7,40})`", commits)
         if not hashes:
-            if commits != "—":
+            if commits not in ("—",):
                 failures.append(
                     f"{slice_id}: commit cell {commits!r} holds neither a hash "
                     "nor the `—` that means the slice deliberately had none"
@@ -666,6 +678,13 @@ def check_slice_index_hashes(repo: Path) -> list[str]:
                     failures.append(
                         f"{slice_id}: row says {date}, `{commit}` is dated {actual}"
                     )
+    if len(pending) > 1:
+        failures.append(
+            "more than one row is `pending`: "
+            + ", ".join(pending)
+            + ". A pending row is a hash that does not exist yet, not a hash "
+            "nobody bothered to find; fill the earlier one in."
+        )
     if failures:
         failures.append(
             f"Fix {SLICE_INDEX.relative_to(ROOT)} — a row that points at nothing "

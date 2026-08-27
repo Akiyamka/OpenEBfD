@@ -28,6 +28,19 @@ class FakeFlyingUnit extends Node3D:
 	var last_vertical_offset := 0.0
 	var move_speed := 5.0
 
+	## Slice R5: air/air_navigation.gd asks the agent's node where it is
+	## through this duck-typed accessor rather than reading global_position,
+	## so a stand-in handed to AirNavigation.desired_velocity() or .tick() has
+	## to answer it -- without this the module keeps working off the node's
+	## position while printing "Nonexistent function" every call, which is
+	## exactly how slices R3 and R4 each found a stale double. Answering from
+	## the node is what a real Unit does when there is no Match in the tree
+	## (Unit.simulation_position()'s fallback), which is this suite's own
+	## situation; the manufactured-disagreement binding for these reads lives
+	## in tests/navigation/store_reads_run.gd, on FakeUnit's override.
+	func simulation_position() -> Vector3:
+		return global_position
+
 	func flight_is_airborne_phase() -> bool:
 		return airborne
 

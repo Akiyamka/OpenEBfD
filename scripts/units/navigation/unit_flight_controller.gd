@@ -127,7 +127,17 @@ var _pickup_landing_start_altitude := 0.0
 func configure(unit, unit_definition) -> void:
 	_unit = unit
 	height_offset = float(unit_definition.height_offset) * HEIGHT_OFFSET_WORLD_SCALE
-	cruise_altitude = _unit.global_position.y + BASE_FLIGHT_ALTITUDE + height_offset
+	# simulation_position(), not global_position, since slice R5: cruise_altitude
+	# is simulation state -- advance()'s CRUISING branch writes it straight back
+	# out through set_simulation_position() every tick -- so the altitude it
+	# starts from has to be the store's. This is also the one site in this file
+	# where the accessor's fallback is doing real work rather than being merely
+	# tolerated: configure() runs from Unit._apply_unit_definition() inside
+	# _ready(), before this unit's first set_simulation_position(), so
+	# has_position() is false and simulation_position() answers from the node --
+	# exactly the window NavAgentRegistry.register_unit() documents for its own
+	# seeds.
+	cruise_altitude = _unit.simulation_position().y + BASE_FLIGHT_ALTITUDE + height_offset
 	ornithoptor = bool(unit_definition.ornithoptor)
 	carryall = bool(unit_definition.carryall)
 	advanced_carryall = bool(unit_definition.advanced_carryall)
@@ -206,7 +216,10 @@ func begin_hangar_takeoff(rally_point: Vector3, exit_point: Vector3) -> void:
 	if not exit_point.is_finite():
 		_start_takeoff(rally_point, Vector3.INF)
 		return
-	var exit_offset: Vector3 = exit_point - _unit.global_position
+	# simulation_position(), not global_position, since slice R5: this decides
+	# whether the unit walks out of the hangar at all or climbs from where it
+	# stands, and HANGAR_EXIT then integrates from the same reading.
+	var exit_offset: Vector3 = exit_point - _unit.simulation_position()
 	exit_offset.y = 0.0
 	if exit_offset.length() <= float(_unit.arrival_radius):
 		_start_takeoff(rally_point, Vector3.INF)
@@ -227,7 +240,11 @@ func _start_takeoff(move_target: Vector3, exit_point: Vector3) -> void:
 	_post_takeoff_exit_point = exit_point
 	phase = Phase.TAKING_OFF
 	_phase_elapsed = 0.0
-	ground_altitude = _sample_ground_altitude(_unit.global_position)
+	# simulation_position(), not global_position, since slice R5: ground_altitude
+	# is the lower endpoint of the takeoff lerp _advance_vertical_transition()
+	# writes back through set_simulation_position(), and the terrain probe below
+	# it must sample under where the simulation has this unit standing.
+	ground_altitude = _sample_ground_altitude(_unit.simulation_position())
 	cruise_altitude = ground_altitude + BASE_FLIGHT_ALTITUDE + height_offset
 	_unit.flight_play_clip(TAKEOFF_ANIMATION, false, 1.0)
 
@@ -266,7 +283,9 @@ func _start_landing_descent() -> void:
 func _landing_approach_reached() -> bool:
 	if not _landing_target.is_finite():
 		return false
-	var offset: Vector3 = _landing_target - _unit.global_position
+	# simulation_position(), not global_position, since slice R5: this is the
+	# tick's decision to hand horizontal motion over to the Land clip.
+	var offset: Vector3 = _landing_target - _unit.simulation_position()
 	offset.y = 0.0
 	return offset.length() <= flight_landing_approach_radius()
 
@@ -319,7 +338,9 @@ func circles_desired_velocity() -> Vector3:
 		return Vector3.ZERO
 	var speed := _circles_speed()
 	var target := _circles_steering_target()
-	var offset: Vector3 = target - _unit.global_position
+	# simulation_position(), not global_position, since slice R5: this velocity
+	# is what AirNavigation steers the aircraft with for the whole tick.
+	var offset: Vector3 = target - _unit.simulation_position()
 	offset.y = 0.0
 	if offset.length_squared() <= 0.000001:
 		return _unit.facing_direction() * speed
@@ -338,7 +359,13 @@ func advance_circles_flight(steering_velocity: Vector3, delta: float) -> Vector3
 	var desired_direction := Vector3(steering_velocity.x, 0.0, steering_velocity.z)
 	if desired_direction.length_squared() <= 0.000001:
 		var target := _circles_steering_target()
-		desired_direction = target - _unit.global_position
+		# simulation_position(), not global_position, since slice R5, here and at
+		# the integrator's `start` below. Deliberately two separate calls rather
+		# than one hoisted local: this branch only runs when AirNavigation
+		# supplied no steering velocity, and _unit.turn_toward() sits between the
+		# two reads. It only rotates -- but a hoist here would be asserting that
+		# forever, and the read is cheap next to being wrong about it.
+		desired_direction = target - _unit.simulation_position()
 		desired_direction.y = 0.0
 	if desired_direction.length_squared() <= 0.000001:
 		desired_direction = _unit.facing_direction()
@@ -362,7 +389,7 @@ func advance_circles_flight(steering_velocity: Vector3, delta: float) -> Vector3
 	if forward.length_squared() <= 0.000001:
 		return Vector3.ZERO
 	forward = forward.normalized()
-	var start: Vector3 = _unit.global_position
+	var start: Vector3 = _unit.simulation_position()
 	var end: Vector3 = start + forward * speed * delta
 	if _circles_order_active:
 		var segment_target := _circles_steering_target()
@@ -379,7 +406,15 @@ func advance_circles_flight(steering_velocity: Vector3, delta: float) -> Vector3
 
 func _circles_steering_target() -> Vector3:
 	if not _circles_order_active:
-		return _unit.global_position + _unit.facing_direction()
+		# simulation_position(), not global_position, since slice R5: an idle
+		# orbit steers at a point one unit ahead of where the simulation has the
+		# aircraft, not ahead of the mirror. This read and the one in
+		# circles_desired_velocity() above are a pair that cancels -- its only
+		# consumer subtracts the position again, leaving the facing direction --
+		# so no test can observe either one alone, and only reverting exactly
+		# one of the two changes any behaviour. The rule catches that; nothing
+		# else would.
+		return _unit.simulation_position() + _unit.facing_direction()
 	if _circles_departure.is_finite():
 		return _circles_departure
 	return _circles_destination
@@ -389,7 +424,12 @@ func _plan_close_target_departure() -> void:
 	if _circles_departure_planned:
 		return
 	_circles_departure_planned = true
-	var offset: Vector3 = _circles_destination - _unit.global_position
+	# simulation_position(), not global_position, since slice R5, read once for
+	# both uses below: nothing between them moves the unit -- the intervening
+	# calls are float math and a facing read -- and the departure waypoint has
+	# to be measured from the same point the distance test just rejected.
+	var unit_position: Vector3 = _unit.simulation_position()
+	var offset: Vector3 = _circles_destination - unit_position
 	offset.y = 0.0
 	if offset.length() >= _minimum_turn_radius() * 2.0:
 		return
@@ -399,7 +439,7 @@ func _plan_close_target_departure() -> void:
 	var forward: Vector3 = _unit.facing_direction()
 	forward.y = 0.0
 	if forward.length_squared() > 0.000001:
-		_circles_departure = _unit.global_position + forward.normalized() * _minimum_turn_radius() * 2.0
+		_circles_departure = unit_position + forward.normalized() * _minimum_turn_radius() * 2.0
 
 
 func _circles_speed() -> float:
@@ -449,7 +489,9 @@ static func _rotated_horizontal(direction: Vector3, angle: float) -> Vector3:
 
 
 func _reached(target: Vector3, radius: float) -> bool:
-	var offset: Vector3 = target - _unit.global_position
+	# simulation_position(), not global_position, since slice R5: arrival is a
+	# simulation verdict -- it completes the order.
+	var offset: Vector3 = target - _unit.simulation_position()
 	offset.y = 0.0
 	return offset.length() <= radius
 
@@ -479,11 +521,19 @@ func flight_begin_pickup_sequence(
 	clear_circles_order()
 	_visual_bank = 0.0
 	_unit.flight_set_visual_bank(0.0)
-	var landing: Vector3 = landing_position if landing_position.is_finite() else _unit.global_position
+	# simulation_position(), not global_position, since slice R5, read once for
+	# both uses below: only a terrain raycast sits between them, which moves
+	# nothing. The `.y` half is a position read like any other -- it is the upper
+	# endpoint of the descent lerp _advance_pickup_landing() writes back through
+	# set_simulation_position(), and the node's y is a mirror of that same store
+	# value rather than a rendered height (B4's interpolation offsets
+	# visual_root, never the body).
+	var unit_position: Vector3 = _unit.simulation_position()
+	var landing: Vector3 = landing_position if landing_position.is_finite() else unit_position
 	_pickup_landing_target = landing
 	var terrain_altitude := _sample_ground_altitude(landing)
 	_pickup_landing_altitude = terrain_altitude + maxf(landing_clearance, 0.0)
-	_pickup_landing_start_altitude = _unit.global_position.y
+	_pickup_landing_start_altitude = unit_position.y
 	_pickup_cruise_altitude = maxf(
 		terrain_altitude + BASE_FLIGHT_ALTITUDE + height_offset,
 		_pickup_landing_altitude
@@ -509,11 +559,16 @@ func flight_complete_pickup_sequence() -> void:
 	# pickup/drop this is the fixed docking height held throughout StartPickup,
 	# Pickup and EndPickup.  Keeping the actual position also lets an aborted
 	# landing recover without first snapping down to the intended docking height.
-	_post_takeoff_move_target = _unit.global_position
+	# simulation_position(), not global_position, since slice R5, read once for
+	# both uses below -- nothing between them moves the unit. Both are
+	# simulation state: the move target the aircraft resumes at the top of the
+	# climb, and the altitude the climb lerps up from.
+	var unit_position: Vector3 = _unit.simulation_position()
+	_post_takeoff_move_target = unit_position
 	_post_takeoff_exit_point = Vector3.INF
 	phase = Phase.TAKING_OFF
 	_phase_elapsed = 0.0
-	ground_altitude = _unit.global_position.y
+	ground_altitude = unit_position.y
 	cruise_altitude = _pickup_cruise_altitude
 	_unit.flight_play_clip(TAKEOFF_ANIMATION, false, 1.0)
 
@@ -559,7 +614,10 @@ func advance(delta: float) -> void:
 		_advance_transition(delta)
 		_advance_vertical_avoidance(delta)
 		_advance_cruise_altitude(delta)
-		var cruise_position: Vector3 = _unit.global_position
+		# simulation_position(), not global_position, since slice R5: this read
+		# is written straight back out on the next line, so asking the node here
+		# would make the store's own position a copy of the mirror once a tick.
+		var cruise_position: Vector3 = _unit.simulation_position()
 		cruise_position.y = cruise_altitude + _vertical_avoidance_offset
 		_unit.set_simulation_position(cruise_position)
 		_unit.flight_set_visual_slope_target(Vector3.UP)
@@ -579,13 +637,20 @@ func advance(delta: float) -> void:
 
 
 func _advance_hangar_exit(delta: float) -> void:
-	var exit_offset: Vector3 = _post_takeoff_exit_point - _unit.global_position
+	# simulation_position(), not global_position, since slice R5, read once for
+	# both uses below -- nothing between them moves the unit. The second use is
+	# the argument of set_simulation_position(): the two calls are not the same
+	# call, and the read half moved to the store here exactly like every other
+	# read in this file. Integrating from the node while writing the store would
+	# copy the mirror into the store one step per tick.
+	var unit_position: Vector3 = _unit.simulation_position()
+	var exit_offset: Vector3 = _post_takeoff_exit_point - unit_position
 	exit_offset.y = 0.0
 	var distance: float = exit_offset.length()
 	var arrival := float(_unit.arrival_radius)
 	if distance > arrival and delta > 0.0:
 		var step: float = minf(float(_unit.navigation_move_speed()) * delta, distance)
-		_unit.set_simulation_position(_unit.global_position + exit_offset / distance * step)
+		_unit.set_simulation_position(unit_position + exit_offset / distance * step)
 		_unit.flight_snap_to_terrain()
 		_unit.flight_set_movement_animation(true)
 		return
@@ -606,7 +671,12 @@ func _advance_vertical_transition(
 		_unit.flight_advance_transition_motion(horizontal_target, delta)
 	var duration: float = _unit.flight_clip_length(clip_name, default_seconds)
 	var t := clampf(_phase_elapsed / duration, 0.0, 1.0) if duration > 0.0 else 1.0
-	var transition_position: Vector3 = _unit.global_position
+	# simulation_position(), not global_position, since slice R5, and read here
+	# rather than hoisted to the top of the function on purpose:
+	# flight_advance_transition_motion() above moves the unit horizontally
+	# through Unit.set_simulation_position(), so the horizontal half of this
+	# read has to be taken after it.
+	var transition_position: Vector3 = _unit.simulation_position()
 	transition_position.y = lerpf(from_altitude, to_altitude, t)
 	_unit.set_simulation_position(transition_position)
 	_unit.flight_set_visual_slope_target(Vector3.UP)
@@ -642,7 +712,11 @@ func _advance_pickup_landing(delta: float) -> void:
 	_phase_elapsed += maxf(delta, 0.0)
 	var duration: float = _unit.flight_clip_length(LAND_ANIMATION, DEFAULT_LAND_SECONDS)
 	var t := clampf(_phase_elapsed / duration, 0.0, 1.0) if duration > 0.0 else 1.0
-	var pickup_position: Vector3 = _unit.global_position
+	# simulation_position(), not global_position, since slice R5, and read after
+	# flight_advance_transition_motion() above for the reason
+	# _advance_vertical_transition() gives: that call has already moved the unit
+	# horizontally this tick.
+	var pickup_position: Vector3 = _unit.simulation_position()
 	pickup_position.y = lerpf(_pickup_landing_start_altitude, _pickup_landing_altitude, t)
 	_unit.set_simulation_position(pickup_position)
 	_unit.flight_set_visual_slope_target(Vector3.UP)
@@ -669,7 +743,10 @@ func _advance_vertical_avoidance(delta: float) -> void:
 func _advance_cruise_altitude(delta: float) -> void:
 	if delta <= 0.0:
 		return
-	var target_altitude := _sample_flight_altitude(_unit.global_position)
+	# simulation_position(), not global_position, since slice R5: the terrain
+	# probe must be taken under where the simulation has the aircraft, and the
+	# altitude it produces is written back out by advance()'s CRUISING branch.
+	var target_altitude := _sample_flight_altitude(_unit.simulation_position())
 	var blend := clampf(1.0 - exp(-TERRAIN_ALTITUDE_RESPONSE * delta), 0.0, 1.0)
 	cruise_altitude = lerpf(cruise_altitude, target_altitude, blend)
 

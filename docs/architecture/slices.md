@@ -45,6 +45,12 @@ Two limits worth knowing before trusting a green run:
   children.
 - **`?`** would mean a slice this reconstruction could not pin to a commit.
   There are none.
+- **`pending`** in the commit cell means the row landed in the same commit as
+  the code that cites it, so the hash it will carry does not exist yet — a
+  commit cannot contain its own hash, and the `slice-index` rule plus the
+  pre-commit hook together mean the row cannot wait for the next one. The
+  self-test allows exactly one, so a pending row has to be filled in before the
+  slice after it can use the same escape.
 - **`†`** marks a hash whose own commit message never names the slice id it is
   filed under, so the attribution is this reconstruction's inference rather than
   the commit's own claim. Eight of the twenty-six rows carry one, measured with
@@ -112,3 +118,4 @@ here, so the index cannot fall behind the code that cites it.
 | `R3` | `e7e67f5`† | 2026-08-27 | Migrated the three ground-steering modules' 53 position reads onto `simulation_position()` | [Slice R3, decided 2026-08-27: the ground-navigation group](network-multiplayer.md#order-of-work) |
 | `R4` | `b932632` | 2026-08-27 | Migrated 24 of the navigation system-and-shared group's 26 reads, across six modules plus twelve of `UnitNavigationSystem`'s fourteen | [Slice R4, decided 2026-08-27: navigation's system-and-shared group](network-multiplayer.md#order-of-work) |
 | `R4a` | `3bea127`† | 2026-08-27 | Hatched the two debug-overlay reads R4 left behind instead of exempting the whole 1100-line navigation facade, raising `allow_budget` 0 → 2 | |
+| `R5` | pending | 2026-08-27 | Migrated the flight group's 24 reads — `unit_flight_controller.gd` and `air_navigation.gd` — emptying the read rule's navigation queue, and bound the migration on the real path instead of a double for the first time | [Slice R5, decided 2026-08-27: the flight group](network-multiplayer.md#order-of-work) |

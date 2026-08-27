@@ -1948,6 +1948,131 @@ source cites a number you cannot place.
   every slice off this queue will keep paying for its binding at a manufactured
   disagreement instead.
 
+  **Slice R5, decided 2026-08-27: the flight group, and the first binding this
+  program has been able to put on the real path.** Two files —
+  `unit_flight_controller.gd` (21 reads) and `air/air_navigation.gd` (3) — now
+  ask `simulation_position()` instead of the node. All 24 moved and none stayed:
+  the sweep looked for the two things that keep a read on the permanent list, a
+  read that only feeds the view and a read of something with no store entry, and
+  found neither. Every one of them is an altitude the next line writes back
+  through `set_simulation_position()`, a bearing an aircraft flies on for a whole
+  tick, an arrival verdict that completes an order, or a terrain probe whose
+  answer becomes the altitude. Deleting the two entries empties the navigation
+  subgroup of the read rule's queued group entirely, which was 12 files and 103
+  reads when R3 started: R3 took ground steering, R4 the system-and-shared group,
+  R5 flight. The queue is 20 files and 53 reads, down from 22 and 77, and what is
+  left of it is combat, buildings and a scattering of unit and match code.
+
+  Four of the controller's functions read the same unit twice with nothing
+  between the reads that moves it, so R3's hoist is repeated and said out loud at
+  each site: 21 reads became 17 accessor calls. Two functions deliberately do
+  *not* hoist and say why — `_advance_vertical_transition()` and
+  `_advance_pickup_landing()` both call `Unit.flight_advance_transition_motion()`
+  first, which moves the unit horizontally through `set_simulation_position()`, so
+  their read has to be taken after it rather than at the top of the function.
+  `advance_circles_flight()` keeps its two reads separate for a weaker reason
+  that is worth being honest about: only `turn_toward()` sits between them and it
+  only rotates, so a hoist would be correct today and would be asserting that
+  forever, which the second accessor call is cheap enough not to be worth.
+
+  **One line deserves calling out because a reader skimming will misread it.**
+  `_advance_hangar_exit()` ends in
+  `_unit.set_simulation_position(_unit.global_position + exit_offset / distance * step)`
+  — the *read* inside that argument is a read like any other and became
+  `simulation_position()`, while the write around it stays what it was. They are
+  not the same call and the write half was never in question. Integrating from
+  the node while writing the store would have copied the mirror into the store
+  one step per tick, which is the failure this whole migration exists to remove,
+  and it would have looked completely correct.
+
+  **Three of the reads are `.y` only, and whether the store's `y` is *right*
+  rather than merely equal is a different question from the rest.** They are the
+  cruise altitude `configure()` starts from, the altitude a pickup descent lerps
+  down from, and the altitude the post-pickup climb lerps up from. The worry
+  worth having is that an aircraft's rendered height might not be its simulated
+  one, which would make the node's `y` the correct read at some of these sites.
+  It is not: `UnitTerrainAlignment.snap_body_to_terrain()` — the only thing that
+  writes a flying unit's `y` outside the controller — routes through
+  `set_simulation_position()` like everything else, and B4's interpolation offsets
+  `visual_root`, a child node, never the body. So the node's `y` is a mirror of
+  the store's `y` at every instant, all three feed lerp endpoints that are written
+  straight back into the store, and there is no rendered height anywhere in this
+  file for a read to have meant.
+
+  **This is the first group whose binding could go on the real path, and it
+  did.** R3 and R4 both reported the same fact from the other side: making the
+  real `Unit.simulation_position()` answer from the node broke two assertions in
+  the whole repository, both in R2's own poke case in
+  `tests/match/entity_state_run.gd`, and nothing on a navigation path. Their
+  bindings had to live at a double because the modules they migrated are
+  duck-typed on a `Node3D` and their suites have no `Match` in the tree at all.
+  `UnitFlightController` is not like that: `Unit` constructs it, holds it, and
+  drives it, so the disagreement can be manufactured on the real object.
+  `tests/units/flight_store_reads_run.gd` boots the real match fixture, adds a
+  real ATADVCarryall and a real Carryall under it, waits for each to earn an
+  entity id and a store position from the tick, and then splits the two apart the
+  only way a real unit can be split — `store.set_position(id, …)` behind the
+  node's back, the identical bypass the poke cases perform — before driving one
+  real flight step and asserting the controller followed the store. Fifteen cases,
+  78 assertions, no double anywhere in the file. **Mutation 3 moves for the first
+  time in this program: making the real accessor answer from the node now breaks
+  41 assertions across two suites — 39 of the new suite's 77 in all fifteen
+  cases, plus the same 2 in `entity_state_run.gd` R3 and R4 recorded — where for
+  those two slices it broke 2 and nothing else.**
+
+  What made that suite possible is also what bounds it, and the bound is the
+  interesting part. A real unit's store/node disagreement survives exactly until
+  its next simulation tick, because `Unit.navigation_step()` and
+  `snap_body_to_terrain()` both end in `set_simulation_position()` written from
+  the node's own `global_position` — a bare self-read, deliberately outside the
+  read rule's scope, and the thing that makes the mirror true. So every case runs
+  synchronously against one fixture with no `await` between the poke and the
+  step: the measurement is taken inside the window the simulation actually leaves
+  open, rather than by pretending the window is wider. The same fact costs one
+  read its binding. `air_navigation.tick()`'s
+  `agent["destination"] = unit.simulation_position()`, which runs when a Circles
+  order completes, sits immediately after `navigation_step()` has closed the
+  divergence, so no manufactured disagreement can survive to reach it. A double
+  that held the split open across its own step would be modelling a state the
+  simulation cannot reach — the same reason `FakeUnit.navigation_step()` re-syncs
+  — so that read is held by the architecture rule alone, and saying so is worth
+  more than a case that would pass either way. A second read is unobservable for
+  an unrelated reason: `_circles_steering_target()`'s idle branch returns
+  `simulation_position() + facing_direction()`, and its only consumer subtracts
+  the position again, so the two reads cancel unless exactly one of them is
+  reverted — which is precisely what the rule catches.
+
+  `air_navigation.gd`'s other two reads are bound at the established double,
+  in `tests/navigation/store_reads_run.gd` (now 15 cases, 58 assertions, 678
+  lines) rather than in a suite of their own, because that module is duck-typed
+  on `FakeUnit` exactly as the ground modules are and `FakeLandedFlyer` already
+  inherits the override. Its neighbour-search read is the air twin of the pairing
+  R4 had to make for `nav_spatial_hash.gd`: `NavSpatialHash.build()` has keyed
+  those buckets from `simulation_position()` since R4, so looking them up from
+  the node would file an agent in one bucket and search for it in another the
+  moment the two disagreed. Inside a match they never do, so nothing was broken;
+  the case proves the lookup follows the store by putting the neighbour 141 m
+  from the mover's node and half a metre from its stored position and asserting
+  that lateral separation still deflects the step.
+
+  **What the sweep turned up.** One test double broke, and loudly this time:
+  `tests/units/flight_run.gd`'s `FakeFlyingUnit`, a bare `Node3D` handed straight
+  to `AirNavigation.desired_velocity()` and `.tick()`, has no
+  `simulation_position()` — removing the one this slice added costs that suite 2
+  failed assertions and 2 "Nonexistent function" errors, which is the same
+  outcome R4's `FakeCarrier` had and better than R3's two doubles, both of which
+  kept passing while printing the error every tick. The wider grep over `tests/`
+  found no others: `jitter_probe.gd`'s `ProbeUnit` is not a flyer and already
+  answers, and nothing else reaches an air agent. The read rule's arithmetic did
+  *not* reproduce this time, and in the half nobody had looked at: the permanent
+  group's header still claimed 21 files and 37 reads, which was R4's own correct
+  count and went stale the same day, because R4a pulled `unit_navigation_system.gd`
+  back out of that group in favour of two line-scoped hatches without lowering the
+  total it had just been added to. The queued half was exact. Both headers are
+  corrected and the arithmetic now closes: the rule matches 90 lines across 41
+  files, 20 permanent, 20 queued, and `unit_navigation_system.gd` alone with its
+  two hatches, `allow_budget` unchanged at 2 — this slice needed none.
+
 
 - **Phase 4 — determinism gate.** Portable math, RNG split, the static rules
   above wired into `check_architecture.py`, and the CI test that replays one
