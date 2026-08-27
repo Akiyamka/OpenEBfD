@@ -23,7 +23,19 @@
 # hatches are removed, never up — the same idiom as `max-file-lines` in
 # .gdlintrc. The checker prints the live count on every run and suggests
 # lowering the budget when the tree is cleaner than the budget allows.
-allow_budget = 0
+#
+# Raised 0 → 2 in slice R4a, the only time it has moved up, and the trade is
+# worth stating because "never up" is the rule it breaks.
+# global-position-read-bypasses-store exempts by *file*.
+# unit_navigation_system.gd migrated 12 of its 14 reads in R4 and kept 2 view
+# reads in _refresh_navigation_debug(), which under a file-level exemption
+# took the whole 1100-line simulation facade out from under the rule --
+# measured: reverting any of the 12 migrated reads left the checker green,
+# while the same revert in each of R4's other six files was caught. Two
+# line-scoped hatches buy the file back. A hatch that stops violating its rule
+# is itself reported, so these cannot rot silently the way the file entry
+# could.
+allow_budget = 2
 
 # Minimum length of a hatch reason, in characters.
 min_reason_length = 8
@@ -328,19 +340,6 @@ exempt = [
 	"scripts/match/match_snapshot.gd",
 	"scripts/ui/selection_halo_binding.gd",
 	"scripts/units/navigation/navigation_grid_debug.gd",
-	# Arrived here from the queued group in slice R4, which migrated 12 of this
-	# file's 14 reads and left 2. Both survivors are inside
-	# _refresh_navigation_debug(), which builds the line strip
-	# UnitNavigationDebug draws for a selected unit and nothing else -- reason 1
-	# above, view code, and the function's own doc comment says so at the site.
-	# This is the first entry here that is a simulation file kept for a view
-	# read rather than an FX or audio one, so it buys silence for a future
-	# simulation read in a facade that has plenty of them. That is the same
-	# file-level imprecision this header already accepts for
-	# authored_fire_controller.gd and friends, and it is stated rather than
-	# hidden: a reader adding a position read to this file has to decide for
-	# itself, because the rule will not.
-	"scripts/units/navigation/unit_navigation_system.gd",
 	"scripts/units/unit_authored_collision.gd",
 	"scripts/units/unit_death_sequence.gd",
 	"scripts/units/unit_deploy_state.gd",

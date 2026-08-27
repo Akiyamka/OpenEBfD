@@ -955,8 +955,8 @@ func _refresh_navigation_debug() -> void:
 		if not is_instance_valid(unit) or not &"is_selected" in unit \
 		or not bool(unit.get("is_selected")):
 			continue
-		var height := unit.global_position.y + maxf(float(agent["radius"]) * 0.12, 0.18)
-		var position := _debug_height(unit.global_position, height)
+		var height := unit.global_position.y + maxf(float(agent["radius"]) * 0.12, 0.18)  # arch-allow: global-position-read-bypasses-store -- the overlay is drawn on the node, so it must measure against the node
+		var position := _debug_height(unit.global_position, height)  # arch-allow: global-position-read-bypasses-store -- same line strip, same node-relative frame
 		var destination := _debug_height(agent["destination"], height)
 		var route: Array[Vector3] = [position]
 		var waypoint := Vector3.INF
