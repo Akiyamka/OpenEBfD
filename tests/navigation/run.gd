@@ -32,6 +32,16 @@ class FakeUnit extends Node3D:
 	var defer_navigation_orders := false
 	var prepared_navigation_targets: Array[Vector3] = []
 	var attack_arc_direction := Vector3.ZERO
+	## Slice R3: the store-side position this double reports to navigation,
+	## separable from the node's own `global_position` on purpose. Vector3.INF
+	## means "no separate store value" and simulation_position() then answers
+	## from the node, which is both what a real Unit with no Match in the tree
+	## does (Unit.simulation_position()'s fallback) and what leaves every case
+	## written before R3 behaving exactly as it did. Without it this suite
+	## cannot see what R3 changed at all: the two readings would always hold
+	## the same number, and a fixture that can only agree with itself proves
+	## the reader compiles rather than that it read the store.
+	var _simulation_position := Vector3.INF
 
 	func _init(size := 1.0, infantry := false) -> void:
 		unit_definition.size = roundi(size)
@@ -47,6 +57,19 @@ class FakeUnit extends Node3D:
 		# early is visible to get_nodes_in_group() the instant the node
 		# enters the tree, with no frame delay.
 		add_to_group(&"sim_units")
+
+	## Puts this double into the one disagreement a real Unit can actually be
+	## in: something wrote `global_position` behind the simulation's back (the
+	## rogue poke tests/match/entity_state_run.gd performs on a real Unit) and
+	## the store kept its own value. Pass Vector3.INF to go back to answering
+	## from the node.
+	func set_simulation_position_override(value: Vector3) -> void:
+		_simulation_position = value
+
+	## The duck-typed accessor scripts/units/navigation/ground/* has called
+	## since slice R3, standing in for Unit.simulation_position().
+	func simulation_position() -> Vector3:
+		return _simulation_position if _simulation_position.is_finite() else global_position
 
 	func set_navigation_managed(active: bool) -> void:
 		managed = active
@@ -70,6 +93,14 @@ class FakeUnit extends Node3D:
 
 	func navigation_step(value: Vector3, delta: float) -> void:
 		global_position += value * delta
+		# Unit.navigation_step() ends in set_simulation_position(), which writes
+		# the store and the mirror together from the node's own value -- so a
+		# real unit's store/mirror disagreement survives exactly until its next
+		# step, and this double must not outlive it either. A fixture that could
+		# hold a divergence open for a hundred ticks would be modelling a state
+		# the simulation cannot reach.
+		if _simulation_position.is_finite():
+			_simulation_position = global_position
 
 	func is_enemy_of(player_id: int) -> bool:
 		return owner_player_id != player_id
@@ -220,6 +251,9 @@ func _initialize() -> void:
 	_test_large_reciprocal_crossing(grid)
 	_test_circle_convergence_metrics(grid)
 	_test_group_shift_keeps_shape(grid)
+	_test_desired_velocity_reads_the_store_position(grid)
+	_test_route_lanes_read_the_store_position(grid)
+	_test_turn_in_place_reads_the_store_position(grid)
 	if _failures > 0:
 		printerr("Unit navigation tests: %d failures after %d assertions" % [_failures, _assertions])
 		quit(1)
@@ -2806,6 +2840,145 @@ func _test_command_overrides_yield(grid: MapNavigationGrid) -> void:
 	navigation.command_move([unit], destination)
 	_advance_navigation(navigation, 5.0)
 	_expect(unit.global_position.distance_to(destination) < 1.0, "an order issued mid-yield must still be executed")
+
+	navigation.queue_free()
+	unit.queue_free()
+
+
+## Slice R3's binding for the ground-navigation migration, and the only cases
+## in this suite that are one: everywhere else a FakeUnit's node position and
+## its simulation position hold the same number, so both reads return the same
+## value and every assertion passes either way -- which is exactly why R2's
+## harvester migration measured 103 assertions before it and 103 after. These
+## three split the two apart (see FakeUnit._simulation_position) and assert the
+## navigation module followed the store, so reverting a read they cover fails a
+## test rather than only the checker.
+
+
+## ground_navigation.gd. The observable is arrival: desired_velocity() decides
+## it by measuring the unit against its destination, so parking the node exactly
+## on the destination while the store keeps the unit six metres short of it
+## separates the two readings completely -- the store says "keep driving", the
+## mirror says "arrived, stop".
+func _test_desired_velocity_reads_the_store_position(grid: MapNavigationGrid) -> void:
+	var navigation := NavigationSystemScript.new()
+	root.add_child(navigation)
+	_expect(navigation.setup(grid), "navigation system must initialize for store-position steering")
+	var unit := FakeUnit.new()
+	root.add_child(unit)
+	var start := Vector3(180.5, 0.0, 180.5)
+	unit.global_position = start
+	navigation.register_unit(unit)
+	var destination := start + Vector3.RIGHT * 6.0
+	var agent: Dictionary = navigation._agents[unit.get_instance_id()]
+	agent["destination"] = destination
+	agent["direct_path"] = true
+	# The store keeps the unit where it started while the node is teleported
+	# onto the destination behind the simulation's back -- the same rogue write
+	# tests/match/entity_state_run.gd performs on a real Unit.
+	unit.set_simulation_position_override(start)
+	unit.global_position = destination
+
+	var velocity: Vector3 = navigation.ground_navigation.desired_velocity(agent)
+	_expect(
+		unit.global_position.distance_to(destination) < 0.001
+			and unit.simulation_position().distance_to(start) < 0.001,
+		"the node and the store must genuinely disagree here -- otherwise this case tests nothing"
+	)
+	_expect(
+		not velocity.is_zero_approx(),
+		"desired_velocity must keep driving: the store still has this unit six metres short of "
+			+ "its destination, however close the node's mirror has been moved to it"
+	)
+	_expect(
+		velocity.normalized().dot(Vector3.RIGHT) > 0.99,
+		"the desired direction must run from the stored position toward the destination (got %s)"
+			% velocity
+	)
+
+	navigation.queue_free()
+	unit.queue_free()
+
+
+## ground_slot_allocator.gd. Route lanes are pure geometry -- each unit's lane
+## is its lateral offset from the group's centroid -- so freezing two units'
+## stored positions and then swapping their nodes across the travel axis makes
+## the two readings hand out opposite lanes.
+func _test_route_lanes_read_the_store_position(grid: MapNavigationGrid) -> void:
+	var navigation := NavigationSystemScript.new()
+	root.add_child(navigation)
+	_expect(navigation.setup(grid), "navigation system must initialize for store-position lanes")
+	var units: Array[Node3D] = []
+	for offset in [-3.0, 3.0]:
+		var member := FakeUnit.new()
+		root.add_child(member)
+		member.global_position = Vector3(180.5, 0.0, 180.5 + offset)
+		navigation.register_unit(member)
+		units.append(member)
+	var low := units[0]
+	var high := units[1]
+	low.set_simulation_position_override(low.global_position)
+	high.set_simulation_position_override(high.global_position)
+	var swap := low.global_position
+	low.global_position = high.global_position
+	high.global_position = swap
+
+	# Travel runs along +X, so the lateral axis is Z and each lane carries the
+	# sign of that unit's Z offset from the centroid.
+	navigation.slot_allocator.assign_route_lanes(
+		navigation._agents, units, Vector3(200.5, 0.0, 180.5)
+	)
+	var low_lane := float(navigation._agents[low.get_instance_id()]["route_lane_offset"])
+	var high_lane := float(navigation._agents[high.get_instance_id()]["route_lane_offset"])
+	_expect(
+		low_lane < 0.0 and high_lane > 0.0,
+		("route lanes must be cut from the stored positions, not from the swapped nodes "
+			+ "(got %.2f for the unit stored on the -Z side and %.2f for the +Z one)")
+			% [low_lane, high_lane]
+	)
+
+	navigation.queue_free()
+	for member in units:
+		member.queue_free()
+
+
+## steering_stabilizer.gd. The same geometry as
+## _test_far_target_large_bearing_starts_driven_arc above, with the node
+## teleported onto the steering target: a node-side read sees a target inside
+## the chassis' turn circle and stops to turn in place, a store-side read still
+## sees a far corner and drives the arc.
+func _test_turn_in_place_reads_the_store_position(grid: MapNavigationGrid) -> void:
+	var navigation := NavigationSystemScript.new()
+	root.add_child(navigation)
+	_expect(navigation.setup(grid), "navigation system must initialize for store-position arcs")
+	navigation.avoidance.turn_rate_stabilization_enabled = true
+	var unit := FakeTurningUnit.new(3.0)
+	unit.move_speed = 4.0
+	unit.facing = Vector3.RIGHT
+	root.add_child(unit)
+	var start := Vector3(180.5, 0.0, 180.5)
+	unit.global_position = start
+	navigation.register_unit(unit)
+	var agent: Dictionary = navigation._agents[unit.get_instance_id()]
+	var target := start + Vector3.BACK * 10.0
+	agent["steering_target"] = target
+	unit.set_simulation_position_override(start)
+	unit.global_position = target
+
+	var velocity: Vector3 = navigation.avoidance.stabilize_velocity(
+		agent, Vector3.BACK * unit.move_speed, 0.05, [agent], {}
+	)
+	_expect(
+		not bool(agent["steering_turn_in_place"]),
+		"a steering target ten metres from the stored position must start a driven arc, however "
+			+ "close the node\'s mirror has been moved to it"
+	)
+	var previous := unit.global_position
+	unit.navigation_step(velocity, 0.05)
+	_expect(unit.global_position.distance_to(previous) > 0.1,
+		"the driven arc must actually move the unit")
+	_expect(unit.turn_starts == 0,
+		"a target far from the stored position must not enter turn-in-place")
 
 	navigation.queue_free()
 	unit.queue_free()

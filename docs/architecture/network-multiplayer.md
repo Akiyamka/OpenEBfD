@@ -1716,6 +1716,106 @@ and by the time we get there the hard part is already tested.
   said `global_position` while the line said `global_transform`. A rule is only
   as wide as its spelling, and the cost of finding that out was two slices.
 
+  **Slice R3, decided 2026-08-27: the ground-navigation group, and a fixture
+  that can finally disagree with itself.** Three files —
+  `ground_slot_allocator.gd` (23 reads), `ground_navigation.gd` (20) and
+  `steering_stabilizer.gd` (10) — now ask `simulation_position()` instead of
+  the node. All 53 moved and none stayed: the sweep looked for the two things
+  that would have kept an entry on the list, a read that only feeds the view
+  and a read of something that never had a store entry, and found neither. Every
+  one of these reads is a slot assignment, a destination, a swept-disc check or
+  a steering decision taken inside the tick, so every one of them owes the store
+  an answer. The three files are gone from the read rule's queued group, which
+  leaves it at 29 files and 103 reads; navigation, which was two thirds of the
+  debt at 12 files and 103 reads, is now 9 files and 50 and is no longer one
+  indivisible lump — `unit_flight_controller.gd` (21) and
+  `unit_navigation_system.gd` (14) are each a slice of their own.
+
+  The duck typing survived intact and that was the point of the accessor living
+  on the node. Nothing in these three files learned what a `Unit` is: every unit
+  still comes out of `agent["unit"]` annotated `Node3D`, there is no `is Unit`
+  check and no preload of `unit.gd` anywhere in them, and the call is resolved
+  at runtime exactly as `has_method("navigation_step")` already was. What that
+  costs is spelled out in the diff rather than hidden: `simulation_position()`
+  is not a field read, it resolves the owning `Match` by walking the node's
+  ancestors (`MatchLookup._live_match`) on every call, and these loops run for
+  every agent every tick. Where a function read the same unit's position several
+  times it now reads it once into a local and reuses that, which is only safe
+  because nothing between the reads moves the unit — stated at each hoist,
+  because the one place where it is *not* true, `tick()`'s achieved-velocity
+  calculation, has to read again after `navigation_step` has landed the unit and
+  says so.
+
+  **The hard part of this slice was that no existing suite could have caught a
+  mistake in it, and that is structural rather than an oversight.** Inside a
+  match the store and the node hold the same number, so `unit.global_position`
+  and `unit.simulation_position()` return the same value and every assertion in
+  `demo_boot_run.gd` or `harvester_run.gd` passes with either read. R2's
+  harvester migration ran into exactly this and measured 103 assertions before
+  and 103 after. `tests/navigation/run.gd` is worse still: it has no `Match` in
+  the tree at all, so a `simulation_position()` added to its `FakeUnit` would
+  just return `global_position` and agree with itself forever. Fifty-three reads
+  inside the tick protected by nothing but a regex is not good enough, so the
+  fake was given the ability to disagree: `FakeUnit._simulation_position` holds
+  a store-side position that `simulation_position()` returns, defaulting to
+  `Vector3.INF` meaning "no separate store value, answer from the node" — which
+  is both what a real `Unit` outside a match does and what leaves all 388
+  pre-existing assertions untouched. Three cases then set the two apart and
+  assert the store wins: a unit parked exactly on its destination whose store
+  still has it six metres short must keep driving rather than report arrival
+  (`ground_navigation.gd`), two units whose nodes are swapped across the travel
+  axis must get the route lanes their stored positions earn
+  (`ground_slot_allocator.gd`), and a chassis whose node sits on its steering
+  target while the store keeps it ten metres away must drive the arc instead of
+  stopping to turn in place (`steering_stabilizer.gd`).
+
+  What makes that fake honest rather than convenient is the second half of it:
+  `FakeUnit.navigation_step()` re-syncs the stored position to the node after
+  it moves, because `Unit.navigation_step()` ends in `set_simulation_position()`
+  and therefore closes any divergence on the very next step. A double that could
+  hold a disagreement open for a hundred ticks would be modelling a state the
+  simulation cannot reach, and assertions built on it would be proving something
+  about the fixture. The three cases are all single, direct calls into the
+  module under test for the same reason. Their honesty was checked by mutation
+  rather than assumed: making `FakeUnit.simulation_position()` return
+  `global_position` unconditionally fails exactly those three cases and nothing
+  else, 7 assertions of 398, which is what tells them apart from cases that
+  merely assert the two agree.
+
+  **The mutation worth recording is the one that failed to fail.** Making the
+  *real* `Unit.simulation_position()` answer from the node instead of the store
+  breaks two assertions in the whole repository, both of them in R2's own
+  deliberate poke case in `tests/match/entity_state_run.gd`; the navigation
+  suite still reports 398 passing assertions and `demo_boot_run.gd` still
+  reports 364. That is not a gap to be closed by adding integration coverage —
+  it is the same fact that made this slice hard, seen from the other side. Inside
+  a match the mirror is correct, so no integration test can distinguish a reader
+  that asks the store from one that asks the node, and the binding has to live
+  where a disagreement can be manufactured: at the double, and at that one poke
+  case. Every future slice off this queue inherits that and should expect to pay
+  the same price.
+
+  Three things the sweep turned up that were not on anyone's list. First, the
+  queue's own arithmetic was wrong: the rule matched 191 lines across 52 files
+  at the commit R3 started from, not the 190 R2's paragraph above records, and
+  both group headers still carried pre-R2b figures — permanent was 20 files and
+  35 reads rather than the 19 and 33 it claimed, queued 32 and 156 rather than
+  33 and 157, because R2b moved `match_snapshot.gd`'s two reads across without
+  updating either total. All four numbers are corrected in the rule, measured
+  with the rule's own pattern. Second, `nav_spatial_hash.gd`'s single remaining
+  read is not independent of the ones R3 just moved: it keys the neighbour
+  buckets by node position while `ground_navigation.tick()` now queries those
+  buckets with a store position, and the two must agree. Inside a match they do,
+  so nothing is broken, but the pair should migrate together rather than the
+  hash being left for last. Third, the duck-typing bill R2's paragraph predicted
+  came due immediately and in a place no one would have looked: two `Node3D`
+  doubles that drive the real navigation system had to grow the accessor —
+  `tests/match/admission_run.gd`'s `UnregisteredProbeUnit`, whose suite kept
+  passing while printing a "Nonexistent function" error every tick, and
+  `tests/navigation/jitter_probe.gd`'s `ProbeUnit`, which is not in the suite
+  list at all and would simply have been found broken later, exactly as slice
+  C6c's group gate found it.
+
 - **Phase 4 — determinism gate.** Portable math, RNG split, the static rules
   above wired into `check_architecture.py`, and the CI test that replays one
   command log twice in-process and then compares state hashes across native and

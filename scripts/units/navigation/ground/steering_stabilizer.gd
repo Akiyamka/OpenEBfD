@@ -87,8 +87,15 @@ func stabilize_velocity(
 	# U-turn away from the order.
 	var angular_speed := float(turn_rate_value) * RULE_MOVEMENT_UPDATES_PER_SECOND
 	var turn_radius := proposed.length() / maxf(angular_speed, 0.001)
-	var steering_target: Vector3 = agent.get("steering_target", unit.global_position)
-	var target_offset := steering_target - unit.global_position
+	# simulation_position(), not global_position, since slice R3: this decides
+	# whether the chassis drives an arc or turns in place, inside the tick, so
+	# it must read the store rather than the node's mirror. `unit` stays a bare
+	# Node3D -- see this file's other agent["unit"] reads -- so the call is
+	# duck-typed, and a test double standing in for a Unit has to answer it
+	# (tests/navigation/run.gd's FakeUnit does).
+	var unit_position: Vector3 = unit.simulation_position()
+	var steering_target: Vector3 = agent.get("steering_target", unit_position)
+	var target_offset := steering_target - unit_position
 	target_offset.y = 0.0
 	var close_target := target_offset.length() <= maxf(
 		float(agent["radius"]), turn_radius * STEERING_CLOSE_TARGET_TURN_RADIUS_FACTOR
@@ -132,7 +139,7 @@ func _terrain_sweep_fraction_from(
 	if bool(terrain.get("escape", false)):
 		return 1.0
 	var unit: Node3D = agent["unit"]
-	var start := unit.global_position
+	var start: Vector3 = unit.simulation_position()
 	var combined := float(terrain["hard_radius"])
 	var fraction := 1.0
 	for value in terrain["obstacles"]:
@@ -161,7 +168,7 @@ func _terrain_pressure_from(agent: Dictionary, terrain: Dictionary) -> Vector3:
 	if bool(terrain.get("escape", false)):
 		return Vector3.ZERO
 	var unit: Node3D = agent["unit"]
-	var position := unit.global_position
+	var position: Vector3 = unit.simulation_position()
 	var soft_margin := float(terrain["soft_margin"])
 	var field_radius := float(terrain["field_radius"])
 	var pressure := Vector3.ZERO
@@ -191,7 +198,7 @@ func _apply_pressure(desired: Vector3, pressure: Vector3) -> Vector3:
 ## field. Shared by the candidate-sampling and ORCA avoidance backends.
 func terrain_context(agent: Dictionary, movement_reach: float) -> Dictionary:
 	var unit: Node3D = agent["unit"]
-	var position := unit.global_position
+	var position: Vector3 = unit.simulation_position()
 	var origin: Vector2i = runtime_map.grid.world_to_grid(position)
 	var cell_size: Vector2 = runtime_map.grid.cell_size()
 	var obstacle_radius := maxf(minf(cell_size.x, cell_size.y) * 0.5, 0.001)
@@ -294,16 +301,21 @@ func enemy_sweep_fraction(
 		resolved: Dictionary
 	) -> float:
 	var unit: Node3D = agent["unit"]
+	# Read once per call rather than once per neighbour: simulation_position()
+	# resolves the owning Match by walking this node's ancestors (see
+	# MatchLookup._live_match) where global_position was a field read, and this
+	# loop runs for every agent every tick. Nothing in the loop moves `unit`.
+	var unit_position: Vector3 = unit.simulation_position()
 	var fraction := 1.0
 	for other in nearby:
 		var other_unit: Node3D = other["unit"]
 		if other_unit == unit or not _are_enemies(unit, other_unit):
 			continue
 		var other_position: Vector3 = resolved.get(
-			other_unit.get_instance_id(), other_unit.global_position
+			other_unit.get_instance_id(), other_unit.simulation_position()
 		)
 		fraction = minf(fraction, sweep_fraction(
-			unit.global_position,
+			unit_position,
 			displacement,
 			other_position,
 			float(agent["radius"]) + float(other["radius"])
@@ -325,15 +337,17 @@ func unit_sweep_fraction(
 		radius_factor := 1.0
 	) -> float:
 	var unit: Node3D = agent["unit"]
+	var unit_position: Vector3 = unit.simulation_position()
 	var fraction := 1.0
 	for other in nearby:
 		var other_unit: Node3D = other["unit"]
 		if other_unit == unit:
 			continue
+		var other_position: Vector3 = other_unit.simulation_position()
 		fraction = minf(fraction, sweep_fraction(
-			unit.global_position,
+			unit_position,
 			displacement,
-			other_unit.global_position,
+			other_position,
 			(float(agent["radius"]) + float(other["radius"])) * radius_factor
 		))
 	return fraction
@@ -343,12 +357,14 @@ func unit_sweep_fraction(
 ## bounded force continuously restores the round non-overlapping state.
 func separation_velocity(agent: Dictionary, nearby: Array) -> Vector3:
 	var unit: Node3D = agent["unit"]
+	var unit_position: Vector3 = unit.simulation_position()
 	var push := Vector3.ZERO
 	for other in nearby:
 		if other["unit"] == unit:
 			continue
 		var other_unit: Node3D = other["unit"]
-		var away := unit.global_position - other_unit.global_position
+		var other_position: Vector3 = other_unit.simulation_position()
+		var away := unit_position - other_position
 		away.y = 0.0
 		var combined := float(agent["radius"]) + float(other["radius"])
 		var distance := away.length()

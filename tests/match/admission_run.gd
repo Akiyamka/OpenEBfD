@@ -85,13 +85,21 @@ class TickEndProbe extends Node:
 ## The two no-op tick methods are not decoration: the case's positive control
 ## puts this node into "sim_units" by hand, and from that moment
 ## Match._advance_simulation_tick()'s two walks of that group call both of
-## them on it.
+## them on it. simulation_position() is there for the same reason and was
+## added by slice R3: once this node is in "sim_units" the navigation system
+## registers it as a ground agent, and GroundNavigation.tick() asks every
+## agent's node where it is through that duck-typed accessor rather than
+## reading global_position. Without it the case still passed while printing a
+## "Nonexistent function" script error every tick.
 class UnregisteredProbeUnit extends Node3D:
 	func sim_tick() -> void:
 		pass
 
 	func sim_tick_combat() -> void:
 		pass
+
+	func simulation_position() -> Vector3:
+		return global_position
 
 
 var _assertions := 0

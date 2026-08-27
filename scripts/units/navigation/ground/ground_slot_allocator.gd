@@ -38,8 +38,15 @@ func assign_route_lanes(agents: Dictionary, units: Array[Node3D], world_target: 
 	if units.is_empty():
 		return
 	var centroid := Vector3.ZERO
+	# simulation_position(), not global_position, since slice R3: lane and slot
+	# assignment is a simulation decision taken inside the tick, so it must read
+	# the store rather than the node's mirror. Every `unit` here is a bare
+	# Node3D by design (this whole module is duck-typed on the navigation
+	# agent's node -- see the design doc's R2 paragraph), so the call is
+	# duck-typed too and a test double standing in for a Unit has to answer it.
 	for unit in units:
-		centroid += unit.global_position
+		var unit_position: Vector3 = unit.simulation_position()
+		centroid += unit_position
 	centroid /= float(units.size())
 	var travel := world_target - centroid
 	travel.y = 0.0
@@ -56,7 +63,7 @@ func assign_route_lanes(agents: Dictionary, units: Array[Node3D], world_target: 
 		* float(largest_footprint(agents, units) + NavConstantsScript.PARKING_GAP_CELLS) * maxf(cell.x, cell.y)
 	var entries: Array[Dictionary] = []
 	for unit in units:
-		var offset := unit.global_position - centroid
+		var offset: Vector3 = unit.simulation_position() - centroid
 		offset.y = 0.0
 		var agent: Dictionary = agents[unit.get_instance_id()]
 		entries.append({
@@ -135,6 +142,7 @@ func assign_slots(agents: Dictionary, units: Array[Node3D], world_target: Vector
 	var allow_no_stop: bool = _runtime_map.is_no_stop(_runtime_map.grid.world_to_grid(world_target))
 	for index in units.size():
 		var unit := units[index]
+		var unit_position: Vector3 = unit.simulation_position()
 		var agent: Dictionary = agents[unit.get_instance_id()]
 		var span := int(agent["footprint"])
 		var preferred := parking_anchor(world_target, span)
@@ -142,9 +150,9 @@ func assign_slots(agents: Dictionary, units: Array[Node3D], world_target: Vector
 			preferred += formation_offset(index, units.size(), float(spacing))
 		else:
 			preferred += crowd_offset(index) * spacing
-		var anchor := claim_passable_anchor(preferred, agent, occupied, unit.global_position) \
+		var anchor := claim_passable_anchor(preferred, agent, occupied, unit_position) \
 			if allow_no_stop else find_slot(preferred, agent, occupied)
-		var position: Vector3 = block_center(anchor, span) if anchor.x >= 0 else unit.global_position
+		var position: Vector3 = block_center(anchor, span) if anchor.x >= 0 else unit_position
 		position.y = world_target.y
 		var assignment := {
 			"unit": unit,
@@ -171,14 +179,16 @@ func shared_target_assignments(agents: Dictionary, units: Array[Node3D], world_t
 	var occupied: Array[Dictionary] = []
 	var centroid := Vector3.ZERO
 	for unit in units:
-		centroid += unit.global_position
+		var unit_position: Vector3 = unit.simulation_position()
+		centroid += unit_position
 	centroid /= float(units.size())
 	var cell: Vector2 = _runtime_map.grid.cell_size()
 	var pack_radius := ceilf(sqrt(float(units.size()))) * 0.5 \
 		* float(largest_footprint(agents, units) + NavConstantsScript.PARKING_GAP_CELLS) * maxf(cell.x, cell.y)
 	var spread := 0.0
 	for unit in units:
-		spread = maxf(spread, Vector2(unit.global_position.x - centroid.x, unit.global_position.z - centroid.z).length())
+		var unit_position: Vector3 = unit.simulation_position()
+		spread = maxf(spread, Vector2(unit_position.x - centroid.x, unit_position.z - centroid.z).length())
 	# A compact pack is being MOVED: keep its shape, claims stay at each aim
 	# point. A group scattered wider than its resting size is being GATHERED:
 	# claims run center-out from the target so the pack fills up tight.
@@ -186,21 +196,22 @@ func shared_target_assignments(agents: Dictionary, units: Array[Node3D], world_t
 	var allow_no_stop: bool = _runtime_map.is_no_stop(_runtime_map.grid.world_to_grid(world_target))
 	for index in units.size():
 		var unit := units[index]
+		var unit_position: Vector3 = unit.simulation_position()
 		var agent: Dictionary = agents[unit.get_instance_id()]
 		var span := int(agent["footprint"])
-		var offset := unit.global_position - centroid
+		var offset := unit_position - centroid
 		offset.y = 0.0
 		var aim := world_target + offset.limit_length(pack_radius)
 		# When the aim lies inside a building footprint, approach it radially from
 		# this unit's current side. A ring-first search otherwise picks a corner
 		# before the centered cell on the same side of a rectangular building.
 		var preferred := parking_anchor(aim, span)
-		var anchor := claim_passable_anchor(preferred, agent, occupied, unit.global_position) \
-			if allow_no_stop else approach_anchor(preferred, agent, unit.global_position)
+		var anchor := claim_passable_anchor(preferred, agent, occupied, unit_position) \
+			if allow_no_stop else approach_anchor(preferred, agent, unit_position)
 		# Never fall back to the unvalidated spread aim: it may be a free cell
 		# inside a disconnected island. Staying put is the safe fallback when
 		# the bounded slot search cannot find a reachable candidate.
-		var position := block_center(anchor, span) if anchor.x >= 0 else unit.global_position
+		var position := block_center(anchor, span) if anchor.x >= 0 else unit_position
 		position.y = world_target.y
 		var no_stop_destination := anchor.x >= 0 and not block_stoppable(anchor, span, agent)
 		result.append({
@@ -224,22 +235,23 @@ func try_claim_slot(agents: Dictionary, agent: Dictionary) -> void:
 	var unit: Node3D = agent["unit"]
 	if bool(agent["hold"]) or (agent["exit_point"] as Vector3).is_finite():
 		return
+	var unit_position: Vector3 = unit.simulation_position()
 	var destination: Vector3 = agent["destination"]
-	var offset := destination - unit.global_position
+	var offset := destination - unit_position
 	offset.y = 0.0
 	if offset.length() > float(agent["claim_radius"]):
 		return
 	var span := int(agent["footprint"])
 	# The search is centered on the shared command target, not the unit's own
 	# aim point: the pack packs center-out and does not settle into a ring.
-	var anchor := claim_anchor(parking_anchor(agent["claim_center"], span), agent, reserved_blocks(agents, agent), unit.global_position)
+	var anchor := claim_anchor(parking_anchor(agent["claim_center"], span), agent, reserved_blocks(agents, agent), unit_position)
 	if anchor.x < 0:
 		return
 	agent["reserved"] = true
 	var parked := block_center(anchor, span)
 	parked.y = destination.y
 	agent["destination"] = parked
-	_ground_navigation_ref.get_ref().route_agent(agent, unit.global_position, parked)
+	_ground_navigation_ref.get_ref().route_agent(agent, unit_position, parked)
 	if unit.has_method("set_navigation_destination"):
 		unit.call("set_navigation_destination", parked)
 
@@ -260,7 +272,7 @@ func uncross_assignments(ordered_agents: Array[Dictionary]) -> void:
 		# out in the open resolve themselves by steering, and a unit already
 		# parked on its block must not be dragged out by a trade.
 		var unit: Node3D = agent["unit"]
-		var offset: Vector3 = (agent["destination"] as Vector3) - unit.global_position
+		var offset: Vector3 = (agent["destination"] as Vector3) - unit.simulation_position()
 		offset.y = 0.0
 		if offset.length() > float(agent["claim_radius"]):
 			continue
@@ -282,22 +294,24 @@ func uncross_assignments(ordered_agents: Array[Dictionary]) -> void:
 				var b: Dictionary = group[b_index]
 				var a_unit: Node3D = a["unit"]
 				var b_unit: Node3D = b["unit"]
+				var a_position: Vector3 = a_unit.simulation_position()
+				var b_position: Vector3 = b_unit.simulation_position()
 				var a_destination: Vector3 = a["destination"]
 				var b_destination: Vector3 = b["destination"]
-				var current := a_unit.global_position.distance_to(a_destination) \
-					+ b_unit.global_position.distance_to(b_destination)
-				var swapped := a_unit.global_position.distance_to(b_destination) \
-					+ b_unit.global_position.distance_to(a_destination)
+				var current := a_position.distance_to(a_destination) \
+					+ b_position.distance_to(b_destination)
+				var swapped := a_position.distance_to(b_destination) \
+					+ b_position.distance_to(a_destination)
 				if swapped + 0.05 < current:
 					a["destination"] = b_destination
 					b["destination"] = a_destination
 					a["swap_tick"] = int(_navigation_tick_index.call())
 					b["swap_tick"] = int(_navigation_tick_index.call())
 					_ground_navigation_ref.get_ref().route_agent(
-						a, a_unit.global_position, b_destination
+						a, a_position, b_destination
 					)
 					_ground_navigation_ref.get_ref().route_agent(
-						b, b_unit.global_position, a_destination
+						b, b_position, a_destination
 					)
 					if a_unit.has_method("set_navigation_destination"):
 						a_unit.call("set_navigation_destination", b_destination)
@@ -327,7 +341,8 @@ func claim_radius_for(agents: Dictionary, units: Array[Node3D]) -> float:
 
 func find_slot(preferred: Vector2i, agent: Dictionary, occupied: Array[Dictionary]) -> Vector2i:
 	var unit: Node3D = agent["unit"]
-	return claim_anchor(preferred, agent, occupied, unit.global_position)
+	var unit_position: Vector3 = unit.simulation_position()
+	return claim_anchor(preferred, agent, occupied, unit_position)
 
 
 ## Initial FREE-move aim selection. Walks a straight line from the unit's own
@@ -540,12 +555,13 @@ func parking_anchor(point: Vector3, span: int) -> Vector2i:
 func snapped_parking(agents: Dictionary, agent: Dictionary, point: Vector3) -> Vector3:
 	var span := int(agent["footprint"])
 	var unit: Node3D = agent["unit"]
+	var unit_position: Vector3 = unit.simulation_position()
 	var anchor := claim_anchor(
 		parking_anchor(point, span), agent, reserved_blocks(agents, agent),
-		unit.global_position
+		unit_position
 	)
 	if anchor.x < 0:
-		return unit.global_position
+		return unit_position
 	var parked := block_center(anchor, span)
 	parked.y = point.y
 	return parked

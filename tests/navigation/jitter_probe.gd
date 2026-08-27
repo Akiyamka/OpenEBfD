@@ -33,6 +33,15 @@ class ProbeUnit extends Node3D:
 		# suite would have caught it going stale.
 		add_to_group(&"sim_units")
 
+	## Slice R3: scripts/units/navigation/ground/* asks the agent's node where
+	## it is through this duck-typed accessor rather than reading
+	## global_position, so a stand-in that drives the real navigation system
+	## has to answer it. Same reason this class joins "sim_units" above, and
+	## the same trap: this file is not in tools/run_godot_tests.sh's suite
+	## list, so no suite would have caught it going stale.
+	func simulation_position() -> Vector3:
+		return global_position
+
 	func set_navigation_managed(_active: bool) -> void:
 		pass
 

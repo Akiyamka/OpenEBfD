@@ -276,7 +276,10 @@ zone = "all"
 pattern = '[\w)\]]\.global_(?:position|transform)\b(?!(?:\.[xyz])?\s*[-+]?=(?!=))'
 exempt = [
 	# ===================================================================
-	# PERMANENT -- 19 files, 33 reads. These should keep asking the node
+	# PERMANENT -- 20 files, 35 reads (recounted in slice R3 with the rule's
+	# own pattern; the "19 files, 33 reads" this header used to claim was the
+	# pre-R2b figure and stayed behind when R2b moved match_snapshot.gd's 2
+	# reads up from the queued group). These should keep asking the node
 	# forever and are not work anyone owes. Three reasons cover all of them,
 	# and none is a scheduling excuse:
 	#
@@ -335,23 +338,28 @@ exempt = [
 	"scripts/world/spatial_orientation.gd",
 	#
 	# ===================================================================
-	# QUEUED -- 33 files, 157 reads. Simulation code that should ask
-	# SimEntityState and does not yet. R3 and the slices after it empty this
+	# QUEUED -- 29 files, 103 reads, down from 32 files and 156 reads before
+	# slice R3 took the ground-navigation group (the "33 files, 157 reads" this
+	# header used to claim was wrong twice over: pre-R2b, and one read short of
+	# what the pattern actually matched). Simulation code that should ask
+	# SimEntityState and does not yet. R4 and the slices after it empty this
 	# half one subsystem at a time; deleting a line is the visible event that
 	# records progress, exactly as it is for animation-completes-simulation.
-	# The counts are what make this a plan rather than a list: navigation is
-	# two thirds of the remaining debt and is the only group that needs
-	# splitting further before it can be a slice.
+	# The counts are what make this a plan rather than a list: navigation was
+	# two thirds of the debt and is now under half of it, and what is left of
+	# it is no longer one indivisible lump.
 	#
-	# Navigation -- 12 files, 103 reads. The largest group by far, and the one
-	# whose reads run inside the tick every tick. These modules take a `Node3D`
-	# and never a `Unit`; that duck typing is why simulation_position() lives
-	# on the node instead of a reader holding the store.
-	"scripts/units/navigation/ground/ground_slot_allocator.gd",  # 23
+	# Navigation -- 9 files, 50 reads, down from 12 files and 103 reads. R3
+	# took the three ground-steering modules; the two big remaining files are
+	# each a slice of their own. These modules take a `Node3D` and never a
+	# `Unit`; that duck typing is why simulation_position() lives on the node
+	# instead of a reader holding the store. nav_spatial_hash.gd's single read
+	# is not independent of the rest: it keys the neighbour buckets, and
+	# ground_navigation.gd (migrated by R3) queries those buckets with a store
+	# position, so the two must agree -- inside a match they do, but the pair
+	# should move together rather than the hash being left for last.
 	"scripts/units/navigation/unit_flight_controller.gd",  # 21
-	"scripts/units/navigation/ground/ground_navigation.gd",  # 20
 	"scripts/units/navigation/unit_navigation_system.gd",  # 14
-	"scripts/units/navigation/ground/steering_stabilizer.gd",  # 10
 	"scripts/units/navigation/air/air_navigation.gd",  # 3
 	"scripts/units/navigation/shared/nav_agent_registry.gd",  # 3
 	"scripts/units/navigation/ground/attack_arc_allocator.gd",  # 2
@@ -394,7 +402,10 @@ exempt = [
 	"scripts/match/command_executor.gd",  # 1
 	#
 	# Migrated and gone from this list, which is the point of keeping it:
-	# scripts/units/harvester_controller.gd (7 reads), by slice R2 itself.
+	# scripts/units/harvester_controller.gd (7 reads), by slice R2 itself;
+	# scripts/units/navigation/ground/ground_slot_allocator.gd (23),
+	# ground_navigation.gd (20) and steering_stabilizer.gd (10), by slice R3 --
+	# the whole ground-navigation group, every read of it simulation.
 ]
 summary = "another entity's position read off the node instead of SimEntityState"
 why = """
@@ -413,9 +424,11 @@ files. A bare read is a node reading its own mirror, and that node is the one \
 thing already guaranteed to have written the store it mirrors, so it is a \
 different and much smaller question. Sorting the qualified reads into a queue \
 is worth a rule; chasing 47 self-reads would make this one noise before it \
-made anything correct. This rule matches 190 lines across the 52 files listed \
-below, all exempted, which is the size of the queue R3 inherits. See \
-docs/architecture/network-multiplayer.md, phase 3's R2 paragraph.
+made anything correct. This rule matched 191 lines across 52 files when R3 measured \
+it -- not the 190 R2's own paragraph recorded, which was one short -- and \
+matches 138 lines across the 49 files listed below now that R3 has taken the \
+ground-navigation group, all of them exempted. See \
+docs/architecture/network-multiplayer.md, phase 3's R2 and R3 paragraphs.
 """
 instead = "Unit.simulation_position() or Building.simulation_position() on the node you are asking about, which answer from SimEntityState and fall back to global_position only where there is no match to be authoritative"
 

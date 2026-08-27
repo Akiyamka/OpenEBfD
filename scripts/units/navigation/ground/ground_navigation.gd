@@ -141,17 +141,26 @@ func path_points_for(agent: Dictionary) -> Array[Vector3]:
 
 func desired_velocity(agent: Dictionary) -> Vector3:
 	var unit: Node3D = agent["unit"]
-	agent["steering_target"] = unit.global_position
+	# simulation_position(), not global_position, since slice R3: every number
+	# below is a steering decision taken inside the tick, so it must come from
+	# the store rather than the node's mirror. Read once for the whole function
+	# -- the accessor resolves the owning Match by walking this node's
+	# ancestors (MatchLookup._live_match) where the field read was free, and
+	# nothing between here and the return moves the unit (route_agent only
+	# rewrites agent keys). `unit` stays a bare Node3D, so the call is
+	# duck-typed and a test double has to answer it.
+	var unit_position: Vector3 = unit.simulation_position()
+	agent["steering_target"] = unit_position
 	agent["_arrival_speed_limited"] = false
 	if bool(agent["hold"]):
 		return Vector3.ZERO
 	if float(agent["yield_remaining"]) > 0.0:
-		agent["steering_target"] = unit.global_position \
+		agent["steering_target"] = unit_position \
 			+ (agent["yield_direction"] as Vector3) * maxf(float(agent["radius"]) * 2.0, 2.0)
 		return (agent["yield_direction"] as Vector3) * _unit_speed(unit) * 0.7
 	var exit_point: Vector3 = agent["exit_point"]
 	if exit_point.is_finite():
-		var exit_offset := exit_point - unit.global_position
+		var exit_offset := exit_point - unit_position
 		exit_offset.y = 0.0
 		if exit_offset.length() > maxf(_arrival_radius(unit), float(agent["radius"]) * 0.35):
 			agent["steering_target"] = exit_point
@@ -160,9 +169,9 @@ func desired_velocity(agent: Dictionary) -> Vector3:
 			)
 			return exit_offset.normalized() * exit_speed
 		agent["exit_point"] = Vector3.INF
-		route_agent(agent, unit.global_position, agent["destination"])
+		route_agent(agent, unit_position, agent["destination"])
 	var destination: Vector3 = agent["destination"]
-	var offset := destination - unit.global_position
+	var offset := destination - unit_position
 	offset.y = 0.0
 	agent["steering_target"] = destination
 	var arrival: float = _facade.arrival_tolerance(unit)
@@ -183,17 +192,17 @@ func desired_velocity(agent: Dictionary) -> Vector3:
 			path_index = 1
 		path_index = clampi(path_index, 0, path_points.size() - 1)
 		path_index = _path_follower.advanced_path_index(
-			agent, path_points, path_index, unit.global_position, speed
+			agent, path_points, path_index, unit_position, speed
 		)
 		agent["path_index"] = path_index
 		var steering_target: Vector3 = _path_follower.path_steering_target(
-			agent, path_points, path_index, unit.global_position, speed
+			agent, path_points, path_index, unit_position, speed
 		)
 		steering_target = _path_follower.path_lane_target(
-			agent, path_points, path_index, unit.global_position, steering_target, speed
+			agent, path_points, path_index, unit_position, steering_target, speed
 		)
 		agent["steering_target"] = steering_target
-		direction = unit.global_position.direction_to(steering_target)
+		direction = unit_position.direction_to(steering_target)
 		direction.y = 0.0
 		direction = direction.normalized()
 		final_approach = path_index >= path_points.size() - 1
@@ -218,7 +227,9 @@ func _arrival_limited_speed(agent: Dictionary, speed: float, distance: float) ->
 ## front of the requester and drags it deep into the crowd.
 func yield_direction(requester: Node3D, friend: Node3D, desired: Vector3) -> Vector3:
 	var lateral := desired.normalized().cross(Vector3.UP)
-	var side := friend.global_position - requester.global_position
+	var friend_position: Vector3 = friend.simulation_position()
+	var requester_position: Vector3 = requester.simulation_position()
+	var side := friend_position - requester_position
 	side.y = 0.0
 	if lateral.dot(side) < 0.0:
 		lateral = -lateral
@@ -246,7 +257,7 @@ func is_en_route(agent: Dictionary) -> bool:
 	if int(agent["command_id"]) <= 0:
 		return false
 	var unit: Node3D = agent["unit"]
-	var offset: Vector3 = (agent["destination"] as Vector3) - unit.global_position
+	var offset: Vector3 = (agent["destination"] as Vector3) - unit.simulation_position()
 	offset.y = 0.0
 	return offset.length() > maxf(_arrival_radius(unit), float(agent["radius"]) * 0.35)
 
@@ -269,12 +280,12 @@ func tick(delta: float, ordered: Array[Dictionary], buckets: Dictionary) -> void
 	# iteration order.
 	for agent in ordered:
 		var unit: Node3D = agent["unit"]
-		agent["_tick_start_position"] = unit.global_position
+		agent["_tick_start_position"] = unit.simulation_position()
 		agent["_v_pref"] = desired_velocity(agent)
 	for agent in ordered:
 		var unit: Node3D = agent["unit"]
 		var nearby: Array = _spatial_hash.nearby(
-			unit.global_position,
+			unit.simulation_position(),
 			buckets,
 			float(agent["radius"]) + largest_radius
 		)
@@ -294,7 +305,7 @@ func tick(delta: float, ordered: Array[Dictionary], buckets: Dictionary) -> void
 		var desired: Vector3 = agent["_v_pref"]
 		var velocity: Vector3 = agent["_new_velocity"]
 		var nearby: Array = _spatial_hash.nearby(
-			unit.global_position,
+			unit.simulation_position(),
 			buckets,
 			float(agent["radius"]) + largest_radius
 		)
@@ -303,7 +314,12 @@ func tick(delta: float, ordered: Array[Dictionary], buckets: Dictionary) -> void
 			agent["_enemies"], agent["_friends"], nearby, resolved_positions
 		)
 		var start_position: Vector3 = agent["_tick_start_position"]
-		var achieved_velocity: Vector3 = (unit.global_position - start_position) / delta
+		# Read again rather than reusing any earlier value: _apply_resolved_velocity
+		# above has run navigation_step, which moves the unit through
+		# Unit.set_simulation_position(), so the store already carries this tick's
+		# landing point.
+		var landed_position: Vector3 = unit.simulation_position()
+		var achieved_velocity: Vector3 = (landed_position - start_position) / delta
 		agent["orca_velocity"] = achieved_velocity
 		# Recorded here (end of this agent's phase-2 iteration, after
 		# `orca_velocity` above has already been overwritten with THIS tick's
@@ -355,19 +371,20 @@ func _apply_resolved_velocity(
 	if float(agent["yield_remaining"]) > 0.0:
 		agent["yield_remaining"] = maxf(0.0, float(agent["yield_remaining"]) - delta)
 		if is_zero_approx(float(agent["yield_remaining"])):
+			var unit_position: Vector3 = unit.simulation_position()
 			if int(agent["command_id"]) > 0:
 				# A commanded unit owns a unique reserved block nobody else
 				# will claim: walk back to it once the passer is through.
-				route_agent(agent, unit.global_position, agent["destination"])
+				route_agent(agent, unit_position, agent["destination"])
 			else:
 				# An idle unit displaced off a choke point must not return
 				# (it would displace the passer forever); it parks on the
 				# nearest free grid block instead.
 				agent["destination"] = _slot_allocator.snapped_parking(
-					_agents, agent, unit.global_position + velocity * delta
+					_agents, agent, unit_position + velocity * delta
 				)
 				agent["reserved"] = true
-				route_agent(agent, unit.global_position, agent["destination"])
+				route_agent(agent, unit_position, agent["destination"])
 	# Elastic overlap resolution normally lets overlapping units push each
 	# other apart. A held unit, however, owns its exact position (for example
 	# a harvester unloading on a refinery pad); only the other agent may move
@@ -391,7 +408,7 @@ func _apply_resolved_velocity(
 			# An idle unit has no spot to defend; it goes where it is pushed
 			# instead of fighting its way back into the overlap.
 			if int(agent["command_id"]) <= 0 and not bool(agent["hold"]):
-				agent["destination"] = unit.global_position + velocity * delta
+				agent["destination"] = unit.simulation_position() + velocity * delta
 	velocity = _avoidance.stabilize_velocity(
 		agent, velocity, delta, nearby, resolved_positions
 	)
@@ -406,7 +423,7 @@ func _apply_resolved_velocity(
 	# Unit may spend this update turning in place when its rules do not allow
 	# simultaneous translation and rotation. Record the actual position so
 	# later swept-disc checks do not reserve movement that never happened.
-	resolved_positions[unit.get_instance_id()] = unit.global_position
+	resolved_positions[unit.get_instance_id()] = unit.simulation_position()
 
 
 static func _unit_speed(unit: Node3D) -> float:
