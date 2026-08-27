@@ -45,6 +45,16 @@ Two limits worth knowing before trusting a green run:
   children.
 - **`?`** would mean a slice this reconstruction could not pin to a commit.
   There are none.
+- **`†`** marks a hash whose own commit message never names the slice id it is
+  filed under, so the attribution is this reconstruction's inference rather than
+  the commit's own claim. Eight of the twenty-six rows carry one, measured with
+  `git show -s --format=%B <hash>` against each row's id: `A1a`, `A1b`'s
+  implementing commit, `C5`'s implementing commit and its defect fix, `C6c`,
+  `R2b`, `R3` and `R4a`. Each rests on the design note in the cell beside it
+  describing the same change, and on nothing else. Nine further hashes name
+  their id without the word "slice" and are not marked — the regex wants
+  `slice <id>`, the commits simply write `C6a` or `R1`. The `Slice:` trailer
+  above exists so this column stops growing.
 - **design note** links the paragraph in
   [`network-multiplayer.md`](network-multiplayer.md) that argues the slice.
   Those paragraphs are bold or italic openers inside `## Order of work`, not
@@ -77,8 +87,8 @@ here, so the index cannot fall behind the code that cites it.
 
 | slice | commit | date | what it did | design note |
 | --- | --- | --- | --- | --- |
-| `A1a` | `ebc7688` | 2026-08-20 | Split the Rules.txt movement cadence away from the navigation tick rate, so folding the two clocks could not silently change how units turn | [Closed 2026-08-20, in phase 3 slices A1a and A1b](network-multiplayer.md#4-one-integer-tick-at-25-hz) |
-| `A1b` | `5712714`, `51aa267` (record) | 2026-08-20 | Folded `UnitNavigationSystem`'s own 20 Hz accumulator into the 25 Hz simulation tick and deleted `NAVIGATION_TICK_RATE`, closing the sixth tick domain | [Closed 2026-08-20, in phase 3 slices A1a and A1b](network-multiplayer.md#4-one-integer-tick-at-25-hz) |
+| `A1a` | `ebc7688`† | 2026-08-20 | Split the Rules.txt movement cadence away from the navigation tick rate, so folding the two clocks could not silently change how units turn | [Closed 2026-08-20, in phase 3 slices A1a and A1b](network-multiplayer.md#4-one-integer-tick-at-25-hz) |
+| `A1b` | `5712714`†, `51aa267` (record) | 2026-08-20 | Folded `UnitNavigationSystem`'s own 20 Hz accumulator into the 25 Hz simulation tick and deleted `NAVIGATION_TICK_RATE`, closing the sixth tick domain | [Closed 2026-08-20, in phase 3 slices A1a and A1b](network-multiplayer.md#4-one-integer-tick-at-25-hz) |
 | `B1` | `48e9e21` | 2026-08-20 | Sorted the 96 `delta: float` call sites across 37 files into simulation and view; no behaviour change, the classification was the product | [Slice B1's inventory, 2026-08-20](network-multiplayer.md#order-of-work) |
 | `B2` | `b98cc3a`, `3d14e22` (correction) | 2026-08-20 | Moved ground locomotion, terrain snapping and the harvester economy onto the tick, and gave `Unit` its `_simulation_halted` gate | [Updated after slice B2](network-multiplayer.md#order-of-work) |
 | `B3` | — | — | Parent of the frame-delta combat group; never a commit of its own, delivered as B3a–B3d | |
@@ -90,15 +100,15 @@ here, so the index cannot fall behind the code that cites it.
 | `C2` | `8531049`, `c9e5dc1` (scope) | 2026-08-21 | Made the store authoritative for a unit's position — writes only, readers left owing | [Slice C2's scope, decided 2026-08-21, and the debt it knowingly takes on](network-multiplayer.md#order-of-work) |
 | `C3` | `da5a0b8` | 2026-08-21 | Made the store authoritative for health and shields, units and buildings both, through the existing setter chokepoint | [Slice C3, decided 2026-08-21: health and shields](network-multiplayer.md#order-of-work) |
 | `C4` | `862ef06` | 2026-08-21 | Made the store authoritative for entity ownership | |
-| `C5` | `f2fdf7f`, `3756462` (scope), `ad4f271` (correction), `479cd1a` (defect fix) | 2026-08-21 | Deferred entity despawn to a queue the tick drains, so a killed entity stops being simulated at once instead of at end of frame | [Slice C5, decided 2026-08-21: deferred despawn](network-multiplayer.md#order-of-work) |
+| `C5` | `f2fdf7f`†, `3756462` (scope), `ad4f271` (correction), `479cd1a`† (defect fix) | 2026-08-21 | Deferred entity despawn to a queue the tick drains, so a killed entity stops being simulated at once instead of at end of frame | [Slice C5, decided 2026-08-21: deferred despawn](network-multiplayer.md#order-of-work) |
 | `C6` | `6a0be54` (scope) | 2026-08-22 | Parent of the deferred-spawn work; its own commit only recorded the scope and the shared-group problem that split it into C6a–C6c | [Slice C6, decided 2026-08-22: deferred spawn](network-multiplayer.md#order-of-work) |
 | `C6a` | `0751182` | 2026-08-22 | Gave the simulation its own iteration source: `"sim_units"`/`"sim_buildings"` joined in code beside the shared view groups, no scene file touched | [C6a introduces "sim_units" and "sim_buildings"](network-multiplayer.md#order-of-work) |
 | `C6b` | `8b4c430` | 2026-08-22 | Built `SimAdmissionQueue` and routed the three tick-only groups — projectiles, linger effects, spice mounds — through it | [C6b builds the queue and routes the three joins](network-multiplayer.md#order-of-work) |
-| `C6c` | `21cc91c` | 2026-08-26 | Admitted units and buildings on a tick and gated navigation's own registration on the same drain | [C6c takes "sim_units" and "sim_buildings"](network-multiplayer.md#order-of-work) |
+| `C6c` | `21cc91c`† | 2026-08-26 | Admitted units and buildings on a tick and gated navigation's own registration on the same drain | [C6c takes "sim_units" and "sim_buildings"](network-multiplayer.md#order-of-work) |
 | `B4` | `51e7cd9` | 2026-08-26 | Made the view interpolate between simulation ticks off the store's double buffer, which is what made 25 Hz motion look continuous | [Slice B4, decided 2026-08-26: the view interpolates](network-multiplayer.md#order-of-work) |
 | `R1` | `d684e22` | 2026-08-26 | Gave buildings a store-backed position, closing the one hot-state field C2 left on the node | [Slice R1, decided 2026-08-26: buildings get a store-backed position](network-multiplayer.md#order-of-work) |
 | `R2` | `0f299de`, `0da1419` (correction) | 2026-08-26 | Added `simulation_position()`, the `global-position-read-bypasses-store` rule, and the queued exempt group that ratchets readers off the node | [Slice R2, decided 2026-08-26: the read accessor](network-multiplayer.md#order-of-work) |
-| `R2b` | `6e7a262` | 2026-08-27 | Pushed a snapshot-restored entity's position back into the store, which `MatchSnapshot` had been assigning to the node only | [Slice R2b, decided 2026-08-27: the snapshot restore](network-multiplayer.md#order-of-work) |
-| `R3` | `e7e67f5` | 2026-08-27 | Migrated the three ground-steering modules' 53 position reads onto `simulation_position()` | [Slice R3, decided 2026-08-27: the ground-navigation group](network-multiplayer.md#order-of-work) |
+| `R2b` | `6e7a262`† | 2026-08-27 | Pushed a snapshot-restored entity's position back into the store, which `MatchSnapshot` had been assigning to the node only | [Slice R2b, decided 2026-08-27: the snapshot restore](network-multiplayer.md#order-of-work) |
+| `R3` | `e7e67f5`† | 2026-08-27 | Migrated the three ground-steering modules' 53 position reads onto `simulation_position()` | [Slice R3, decided 2026-08-27: the ground-navigation group](network-multiplayer.md#order-of-work) |
 | `R4` | `b932632` | 2026-08-27 | Migrated 24 of the navigation system-and-shared group's 26 reads, across six modules plus twelve of `UnitNavigationSystem`'s fourteen | [Slice R4, decided 2026-08-27: navigation's system-and-shared group](network-multiplayer.md#order-of-work) |
-| `R4a` | `3bea127` | 2026-08-27 | Hatched the two debug-overlay reads R4 left behind instead of exempting the whole 1100-line navigation facade, raising `allow_budget` 0 → 2 | |
+| `R4a` | `3bea127`† | 2026-08-27 | Hatched the two debug-overlay reads R4 left behind instead of exempting the whole 1100-line navigation facade, raising `allow_budget` 0 → 2 | |
