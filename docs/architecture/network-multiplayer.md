@@ -2405,6 +2405,22 @@ source cites a number you cannot place.
     player 1's credits were untouched. It is R2's proven shape: the mechanism,
     the rule that queues the debt, and one real migration to prove the
     mechanism works.
+
+    It also has to separate placement's verdict from placement's preview, and
+    that requirement was found by review rather than by design. `execute_place_building_command()`
+    runs through the controller's single `BuildingPlacement`, whose `begin()`
+    opens with `_clear()` (`building_placement.gd:129`) and which owns the
+    active building id, anchor cell, preview cells and arrow. Today that is
+    harmless because the method is only ever reached for the local player.
+    The moment `D2` lets a `player_id: 2` command reach it, that command wipes
+    an unfinished local preview, clears the local committed-click guard and
+    publishes player 2's status in player 1's sidebar. **That defect would be
+    created by `D2` rather than merely left by it**, which is the line between
+    absorbing work and deferring it — `D2a` is deferred because the wall path
+    is already wrong today, and this is absorbed because it would not be. So
+    execution places through a view-less path for every player, local included,
+    and the preview stays what it always was: local UI, dismissed by the
+    controller on its own player's outcome.
   - **`D2a`** — wall chains follow `player_id` too. `SimWallLineCommand` is a
     third command path over the same build queue, and `D2` leaves it selecting
     whichever player the receiving client considers local:
