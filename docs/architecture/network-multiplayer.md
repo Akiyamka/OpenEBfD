@@ -525,7 +525,10 @@ source cites a number you cannot place.
   and the option state they drive are per-player simulation state that today
   lives in one controller bound to the local player — see the open question
   below. Until that lands, a command's `player_id` cannot choose a queue,
-  because there is only one.
+  because there is only one. Both of those — production per player and the
+  headless loop — are what remains of this phase after tracks A, B, C and R
+  closed; they are sliced as tracks `D` and `E` in the entry of that name
+  below.
 
   Two forks decided 2026-08-20, before any of it was written:
 
@@ -2225,19 +2228,172 @@ source cites a number you cannot place.
   passing, which is why the verification for these slices counts that string
   separately from failures. A green run does not mean a quiet one.
 
+  **Tracks D and E, decided 2026-08-28: what phase 3 still owes, and the
+  defect that joins the two halves.** The reader migration closed `R`, and two
+  items from this phase's own opening paragraph are still owed — production
+  that belongs to a player rather than to whoever is local, and headless
+  execution faster than real time. They are sliced below as tracks `D` and
+  `E`. They share their first slice, and the reason is a measured defect
+  rather than a tidy factoring.
+
+  **Availability is a frame-time cache that the simulation tick reads, and it
+  is computed for the local player only.** Both halves show on one path each.
+  `BuildingController._process_building_order()` runs from `advance_tick()`
+  and asks `_is_building_available()` whether the order it is advancing is
+  still legal (`scripts/buildings/building_controller.gd:1072`); that function
+  returns `_catalog_view.is_available()`, a dictionary lookup
+  (`scripts/buildings/building_catalog_view.gd:79`); and the dictionary is
+  filled by `_refresh_availability_if_dirty()`, which the controller calls
+  from `process(delta)`. `UnitRosterController` has the same shape on the
+  execution side: `execute_unit_order_command()` reaches
+  `_on_unit_slot_left_pressed()`, which reads `_unit_availability`, filled
+  from its own `process(delta)`.
+
+  So a verdict the simulation depends on is refreshed on engine frames and
+  consumed on ticks. This is a structural finding, not a reproduced bug:
+  frames and ticks are interleaved today, the availability tracker only
+  dirties on real events, and the queue's own progress signal drives a refresh
+  on most ticks anyway, so the staleness window is at most a frame and nothing
+  has been observed to go wrong. It becomes two different failures the moment
+  either track lands. Under lockstep a `SimBuildOrderCommand` carrying
+  `player_id: 2` is validated against the technology the *local* player owns,
+  which is divergence by construction. Under a frameless headless loop
+  `process()` never runs at all, and the cache answers with whatever the last
+  frame left. One cause, two symptoms, so it is slice `D1` and both tracks
+  stand on it.
+
+  **The queue, measured, with the method beside it.** `_local_player()`,
+  `local_player_id`, `_local_player_id()` and `_local_player_resource` appear
+  at **47 non-comment sites** across the three production controllers: 31 in
+  `building_controller.gd`, 9 in `building_upgrade_controller.gd`, 7 in
+  `unit_roster_controller.gd`. A plain `grep | wc -l` says 48 — the extra
+  match is inside a doc comment, which is why the number here comes from a
+  script that attributes every site to its enclosing `func` rather than from a
+  line count. Classified by that attribution, where a site counts as
+  simulation if it is reachable from `advance_tick()` or from an `execute_*`
+  method, **17 of the 47 are simulation**: six in `building_controller.gd`
+  (`_process_building_order`, `_process_repairs`, `_cancel_building_order`,
+  `execute_place_building_command`, `execute_sell_building_command`,
+  `_refresh_availability_if_dirty`), six in `building_upgrade_controller.gd`
+  (`_process_upgrade_order`, `_cancel_upgrade_order`,
+  `_complete_global_upgrade`, `_refund_and_fail`, `_is_upgrade_available`,
+  `_refinery_for_dock_upgrade`), five in `unit_roster_controller.gd`
+  (`_process_unit_orders`, `_spawn_completed_unit`,
+  `_refresh_availability_if_dirty`, `_remove_queued_units`,
+  `_production_building_id`). The remaining 30 are input handling, resource
+  binding and sidebar rendering, which stay local by design and go into the
+  rule's permanent group. `_refresh_availability_if_dirty` is counted as
+  simulation in both controllers on purpose: it is a view-side call the tick
+  reads out of, which is exactly `D1`.
+
+  Four forks were decided before any of it was written.
+
+  **Enforcement is a rule with a queue, the way `R` was.** A new `all`-zone
+  rule, `local-player-in-simulation`, forbids the local-player lookups on
+  simulation paths, with the 17 sites above as its queued exempt group and the
+  30 input-and-view sites as its permanent one. The alternative was slices and
+  tests alone, which is one slice cheaper and leaves "is the track closed" a
+  judgement rather than a measurement — the same trade the read rule already
+  settled once. The queue is also the reviewable unit: `D3` through `D6` each
+  empty a named part of it, and the track closes when it is empty.
+
+  **Availability for a non-local player is recomputed at execution, not cached
+  per player.** The local player keeps its cache, because the sidebar renders
+  from it every frame and the `TechnologyTree` scan behind it was the single
+  largest cost in the frame before it was cached. Every other player's
+  availability is recomputed at the moment their order executes. That is not a
+  shortcut, it is phase 2's own rule: a verdict is recomputed on the execution
+  tick against the world as it stands then, precisely because it can be wrong
+  by the time it runs. Caching availability for every player would pay an
+  N-times scan to keep answers nobody renders.
+
+  **Production state lives in a new `ProductionSystem`, not on `PlayerData`.**
+  The roster already holds a `PlayerData` per player with its own credits,
+  energy and upgrades, so hanging the queues there is one lookup instead of
+  two. It is the wrong home anyway: `PlayerData` is a `Resource` that the UI
+  reads and that a save system will one day serialize, while a production
+  queue is state that advances on a tick and therefore needs an owner Match
+  ticks in a fixed order beside the other controllers. `ProductionSystem` is
+  that owner; `PlayerData` stays about resources.
+
+  **The six animation-completed transitions come into phase 3 as `E3`.** They
+  were carried into phase 4 deliberately (see that phase's entry below), and
+  `E` takes them back for a mechanical reason: a loop that runs ticks without
+  frames never fires `AnimationPlayer`'s `animation_finished`, so a unit that
+  finishes deploying on that signal never finishes at all. Leaving them would
+  make the headless harness able to run only the paths that avoid them, which
+  is not the harness phase 4 was promised. Doing them here also gives the work
+  a real reader — a headless match that completes — instead of six severings
+  verified in isolation.
+
+  The slices, in order:
+
+  - **`D1`** — availability answers on the tick, not on the frame. Both
+    controllers move their refresh onto `advance_tick()`, so nothing the
+    simulation reads is a function of how many frames happened to run. No
+    per-player work; the sidebar's update can shift by up to one tick, which
+    is the only behaviour this slice changes.
+  - **`D2`** — `ProductionSystem` and the rule. A `PlayerProduction` per
+    player (build queue, unit queues, upgrade queue) keyed by player id, ticked
+    by Match in the fixed order the sibling controllers already run in, plus
+    `local-player-in-simulation` with its 17-site queue.
+  - **`D3`** — a build order spends the ordering player's credits and hands
+    the finished building to them. `execute_build_order_command()` selects the
+    queue by `command.player_id`. The slice is only done when a test drives
+    player 2 end to end — order, tick to completion, place — and asserts
+    player 1's credits were untouched.
+  - **`D4`** — unit production per player. `_production_queues` keys on
+    player *and* production building instead of building alone; a completed
+    unit emerges from that player's primary building (`PrimaryBuildingRegistry`
+    is already keyed per player) and the population cap counts that player's
+    units, which `_owned_unit_count(player_id)` already does.
+  - **`D5`** — upgrades per player, the same move for `UpgradeQueue`.
+  - **`D6`** — option state becomes per-player data rendered for the local
+    player only, and the rule's queue empties.
+  - **`E1`** — a tick-driver seam. Match takes a driver rather than owning
+    `FrameTickDriver`; a burst driver returns a fixed budget with no wall
+    clock and no `MAX_TICKS_PER_FRAME` clamp to apply. This seam is already
+    wanted and already improvised: **70 direct calls to
+    `_advance_simulation_tick()` across 11 test files** exist because an
+    awaited frame "only advances the clock by however much wall time it
+    happened to take and is not guaranteed to produce a tick at all"
+    (`tests/match/demo_boot_run.gd:131`). `MatchClock`'s own class comment
+    already names the second driver phase 5 will bring, so the seam is owed
+    twice over.
+  - **`E2`** — a state hash on `SimEntityState`, and the test that makes the
+    track falsifiable: N ticks with no frames must hash identically to N ticks
+    interleaved with frames. This is the acceptance test for `E` and phase 4's
+    replay-hash primitive in embryo, which is why it comes before the runner
+    rather than after it.
+  - **`E3`** — sever the six `animation_finished` completions the way `B3d`
+    severed flight's: read the clip's authored length once, complete on a tick
+    deadline. The rule's exempt list is the file list, and it shrinks to zero.
+  - **`E4`** — the headless entry point: boot a match with no view, feed a
+    recorded command log, run to the end of it, exit. Production code is
+    almost ready for it — `await` appears at exactly 2 sites in all of
+    `scripts/`, both in `match.gd`.
+  - **`E5`** — measure it and record the number. Ticks per second headless
+    against the 25 a second real time gives, on the same machine, with the
+    command beside it. Until that number exists, "faster than real time" is a
+    claim rather than a result, and phase 4's cost is still unknown.
+
 - **Phase 4 — determinism gate.** Portable math, RNG split, the static rules
   above wired into `check_architecture.py`, and the CI test that replays one
   command log twice in-process and then compares state hashes across native and
   web builds.
 
-  **Carried in from phase 3, and deliberately not fixed there: simulation state
-  that completes on an animation signal.** `AnimationPlayer`'s
+  **Carried in from phase 3, then taken back by it: simulation state that
+  completes on an animation signal.** `AnimationPlayer`'s
   `animation_finished` fires on engine frame time, so anything that completes on
   it takes however many simulation ticks the machine's frame rate happened to
   allow. Slice B3d removed one instance of this from `UnitFlightController` and
   proved the severing directly; the rest were found by its sweep and left,
   because they were not in B3's file list and widening a slice after the fact is
-  how a slice stops being reviewable.
+  how a slice stops being reviewable. **Reassigned 2026-08-28 to phase 3's slice
+  `E3`** — see tracks D and E above. Not because the argument for deferring them
+  changed, but because a headless loop that runs ticks without frames never
+  fires the signal at all, so the six of them block `E` rather than merely
+  waiting for phase 4.
 
   The backlog is not kept here, on purpose — a list in prose is a second place
   to keep correct, and it would be wrong the first time someone fixed one
@@ -2339,6 +2495,11 @@ already play before it is trusted by the mode we cannot yet test.
   data, rendered only for the local one), and input handling (local only). That
   separation is phase 3's work — the same move that takes state out of the view
   objects — and `player_id` selecting a queue falls out of it afterwards.
+  **Sliced 2026-08-28 as track `D`** (`D1` through `D6`, in the tracks D and E
+  entry under phase 3): the three roles separate in that order, `D1` first
+  because the availability verdict this argument depends on turned out to be
+  refreshed on frame time and read on the tick, which is a second defect living
+  in the same code.
   `SimBuildOrderCommand` already carries and orders `player_id` for that day, so
   neither the wire format nor replays recorded before it have to change.
 - Suppressing local input while a replay plays back. Nothing can start playback
