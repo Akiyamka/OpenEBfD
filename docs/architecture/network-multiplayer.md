@@ -2294,8 +2294,31 @@ source cites a number you cannot place.
   30 input-and-view sites as its permanent one. The alternative was slices and
   tests alone, which is one slice cheaper and leaves "is the track closed" a
   judgement rather than a measurement — the same trade the read rule already
-  settled once. The queue is also the reviewable unit: `D2` through `D5` each
-  empty a named part of it, and the track closes when it is empty.
+  settled once.
+
+  **Reshaped 2026-08-28, before `D2` was written: the queue above cannot be
+  expressed, and a rule that cannot express its queue is worse than no rule.**
+  `Rule.exempt` is a tuple of path patterns and `Rule.applies_to()` decides per
+  *file* (`tools/check_architecture.py:144`); the line-by-line scan only runs on
+  files that decision let through. The read rule survived that limit because its
+  permanent files and its queued files were mostly different files. Here they
+  are the same three: every one of `building_controller.gd`,
+  `building_upgrade_controller.gd` and `unit_roster_controller.gd` holds both
+  simulation sites that must move and input-and-sidebar sites that are local by
+  design and always will be. Exempting those paths would switch the rule off
+  over exactly the code it exists to watch, and the track would end with three
+  permanently-exempt files and a green checker proving nothing.
+
+  So the rule gets a zone instead of an exempt list. The per-player simulation
+  modules go in a directory of their own, `scripts/production/`, and
+  `local-player-in-simulation` covers that directory with **no `exempt` entries
+  at all** — a new file there is watched the day it is written, which is the
+  code most likely to get this wrong, and there is no list for anyone to keep
+  correct. The 17 sites stay the measurement of what has to move; they are the
+  slice inventory rather than a manifest entry. What replaces "the queue is
+  empty" as the track's closing condition is that the controllers retain no
+  simulation path at all — which is `D5`'s product, and is checkable by the same
+  attribution script that produced the 17.
 
   **Availability for a non-local player is recomputed at execution, not cached
   per player.** The local player keeps its cache, because the sidebar renders
@@ -2371,8 +2394,8 @@ source cites a number you cannot place.
   - **`D2`** — `ProductionSystem`, the rule, and the build queue made
     per-player in one move. A `PlayerProduction` per player keyed by player id,
     ticked by Match in the fixed order the sibling controllers already run in;
-    `local-player-in-simulation` with its 17-site queued group; and
-    `execute_build_order_command()` selecting the queue by `command.player_id`
+    `local-player-in-simulation` over the new `scripts/production/` directory;
+    and `execute_build_order_command()` selecting the queue by `command.player_id`
     rather than taking the only one there is. **Merged from what were two
     slices, and the merge is the point.** Introducing the container with the
     local player as its sole inhabitant would have created a per-player map
