@@ -9,6 +9,7 @@ const ATConYardScene := preload("res://assets/converted/buildings/ATConYard/ATCo
 const PlacementBuildingScene := preload("res://assets/converted/placement/build_building.scn")
 const PlacementWallScene := preload("res://assets/converted/placement/build_wall.scn")
 const PlacementContextScript := preload("res://scripts/buildings/placement_context.gd")
+const ProductionSystemScript := preload("res://scripts/production/production_system.gd")
 const CommandPumpScript := preload("res://tests/match/support/command_pump.gd")
 
 ## Status line each mode emits on its way out, keyed the same as _enter_mode().
@@ -146,6 +147,7 @@ func _initialize() -> void:
 	players.local_player_id = 1
 
 	_run_case("asset-independent setup owns one placement child", _test_asset_independent_setup)
+	_run_case("controller setup uses distinct real queues for distinct players", _test_controller_setup_uses_distinct_player_queues)
 	_run_case("rotation release requires a later confirmation click", _test_rotation_release_requires_confirmation)
 	_run_case("repeated setup forwards resources once", _test_repeated_setup_forwards_resources_once.bind(local_player))
 	_run_case("freed controller leaves no resource forwarding", _test_free_disconnects_resource_forwarding.bind(local_player))
@@ -258,6 +260,10 @@ func _initialize() -> void:
 		_test_handle_building_intent_defers_pause.bind(local_player)
 	)
 	_run_case(
+		"a queued right-click cancels production despite a preview opened before execution",
+		_test_queued_right_click_uses_player_production_not_preview.bind(local_player)
+	)
+	_run_case(
 		"entering wall-line mode from a slot click stays local and needs no command bus",
 		_test_handle_building_intent_wall_entry_stays_local
 	)
@@ -288,12 +294,26 @@ func _run_case(case_name: String, test: Callable) -> void:
 func _new_controller() -> BuildingController:
 	var controller = BuildingControllerScript.new()
 	root.add_child(controller)
+	_production_for(controller)
 	return controller
+
+
+func _production_for(controller: BuildingController) -> ProductionSystem:
+	if controller._production_system == null:
+		var production := ProductionSystemScript.new()
+		production.configure(
+			root.get_node("Players"), Callable(controller, "_is_building_available_for_player")
+		)
+		controller._production_system = production
+	return controller._production_system
 
 
 func _setup_without_assets(controller: BuildingController) -> void:
 	var no_building_ids: Array[StringName] = []
-	controller.setup(null, null, null, no_building_ids, null, null, null, null)
+	controller.setup(
+		null, null, null, no_building_ids, _production_for(controller),
+		null, null, null, null, null, null, Callable()
+	)
 
 
 func _test_asset_independent_setup(token: int) -> int:
@@ -301,6 +321,20 @@ func _test_asset_independent_setup(token: int) -> int:
 	_setup_without_assets(controller)
 	_expect(controller.get_child_count() == 1, "setup must own exactly one placement child without generated scenes")
 	_expect(controller.get_child(0) is BuildingPlacement, "setup must add the placement feature as its child")
+	controller.free()
+	return token
+
+
+func _test_controller_setup_uses_distinct_player_queues(token: int) -> int:
+	var controller := _new_controller()
+	_setup_without_assets(controller)
+	var local_queue := controller.building_queue_for_player(1)
+	var remote_queue := controller.building_queue_for_player(2)
+	_expect(local_queue != remote_queue, "setup must keep player 1 and player 2 in distinct real queues")
+	_expect(
+		controller._building_queue == local_queue,
+		"the controller's local queue view must resolve through its real ProductionSystem"
+	)
 	controller.free()
 	return token
 
@@ -797,7 +831,7 @@ func _test_place_click_defers_placement_to_the_tick(token: int) -> int:
 	controller._building_placement.free()
 	controller._building_placement = stub
 	var building_ids: Array[StringName] = [&"ATBarracks"]
-	controller.setup(null, null, null, building_ids, null, null, null, null)
+	controller.setup(null, null, null, building_ids, _production_for(controller), null, null, null, null, null, null, Callable())
 	_setup_controller_placement(controller,
 		null, FakeGrid.new(), buildings_root, null, null, null, null, Callable()
 	)
@@ -849,7 +883,7 @@ func _test_place_click_with_no_cell_submits_nothing(token: int) -> int:
 	root.add_child(buildings_root)
 	var controller := _new_controller()
 	var building_ids: Array[StringName] = [&"ATBarracks"]
-	controller.setup(null, null, null, building_ids, null, null, null, null)
+	controller.setup(null, null, null, building_ids, _production_for(controller), null, null, null, null, null, null, Callable())
 	_setup_controller_placement(controller,
 		null, FakeGrid.new(), buildings_root, null, null, null, null, Callable()
 	)
@@ -893,7 +927,7 @@ func _test_place_execution_ignores_a_stale_command(token: int) -> int:
 	controller._building_placement.free()
 	controller._building_placement = stub
 	var building_ids: Array[StringName] = [&"ATBarracks", &"ATSmWindtrap"]
-	controller.setup(null, null, null, building_ids, null, null, null, null)
+	controller.setup(null, null, null, building_ids, _production_for(controller), null, null, null, null, null, null, Callable())
 	_setup_controller_placement(controller,
 		null, FakeGrid.new(), buildings_root, null, null, null, null, Callable()
 	)
@@ -927,6 +961,10 @@ func _test_place_execution_ignores_a_stale_command(token: int) -> int:
 		and controller._building_queue.current_order().ready,
 		"a stale place command must leave the queue's real ready order untouched"
 	)
+	_expect(
+		controller._committed_placement_cell == null,
+		"a stale local command must clear its committed cell so a future click is live"
+	)
 
 	controller.free()
 	buildings_root.free()
@@ -948,7 +986,7 @@ func _test_place_click_rotation_survives_round_trip(token: int) -> int:
 	controller._building_placement.free()
 	controller._building_placement = stub
 	var building_ids: Array[StringName] = [&"ATBarracks"]
-	controller.setup(null, null, null, building_ids, null, null, null, null)
+	controller.setup(null, null, null, building_ids, _production_for(controller), null, null, null, null, null, null, Callable())
 	_setup_controller_placement(controller,
 		null, FakeGrid.new(), buildings_root, null, null, null, null, Callable()
 	)
@@ -998,7 +1036,7 @@ func _test_place_click_on_unbuildable_cell_submits_nothing(token: int) -> int:
 	controller._building_placement.free()
 	controller._building_placement = stub
 	var building_ids: Array[StringName] = [&"ATWall"]
-	controller.setup(null, null, null, building_ids, null, null, null, null, PlacementWallScene)
+	controller.setup(null, null, null, building_ids, _production_for(controller), null, null, null, null, PlacementWallScene, null, Callable())
 	var grid := MutableGrid.new()
 	grid.block_occupy_cell(Vector2i(6, 4))
 	_setup_controller_placement(controller,
@@ -1050,7 +1088,7 @@ func _test_place_second_click_while_committed_submits_nothing(token: int) -> int
 	controller._building_placement.free()
 	controller._building_placement = stub
 	var building_ids: Array[StringName] = [&"ATBarracks"]
-	controller.setup(null, null, null, building_ids, null, null, null, null)
+	controller.setup(null, null, null, building_ids, _production_for(controller), null, null, null, null, null, null, Callable())
 	_setup_controller_placement(controller,
 		null, FakeGrid.new(), buildings_root, null, null, null, null, Callable()
 	)
@@ -1094,7 +1132,7 @@ func _test_place_committed_preview_pinned_at_committed_cell(token: int) -> int:
 	controller._building_placement.free()
 	controller._building_placement = stub
 	var building_ids: Array[StringName] = [&"ATBarracks"]
-	controller.setup(null, null, null, building_ids, null, null, null, null)
+	controller.setup(null, null, null, building_ids, _production_for(controller), null, null, null, null, null, null, Callable())
 	_setup_controller_placement(controller,
 		null, FakeGrid.new(), buildings_root, null, null, null, null, Callable()
 	)
@@ -1148,7 +1186,7 @@ func _test_place_committed_right_click_not_consumed(token: int) -> int:
 	controller._building_placement.free()
 	controller._building_placement = stub
 	var building_ids: Array[StringName] = [&"ATBarracks"]
-	controller.setup(null, null, null, building_ids, null, null, null, null)
+	controller.setup(null, null, null, building_ids, _production_for(controller), null, null, null, null, null, null, Callable())
 	_setup_controller_placement(controller,
 		null, FakeGrid.new(), buildings_root, null, null, null, null, Callable()
 	)
@@ -1201,7 +1239,7 @@ func _test_place_click_filter_and_execution_checks_are_independent(token: int) -
 	controller._building_placement.free()
 	controller._building_placement = stub
 	var building_ids: Array[StringName] = [&"ATWall"]
-	controller.setup(null, null, null, building_ids, null, null, null, null, PlacementWallScene)
+	controller.setup(null, null, null, building_ids, _production_for(controller), null, null, null, null, PlacementWallScene, null, Callable())
 	var grid := MutableGrid.new()
 	_setup_controller_placement(controller,
 		null, grid, buildings_root, null, null, null, null, Callable()
@@ -1278,7 +1316,7 @@ func _test_wall_line_first_click_submits_nothing(token: int) -> int:
 	controller._building_placement.free()
 	controller._building_placement = stub
 	var building_ids: Array[StringName] = [&"ATWall"]
-	controller.setup(null, null, null, building_ids, null, null, null, null, PlacementWallScene)
+	controller.setup(null, null, null, building_ids, _production_for(controller), null, null, null, null, PlacementWallScene, null, Callable())
 	_setup_controller_placement(controller,
 		null, FakeGrid.new(), null, null, null, null, null, Callable()
 	)
@@ -1318,7 +1356,7 @@ func _test_wall_line_second_click_defers_chain_to_the_tick(token: int) -> int:
 	controller._building_placement.free()
 	controller._building_placement = stub
 	var building_ids: Array[StringName] = [&"ATWall"]
-	controller.setup(null, null, null, building_ids, null, null, null, null, PlacementWallScene)
+	controller.setup(null, null, null, building_ids, _production_for(controller), null, null, null, null, PlacementWallScene, null, Callable())
 	_setup_controller_placement(controller,
 		null, FakeGrid.new(), buildings_root, null, null, null, null, Callable()
 	)
@@ -1373,7 +1411,7 @@ func _test_wall_line_command_recomputes_buildable_cells_at_execution(token: int)
 	controller._building_placement.free()
 	controller._building_placement = stub
 	var building_ids: Array[StringName] = [&"ATWall"]
-	controller.setup(null, null, null, building_ids, null, null, null, null, PlacementWallScene)
+	controller.setup(null, null, null, building_ids, _production_for(controller), null, null, null, null, PlacementWallScene, null, Callable())
 	var grid := MutableGrid.new()
 	_setup_controller_placement(controller,
 		null, grid, buildings_root, null, null, null, null, Callable()
@@ -1521,7 +1559,7 @@ func _test_leaving_wall_mode_cancels_its_own_preview(token: int) -> int:
 func _test_availability_resubscribe_after_tree_reentry(token: int, local_player: PlayerData) -> int:
 	var controller := _new_controller()
 	var building_ids: Array[StringName] = [&"ATBarracks"]
-	controller.setup(null, null, null, building_ids, null, null, null, null)
+	controller.setup(null, null, null, building_ids, _production_for(controller), null, null, null, null, null, null, Callable())
 
 	# ATBarracks needs both a primary ATConYard and a secondary Windtrap to
 	# read AVAILABLE (see _test_availability_reacts_to_prerequisite_loss), so
@@ -1558,7 +1596,7 @@ func _test_availability_resubscribe_after_tree_reentry(token: int, local_player:
 	)
 
 	root.add_child(controller)
-	controller.setup(null, null, null, building_ids, null, null, null, null)
+	controller.setup(null, null, null, building_ids, _production_for(controller), null, null, null, null, null, null, Callable())
 	controller.process(0.0)
 
 	_expect(
@@ -1614,7 +1652,7 @@ func _test_availability_resubscribe_after_tree_reentry(token: int, local_player:
 func _test_availability_forces_false_when_leaving_tree(token: int, local_player: PlayerData) -> int:
 	var controller := _new_controller()
 	var building_ids: Array[StringName] = [&"ATBarracks"]
-	controller.setup(null, null, null, building_ids, null, null, null, null)
+	controller.setup(null, null, null, building_ids, _production_for(controller), null, null, null, null, null, null, Callable())
 
 	var con_yard := BuildingStub.new(&"ATConYard", local_player.player_id)
 	var windtrap := BuildingStub.new(&"ATSmWindtrap", local_player.player_id)
@@ -1705,7 +1743,7 @@ func _test_wall_chain_owner_comes_from_roster(token: int, local_player: PlayerDa
 func _test_unrelated_node_removal_keeps_availability_cache(token: int, _local_player: PlayerData) -> int:
 	var controller := _new_controller()
 	var building_ids: Array[StringName] = [&"ATBarracks"]
-	controller.setup(null, null, null, building_ids, null, null, null, null)
+	controller.setup(null, null, null, building_ids, _production_for(controller), null, null, null, null, null, null, Callable())
 	controller.process(0.0)
 	_expect(
 		not controller._availability_tracker.is_dirty(),
@@ -1733,7 +1771,7 @@ func _test_unrelated_node_removal_keeps_availability_cache(token: int, _local_pl
 func _test_handle_building_intent_defers_start(token: int, local_player: PlayerData) -> int:
 	var controller := _new_controller()
 	var building_ids: Array[StringName] = [&"ATBarracks"]
-	controller.setup(null, null, null, building_ids, null, null, null, null)
+	controller.setup(null, null, null, building_ids, _production_for(controller), null, null, null, null, null, null, Callable())
 	var con_yard := BuildingStub.new(&"ATConYard", local_player.player_id)
 	var windtrap := BuildingStub.new(&"ATSmWindtrap", local_player.player_id)
 	root.add_child(con_yard)
@@ -1770,7 +1808,7 @@ func _test_handle_building_intent_defers_start(token: int, local_player: PlayerD
 func _test_handle_building_intent_defers_pause(token: int, local_player: PlayerData) -> int:
 	var controller := _new_controller()
 	var building_ids: Array[StringName] = [&"ATBarracks"]
-	controller.setup(null, null, null, building_ids, null, null, null, null)
+	controller.setup(null, null, null, building_ids, _production_for(controller), null, null, null, null, null, null, Callable())
 	var con_yard := BuildingStub.new(&"ATConYard", local_player.player_id)
 	var windtrap := BuildingStub.new(&"ATSmWindtrap", local_player.player_id)
 	root.add_child(con_yard)
@@ -1807,6 +1845,69 @@ func _test_handle_building_intent_defers_pause(token: int, local_player: PlayerD
 	return token
 
 
+## A right click observed while the preview is already open is input-only and
+## submits nothing. This is the distinct timeline that must still execute as
+## production: submit it while the order runs, let that order become ready,
+## then open the local preview before the queued command drains.
+func _test_queued_right_click_uses_player_production_not_preview(
+		token: int, local_player: PlayerData
+	) -> int:
+	var buildings_root := Node3D.new()
+	root.add_child(buildings_root)
+	var controller := _new_controller()
+	var building_ids: Array[StringName] = [&"ATBarracks"]
+	controller.setup(
+		null, null, null, building_ids, _production_for(controller), null, null,
+		null, null, null, null, Callable()
+	)
+	_setup_controller_placement(
+		controller, null, FakeGrid.new(), buildings_root, null, null, null, null, Callable()
+	)
+	var pump := CommandPumpScript.new()
+	pump.configure_queue_controllers(controller)
+	controller._command_bus = pump.bus()
+	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
+
+	var queue := controller.building_queue_for_player(local_player.player_id)
+	var money_before: int = local_player.money
+	queue.start(&"ATBarracks", "Barracks", 10, 2)
+	queue.advance_tick(local_player.money, Callable(local_player, "spend_money"))
+	_expect(
+		local_player.money == money_before - 5,
+		"setup: the running order must have paid its first half before the right click"
+	)
+	controller.handle_building_intent(&"ATBarracks", MOUSE_BUTTON_RIGHT)
+	_expect(
+		pump.bus().pending_count() == 1,
+		"setup: a right click while the order runs must submit a deferred production command"
+	)
+	queue.advance_tick(local_player.money, Callable(local_player, "spend_money"))
+	_expect(queue.current_order() != null and queue.current_order().ready, "setup: the order must become ready")
+	controller._begin_ready_building_placement()
+	_expect(
+		controller._building_placement.is_active(),
+		"setup: the local user must be able to open the ready-building preview before drain"
+	)
+
+	pump.pump()
+	_expect(
+		not queue.has_order(),
+		"a queued right-click must cancel its player's ready order despite the later local preview"
+	)
+	_expect(
+		local_player.money == money_before,
+		"a queued right-click must refund its player's paid construction credits"
+	)
+	_expect(
+		not controller._building_placement.is_active(),
+		"the local preview must dismiss as the local UI reaction to the canceled order"
+	)
+
+	controller.free()
+	buildings_root.free()
+	return token
+
+
 ## The other half of handle_building_intent()'s split (see its doc comment):
 ## left-clicking an idle wall slot changes what the player's next click means,
 ## not the state of any queue, so it must run immediately with no command bus
@@ -1814,7 +1915,7 @@ func _test_handle_building_intent_defers_pause(token: int, local_player: PlayerD
 func _test_handle_building_intent_wall_entry_stays_local(token: int) -> int:
 	var controller := _new_controller()
 	var building_ids: Array[StringName] = [&"ATWall"]
-	controller.setup(null, null, null, building_ids, null, null, null, null)
+	controller.setup(null, null, null, building_ids, _production_for(controller), null, null, null, null, null, null, Callable())
 
 	_expect(
 		controller.handle_building_intent(&"ATWall", MOUSE_BUTTON_LEFT),
@@ -1877,7 +1978,7 @@ func _test_availability_reacts_to_prerequisite_loss(token: int, local_player: Pl
 	)
 
 	var building_ids: Array[StringName] = [&"ATBarracks"]
-	controller.setup(null, null, null, building_ids, null, null, null, null)
+	controller.setup(null, null, null, building_ids, _production_for(controller), null, null, null, null, null, null, Callable())
 
 	var con_yard := BuildingStub.new(&"ATConYard", local_player.player_id)
 	var windtrap := BuildingStub.new(&"ATSmWindtrap", local_player.player_id)
@@ -1965,7 +2066,7 @@ func _test_availability_reacts_to_upgrade_purchase(token: int, local_player: Pla
 	)
 
 	var building_ids: Array[StringName] = [&"ATRocketTurret"]
-	controller.setup(null, null, null, building_ids, null, null, null, null)
+	controller.setup(null, null, null, building_ids, _production_for(controller), null, null, null, null, null, null, Callable())
 
 	var con_yard := BuildingStub.new(&"ATConYard", local_player.player_id)
 	var barracks := BuildingStub.new(&"ATBarracks", local_player.player_id)

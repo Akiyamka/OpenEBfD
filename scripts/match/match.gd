@@ -2,6 +2,7 @@ extends Node3D
 
 const PlayerDataScript := preload("res://scripts/players/player_data.gd")
 const BuildingControllerScript := preload("res://scripts/buildings/building_controller.gd")
+const ProductionSystemScript := preload("res://scripts/production/production_system.gd")
 const BuildingUpgradeControllerScript := preload("res://scripts/buildings/building_upgrade_controller.gd")
 const UnitCommandControllerScript := preload("res://scripts/match/unit_command_controller.gd")
 const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
@@ -76,6 +77,7 @@ var _replay_recorder: ReplayRecorder
 var _replay_player: ReplayPlayer
 var _command_executor: CommandExecutor
 var _building_controller: BuildingController
+var _production_system: ProductionSystem
 var _building_upgrade_controller: BuildingUpgradeController
 var _unit_command_controller: UnitCommandController
 var _unit_deployment_controller
@@ -182,7 +184,11 @@ func _ready() -> void:
 	_setup_navigation_grid_debug()
 	_setup_unit_deployment_controller()
 	_setup_unit_command_controller()
+	_setup_production_system()
 	_setup_building_controller()
+	_production_system.configure(
+		_players(), Callable(_building_controller, "_is_building_available_for_player")
+	)
 	_setup_building_upgrade_controller()
 	_setup_unit_roster_controller()
 	# Built last, once every collaborator it dispatches to exists: Move needs
@@ -253,6 +259,7 @@ func _setup_building_controller() -> void:
 		camera,
 		$Buildings,
 		building_grid_ids,
+		_production_system,
 		PLACEMENT_ARROW_SCENE,
 		PLACEMENT_BUILDING_SCENE,
 		PLACEMENT_CANT_BUILD_SCENE,
@@ -262,6 +269,10 @@ func _setup_building_controller() -> void:
 		Callable(self, "next_orderable_tick")
 	)
 	_building_controller.interaction_mode_changed.connect(_on_building_interaction_mode_changed)
+
+
+func _setup_production_system() -> void:
+	_production_system = ProductionSystemScript.new()
 
 
 func _setup_building_upgrade_controller() -> void:
@@ -787,6 +798,8 @@ func _advance_simulation_tick() -> void:
 	# this tick, not one tick late.
 	if _unit_navigation_system != null:
 		_unit_navigation_system.sim_tick()
+	if _production_system != null:
+		_production_system.advance_tick()
 	if _building_controller != null:
 		_building_controller.advance_tick()
 	if _building_upgrade_controller != null:

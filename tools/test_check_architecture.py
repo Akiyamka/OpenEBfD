@@ -100,6 +100,18 @@ CASES: tuple[Case, ...] = (
         expect_text=("widen the owner's public API",),
     ),
     Case(
+        "production simulation cannot ask for the local player",
+        {"scripts/production/queue.gd": "local_player_in_production"},
+        EXIT_FINDINGS,
+        expect_rules=("local-player-in-simulation",),
+    ),
+    Case(
+        "local-player production rule does not apply outside production",
+        {"scripts/buildings/queue.gd": "local_player_in_production"},
+        EXIT_CLEAN,
+        forbid_rules=("local-player-in-simulation",),
+    ),
+    Case(
         "facade sibling access",
         scripts("facade_sibling_access"),
         EXIT_FINDINGS,
@@ -503,6 +515,10 @@ def run_case(case: Case) -> list[str]:
             destination.startswith("scripts/sim/") for destination in files
         ):
             files["scripts/sim/_zone_filler.gd"] = "sim_clean"
+        if case.manifest is None and not any(
+            destination.startswith("scripts/production/") for destination in files
+        ):
+            files["scripts/production/_zone_filler.gd"] = "clean"
         # Same shape as the zone filler above, for the same reason. The real
         # manifest's `unindexed-slice-reference` resolves its index against the
         # scanned root, so a throwaway tree needs one or the checker errors out

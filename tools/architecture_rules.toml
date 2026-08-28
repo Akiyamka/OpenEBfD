@@ -58,10 +58,22 @@ non-portable math. See docs/architecture/network-multiplayer.md.
 """
 include = ["scripts/sim/**/*.gd"]
 
+[zones.production]
+description = "Per-player production simulation modules."
+include = ["scripts/production/**/*.gd"]
+
 
 # ---------------------------------------------------------------------------
 # Module boundary rules
 # ---------------------------------------------------------------------------
+
+[[rules]]
+id = "local-player-in-simulation"
+zone = "production"
+pattern = '(?:\b_local_player\(\)|\b_local_player_id\(\)|\blocal_player_id\b|\b_local_player_resource\b)'
+summary = "production simulation asks who the local player is"
+why = "lockstep production must make the same ownership and credit decisions on every client, regardless of which player that client renders"
+instead = "take the player from the command, the order, or the queue being ticked"
 
 [[rules]]
 id = "private-owner-access"

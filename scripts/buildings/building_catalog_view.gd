@@ -10,13 +10,13 @@ const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 var _catalog := BuildingDefinitionCatalogScript.shared()
 var _ids: Array[StringName] = []
 var _configs: Dictionary = {}
-var _availability: Dictionary = {}
+var _availability_by_player_id: Dictionary = {}
 
 
 func configure(building_ids: Array[StringName]) -> void:
 	_ids = building_ids.duplicate()
 	_configs.clear()
-	_availability.clear()
+	_availability_by_player_id.clear()
 	for building_id in _ids:
 		var building_config: Resource = _catalog.definition(building_id)
 		if building_config == null:
@@ -62,6 +62,8 @@ func refresh_availability(
 		buildings: Array[Node],
 		max_tech_level: int
 ) -> bool:
+	var player_id: int = player.player_id if player != null else -1
+	var availability: Dictionary = _availability_by_player_id.get(player_id, {})
 	var changed := false
 	for building_id in _ids:
 		var building_config := config(building_id)
@@ -69,15 +71,27 @@ func refresh_availability(
 			and technology_tree.is_available(
 				building_config, player, buildings, max_tech_level
 			)
-		if available == _availability.get(building_id, false):
+		if available == availability.get(building_id, false):
 			continue
-		_availability[building_id] = available
+		availability[building_id] = available
 		changed = true
+	_availability_by_player_id[player_id] = availability
 	return changed
 
 
-func is_available(building_id: StringName) -> bool:
-	return bool(_availability.get(building_id, false))
+func is_available_for(player_id: int, building_id: StringName) -> bool:
+	var availability: Dictionary = _availability_by_player_id.get(player_id, {})
+	return bool(availability.get(building_id, false))
+
+
+func clear_availability() -> bool:
+	var changed := false
+	for availability: Dictionary in _availability_by_player_id.values():
+		for building_id in availability:
+			if bool(availability[building_id]):
+				changed = true
+	_availability_by_player_id.clear()
+	return changed
 
 
 func scene_path(building_id: StringName) -> String:

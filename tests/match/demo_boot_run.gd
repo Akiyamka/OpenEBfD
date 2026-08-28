@@ -11,6 +11,8 @@ const BuildingDefinitionCatalogScript := preload(
 	"res://scripts/buildings/building_definition_catalog.gd"
 )
 const MatchFixtureScene := preload("res://tests/fixtures/match_fixture.tscn")
+const SimBuildOrderCommandScript := preload("res://scripts/sim/commands/build_order_command.gd")
+const SimPlaceBuildingCommandScript := preload("res://scripts/sim/commands/place_building_command.gd")
 const SpiceMoundScene := preload("res://scenes/world/spice_mound.tscn")
 const HarvesterControllerScript := preload("res://scripts/units/harvester_controller.gd")
 const HarvesterScene := preload("res://scenes/units/harvester.tscn")
@@ -25,6 +27,10 @@ const ATMinotaurusModelScene := preload(
 )
 const HKDevastatorModelScene := preload(
 	"res://assets/converted/models/HK_devastator_H0/HK_devastator_H0.scn"
+)
+const ATConYardScene := preload("res://assets/converted/buildings/ATConYard/ATConYard.scn")
+const ATSmWindtrapScene := preload(
+	"res://assets/converted/buildings/ATSmWindtrap/ATSmWindtrap.scn"
 )
 
 ## Regression test for a startup-ordering bug: Match._enter_tree() used to
@@ -50,6 +56,14 @@ func _initialize() -> void:
 	await _run_case("mechs follow authored gait speeds", _test_mech_gait_speeds)
 	await _run_case("mechs use authored locomotion transitions", _test_mech_locomotion_transitions)
 	await _run_case("test match roster is non-empty after boot", _test_match_roster_populated)
+	await _run_case(
+		"a player-2 build order spends and places for player 2 through the real match bus",
+		_test_player_two_build_order_owns_credits_and_building
+	)
+	await _run_case(
+		"a player-2 placement leaves an active local preview and committed click alone",
+		_test_player_two_placement_does_not_touch_local_preview
+	)
 	await _run_case(
 		"the match loop advances the simulation clock at the tick rate, not the frame rate",
 		_test_match_loop_drives_the_clock
@@ -646,6 +660,204 @@ func _test_match_roster_populated() -> void:
 	)
 
 	match_instance.queue_free()
+
+
+## Player 2 is intentionally made able to order an Atreides Barracks here:
+## Match configures the controller's catalog from local Atreides roster, while
+## D5 will make the catalog player-specific. This test is only about D2's
+## queue, credit, and placed-building ownership following command.player_id.
+func _test_player_two_build_order_owns_credits_and_building() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	get_root().add_child(match_instance)
+	await process_frame
+	await process_frame
+
+	var players = get_root().get_node("Players")
+	var player_one = players.player(1)
+	var player_two = players.player(2)
+	_add_player_two_building_prerequisites(match_instance)
+	await process_frame
+
+	var controller = match_instance.get_node("BuildingController") as BuildingController
+	var placement_cell: Variant = _first_buildable_barracks_cell(match_instance, controller)
+	_expect(placement_cell != null, "setup: the fixture must provide a buildable Barracks cell")
+	if placement_cell == null:
+		match_instance.queue_free()
+		return
+
+	var player_one_money_before: int = player_one.money
+	var player_two_money_before: int = player_two.money
+	var order := SimBuildOrderCommandScript.new()
+	order.player_id = 2
+	order.building_id = &"ATBarracks"
+	order.button_index = MOUSE_BUTTON_LEFT
+	match_instance._command_bus.submit(order, match_instance.next_orderable_tick())
+	match_instance.call("_advance_simulation_tick")
+
+	var ready := false
+	for _tick in 2000:
+		match_instance.call("_advance_simulation_tick")
+		var current_order: BuildingOrder = _queue_for_test(controller, 2).current_order()
+		if current_order != null and current_order.ready:
+			ready = true
+			break
+	_expect(ready, "the player-2 order must reach ready through Match's tick loop")
+
+	var place := SimPlaceBuildingCommandScript.new()
+	place.player_id = 2
+	place.building_id = &"ATBarracks"
+	place.nav_cell = placement_cell
+	place.rotation_quarter_turns = 0
+	match_instance._command_bus.submit(place, match_instance.next_orderable_tick())
+	match_instance.call("_advance_simulation_tick")
+
+	var placed := _newest_building_with_config(match_instance, &"ATBarracks")
+	_expect(placed != null, "the player-2 place command must add a Barracks")
+	_expect(
+		placed != null and placed.owner_player_id == 2,
+		"the building placed by player 2's command must be owned by player 2"
+	)
+	_expect(
+		player_two.money < player_two_money_before,
+		"player 2 must pay the build order from their own credits"
+	)
+	_expect(
+		player_one.money == player_one_money_before,
+		"control: player 1's fixture credits must stay untouched by player 2's order"
+	)
+
+	match_instance.queue_free()
+
+
+## The local ready queue opens this preview through the controller's normal UI
+## path. A remote command must not call begin()/try_place_at_hover_cell() on
+## this object: either call clears its active preview and the committed click.
+func _test_player_two_placement_does_not_touch_local_preview() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	get_root().add_child(match_instance)
+	await process_frame
+	await process_frame
+
+	_add_player_two_building_prerequisites(match_instance)
+	await process_frame
+	var controller = match_instance.get_node("BuildingController") as BuildingController
+	var placement_cell: Variant = _first_buildable_barracks_cell(match_instance, controller)
+	_expect(placement_cell != null, "setup: the fixture must provide a buildable Barracks cell")
+	if placement_cell == null:
+		match_instance.queue_free()
+		return
+
+	var order := SimBuildOrderCommandScript.new()
+	order.player_id = 2
+	order.building_id = &"ATBarracks"
+	order.button_index = MOUSE_BUTTON_LEFT
+	match_instance._command_bus.submit(order, match_instance.next_orderable_tick())
+	match_instance.call("_advance_simulation_tick")
+	var ready := false
+	for _tick in 2000:
+		match_instance.call("_advance_simulation_tick")
+		var current_order: BuildingOrder = _queue_for_test(controller, 2).current_order()
+		if current_order != null and current_order.ready:
+			ready = true
+			break
+	_expect(ready, "setup: player 2's order must reach ready before its place command")
+
+	var local_queue = _queue_for_test(controller, 1)
+	var remote_queue = _queue_for_test(controller, 2)
+	_expect(
+		local_queue != remote_queue,
+		"setup: player 1 and player 2 must keep distinct production queues"
+	)
+	if local_queue == remote_queue:
+		match_instance.queue_free()
+		return
+	local_queue.start(&"ATBarracks", "Local preview", 0, 1)
+	local_queue.advance_tick(0)
+	controller._begin_ready_building_placement()
+	_expect(
+		controller._building_placement.is_active(),
+		"setup: a real local ready order must open the local preview through the controller"
+	)
+	var committed_cell := Vector2i(placement_cell.x + 1, placement_cell.y + 1)
+	controller._committed_placement_cell = committed_cell
+
+	var place := SimPlaceBuildingCommandScript.new()
+	place.player_id = 2
+	place.building_id = &"ATBarracks"
+	place.nav_cell = placement_cell
+	place.rotation_quarter_turns = 0
+	match_instance._command_bus.submit(place, match_instance.next_orderable_tick())
+	match_instance.call("_advance_simulation_tick")
+
+	var placed := _newest_building_with_config(match_instance, &"ATBarracks")
+	_expect(placed != null and placed.owner_player_id == 2, "player 2's building must still place")
+	_expect(controller._building_placement.is_active(), "player 2's placement must leave the local preview active")
+	_expect(
+		controller._committed_placement_cell == committed_cell,
+		"player 2's placement must leave the local committed-click state unchanged"
+	)
+
+	match_instance.queue_free()
+
+
+func _add_player_two_building_prerequisites(match_instance) -> void:
+	var buildings := match_instance.get_node("Buildings") as Node3D
+	var local_yard := buildings.get_node("ATConYard") as Building
+	var local_windtrap := buildings.get_node("ATSmWindtrap") as Building
+	var con_yard := ATConYardScene.instantiate() as Building
+	con_yard.owner_player_id = 2
+	con_yard.position = local_yard.position
+	buildings.add_child(con_yard)
+	var windtrap := ATSmWindtrapScene.instantiate() as Building
+	windtrap.owner_player_id = 2
+	windtrap.position = local_windtrap.position
+	buildings.add_child(windtrap)
+
+
+func _first_buildable_barracks_cell(match_instance, controller: BuildingController):
+	var config = controller._building_config(&"ATBarracks")
+	var occupy_rows: Array[String] = controller._building_occupy_rows(config)
+	if not controller._building_placement.begin(&"ATBarracks", "Barracks", occupy_rows):
+		return null
+	var grid = match_instance.terrain.navigation_grid
+	var center: Vector2i = grid.world_to_grid(
+		(match_instance.get_node("Buildings/ATConYard") as Building).global_position
+	)
+	for radius in range(4, 24):
+		for x in range(-radius, radius + 1):
+			for y in [-radius, radius]:
+				var candidate: Vector2i = center + Vector2i(x, y)
+				if controller._building_placement.evaluate_at_hover_cell(candidate) \
+				== BuildingPlacement.PlaceResult.AVAILABLE:
+					controller._building_placement.cancel()
+					return candidate
+		for y in range(-radius + 1, radius):
+			for x in [-radius, radius]:
+				var candidate: Vector2i = center + Vector2i(x, y)
+				if controller._building_placement.evaluate_at_hover_cell(candidate) \
+				== BuildingPlacement.PlaceResult.AVAILABLE:
+					controller._building_placement.cancel()
+					return candidate
+	controller._building_placement.cancel()
+	return null
+
+
+func _newest_building_with_config(match_instance, config_id: StringName) -> Building:
+	var result: Building = null
+	for node in match_instance.get_node("Buildings").get_children():
+		var building := node as Building
+		if building != null and building.config_id == config_id:
+			result = building
+	return result
+
+
+## D2 adds the public player-keyed accessor. Before that migration the one
+## legacy queue is the only available observation, which lets this regression
+## prove the old wrong ownership path rather than failing to compile first.
+func _queue_for_test(controller: BuildingController, player_id: int):
+	if controller.has_method("building_queue_for_player"):
+		return controller.call("building_queue_for_player", player_id)
+	return controller._building_queue
 
 
 ## The one case that proves the wiring rather than the parts. Every other test

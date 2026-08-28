@@ -1,0 +1,5 @@
+func tick() -> void:
+	_local_player()
+	_local_player_id()
+	var player_id = local_player_id
+	var resource = _local_player_resource

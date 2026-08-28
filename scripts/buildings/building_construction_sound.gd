@@ -70,8 +70,15 @@ static func _has_section(schedule: Array[Dictionary], wanted: StringName) -> boo
 	return false
 
 
-static func _play(building: Node3D, section: StringName) -> void:
-	if section.is_empty() or not is_instance_valid(building) or not building.is_inside_tree():
+## A SceneTreeTimer can outlive the placed building when a match fixture tears
+## down before an authored construction event fires. Keep the bound value
+## untyped until validity is checked: Godot otherwise rejects the invalid
+## Object before this callback can make that normal teardown a no-op.
+static func _play(building_reference: Variant, section: StringName) -> void:
+	if section.is_empty() or not is_instance_valid(building_reference):
+		return
+	var building := building_reference as Node3D
+	if building == null or not building.is_inside_tree():
 		return
 	var parent := building.get_parent()
 	if parent == null:

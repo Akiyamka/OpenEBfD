@@ -23,6 +23,7 @@ signal repair_mode_changed(active: bool)
 signal interaction_mode_changed(active: bool)
 
 const BuildingQueueScript := preload("res://scripts/buildings/building_queue.gd")
+const ProductionSystemScript := preload("res://scripts/production/production_system.gd")
 const BuildingPlacementScript := preload("res://scripts/buildings/building_placement.gd")
 const PlacementContextScript := preload("res://scripts/buildings/placement_context.gd")
 const TechnologyTreeScript := preload("res://scripts/buildings/technology_tree.gd")
@@ -46,6 +47,35 @@ const DOUBLE_CLICK_THRESHOLD_MS := 350
 const BUILDING_MODE_CURSOR_OVERRIDE := &"building_mode"
 
 enum Mode { NONE, SELL, REPAIR, WALL_LINE }
+enum BuildOrderOutcome {
+	NONE,
+	RULES,
+	UNAVAILABLE,
+	ORDERED,
+	BUSY,
+	READY,
+	RESUMED,
+	WAITING,
+	RUNNING,
+	CANCELED,
+	PAUSED,
+}
+
+
+class BuildOrderExecution extends RefCounted:
+	var kind: BuildOrderOutcome = BuildOrderOutcome.NONE
+	var display_name := ""
+	var refunded := 0
+
+
+func _build_order_execution(
+		kind: BuildOrderOutcome, display_name: String = "", refunded: int = 0
+	) -> BuildOrderExecution:
+	var execution := BuildOrderExecution.new()
+	execution.kind = kind
+	execution.display_name = display_name
+	execution.refunded = refunded
+	return execution
 
 var camera: Camera3D
 ## docs/mechanics/production.md section 5 "map tech level": extension point
@@ -72,7 +102,10 @@ var _technology_tree: TechnologyTree = TechnologyTreeScript.new()
 var _game_settings_catalog := GameSettingsCatalogScript.new()
 var _availability_tracker := BuildingAvailabilityTrackerScript.new()
 var _refreshing_building_option_states := false
-var _building_queue: BuildingQueue = BuildingQueueScript.new()
+var _production_system: ProductionSystem
+var _building_queue: BuildingQueue:
+	get:
+		return building_queue_for_player(_local_player_id())
 var _building_placement: BuildingPlacement = BuildingPlacementScript.new()
 ## Null when no placement command is in flight; set to the clicked nav cell by
 ## _try_place_ready_building() the instant it submits a SimPlaceBuildingCommand,
@@ -155,17 +188,19 @@ func setup(
 		placement_camera: Camera3D,
 		building_parent: Node3D,
 		building_ids: Array[StringName],
+		production_system: ProductionSystem,
 		arrow_scene: PackedScene,
 		building_preview_scene: PackedScene,
 		cant_build_preview_scene: PackedScene,
 		skirt_preview_scene: PackedScene,
-		wall_marker_scene: PackedScene = null,
-		command_bus: SimCommandBus = null,
-		submit_tick_provider: Callable = Callable()
+		wall_marker_scene: PackedScene,
+		command_bus: SimCommandBus,
+		submit_tick_provider: Callable
 ) -> void:
 	camera = placement_camera
 	_command_bus = command_bus
 	_submit_tick_provider = submit_tick_provider
+	_production_system = production_system
 	_catalog_view.configure(building_ids)
 	_availability_tracker.mark_dirty()
 	_wall_session.configure(
@@ -193,8 +228,10 @@ func setup(
 	placement_context.build_radius_provider = Callable(self, "_build_radius_tiles")
 	placement_context.owner_player_id_provider = Callable(self, "_local_player_id")
 	_building_placement.setup(placement_context)
-	if not _building_queue.order_ready.is_connected(_on_building_queue_ready):
-		_building_queue.order_ready.connect(_on_building_queue_ready)
+	if not _production_system.build_order_ready.is_connected(_on_production_build_order_ready):
+		_production_system.build_order_ready.connect(_on_production_build_order_ready)
+	if not _production_system.build_order_canceled.is_connected(_on_production_build_order_canceled):
+		_production_system.build_order_canceled.connect(_on_production_build_order_canceled)
 	if not _sale_service.completed.is_connected(_on_building_sale_completed):
 		_sale_service.completed.connect(_on_building_sale_completed)
 
@@ -241,8 +278,31 @@ func process(_delta: float) -> void:
 ## this and the sibling controllers' advance_tick() calls read that snapshot in
 ## their fixed order.
 func advance_tick() -> void:
-	_process_building_order()
 	_process_repairs()
+
+
+## ProductionSystem owns queues in both shipping matches and controller tests.
+## This accessor is the controller's player-keyed queue seam.
+func building_queue_for_player(player_id: int) -> BuildingQueue:
+	return _production_system.build_queue_for_player(player_id)
+
+
+func _is_building_available_for_player(player_id: int, building_id: StringName) -> bool:
+	return _catalog_view.is_available_for(player_id, building_id)
+
+
+func _on_production_build_order_ready(player_id: int, order: BuildingOrder) -> void:
+	if player_id == _local_player_id():
+		_on_building_queue_ready(order)
+
+
+func _on_production_build_order_canceled(player_id: int, order: BuildingOrder, refunded: int) -> void:
+	if player_id != _local_player_id():
+		return
+	_building_placement.cancel()
+	_wall_session.cancel_chain()
+	status_changed.emit("%s canceled; refunded %d" % [order.display_name, refunded])
+	_refresh_building_option_states()
 
 
 ## Match calls this after entity admission and before command execution, so
@@ -261,26 +321,34 @@ func _exit_tree() -> void:
 
 ## HEAD's _is_building_available() started with `if not is_inside_tree():
 ## return false` -- once outside the tree (mid-teardown, or before the first
-## add_child()), nothing is available, full stop. _catalog_view.is_available()
+## add_child()), nothing is available, full stop. _catalog_view.is_available_for()
 ## has no notion of "in tree" (it is a plain RefCounted), and the normal dirty
 ## check below only recomputes when the availability tracker has actually seen
 ## a change, so a controller that leaves the tree without one more dirtying
 ## event would otherwise keep serving its last, possibly-true, cached
-## availability forever. Recompute unconditionally (bypassing the dirty
-## flag) with a null player whenever outside the tree instead: every
-## TechnologyTree.is_available() check starts with `if player == null:
-## return false`, so this forces every id false through the same path HEAD
-## used, without teaching the catalog view about the scene tree.
+## availability forever. Clear every per-player cache unconditionally
+## (bypassing the dirty flag) whenever outside the tree, so no player's last
+## true value can survive teardown without teaching the catalog view about
+## scene-tree lifetime.
 func _refresh_availability_if_dirty() -> void:
 	if not is_inside_tree():
-		var no_buildings: Array[Node] = []
-		if _catalog_view.refresh_availability(_technology_tree, null, no_buildings, max_tech_level):
+		if _catalog_view.clear_availability():
 			_refresh_building_option_states()
 		return
 	if not _availability_tracker.consume_dirty():
 		return
 	var buildings := _availability_tracker.buildings()
-	if _catalog_view.refresh_availability(_technology_tree, _local_player(), buildings, max_tech_level):
+	var local_changed := false
+	var players = _players()
+	if players != null:
+		for player_id in players.player_ids():
+			if _catalog_view.refresh_availability(
+				_technology_tree, players.player(player_id), buildings, max_tech_level
+			) and player_id == players.local_player_id:
+				local_changed = true
+	elif _catalog_view.refresh_availability(_technology_tree, _local_player(), buildings, max_tech_level):
+		local_changed = true
+	if local_changed:
 		_refresh_building_option_states()
 
 
@@ -503,20 +571,106 @@ func _submit_build_order_command(building_id: StringName, button_index: int) -> 
 
 ## The execution side of a build-order click: Match._advance_simulation_tick()
 ## calls this with the SimBuildOrderCommand it just drained, on the tick the
-## bus scheduled it for. Simply re-dispatches to the same left/right handlers
-## _on_building_slot_left_pressed()/_on_building_slot_right_pressed() already
-## used to run synchronously at click time -- their own mode-branch guards
-## (order.ready, the wall-line/placement checks) still run here too, and
-## normally find nothing to do, since handle_building_intent() already
-## filtered those clicks out before ever building a command; see that
-## method's doc comment for why a mode action must never be decided from
-## inside a deferred command instead of at the click that caused it.
+## bus scheduled it for. Non-wall commands always run one player-keyed queue
+## operation; only the matching local client applies its returned outcome to
+## status, preview, and sidebar state. handle_building_intent() keeps preview
+## cancellation and other mode actions out of the bus before this point.
 func execute_build_order_command(command: SimBuildOrderCommand) -> void:
+	if _is_wall_building_id(command.building_id):
+		# D2a: wall build orders deliberately still resolve through the local
+		# queue and picker, ignoring command.player_id until WallLineSession's
+		# simulation half is split from its local input half.
+		match command.button_index:
+			MOUSE_BUTTON_LEFT:
+				_on_building_slot_left_pressed(command.building_id)
+			MOUSE_BUTTON_RIGHT:
+				_on_building_slot_right_pressed(command.building_id)
+		return
+	var outcome := _execute_player_build_order(command)
+	if command.player_id == _local_player_id():
+		_apply_local_build_order_outcome(outcome)
+
+
+func _execute_player_build_order(command: SimBuildOrderCommand) -> BuildOrderExecution:
+	var queue = building_queue_for_player(command.player_id)
+	var order := queue.current_order()
 	match command.button_index:
 		MOUSE_BUTTON_LEFT:
-			_on_building_slot_left_pressed(command.building_id)
+			if order == null:
+				var config := _building_config(command.building_id)
+				if config == null:
+					return _build_order_execution(BuildOrderOutcome.RULES)
+				if not _is_building_available_for_player(command.player_id, command.building_id):
+					return _build_order_execution(
+						BuildOrderOutcome.UNAVAILABLE, _building_display_name(command.building_id)
+					)
+				if not queue.start(
+					command.building_id,
+					_building_display_name(command.building_id),
+					maxi(config.cost, 0),
+					RuleTicksScript.order_sim_ticks(config.build_time_ticks)
+				):
+					return _build_order_execution(BuildOrderOutcome.NONE)
+				return _build_order_execution(
+					BuildOrderOutcome.ORDERED, _building_display_name(command.building_id)
+				)
+			if order.building_id != command.building_id:
+				return _build_order_execution(BuildOrderOutcome.BUSY)
+			if order.ready:
+				return _build_order_execution(BuildOrderOutcome.READY)
+			if order.manually_paused:
+				queue.resume()
+				return _build_order_execution(BuildOrderOutcome.RESUMED, order.display_name)
+			return _build_order_execution(
+				BuildOrderOutcome.WAITING if queue.lacks_funds() else BuildOrderOutcome.RUNNING,
+				order.display_name
+			)
 		MOUSE_BUTTON_RIGHT:
-			_on_building_slot_right_pressed(command.building_id)
+			if order == null or order.building_id != command.building_id:
+				return _build_order_execution(BuildOrderOutcome.NONE)
+			if order.ready or order.manually_paused:
+				var refunded := queue.cancel()
+				var players = _players()
+				var player = players.player(command.player_id) if players != null else null
+				if player != null and refunded > 0:
+					player.add_money(refunded)
+				return _build_order_execution(
+					BuildOrderOutcome.CANCELED, order.display_name, refunded
+				)
+			queue.pause()
+			return _build_order_execution(BuildOrderOutcome.PAUSED, order.display_name)
+	return _build_order_execution(BuildOrderOutcome.NONE)
+
+
+func _apply_local_build_order_outcome(outcome: BuildOrderExecution) -> void:
+	match outcome.kind:
+		BuildOrderOutcome.RULES:
+			status_changed.emit("Building rules are not loaded")
+			return
+		BuildOrderOutcome.UNAVAILABLE:
+			status_changed.emit("%s is not available" % outcome.display_name)
+		BuildOrderOutcome.ORDERED:
+			_building_placement.cancel()
+			status_changed.emit("%s ordered" % outcome.display_name)
+		BuildOrderOutcome.BUSY:
+			status_changed.emit("Building queue is busy")
+		BuildOrderOutcome.READY:
+			_begin_ready_building_placement()
+		BuildOrderOutcome.RESUMED:
+			status_changed.emit("%s construction resumed" % outcome.display_name)
+		BuildOrderOutcome.WAITING:
+			status_changed.emit("%s construction is waiting for credits" % outcome.display_name)
+		BuildOrderOutcome.RUNNING:
+			status_changed.emit("%s construction is already running" % outcome.display_name)
+		BuildOrderOutcome.CANCELED:
+			_building_placement.cancel()
+			_wall_session.cancel_chain()
+			status_changed.emit("%s canceled; refunded %d" % [outcome.display_name, outcome.refunded])
+		BuildOrderOutcome.PAUSED:
+			status_changed.emit("%s construction paused" % outcome.display_name)
+		BuildOrderOutcome.NONE:
+			return
+	_refresh_building_option_states()
 
 
 ## _sell_mode/_repair_mode/_wall_line_mode are property shims over the single
@@ -980,25 +1134,13 @@ func _on_building_slot_left_pressed(building_id: StringName) -> void:
 		return
 
 	var order := _building_queue.current_order()
-	if order == null:
-		_start_building_order(building_id)
-	elif order.building_id != building_id:
-		status_changed.emit("Building queue is busy")
-	elif order.ready:
+	if order != null and order.building_id == building_id and order.ready:
 		_begin_ready_building_placement()
-	elif order.manually_paused:
-		_building_queue.resume()
-		status_changed.emit("%s construction resumed" % order.display_name)
-	else:
-		var status := "%s construction is waiting for credits" if _building_queue.lacks_funds() else "%s construction is already running"
-		status_changed.emit(status % order.display_name)
-
-	_refresh_building_option_states()
 
 
 ## Wall's own entry point (docs/mechanics/production.md section 2 "walls"):
 ## a fresh click starts the interactive line-picking mode instead of the
-## plain "queue then place" flow _start_building_order() uses, but once a
+## ordinary production flow uses, but once a
 ## chain/order for this wall id is already in flight, clicking the same slot
 ## again falls back to the normal pause/resume/ready-to-place handling below.
 func _on_wall_slot_left_pressed(building_id: StringName) -> void:
@@ -1040,52 +1182,15 @@ func _on_building_slot_right_pressed(building_id: StringName) -> void:
 			_cancel_building_placement()
 		return
 
-	if order.ready or order.manually_paused:
-		_cancel_building_order()
-	else:
-		_building_queue.pause()
-		status_changed.emit("%s construction paused" % order.display_name)
-		_refresh_building_option_states()
-
-
-func _start_building_order(building_id: StringName) -> void:
-	var config := _catalog_view.config(building_id)
-	if config == null:
-		status_changed.emit("Building rules are not loaded")
-		return
-	if _building_queue.has_order():
-		status_changed.emit("Building queue is busy")
-		return
-	if not _is_building_available(building_id):
-		status_changed.emit("%s is not available" % _building_display_name(building_id))
-		_refresh_building_option_states()
-		return
-
-	if not _building_queue.start(
-		building_id,
-		_building_display_name(building_id),
-		maxi(config.cost, 0),
-		RuleTicksScript.order_sim_ticks(config.build_time_ticks)
-	):
-		return
-	_building_placement.cancel()
-
-	status_changed.emit("%s ordered" % _building_queue.current_order().display_name)
-	_refresh_building_option_states()
-
-
-func _process_building_order() -> void:
-	var order := _building_queue.current_order()
-	if order == null:
-		return
-	if not order.ready and not _is_building_available(order.building_id):
-		_cancel_building_order()
-		return
-	var player = _local_player()
-	var available_credits: int = player.money if player != null else 0
-	var spend_credits: Callable = Callable(player, &"spend_money") if player != null else Callable()
-	if _building_queue.advance_tick(available_credits, spend_credits):
-		_refresh_building_option_states()
+	# D2a: fixed wall chains still use the local queue and picker. Their
+	# player-keyed simulation split is deliberately deferred with WallLineSession.
+	if _is_wall_building_id(building_id):
+		if order.ready or order.manually_paused:
+			_cancel_building_order()
+		else:
+			_building_queue.pause()
+			status_changed.emit("%s construction paused" % order.display_name)
+			_refresh_building_option_states()
 
 
 func _on_building_queue_ready(order: BuildingOrder) -> void:
@@ -1262,13 +1367,9 @@ func _submit_place_building_command(
 ## The execution side of a place click: CommandExecutor.execute()
 ## (scripts/match/command_executor.gd) calls this with the
 ## SimPlaceBuildingCommand it just drained, on the tick the bus scheduled it
-## for. Must not depend on the local placement preview being active -- on
-## every client but the issuer it is not, since _begin_ready_building_placement()
-## only ever ran on the clicking player's own client -- so this rebuilds the
-## preview from the queue's own order first, the same recipe
-## WallLineSession.place_ready_segment() already uses to place a building at
-## an explicit cell with no pointer and no active preview
-## (scripts/buildings/wall_line_session.gd:227).
+## for. Must not depend on the local placement preview being active: command
+## execution evaluates and spawns through BuildingPlacement's view-less path,
+## while the issuer's preview remains a local input concern.
 ##
 ## Verifies identity before doing anything else beyond clearing
 ## _committed_placement_cell (see the doc comment on the line that does it,
@@ -1279,21 +1380,15 @@ func _submit_place_building_command(
 ## treatment a dead entity id gets in CommandExecutor._execute_stop()'s
 ## identical reasoning.
 ##
-## The rest is _try_place_ready_building()'s old body, unchanged except that
-## command.nav_cell replaces the pointer position. The two try_place_at_hover_cell()
-## calls look redundant, but each reaches a different set of PlaceResult
-## branches and every one of those emits a distinct status string that must
-## stay reachable -- see try_place_at_hover_cell()'s own doc comment for why
-## the second call is cheap now that it no longer draws a preview.
+## The two view-less calls intentionally preserve the old verdict priority:
+## first evaluate terrain and occupancy, then report a missing scene only when
+## that verdict is valid. Every local failure keeps its prior status string.
 func execute_place_building_command(command: SimPlaceBuildingCommand) -> void:
-	# Clears before any branch below, including the stale-command early
-	# return: every outcome this command can reach -- placed, cannot-build,
-	# missing scene, stale -- ends the "committed" window the matching
-	# _try_place_ready_building() call opened (see _committed_placement_cell's
-	# doc comment), so the player's next click is live again regardless of how
-	# this one turned out.
-	_committed_placement_cell = null
-	var order := _building_queue.current_order()
+	var is_local_command := command.player_id == _local_player_id()
+	if is_local_command:
+		_committed_placement_cell = null
+	var queue = building_queue_for_player(command.player_id)
+	var order := queue.current_order()
 	if order == null or not order.ready:
 		return
 	if order.building_id != command.building_id:
@@ -1301,44 +1396,67 @@ func execute_place_building_command(command: SimPlaceBuildingCommand) -> void:
 
 	var config := _building_config(order.building_id)
 	var occupy_rows := _building_occupy_rows(config)
-	if not _building_placement.begin(order.building_id, order.display_name, occupy_rows, _is_wall_building_id(order.building_id)):
-		status_changed.emit("%s has no occupy_rows" % order.display_name)
+	if occupy_rows.is_empty():
+		if is_local_command:
+			status_changed.emit("%s has no occupy_rows" % order.display_name)
 		return
-	_building_placement.set_rotation_quarter_turns(command.rotation_quarter_turns)
-
-	# owner_player_id keeps coming from the local roster, not command.player_id:
-	# a match has exactly one BuildingController today, always the local
-	# player's (see the _command_bus field comment), so the two are
-	# identical -- which player's roster a placement should own once more
-	# than one client's commands reach this controller is phase 5's problem.
-	var players = _players()
-	var owner_player_id = players.local_player_id if players != null else null
-	match _building_placement.try_place_at_hover_cell(command.nav_cell, null, owner_player_id):
+	var is_wall := _is_wall_building_id(order.building_id)
+	match _building_placement.place_without_preview(
+		order.building_id, order.display_name, occupy_rows, is_wall,
+		command.rotation_quarter_turns, command.nav_cell, null, command.player_id
+	):
 		BuildingPlacementScript.PlaceResult.NEEDS_TERRAIN:
-			status_changed.emit("%s placement needs terrain" % order.display_name)
+			if is_local_command:
+				status_changed.emit("%s placement needs terrain" % order.display_name)
 			return
 		BuildingPlacementScript.PlaceResult.CANNOT_BUILD:
-			status_changed.emit("%s cannot be placed there" % order.display_name)
+			if is_local_command:
+				status_changed.emit("%s cannot be placed there" % order.display_name)
+			return
+		BuildingPlacementScript.PlaceResult.INACTIVE:
+			if is_local_command:
+				status_changed.emit("%s has no occupy_rows" % order.display_name)
+			return
+	var scene_path := _building_scene_path(order.building_id)
+	if not ResourceLoader.exists(scene_path):
+		if is_local_command:
+			status_changed.emit(
+				"%s placement valid; missing scene %s" % [order.display_name, scene_path]
+			)
+		return
+	var scene := load(scene_path) as PackedScene
+	match _building_placement.place_without_preview(
+		order.building_id,
+		order.display_name,
+		occupy_rows,
+		_is_wall_building_id(order.building_id),
+		command.rotation_quarter_turns,
+		command.nav_cell,
+		scene,
+		command.player_id
+	):
+		BuildingPlacementScript.PlaceResult.NEEDS_TERRAIN:
+			if is_local_command:
+				status_changed.emit("%s placement needs terrain" % order.display_name)
+			return
+		BuildingPlacementScript.PlaceResult.CANNOT_BUILD:
+			if is_local_command:
+				status_changed.emit("%s cannot be placed there" % order.display_name)
 			return
 		BuildingPlacementScript.PlaceResult.INACTIVE:
 			return
-
-	var scene_path := _building_scene_path(order.building_id)
-	if not ResourceLoader.exists(scene_path):
-		status_changed.emit(
-			"%s placement valid; missing scene %s" % [order.display_name, scene_path]
-		)
-		return
-	var scene := load(scene_path) as PackedScene
-	match _building_placement.try_place_at_hover_cell(command.nav_cell, scene, owner_player_id):
 		BuildingPlacementScript.PlaceResult.PLACED:
-			_building_queue.take_ready()
-			status_changed.emit("%s placed" % order.display_name)
-			_refresh_building_option_states()
+			queue.take_ready()
+			if is_local_command:
+				_building_placement.cancel()
+				status_changed.emit("%s placed" % order.display_name)
+				_refresh_building_option_states()
 		BuildingPlacementScript.PlaceResult.INVALID_SCENE:
-			status_changed.emit("%s scene is not a Node3D" % order.display_name)
+			if is_local_command:
+				status_changed.emit("%s scene is not a Node3D" % order.display_name)
 		BuildingPlacementScript.PlaceResult.MISSING_BUILDINGS_ROOT:
-			status_changed.emit("Buildings root is missing")
+			if is_local_command:
+				status_changed.emit("Buildings root is missing")
 
 
 ## Mirrors _submit_place_building_command()'s shape exactly, including its
@@ -1375,6 +1493,9 @@ func _submit_wall_line_command(
 ## that method's own doc comment and SimWallLineCommand's for why the
 ## buildable set is not part of the command.
 func execute_wall_line_command(command: SimWallLineCommand) -> void:
+	# D2a: this still resolves its queue, credits, and placed-wall owner from
+	# the local player and ignores command.player_id, so it diverges in lockstep
+	# until WallLineSession's simulation half is split from its local picker.
 	_start_wall_chain(command.start_cell, command.end_cell, command.building_id)
 
 
@@ -1442,7 +1563,7 @@ func _building_model_name(building_id: StringName) -> String:
 
 
 func _is_building_available(building_id: StringName) -> bool:
-	return _catalog_view.is_available(building_id)
+	return _catalog_view.is_available_for(_local_player_id(), building_id)
 
 
 ## _is_building_available() reads _catalog_view's cache, which is only ever

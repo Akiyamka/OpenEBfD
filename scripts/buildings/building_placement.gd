@@ -98,6 +98,43 @@ func setup(context: PlacementContextScript) -> void:
 	_occupied_cells_cache_valid = false
 
 
+## Command execution takes this stateless path instead of begin()/try_place:
+## those preview methods own local arrows, cells, anchors, and visibility.
+## It shares the exact verdict and spawning helpers below while taking every
+## order-specific fact explicitly, so it cannot alter the local preview.
+func place_without_preview(
+		building_id: StringName,
+		_building_display_name: String,
+		occupy_rows: Array[String],
+		is_wall: bool,
+		rotation_turns: int,
+		hover_cell: Vector2i,
+		building_scene: PackedScene,
+		owner_player_id: int
+	) -> PlaceResult:
+	if building_id == &"" or not _has_occupy_cells(occupy_rows):
+		return PlaceResult.INACTIVE
+	if _navigation_grid == null or not _navigation_grid.is_loaded():
+		return PlaceResult.NEEDS_TERRAIN
+	var rotated_rows := _rotated_occupy_rows(occupy_rows, rotation_turns)
+	var anchor_cell := _anchor_for_hover_cell_for(hover_cell, rotated_rows)
+	var inputs := _current_build_radius_inputs_for(is_wall, false, owner_player_id)
+	var evaluation := _evaluate_anchor_for(
+		anchor_cell, rotated_rows, is_wall, false, inputs
+	)
+	if not bool(evaluation["can_build"]):
+		return PlaceResult.CANNOT_BUILD
+	var result := _spawn_placed_building(
+		building_id, rotation_turns, anchor_cell, rotated_rows, is_wall,
+		building_scene, owner_player_id
+	)
+	if result == PlaceResult.PLACED and not is_wall:
+		_play_placement_thud(
+			_snap_to_ground(_world_center_for(anchor_cell, rotated_rows)), &"BuildingThud"
+		)
+	return result
+
+
 func _exit_tree() -> void:
 	if not _occupied_cells_tracking_started:
 		return
@@ -279,6 +316,29 @@ func try_place_at_hover_cell(
 	_can_build = bool(evaluation["can_build"])
 	if not _can_build:
 		return PlaceResult.CANNOT_BUILD
+	var placement_position := _snap_to_ground(_world_center(_anchor_cell))
+	var is_wall_segment := _is_wall_candidate
+	var result := _spawn_placed_building(
+		_building_id, _rotation_quarter_turns, _anchor_cell, _occupy_rows,
+		_is_wall_candidate, building_scene, owner_player_id, excluded_unit
+	)
+	if result == PlaceResult.PLACED:
+		_clear()
+		if not is_wall_segment:
+			_play_placement_thud(placement_position, &"BuildingThud")
+	return result
+
+
+func _spawn_placed_building(
+		building_id: StringName,
+		rotation_turns: int,
+		anchor_cell: Vector2i,
+		occupy_rows: Array[String],
+		_is_wall: bool,
+		building_scene: PackedScene,
+		owner_player_id,
+		excluded_unit: Node3D = null
+	) -> PlaceResult:
 	if building_scene == null:
 		return PlaceResult.INVALID_SCENE
 	var building := building_scene.instantiate() as Node3D
@@ -289,10 +349,10 @@ func try_place_at_hover_cell(
 		return PlaceResult.MISSING_BUILDINGS_ROOT
 
 	if building.has_method("setup"):
-		building.call("setup", _building_id)
-	building.rotate_y(float(_rotation_quarter_turns) * QUARTER_TURN_RADIANS)
+		building.call("setup", building_id)
+	building.rotate_y(float(rotation_turns) * QUARTER_TURN_RADIANS)
 	_buildings_root.add_child(building)
-	var placement_position := _snap_to_ground(_world_center(_anchor_cell))
+	var placement_position := _snap_to_ground(_world_center_for(anchor_cell, occupy_rows))
 	if not building.is_inside_tree():
 		# A node outside the tree has never reached _ready(), so
 		# Building._register_entity_id() has not run and there is no entity id
@@ -320,19 +380,12 @@ func try_place_at_hover_cell(
 		# which places a packed bare Node3D. Nothing that is not a Building has
 		# a store entry to write, so the direct write stands.
 		building.global_position = placement_position
-	building.set_meta(&"placement_anchor_cell", _anchor_cell)
+	building.set_meta(&"placement_anchor_cell", anchor_cell)
 	if owner_player_id != null and building.has_method("set_owner_player_id"):
 		building.call("set_owner_player_id", owner_player_id)
-	_push_units_out_of_footprint(_anchor_cell, excluded_unit)
-	var is_wall_segment := _is_wall_candidate
+	_push_units_out_of_footprint(anchor_cell, occupy_rows, excluded_unit)
 	building_placed.emit(building)
 	_play_placed_building_animation(building)
-	_clear()
-	# Wall segments confirm the whole line with one WallThud when the line is
-	# drawn (see WallLineSession.start_chain / play_wall_line_start_thud)
-	# rather than per segment here.
-	if not is_wall_segment:
-		_play_placement_thud(placement_position, &"BuildingThud")
 	return PlaceResult.PLACED
 
 
@@ -365,7 +418,9 @@ func _hover_cell_from_pointer(pointer_position: Vector2):
 	return _navigation_grid.world_to_grid(hit["position"])
 
 
-func _push_units_out_of_footprint(anchor_cell: Vector2i, excluded_unit: Node3D = null) -> void:
+func _push_units_out_of_footprint(
+		anchor_cell: Vector2i, occupy_rows: Array[String], excluded_unit: Node3D = null
+	) -> void:
 	if not is_inside_tree() or _navigation_grid == null:
 		return
 	var units := get_tree().get_nodes_in_group("units").filter(
@@ -374,7 +429,7 @@ func _push_units_out_of_footprint(anchor_cell: Vector2i, excluded_unit: Node3D =
 	if units.is_empty():
 		return
 
-	var footprint_size := _nav_size()
+	var footprint_size := _nav_size_for(occupy_rows)
 	var start: Vector3 = _navigation_grid.grid_to_world(anchor_cell, false)
 	var end: Vector3 = _navigation_grid.grid_to_world(anchor_cell + footprint_size, false)
 	var cell_step: Vector3 = (
@@ -410,12 +465,24 @@ func _rebuild_preview(anchor_cell: Vector2i) -> void:
 ## per-tick availability check; scanning them per anchor made long wall lines
 ## increasingly expensive as the cursor moved.
 func _current_build_radius_inputs() -> Dictionary:
+	var owner_player_id = (
+		int(_placement_owner_player_id_provider.call())
+		if not _placement_owner_player_id_provider.is_null() else null
+	)
+	return _current_build_radius_inputs_for(
+		_is_wall_candidate, _skip_build_radius_check, owner_player_id
+	)
+
+
+func _current_build_radius_inputs_for(
+		_is_wall: bool, skip_build_radius_check: bool, owner_player_id
+	) -> Dictionary:
 	var radius_tiles := 0
 	var existing_footprints: Array = []
-	if not _skip_build_radius_check and not _build_radius_provider.is_null():
+	if not skip_build_radius_check and not _build_radius_provider.is_null():
 		radius_tiles = int(_build_radius_provider.call())
 		if radius_tiles > 0:
-			existing_footprints = _existing_building_footprints()
+			existing_footprints = _existing_building_footprints_for(owner_player_id)
 	return {
 		"occupied_cells": _occupied_building_nav_cells(),
 		"radius_tiles": radius_tiles,
@@ -428,9 +495,7 @@ func _current_build_radius_inputs() -> Dictionary:
 ## evaluates the one anchor they care about.
 func _evaluate_anchor_at(anchor_cell: Vector2i) -> Dictionary:
 	var inputs := _current_build_radius_inputs()
-	return _evaluate_anchor(
-		anchor_cell, inputs["occupied_cells"], inputs["radius_tiles"], inputs["existing_footprints"]
-	)
+	return _evaluate_anchor_for(anchor_cell, _occupy_rows, _is_wall_candidate, _skip_build_radius_check, inputs)
 
 
 ## Pure verdict for one anchor cell: whether its footprint has any occupy
@@ -443,11 +508,23 @@ func _evaluate_anchor_at(anchor_cell: Vector2i) -> Dictionary:
 ## evaluate_at_hover_cell() run on the simulation tick without paying for a
 ## preview no one will see (see its doc comment).
 func _evaluate_anchor(
-		anchor_cell: Vector2i,
-		occupied_cells: Dictionary,
-		radius_tiles: int,
+		anchor_cell: Vector2i, occupied_cells: Dictionary, radius_tiles: int,
 		existing_footprints: Array
 	) -> Dictionary:
+	return _evaluate_anchor_for(anchor_cell, _occupy_rows, _is_wall_candidate, _skip_build_radius_check, {
+		"occupied_cells": occupied_cells,
+		"radius_tiles": radius_tiles,
+		"existing_footprints": existing_footprints,
+	})
+
+
+func _evaluate_anchor_for(
+		anchor_cell: Vector2i, occupy_rows: Array[String], is_wall: bool,
+		skip_build_radius_check: bool, inputs: Dictionary
+	) -> Dictionary:
+	var occupied_cells: Dictionary = inputs["occupied_cells"]
+	var radius_tiles: int = inputs["radius_tiles"]
+	var existing_footprints: Array = inputs["existing_footprints"]
 	var has_cells := false
 	var can_build := true
 	var available_by_grid_cell: Dictionary = {}
@@ -455,18 +532,18 @@ func _evaluate_anchor(
 	# individual occupy cell, and every cell's preview material must reflect
 	# it, not just the aggregate can_build result.
 	var within_radius := (
-		_skip_build_radius_check
+		skip_build_radius_check
 		or radius_tiles <= 0
 		or BuildRadiusScript.is_within_radius(
-			_footprint_nav_cells(anchor_cell),
-			_is_wall_candidate,
+			_footprint_nav_cells_for(anchor_cell, occupy_rows),
+			is_wall,
 			existing_footprints,
 			radius_tiles
 		)
 	)
-	for row_index in _occupy_rows.size():
-		for column_index in _occupy_rows[row_index].length():
-			var marker := _occupy_rows[row_index].substr(column_index, 1)
+	for row_index in occupy_rows.size():
+		for column_index in occupy_rows[row_index].length():
+			var marker := occupy_rows[row_index].substr(column_index, 1)
 			if _is_empty_occupy_marker(marker):
 				continue
 			var grid_cell := anchor_cell + _occupy_offset_to_nav_cell(column_index, row_index)
@@ -593,10 +670,14 @@ func _release_preview_cell(preview_cell: Node3D) -> void:
 
 
 func _footprint_nav_cells(anchor_cell: Vector2i) -> Array[Vector2i]:
-	return _occupy_rows_nav_cells(anchor_cell, _occupy_rows)
+	return _footprint_nav_cells_for(anchor_cell, _occupy_rows)
 
 
-func _existing_building_footprints() -> Array:
+func _footprint_nav_cells_for(anchor_cell: Vector2i, occupy_rows: Array[String]) -> Array[Vector2i]:
+	return _occupy_rows_nav_cells(anchor_cell, occupy_rows)
+
+
+func _existing_building_footprints_for(owner_player_id) -> Array:
 	var footprints: Array = []
 	if _navigation_grid == null or not _navigation_grid.is_loaded():
 		return footprints
@@ -611,9 +692,8 @@ func _existing_building_footprints() -> Array:
 		var building := node as Node3D
 		if building == null:
 			continue
-		if not _placement_owner_player_id_provider.is_null():
-			var player_id := int(_placement_owner_player_id_provider.call())
-			if not EntityQueryScript.is_owned_by(building, player_id):
+		if owner_player_id != null:
+			if not EntityQueryScript.is_owned_by(building, int(owner_player_id)):
 				continue
 		var occupy_rows: Array[String] = []
 		if not _existing_building_occupy_rows.is_null():
@@ -744,7 +824,11 @@ func _configure_preview_visuals(node: Node) -> void:
 	PlacementMaterialsScript.configure_preview(node)
 
 func _anchor_for_hover_cell(hover_cell: Vector2i) -> Vector2i:
-	var footprint_size := _occupy_size()
+	return _anchor_for_hover_cell_for(hover_cell, _occupy_rows)
+
+
+func _anchor_for_hover_cell_for(hover_cell: Vector2i, occupy_rows: Array[String]) -> Vector2i:
+	var footprint_size := OccupyGridScript.size(occupy_rows)
 	var hover_occupy_cell := _nav_cell_to_occupy_cell(hover_cell)
 	var anchor_occupy_cell := hover_occupy_cell - Vector2i(
 		int(floor(float(footprint_size.x) * 0.5)), int(floor(float(footprint_size.y) * 0.5))
@@ -757,14 +841,22 @@ func _occupy_size() -> Vector2i:
 
 
 func _world_center(anchor_cell: Vector2i) -> Vector3:
-	var footprint_size := _nav_size()
+	return _world_center_for(anchor_cell, _occupy_rows)
+
+
+func _world_center_for(anchor_cell: Vector2i, occupy_rows: Array[String]) -> Vector3:
+	var footprint_size := _nav_size_for(occupy_rows)
 	var start: Vector3 = _navigation_grid.grid_to_world(anchor_cell, false)
 	var end: Vector3 = _navigation_grid.grid_to_world(anchor_cell + footprint_size, false)
 	return (start + end) * 0.5
 
 
 func _nav_size() -> Vector2i:
-	var occupy_size := _occupy_size()
+	return _nav_size_for(_occupy_rows)
+
+
+func _nav_size_for(occupy_rows: Array[String]) -> Vector2i:
+	var occupy_size := OccupyGridScript.size(occupy_rows)
 	return Vector2i(
 		occupy_size.x * NAV_CELLS_PER_OCCUPY_CELL, occupy_size.y * NAV_CELLS_PER_OCCUPY_CELL
 	)
