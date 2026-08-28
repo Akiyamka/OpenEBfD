@@ -3,10 +3,13 @@ extends SceneTree
 ## Proves the phase 2 command-bus wiring -- SimCommandBus
 ## (scripts/sim/command_bus.gd), CommandExecutor
 ## (scripts/match/command_executor.gd) and the drain point in
-## Match._advance_simulation_tick() -- without calling the bus or the
-## executor itself anywhere in this file. Every case here only ever drives
-## the real UnitCommandController (through handle_unhandled_input(), the
-## same entry point a real S keypress uses) and the real Match tick loop
+## Match._advance_simulation_tick(). The Stop cases drive the real
+## UnitCommandController through handle_unhandled_input(), the same entry
+## point a real S keypress uses. The wall cases submit a SimWallLineCommand
+## directly because the second wall click's local picker is not part of this
+## fixture; they still execute only through the real Match command bus and
+## Match._advance_simulation_tick(), never by calling the controller's command
+## handler. All cases use the real Match tick loop
 ## (through real engine frames, the same way
 ## tests/match/demo_boot_run.gd's _test_match_loop_drives_the_clock proves
 ## the clock is actually reached). tests/sim/command_bus_run.gd already
@@ -21,6 +24,9 @@ extends SceneTree
 
 const LegacyRulesFixture := preload("res://tests/support/legacy_rules_fixture.gd")
 const MatchFixtureScene := preload("res://tests/fixtures/match_fixture.tscn")
+const SimWallLineCommandScript := preload("res://scripts/sim/commands/wall_line_command.gd")
+const ATConYardScene := preload("res://assets/converted/buildings/ATConYard/ATConYard.scn")
+const ATSmWindtrapScene := preload("res://assets/converted/buildings/ATSmWindtrap/ATSmWindtrap.scn")
 
 var _assertions := 0
 var _failures := 0
@@ -36,6 +42,14 @@ func _initialize() -> void:
 	await _run_case(
 		"a Stop order's status label arrives only once the executing tick runs, not on the issuing frame",
 		_test_stop_status_arrives_with_the_tick
+	)
+	await _run_case(
+		"a player-2 wall line spends and places for player 2 through the real match bus",
+		_test_player_two_wall_line_owns_credits_and_building
+	)
+	await _run_case(
+		"a player-2 wall line leaves an active local preview and committed click alone",
+		_test_player_two_wall_line_does_not_touch_local_preview
 	)
 
 	if _failures > 0:
@@ -163,5 +177,116 @@ func _test_stop_status_arrives_with_the_tick() -> void:
 		"the 'Stopped' status must arrive once the tick executes the command and hands its result back through on_command_executed()"
 	)
 
+	match_instance.queue_free()
+	await process_frame
+
+
+func _test_player_two_wall_line_owns_credits_and_building() -> void:
+	var match_instance: Variant = await _wall_match()
+	var controller = match_instance.get_node("BuildingController") as BuildingController
+	var wall_cell: Variant = _wall_cell(match_instance, controller)
+	_expect(wall_cell != null, "setup: the fixture must provide a buildable Wall cell")
+	if wall_cell == null:
+		await _free_match(match_instance)
+		return
+	var players = get_root().get_node("Players")
+	var player_one = players.player(1)
+	var player_two = players.player(2)
+	var player_one_money_before: int = player_one.money
+	var player_two_money_before: int = player_two.money
+	_submit_wall_line(match_instance, wall_cell)
+	var remote_queue = controller.building_queue_for_player(2)
+	var local_queue = controller.building_queue_for_player(1)
+	_expect(remote_queue != local_queue, "setup: player 1 and player 2 must keep distinct production queues")
+	_expect(remote_queue.has_order(), "the player-2 wall line must start in player 2's queue")
+	var placed := _advance_until_wall(match_instance)
+	_expect(placed != null and placed.owner_player_id == 2, "the wall placed by player 2's command must be owned by player 2")
+	_expect(player_two.money < player_two_money_before, "player 2 must pay the wall chain from their own credits")
+	_expect(player_one.money == player_one_money_before, "control: player 1's fixture credits must stay untouched by player 2's wall line")
+	await _free_match(match_instance)
+
+
+func _test_player_two_wall_line_does_not_touch_local_preview() -> void:
+	var match_instance: Variant = await _wall_match()
+	var controller = match_instance.get_node("BuildingController") as BuildingController
+	var wall_cell: Variant = _wall_cell(match_instance, controller)
+	_expect(wall_cell != null, "setup: the fixture must provide a buildable Wall cell")
+	if wall_cell == null:
+		await _free_match(match_instance)
+		return
+	var local_queue = controller.building_queue_for_player(1)
+	local_queue.start(&"ATBarracks", "Local preview", 0, 1)
+	local_queue.advance_tick(0)
+	controller._begin_ready_building_placement()
+	_expect(controller._building_placement.is_active(), "setup: a real local ready order must open the local preview")
+	var committed_cell := Vector2i(wall_cell.x + 1, wall_cell.y + 1)
+	controller._committed_placement_cell = committed_cell
+	_submit_wall_line(match_instance, wall_cell)
+	var placed := _advance_until_wall(match_instance)
+	_expect(placed != null and placed.owner_player_id == 2, "player 2's wall must still place")
+	_expect(controller._building_placement.is_active(), "player 2's wall line must leave the local preview active")
+	_expect(controller._committed_placement_cell == committed_cell, "player 2's wall line must leave the committed click unchanged")
+	await _free_match(match_instance)
+
+
+func _wall_match():
+	var match_instance := MatchFixtureScene.instantiate()
+	get_root().add_child(match_instance)
+	await process_frame
+	await process_frame
+	var buildings := match_instance.get_node("Buildings") as Node3D
+	var local_yard := buildings.get_node("ATConYard") as Building
+	var local_windtrap := buildings.get_node("ATSmWindtrap") as Building
+	var con_yard := ATConYardScene.instantiate() as Building
+	con_yard.owner_player_id = 2
+	con_yard.position = local_yard.position
+	buildings.add_child(con_yard)
+	var windtrap := ATSmWindtrapScene.instantiate() as Building
+	windtrap.owner_player_id = 2
+	windtrap.position = local_windtrap.position
+	buildings.add_child(windtrap)
+	await process_frame
+	return match_instance
+
+
+func _wall_cell(match_instance, controller: BuildingController):
+	var config = controller._building_config(&"ATWall")
+	var rows: Array[String] = controller._building_occupy_rows(config)
+	if not controller._building_placement.begin(&"ATWall", "Wall", rows, true):
+		return null
+	var grid = match_instance.terrain.navigation_grid
+	var center: Vector2i = grid.world_to_grid((match_instance.get_node("Buildings/ATConYard") as Building).global_position)
+	for radius in range(4, 24):
+		for x in range(-radius, radius + 1):
+			for y in [-radius, radius]:
+				var candidate: Vector2i = center + Vector2i(x, y)
+				if controller._building_placement.evaluate_at_hover_cell(candidate) == BuildingPlacement.PlaceResult.AVAILABLE:
+					controller._building_placement.cancel()
+					return candidate
+	controller._building_placement.cancel()
+	return null
+
+
+func _submit_wall_line(match_instance, wall_cell: Vector2i) -> void:
+	var command := SimWallLineCommandScript.new()
+	command.player_id = 2
+	command.building_id = &"ATWall"
+	command.start_cell = wall_cell
+	command.end_cell = wall_cell
+	match_instance._command_bus.submit(command, match_instance.next_orderable_tick())
+	match_instance.call("_advance_simulation_tick")
+
+
+func _advance_until_wall(match_instance) -> Building:
+	for _tick in 2000:
+		match_instance.call("_advance_simulation_tick")
+		for node in match_instance.get_node("Buildings").get_children():
+			var building := node as Building
+			if building != null and building.config_id == &"ATWall":
+				return building
+	return null
+
+
+func _free_match(match_instance) -> void:
 	match_instance.queue_free()
 	await process_frame

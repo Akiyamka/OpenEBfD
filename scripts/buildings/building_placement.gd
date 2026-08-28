@@ -135,6 +135,28 @@ func place_without_preview(
 	return result
 
 
+## Stateless counterpart to evaluate_at_hover_cell(): command execution gives
+## every placement fact explicitly, so checking a remote order cannot clear or
+## otherwise alter the local player's active preview.
+func evaluate_without_preview(
+		building_id: StringName,
+		occupy_rows: Array[String],
+		is_wall: bool,
+		rotation_turns: int,
+		hover_cell: Vector2i,
+		owner_player_id: int
+	) -> PlaceResult:
+	if building_id == &"" or not _has_occupy_cells(occupy_rows):
+		return PlaceResult.INACTIVE
+	if _navigation_grid == null or not _navigation_grid.is_loaded():
+		return PlaceResult.NEEDS_TERRAIN
+	var rotated_rows := _rotated_occupy_rows(occupy_rows, rotation_turns)
+	var anchor_cell := _anchor_for_hover_cell_for(hover_cell, rotated_rows)
+	var inputs := _current_build_radius_inputs_for(is_wall, false, owner_player_id)
+	var evaluation := _evaluate_anchor_for(anchor_cell, rotated_rows, is_wall, false, inputs)
+	return PlaceResult.AVAILABLE if bool(evaluation["can_build"]) else PlaceResult.CANNOT_BUILD
+
+
 func _exit_tree() -> void:
 	if not _occupied_cells_tracking_started:
 		return
@@ -258,13 +280,11 @@ func set_rotation_quarter_turns(value: int) -> void:
 ## spawning anything. MCV deployment uses this before committing the unit to
 ## its animation, then rechecks at the handoff in case the site changed.
 ##
-## Pure: builds, frees, or reveals no preview node. WallLineSession
-## (scripts/buildings/wall_line_session.gd:293 _segment_availability) calls
-## this on the simulation tick, once per wall segment, on every client -- most
-## of which have no cursor anywhere near this placement -- so it cannot pay
-## for drawing a preview no one will see. See _evaluate_anchor() below for the
-## verdict logic this and the drawing path (_rebuild_preview_for_anchors())
-## both read from.
+## Pure: builds, frees, or reveals no preview node. Local click-side filters
+## use this active-preview form; ProductionSystem uses evaluate_without_preview()
+## for wall segments on the simulation tick, because most clients have no
+## cursor near that placement. See _evaluate_anchor() below for the verdict
+## logic this and the drawing path (_rebuild_preview_for_anchors()) both read.
 func evaluate_at_hover_cell(hover_cell: Vector2i) -> PlaceResult:
 	if not is_active():
 		return PlaceResult.INACTIVE

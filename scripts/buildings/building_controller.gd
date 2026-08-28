@@ -166,9 +166,7 @@ var _wall_line_building_id: StringName:
 		_wall_session.set_building_id(value)
 var _wall_chain: WallChain:
 	get:
-		return _wall_session.chain() as WallChain
-	set(value):
-		_wall_session.set_chain(value)
+		return _production_system.wall_chain_for_player(_local_player_id()) if _production_system != null else null
 var _building_double_click := DoubleClickTrackerScript.new()
 var _pointer_gesture = PlacementPointerGestureScript.new()
 var _placement_pointer_down: bool:
@@ -203,14 +201,7 @@ func setup(
 	_production_system = production_system
 	_catalog_view.configure(building_ids)
 	_availability_tracker.mark_dirty()
-	_wall_session.configure(
-		self, _building_placement, _building_queue, wall_marker_scene,
-		Callable(self, "_building_config"), Callable(self, "_building_occupy_rows"),
-		Callable(self, "_building_display_name"), Callable(self, "_building_scene_path"),
-		Callable(self, "_local_player"), Callable(self, "_local_owner_player_id"),
-		Callable(self, "_emit_status"),
-		Callable(self, "_refresh_building_option_states")
-	)
+	_wall_session.configure(self, _building_placement, wall_marker_scene)
 	if _building_placement.get_parent() != self:
 		add_child(_building_placement)
 	_pointer_gesture.configure(_building_placement)
@@ -228,10 +219,19 @@ func setup(
 	placement_context.build_radius_provider = Callable(self, "_build_radius_tiles")
 	placement_context.owner_player_id_provider = Callable(self, "_local_player_id")
 	_building_placement.setup(placement_context)
+	_production_system.configure_wall_chains(
+		_building_placement,
+		Callable(self, "_building_config"),
+		Callable(self, "_building_occupy_rows"),
+		Callable(self, "_building_display_name"),
+		Callable(self, "_building_scene_path")
+	)
 	if not _production_system.build_order_ready.is_connected(_on_production_build_order_ready):
 		_production_system.build_order_ready.connect(_on_production_build_order_ready)
 	if not _production_system.build_order_canceled.is_connected(_on_production_build_order_canceled):
 		_production_system.build_order_canceled.connect(_on_production_build_order_canceled)
+	if not _production_system.wall_chain_execution.is_connected(_on_production_wall_chain_execution):
+		_production_system.wall_chain_execution.connect(_on_production_wall_chain_execution)
 	if not _sale_service.completed.is_connected(_on_building_sale_completed):
 		_sale_service.completed.connect(_on_building_sale_completed)
 
@@ -300,9 +300,81 @@ func _on_production_build_order_canceled(player_id: int, order: BuildingOrder, r
 	if player_id != _local_player_id():
 		return
 	_building_placement.cancel()
-	_wall_session.cancel_chain()
+	_wall_session.clear_markers()
 	status_changed.emit("%s canceled; refunded %d" % [order.display_name, refunded])
 	_refresh_building_option_states()
+
+
+func _on_production_wall_chain_execution(
+		player_id: int, execution: ProductionSystemScript.WallChainExecution
+	) -> void:
+	if player_id != _local_player_id():
+		return
+	_apply_local_wall_chain_execution(execution)
+
+
+func _apply_local_wall_chain_execution(
+		execution: ProductionSystemScript.WallChainExecution
+	) -> void:
+	match execution.kind:
+		ProductionSystemScript.WallChainOutcome.STARTED:
+			_wall_session.lock_markers(execution.cells)
+			if not execution.cells.is_empty():
+				_building_placement.play_wall_line_start_thud(
+					_building_placement.wall_marker_world_position(execution.cells[0])
+				)
+		ProductionSystemScript.WallChainOutcome.BUSY:
+			status_changed.emit("Building queue is busy")
+		ProductionSystemScript.WallChainOutcome.RULES:
+			status_changed.emit("Wall rules are not loaded")
+		ProductionSystemScript.WallChainOutcome.NO_BUILDABLE:
+			status_changed.emit("Wall line has no buildable segments")
+		ProductionSystemScript.WallChainOutcome.EVALUATION_FAILED:
+			status_changed.emit("%s segment could not be evaluated" % execution.display_name)
+		ProductionSystemScript.WallChainOutcome.SKIPPED:
+			_wall_session.remove_marker(_local_wall_chain_cell(execution.segment_index))
+			status_changed.emit("%s segment %d/%d skipped" % [
+				execution.display_name, execution.segment_index, execution.segment_count,
+			])
+		ProductionSystemScript.WallChainOutcome.FINAL_SKIPPED:
+			if execution.segment_index > 0:
+				_wall_session.remove_marker(_local_wall_chain_cell(execution.segment_index))
+				status_changed.emit("%s wall complete; segment %d/%d skipped" % [
+					execution.display_name, execution.segment_index, execution.segment_count,
+				])
+			else:
+				status_changed.emit("%s wall complete; final segment skipped" % execution.display_name)
+		ProductionSystemScript.WallChainOutcome.QUEUE_FAILED:
+			status_changed.emit("%s segment could not be queued" % execution.display_name)
+		ProductionSystemScript.WallChainOutcome.ORDERED:
+			status_changed.emit("%s segment %d/%d ordered" % [
+				execution.display_name, execution.segment_index, execution.segment_count,
+			])
+		ProductionSystemScript.WallChainOutcome.MISSING_ROWS:
+			status_changed.emit("%s has no occupy_rows" % execution.display_name)
+		ProductionSystemScript.WallChainOutcome.MISSING_SCENE:
+			status_changed.emit("%s placement valid; missing scene %s" % [
+				execution.display_name, execution.scene_path,
+			])
+		ProductionSystemScript.WallChainOutcome.PLACEMENT_FAILED:
+			status_changed.emit("%s segment could not be placed; wall chain stopped" % execution.display_name)
+		ProductionSystemScript.WallChainOutcome.PLACED:
+			_wall_session.remove_marker(_local_wall_chain_cell(execution.segment_index))
+			status_changed.emit("%s segment %d/%d placed" % [
+				execution.display_name, execution.segment_index, execution.segment_count,
+			])
+		ProductionSystemScript.WallChainOutcome.COMPLETE:
+			status_changed.emit("%s wall complete" % execution.display_name)
+		ProductionSystemScript.WallChainOutcome.ENDED:
+			_wall_session.clear_markers()
+	_refresh_building_option_states()
+
+
+func _local_wall_chain_cell(segment_index: int):
+	var chain := _wall_chain
+	if chain == null or segment_index <= 0 or segment_index > chain.cells.size():
+		return null
+	return chain.cells[segment_index - 1]
 
 
 ## Match calls this after entity admission and before command execution, so
@@ -485,7 +557,7 @@ func handle_command(command: StringName) -> bool:
 ## reached from a different entry point:
 ##
 ## - left-clicking a wall slot with no order or chain in flight for it opens
-##   wall-line picking (_on_wall_slot_left_pressed()'s own entry condition);
+##   wall-line picking;
 ## - left-clicking a slot whose order is already ready opens the interactive
 ##   placement preview, and right-clicking a slot while that preview is open
 ##   for it cancels the preview, not the order.
@@ -519,8 +591,7 @@ func handle_building_intent(building_id: StringName, button_index: int) -> bool:
 	return false
 
 
-## Mirrors the two local branches _on_building_slot_left_pressed()/
-## _on_wall_slot_left_pressed() short-circuit on before ever touching
+## Mirrors the two local branches _on_building_slot_left_pressed() short-circuit on before ever touching
 ## _building_queue -- see handle_building_intent()'s doc comment. Read-only:
 ## deciding whether *this* click is a mode action must not itself mutate
 ## anything, since the mutating branch still needs an untouched queue to
@@ -571,22 +642,14 @@ func _submit_build_order_command(building_id: StringName, button_index: int) -> 
 
 ## The execution side of a build-order click: Match._advance_simulation_tick()
 ## calls this with the SimBuildOrderCommand it just drained, on the tick the
-## bus scheduled it for. Non-wall commands always run one player-keyed queue
-## operation; only the matching local client applies its returned outcome to
-## status, preview, and sidebar state. handle_building_intent() keeps preview
-## cancellation and other mode actions out of the bus before this point.
+## bus scheduled it for. Every command runs one player-keyed queue operation;
+## only the matching local client applies its returned outcome to status,
+## preview, and sidebar state. handle_building_intent() keeps picker and other
+## interaction-mode changes out of the bus before this point.
 func execute_build_order_command(command: SimBuildOrderCommand) -> void:
-	if _is_wall_building_id(command.building_id):
-		# D2a: wall build orders deliberately still resolve through the local
-		# queue and picker, ignoring command.player_id until WallLineSession's
-		# simulation half is split from its local input half.
-		match command.button_index:
-			MOUSE_BUTTON_LEFT:
-				_on_building_slot_left_pressed(command.building_id)
-			MOUSE_BUTTON_RIGHT:
-				_on_building_slot_right_pressed(command.building_id)
-		return
 	var outcome := _execute_player_build_order(command)
+	if _is_wall_building_id(command.building_id) and outcome.kind == BuildOrderOutcome.CANCELED:
+		_production_system.cancel_wall_chain(command.player_id)
 	if command.player_id == _local_player_id():
 		_apply_local_build_order_outcome(outcome)
 
@@ -664,7 +727,6 @@ func _apply_local_build_order_outcome(outcome: BuildOrderExecution) -> void:
 			status_changed.emit("%s construction is already running" % outcome.display_name)
 		BuildOrderOutcome.CANCELED:
 			_building_placement.cancel()
-			_wall_session.cancel_chain()
 			status_changed.emit("%s canceled; refunded %d" % [outcome.display_name, outcome.refunded])
 		BuildOrderOutcome.PAUSED:
 			status_changed.emit("%s construction paused" % outcome.display_name)
@@ -1130,38 +1192,12 @@ func _refresh_player_resources() -> void:
 
 func _on_building_slot_left_pressed(building_id: StringName) -> void:
 	if _is_wall_building_id(building_id):
-		_on_wall_slot_left_pressed(building_id)
+		_set_wall_line_mode(true, building_id)
 		return
 
 	var order := _building_queue.current_order()
 	if order != null and order.building_id == building_id and order.ready:
 		_begin_ready_building_placement()
-
-
-## Wall's own entry point (docs/mechanics/production.md section 2 "walls"):
-## a fresh click starts the interactive line-picking mode instead of the
-## ordinary production flow uses, but once a
-## chain/order for this wall id is already in flight, clicking the same slot
-## again falls back to the normal pause/resume/ready-to-place handling below.
-func _on_wall_slot_left_pressed(building_id: StringName) -> void:
-	var order := _building_queue.current_order()
-	var chain_active := _wall_chain != null and _wall_chain.building_id == building_id
-
-	if order == null and not chain_active:
-		_set_wall_line_mode(true, building_id)
-	elif order != null and order.building_id == building_id:
-		if order.ready:
-			_begin_ready_building_placement()
-		elif order.manually_paused:
-			_building_queue.resume()
-			status_changed.emit("%s construction resumed" % order.display_name)
-		else:
-			var status := "%s construction is waiting for credits" if _building_queue.lacks_funds() else "%s construction is already running"
-			status_changed.emit(status % order.display_name)
-	else:
-		status_changed.emit("Building queue is busy")
-
-	_refresh_building_option_states()
 
 
 func _on_building_slot_right_pressed(building_id: StringName) -> void:
@@ -1182,21 +1218,7 @@ func _on_building_slot_right_pressed(building_id: StringName) -> void:
 			_cancel_building_placement()
 		return
 
-	# D2a: fixed wall chains still use the local queue and picker. Their
-	# player-keyed simulation split is deliberately deferred with WallLineSession.
-	if _is_wall_building_id(building_id):
-		if order.ready or order.manually_paused:
-			_cancel_building_order()
-		else:
-			_building_queue.pause()
-			status_changed.emit("%s construction paused" % order.display_name)
-			_refresh_building_option_states()
-
-
 func _on_building_queue_ready(order: BuildingOrder) -> void:
-	if _wall_chain != null:
-		_place_wall_chain_segment()
-		return
 	status_changed.emit("%s ready" % order.display_name)
 	_refresh_building_option_states()
 
@@ -1216,7 +1238,8 @@ func _cancel_building_order() -> void:
 	# The wall chain only auto-orders a later buildable cell after the current
 	# one finishes (blocked cells in between are skipped), so cancelling the
 	# in-flight order is enough to stop the whole chain.
-	_wall_session.cancel_chain()
+	_production_system.cancel_wall_chain(_local_player_id())
+	_wall_session.clear_markers()
 	status_changed.emit("%s canceled; refunded %d" % [display_name, refunded])
 	_refresh_building_option_states()
 
@@ -1238,30 +1261,11 @@ func _begin_ready_building_placement() -> void:
 	interaction_mode_changed.emit(true)
 
 
-func _start_wall_chain(
-		from_nav_cell: Vector2i,
-		to_nav_cell: Vector2i,
-		building_id: StringName
-) -> void:
-	_wall_session.start_chain(from_nav_cell, to_nav_cell, building_id)
-
-
 func _wall_nav_cells_between(
 		from_nav_cell: Vector2i, to_nav_cell: Vector2i
 ) -> Array[Vector2i]:
 	return _wall_session.nav_cells_between(from_nav_cell, to_nav_cell)
 
-
-func _advance_wall_chain() -> void:
-	_wall_session.advance_chain()
-
-
-func _place_wall_chain_segment() -> void:
-	_wall_session.place_ready_segment()
-
-
-func _refund_completed_wall_segment(order: BuildingOrder) -> void:
-	_wall_session.refund_order(order)
 
 ## The command-bus seam for the left click that drops a ready building order
 ## onto the map (see docs/architecture/network-multiplayer.md, "Layering" --
@@ -1486,17 +1490,13 @@ func _submit_wall_line_command(
 
 ## The execution side of the wall line's second click: CommandExecutor.execute()
 ## (scripts/match/command_executor.gd) calls this with the SimWallLineCommand
-## it just drained, on the tick the bus scheduled it for. Forwards straight to
-## WallLineSession.start_chain() (scripts/buildings/wall_line_session.gd),
-## which recomputes the buildable-cell set against the map as it stands on
-## this tick, locks markers on the result, and orders the first segment -- see
-## that method's own doc comment and SimWallLineCommand's for why the
-## buildable set is not part of the command.
+## it just drained, on the tick the bus scheduled it for. ProductionSystem
+## recomputes the buildable-cell set, owns the player-keyed chain and orders
+## its first segment; this controller renders only the matching local outcome.
 func execute_wall_line_command(command: SimWallLineCommand) -> void:
-	# D2a: this still resolves its queue, credits, and placed-wall owner from
-	# the local player and ignores command.player_id, so it diverges in lockstep
-	# until WallLineSession's simulation half is split from its local picker.
-	_start_wall_chain(command.start_cell, command.end_cell, command.building_id)
+	_production_system.execute_wall_line(
+		command.player_id, command.start_cell, command.end_cell, command.building_id
+	)
 
 
 func _cancel_building_placement() -> void:

@@ -14,19 +14,19 @@ extends SimCommand
 ## command deliberately does NOT carry the buildable-cell set
 ## WallLineSession.click() used to read off the preview
 ## (BuildingPlacement.available_preview_anchor_cells()) at the moment of the
-## second click. A wall line is not built in one shot -- WallLineSession.
-## start_chain() orders one segment at a time, over many seconds, as each
-## previous segment finishes -- so "which cells were buildable when the
+## second click. A wall line is not built in one shot -- ProductionSystem
+## orders one segment at a time, over many seconds, as each previous segment
+## finishes -- so "which cells were buildable when the
 ## player aimed" is stale by the time most of those segments are actually
 ## ordered, let alone by the time this command reaches its execution tick on
 ## every client. The preview is drawn for the player's eyes only and is
-## allowed to be wrong; WallLineSession.start_chain() (scripts/buildings/
-## wall_line_session.gd) recomputes the real buildable set itself, against
-## the map as it stands at execution time, through BuildingPlacement -- the
-## one shared implementation of every "can this go here" check -- exactly the
-## reasoning SimPlaceBuildingCommand's doc comment gives for keeping verdicts
-## out of the struct (see SimMoveCommand's doc comment for the identical
-## argument, stated first).
+## allowed to be wrong; ProductionSystem (scripts/production/
+## production_system.gd) recomputes the real buildable set against the map as
+## it stands at execution time, through BuildingPlacement -- the one shared
+## implementation of every "can this go here" check -- exactly the reasoning
+## SimPlaceBuildingCommand's doc comment gives for keeping verdicts out of the
+## struct (see SimMoveCommand's doc comment for the identical argument,
+## stated first).
 ##
 ## - start_cell/end_cell are the two clicks, already resolved from screen
 ##   space to grid cells by the local raycast at issue time

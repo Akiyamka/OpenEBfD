@@ -10,6 +10,7 @@ const PlacementBuildingScene := preload("res://assets/converted/placement/build_
 const PlacementWallScene := preload("res://assets/converted/placement/build_wall.scn")
 const PlacementContextScript := preload("res://scripts/buildings/placement_context.gd")
 const ProductionSystemScript := preload("res://scripts/production/production_system.gd")
+const SimBuildOrderCommandScript := preload("res://scripts/sim/commands/build_order_command.gd")
 const CommandPumpScript := preload("res://tests/match/support/command_pump.gd")
 
 ## Status line each mode emits on its way out, keyed the same as _enter_mode().
@@ -402,7 +403,7 @@ func _test_completed_wall_refund(token: int, local_player: PlayerData) -> int:
 	var order := BuildingOrderScript.new()
 	order.paid_cost = 75
 	var money_before := local_player.money
-	controller._refund_completed_wall_segment(order)
+	_production_for(controller).refund_wall_order(local_player.player_id, order)
 	_expect(local_player.money == money_before + 75, "a paid wall segment that cannot be placed must be fully refunded")
 	order = null
 	controller.free()
@@ -432,10 +433,10 @@ func _test_wall_line_preview_only_during_selection(token: int) -> int:
 	)
 
 	controller._building_placement.cancel()
-	controller._wall_chain = WallChainScript.new(
+	_production_for(controller).set_wall_chain_for_player(1, WallChainScript.new(
 		&"ATWall", "Wall", 10, 25, [Vector2i(6, 8)]
-	)
-	controller._advance_wall_chain()
+	))
+	_production_for(controller).advance_wall_chain(1)
 	_expect(
 		controller._building_queue.has_order(),
 		"selecting a wall segment must start its construction order"
@@ -456,10 +457,10 @@ func _test_wall_chain_skips_blocked_segment(token: int) -> int:
 	_setup_controller_placement(controller,
 		null, grid, null, null, null, null, null, Callable()
 	)
-	controller._wall_chain = WallChainScript.new(
+	_production_for(controller).set_wall_chain_for_player(1, WallChainScript.new(
 		&"ATWall", "Wall", 0, 1, [Vector2i(2, 4), Vector2i(4, 4)]
-	)
-	controller._advance_wall_chain()
+	))
+	_production_for(controller).advance_wall_chain(1)
 	_expect(
 		controller._building_queue.has_order(),
 		"the first buildable segment after a blocked cell must still be ordered"
@@ -480,10 +481,10 @@ func _test_wall_chain_continues_after_late_block(token: int) -> int:
 	_setup_controller_placement(controller,
 		null, grid, null, null, null, null, null, Callable()
 	)
-	controller._wall_chain = WallChainScript.new(
+	_production_for(controller).set_wall_chain_for_player(1, WallChainScript.new(
 		&"ATWall", "Wall", 0, 1, [Vector2i(2, 4), Vector2i(4, 4)]
-	)
-	controller._advance_wall_chain()
+	))
+	_production_for(controller).advance_wall_chain(1)
 	grid.block_occupy_cell(Vector2i(2, 4))
 	controller._building_queue.advance_tick(0)
 	_expect(
@@ -516,10 +517,10 @@ func _test_fixed_wall_line_ignores_world_right_click(token: int) -> int:
 		"a world right click must cancel wall-line drawing before it is fixed"
 	)
 
-	controller._wall_chain = WallChainScript.new(
+	_production_for(controller).set_wall_chain_for_player(1, WallChainScript.new(
 		&"ATWall", "Wall", 0, 25, [Vector2i(2, 4), Vector2i(4, 4)]
-	)
-	controller._advance_wall_chain()
+	))
+	_production_for(controller).advance_wall_chain(1)
 
 	_expect(
 		not controller.handle_unhandled_input(world_right_click),
@@ -531,18 +532,29 @@ func _test_fixed_wall_line_ignores_world_right_click(token: int) -> int:
 		"a world right click must not pause or cancel a fixed wall order"
 	)
 
-	controller._on_building_slot_right_pressed(&"ATWall")
+	_execute_wall_build_order(controller, MOUSE_BUTTON_RIGHT)
 	_expect(
 		controller._building_queue.current_order().manually_paused,
 		"right-clicking the wall icon must pause its running order"
 	)
-	controller._on_building_slot_right_pressed(&"ATWall")
+	_execute_wall_build_order(controller, MOUSE_BUTTON_RIGHT)
 	_expect(
 		not controller._building_queue.has_order() and controller._wall_chain == null,
 		"right-clicking the paused wall icon must cancel the remaining chain"
 	)
 	controller.free()
 	return token
+
+
+## Must enter BuildingController's shared execute_build_order_command() path,
+## not a wall-only queue helper, so pause/cancel keeps the ordinary player-keyed
+## queue state machine that non-wall production uses.
+func _execute_wall_build_order(controller: BuildingController, button_index: int) -> void:
+	var command := SimBuildOrderCommandScript.new()
+	command.player_id = 1
+	command.building_id = &"ATWall"
+	command.button_index = button_index
+	controller.execute_build_order_command(command)
 
 
 func _test_fixed_wall_marker_lifecycle(token: int) -> int:
@@ -577,10 +589,10 @@ func _test_fixed_wall_marker_lifecycle(token: int) -> int:
 		"build_wall markers must keep their ordinary authored materials"
 	)
 
-	controller._wall_chain = WallChainScript.new(
+	_production_for(controller).set_wall_chain_for_player(1, WallChainScript.new(
 		&"ATWall", "Wall", 0, 1, [Vector2i(2, 4), Vector2i(4, 4)]
-	)
-	controller._advance_wall_chain()
+	))
+	_production_for(controller).advance_wall_chain(1)
 	controller._building_queue.advance_tick(0)
 	_expect(
 		not controller._wall_session.markers().has(Vector2i(2, 4))
@@ -1397,7 +1409,7 @@ func _test_wall_line_second_click_defers_chain_to_the_tick(token: int) -> int:
 
 
 ## Binds the whole point of this slice (see SimWallLineCommand's doc comment
-## and WallLineSession.start_chain()'s own): the buildable-cell set is
+## and ProductionSystem.execute_wall_line()'s own): the buildable-cell set is
 ## computed when the command executes, not carried from the click-time
 ## preview. A cell buildable at both clicks is blocked afterward, before the
 ## pump -- if the command still carried a click-time snapshot (the design this
@@ -1701,13 +1713,12 @@ func _enter_mode(controller: BuildingController, mode: StringName) -> void:
 			controller._set_wall_line_mode(true, &"ATWall")
 
 
-## The wall tests above all install a WallChain directly, so nothing exercised
-## start_chain() itself -- where the chain is stamped with its owner. That owner
-## is the roster's local_player_id, not the local PlayerData's player_id, and
-## reading the wrong one crashed the moment a player finished a wall line.
+## The wall tests above install a WallChain directly, so this case drives
+## ProductionSystem.execute_wall_line() and proves its player-keyed chain
+## carries the command player id as owner. The production dictionary key, not
+## a local PlayerData lookup, is authoritative when a segment is placed.
 ##
-## start_chain() no longer takes an explicit buildable-cell array (see
-## WallLineSession.start_chain()'s doc comment): it evaluates
+## ProductionSystem.execute_wall_line() evaluates
 ## Vector2i(2, 4)/Vector2i(4, 4) for real, through BuildingPlacement, so this
 ## case leans on the same FakeGrid (every cell "valid"/"buildable") the other
 ## wall cases in this file already use, with no buildings anywhere to occupy
@@ -1718,7 +1729,7 @@ func _test_wall_chain_owner_comes_from_roster(token: int, local_player: PlayerDa
 	_setup_controller_placement(controller,
 		null, FakeGrid.new(), null, null, null, null, null, Callable()
 	)
-	controller._start_wall_chain(Vector2i(2, 4), Vector2i(4, 4), &"ATWall")
+	_production_for(controller).execute_wall_line(1, Vector2i(2, 4), Vector2i(4, 4), &"ATWall")
 	_expect(
 		controller._wall_chain != null,
 		"a wall line over buildable cells must produce a chain"
