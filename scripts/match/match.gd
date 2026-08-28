@@ -347,7 +347,7 @@ func _place_on_map() -> void:
 		# add_to_group("buildings")), so nothing that used to be snapped here
 		# stops being snapped.
 		if building is Building:
-			var spot: Vector3 = building.global_position
+			var spot: Vector3 = building.simulation_position()
 			# Routes through Building.set_simulation_position() (its own doc
 			# comment) rather than writing global_position directly, for the
 			# identical reason the unit loop below does: by this point every
@@ -360,7 +360,7 @@ func _place_on_map() -> void:
 			building.set_simulation_position(_snap_to_ground(spot))
 
 	for unit in get_tree().get_nodes_in_group("units"):
-		var spot: Vector3 = unit.global_position
+		var spot: Vector3 = unit.simulation_position()
 		# Routes through Unit.set_simulation_position() (its own doc comment)
 		# rather than writing global_position directly: by this point every
 		# scene-authored unit has already run its own _ready() (see

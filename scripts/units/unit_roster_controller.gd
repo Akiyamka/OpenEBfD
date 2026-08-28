@@ -276,7 +276,7 @@ func _spawn_completed_unit(unit_id: StringName, production_building_id: StringNa
 	parent.add_child(unit)
 	# Units begin just inside the producer's front edge, then immediately move
 	# toward that building's own rally point.
-	var spawn_position = building.call("production_spawn_position") if building.has_method("production_spawn_position") else building.global_position
+	var spawn_position = building.call("production_spawn_position") if building.has_method("production_spawn_position") else building.simulation_position()
 	unit.set_simulation_position(spawn_position)
 	unit.face_direction(_production_exit_direction(building))
 	unit.set_owner_player_id(player.player_id)
@@ -452,7 +452,7 @@ func _owned_unit_count(player_id: int) -> int:
 
 
 func _default_rally_point(building: Node3D) -> Vector3:
-	return building.global_position + _production_exit_direction(building) * 2.0
+	return building.simulation_position() + _production_exit_direction(building) * 2.0
 
 
 func _production_exit_direction(building: Node3D) -> Vector3:

@@ -140,7 +140,7 @@ func command_pickup(target: Node3D) -> bool:
 	_pending_target_ref = weakref(target)
 	_drop_position = Vector3.INF
 	_state = State.APPROACH_PICKUP
-	_owner.call("transport_move_toward", target.global_position)
+	_owner.call("transport_move_toward", target.simulation_position())
 	return true
 
 
@@ -188,7 +188,7 @@ func advance(delta: float) -> void:
 					# Land may finish before a large heading change. Keep the craft at
 					# docking height while its normal turn-rate constraint completes.
 					return
-				if _horizontal_distance_to(target.global_position) > DOCKING_APERTURE_RADIUS:
+				if _horizontal_distance_to(target.simulation_position()) > DOCKING_APERTURE_RADIUS:
 					# A moving target slipped beyond the docking aperture.  Return to
 					# approach instead of locking and attaching at a distance.
 					_state = State.APPROACH_PICKUP
@@ -274,13 +274,13 @@ func _advance_pickup_approach(_delta: float) -> void:
 	if target == null or not _target_still_reserved(target):
 		_abort_pending_operation()
 		return
-	_owner.call("transport_move_toward", target.global_position)
-	if not bool(_owner.call("transport_approach_reached", target.global_position)):
+	_owner.call("transport_move_toward", target.simulation_position())
+	if not bool(_owner.call("transport_approach_reached", target.simulation_position())):
 		return
 	_owner.call("transport_stop_for_docking")
 	_owner.call(
 		"flight_begin_pickup_sequence",
-		target.global_position,
+		target.simulation_position(),
 		_pickup_landing_clearance(target)
 	)
 	_state = State.LAND_PICKUP
@@ -391,7 +391,7 @@ func _target_still_reserved(target: Node3D) -> bool:
 
 
 func _horizontal_distance_to(world_position: Vector3) -> float:
-	var offset := world_position - _owner.global_position
+	var offset: Vector3 = world_position - _owner.simulation_position()
 	offset.y = 0.0
 	return offset.length()
 

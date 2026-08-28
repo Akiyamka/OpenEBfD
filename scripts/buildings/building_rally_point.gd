@@ -47,21 +47,21 @@ func point() -> Vector3:
 func spawn_position() -> Vector3:
 	var authored_exit := _authored_exit_node()
 	if authored_exit != null:
-		return authored_exit.global_position
+		return authored_exit.global_position # arch-allow: global-position-read-bypasses-store -- authored exit marker inside the model, no store entry
 	if _owner.building_definition == null:
-		return _owner.global_position + _owner.exit_direction()
+		return _owner.simulation_position() + _owner.exit_direction()
 	var rows: Array[String] = []
 	rows.assign(_owner.building_definition.occupy_rows)
 	var spawn_cell := _nearest_skirt_cell(rows)
 	if spawn_cell.x < 0:
-		return _owner.global_position + _owner.exit_direction()
+		return _owner.simulation_position() + _owner.exit_direction()
 	var width := OccupyGridScript.width(rows)
 	var local_offset := Vector3(
 		(float(spawn_cell.x) + 0.5 - float(width) * 0.5) * CELL_SPAN,
 		0.0,
 		(float(spawn_cell.y) + 0.5 - float(rows.size()) * 0.5) * CELL_SPAN
 	)
-	return _owner.global_position \
+	return _owner.simulation_position() \
 		+ SpatialOrientationScript.world_right(_owner) * local_offset.x \
 		+ _owner.exit_direction() * local_offset.z
 
@@ -69,7 +69,7 @@ func spawn_position() -> Vector3:
 func exit_position() -> Vector3:
 	var spawn := spawn_position()
 	var forward: Vector3 = _owner.exit_direction()
-	var spawn_depth := (_owner.global_transform.affine_inverse() * spawn).z
+	var spawn_depth := (_owner.global_transform.affine_inverse() * spawn).z # arch-allow: global-position-read-bypasses-store -- needs the basis, which SimEntityState does not hold
 	return spawn + forward * maxf(
 		_front_footprint_extent() - spawn_depth + CLEARANCE, CLEARANCE
 	)
@@ -79,7 +79,7 @@ func set_default_if_unset() -> void:
 	if _has_point:
 		return
 	_assign(
-		_owner.global_position + _owner.exit_direction() * (CLEARANCE + _front_collision_extent()),
+		_owner.simulation_position() + _owner.exit_direction() * (CLEARANCE + _front_collision_extent()),
 		true
 	)
 

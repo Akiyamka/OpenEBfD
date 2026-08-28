@@ -120,6 +120,13 @@ class FakeLockedCarrier extends FakeUnit:
 
 
 class FakeBuilding extends Node3D:
+	## Slice R7 migrated this stand-in's consumers onto simulation_position().
+	## No Match and no store exist in this suite, so it answers the way
+	## Unit.simulation_position() does with nothing to ask -- with the node.
+	func simulation_position() -> Vector3:
+		return global_position
+
+
 	var player = null
 	var selected := false
 	var rally_points: Array[Vector3] = []

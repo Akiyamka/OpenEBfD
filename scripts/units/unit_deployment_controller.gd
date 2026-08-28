@@ -278,7 +278,7 @@ func _deployment_facing_direction(unit: Node3D) -> Vector3:
 
 
 func _deployment_hover_cell(unit: Node3D) -> Vector2i:
-	var unit_cell: Vector2i = _navigation_grid.world_to_grid(unit.global_position)
+	var unit_cell: Vector2i = _navigation_grid.world_to_grid(unit.simulation_position())
 	var facing := SpatialOrientationScript.world_forward(unit)
 	if facing.length_squared() <= SpatialOrientationScript.DIRECTION_EPSILON:
 		return unit_cell
@@ -495,7 +495,7 @@ func _building_spawn_position(building: Node3D) -> Vector3:
 	# building/MCV forward axis; production_spawn_position() remains
 	# the separate front-apron contract used by ordinary factory output.
 	return (
-		building.global_position
+		building.simulation_position()
 		+ _building_exit_direction(building) * DEFAULT_UNIT_FORWARD_OFFSET_WORLD
 	)
 

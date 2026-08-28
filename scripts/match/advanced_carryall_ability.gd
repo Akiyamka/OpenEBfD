@@ -86,7 +86,7 @@ func _nearest_pickup_carrier(selection: Array[Node], target: Node3D) -> Node3D:
 		if carrier != null and carrier.has_method("can_pickup") \
 		and bool(carrier.call("can_pickup", target)):
 			candidates.append(carrier)
-	return _nearest(candidates, target.global_position)
+	return _nearest(candidates, target.simulation_position())
 
 
 func _nearest_drop_carrier(selection: Array[Node], world_position: Vector3) -> Node3D:
@@ -123,7 +123,7 @@ func _nearest(candidates: Array[Node3D], world_position: Vector3) -> Node3D:
 	var closest: Node3D = null
 	var closest_distance := INF
 	for candidate in candidates:
-		var distance := candidate.global_position.distance_squared_to(world_position)
+		var distance: float = candidate.simulation_position().distance_squared_to(world_position)
 		if distance < closest_distance \
 		or (is_equal_approx(distance, closest_distance) and closest != null \
 		and candidate.get_instance_id() < closest.get_instance_id()):

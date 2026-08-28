@@ -50,7 +50,7 @@ static func spawn_for_destroyed_building(building: Building) -> void:
 		return
 
 	var half_extents := _footprint_half_extents(building)
-	var origin := building.global_position
+	var origin: Vector3 = building.simulation_position()
 	for i in _survivor_count(building):
 		_spawn_survivor(parent, unit_id, building.owner_player_id, origin, half_extents)
 

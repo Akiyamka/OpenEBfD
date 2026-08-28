@@ -1496,7 +1496,7 @@ func transport_track_pickup_landing(target: Node3D, delta: float) -> bool:
 	# Retargeting each tick lets a still-mobile reserved unit be followed without
 	# teleporting the carrier directly above it.
 	if _flight_controller != null:
-		_flight_controller.flight_update_pickup_landing_target(target.global_position)
+		_flight_controller.flight_update_pickup_landing_target(target.simulation_position())
 	return transport_align_with(target, delta)
 
 

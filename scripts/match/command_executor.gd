@@ -401,7 +401,12 @@ func _assign_attack_arcs(accepted: Array[Node], target_or_position: Variant) -> 
 	if target_or_position is Vector3:
 		target = target_or_position
 	elif target_or_position is Node3D:
-		target = (target_or_position as Node3D).global_position
+		# simulation_position(), not global_position, since slice R7. Guarded
+		# because this branch takes any Node3D a command names, and only Unit
+		# and Building answer -- a marker or an effect keeps the node it has.
+		var node := target_or_position as Node3D
+		target = node.simulation_position() if node.has_method("simulation_position") \
+			else node.global_position # arch-allow: global-position-read-bypasses-store -- the fallback is for nodes with no store entry at all
 	if not target.is_finite():
 		return
 	var shooters: Array[Node3D] = []

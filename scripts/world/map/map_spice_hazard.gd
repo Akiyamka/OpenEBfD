@@ -74,7 +74,7 @@ func start(source_cell: Vector2i, spread_cells: Array) -> void:
 		affected_cells[cell] = true
 		var point := navigation_grid.grid_to_world(cell)
 		point.y = _layer.terrain_height_at(Vector2(point.x, point.z))
-		local_points.append(point - mound.global_position)
+		local_points.append(point - mound.global_position) # arch-allow: global-position-read-bypasses-store -- spice mounds never get an entity id, by R1
 	if affected_cells.is_empty():
 		return
 
@@ -127,7 +127,7 @@ func damage_infantry_in_cells(cells: Dictionary, damage: float, units: Array) ->
 		var unit_definition: Resource = unit.get("unit_definition")
 		if unit_definition == null or not unit_definition.infantry:
 			continue
-		var world_position: Vector3 = unit.global_position if unit.is_inside_tree() else unit.position
+		var world_position: Vector3 = unit.simulation_position() if unit.is_inside_tree() else unit.position
 		if not cells.has(navigation_grid.world_to_grid(world_position)):
 			continue
 		unit.take_damage(damage)

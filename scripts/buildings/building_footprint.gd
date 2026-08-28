@@ -45,7 +45,7 @@ static func nav_cells_by_marker(
 	var nav_depth := occupy_rows.size() * cells_per_occupy_cell
 	var half_width_world := float(nav_width) * cell_width * 0.5
 	var half_depth_world := float(nav_depth) * cell_depth * 0.5
-	var center := building.global_position if building.is_inside_tree() else building.position
+	var center: Vector3 = building.simulation_position() if building.is_inside_tree() else building.position
 	var corners := [
 		center - right * half_width_world - exit_direction * half_depth_world,
 		center + right * half_width_world - exit_direction * half_depth_world,

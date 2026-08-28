@@ -77,7 +77,7 @@ func release(harvester: Node, cooldown_seconds := RELEASE_DELAY_SECONDS) -> void
 
 
 func front_position() -> Vector3:
-	return _owner.global_position + _owner.exit_direction() * (
+	return _owner.simulation_position() + _owner.exit_direction() * (
 		_front_footprint_extent() + RALLY_POINT_CLEARANCE
 	)
 
@@ -96,7 +96,7 @@ func world_position(dock_index: int) -> Vector3:
 		* OCCUPY_CELL_WORLD_SPAN
 	var local_z := (float(mirrored_y) + 0.5 - float(rows.size()) * 0.5) \
 		* OCCUPY_CELL_WORLD_SPAN
-	return _owner.global_position \
+	return _owner.simulation_position() \
 		+ SpatialOrientationScript.world_right(_owner) * local_x \
 		+ _owner.exit_direction() * local_z
 

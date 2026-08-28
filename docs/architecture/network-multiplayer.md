@@ -2173,6 +2173,58 @@ source cites a number you cannot place.
   holding 44 reads, and a queue of 14 files holding 34 — units 16, buildings
   11, match and world 7. Navigation and combat are both gone from it.
 
+  **Slice R7, decided 2026-08-28: the tail, and the end of the program.** Thirty
+  reads across fourteen files — a building's footprint centre and rally point
+  and refinery docks and survivor origin, the push-aside displacement, the
+  carryall ability's nearest-candidate search and the transport's approach and
+  docking checks, the deployment and roster spawn points, the terrain snap, the
+  spice hazard's victim list, the command executor's target resolution and
+  `Match._place_on_map()`'s two seeding reads. None of them is interesting on
+  its own, which is what a tail is; three deserve a note.
+
+  `CommandExecutor` resolves a target that may be any `Node3D` a command names,
+  so it asks `simulation_position()` only when the node answers and keeps the
+  node otherwise — the fallback carries a hatch, because a marker or an effect
+  has no store entry to prefer. `Match._place_on_map()`'s two reads are the
+  sites R2's own paragraph singled out as the only ones that *depend* on the
+  accessor's fallback rather than merely tolerating it: they run before the
+  first store write of the match, and now they say so. And
+  `unit_terrain_alignment.gd` migrated four of its five, the fifth being a
+  basis read, which the store has nothing to answer with.
+
+  **The queued group is empty, and the rule's header now says a new entry there
+  is a regression rather than a plan.** The program ran R1 through R7 and took
+  the queue from 33 files and 157 reads to none: harvester, ground steering,
+  navigation's system-and-shared group, flight, combat, tail. What is left is
+  the permanent half — 22 files whose reads are of view code, of rotations, or
+  of things that deliberately have no entity id — plus seven `# arch-allow:`
+  hatches, up from two. The five new ones are the honest residue: an authored
+  exit marker, a building's inverse transform, the `Node3D` fallback above, a
+  rotation, and a spice mound. Each sits on a line that has no store entry to
+  read instead, and each carries its reason inline where the next reader will
+  meet it rather than in a list they would have to find.
+
+  **The migration also caught a suite lying to the store, which is the first
+  time reading the store has exposed a divergence rather than merely being
+  tidier.** `unit_terrain_alignment.gd`'s snap reads the position, corrects its
+  `y` against the terrain and writes the result back. Moving that read onto the
+  store broke eleven assertions in `demo_boot_run.gd`, and bisecting to the
+  single line and then instrumenting it gave the reason: **39.1 world units of
+  divergence on OrdosAPC**, and 5.0 on two other frames. The suite sets up its
+  combat scenarios by assigning `global_position` directly, so the node moved
+  and the store did not; the snap then read the store and put the unit back
+  where the store still believed it was. `tests/` is deliberately outside the
+  checker's zone, so nothing had ever objected. The suite now moves entities
+  through `set_simulation_position()`, the way production does. Reading the node
+  had been hiding this for as long as the writes existed.
+
+  **Five test doubles needed the accessor across the program, and the count is
+  the point.** R3 fixed two, R4 one, R6 one, R7 five more — `FakeCargo`,
+  `FakeAbilityCarrier` and three separate `FakeBuilding` classes. Every one of
+  them printed `Nonexistent function` on every tick while its suite kept
+  passing, which is why the verification for these slices counts that string
+  separately from failures. A green run does not mean a quiet one.
+
 - **Phase 4 — determinism gate.** Portable math, RNG split, the static rules
   above wired into `check_architecture.py`, and the CI test that replays one
   command log twice in-process and then compares state hashes across native and

@@ -34,7 +34,7 @@ static func push_units_out_of_footprint(
 			or (unit.has_method("is_deploying") and bool(unit.call("is_deploying")))
 		):
 			continue
-		var position: Vector3 = unit.global_position
+		var position: Vector3 = unit.simulation_position()
 		if position.x < min_x or position.x > max_x or position.z < min_z or position.z > max_z:
 			continue
 

@@ -1144,7 +1144,12 @@ func _test_match_loop_drives_unit_fire() -> void:
 	var forward: Vector3 = emission["direction"]
 	forward.y = 0.0
 	var side := forward.normalized().rotated(Vector3.UP, PI * 0.5)
-	target.global_position = attacker.global_position + side * 8.0
+	# set_simulation_position(), not a direct write: since slice R7 the terrain
+	# snap reads the store, so a test that moves the node behind the store's
+	# back has the unit snapped straight back to where the store still thinks
+	# it is. Measured when this suite first broke: 39.1 world units of
+	# divergence on OrdosAPC.
+	target.set_simulation_position(attacker.global_position + side * 8.0)
 	target.call("_snap_to_terrain")
 
 	var fired_projectiles: Array = []
@@ -1736,8 +1741,8 @@ func _test_unit_production_rally_and_primary() -> void:
 	var primary_barracks := barracks_scene.instantiate() as Building
 	buildings.add_child(first_barracks)
 	buildings.add_child(primary_barracks)
-	first_barracks.global_position = Vector3(80.0, 8.0, 40.0)
-	primary_barracks.global_position = Vector3(120.0, 8.0, 40.0)
+	first_barracks.set_simulation_position(Vector3(80.0, 8.0, 40.0))
+	primary_barracks.set_simulation_position(Vector3(120.0, 8.0, 40.0))
 	primary_barracks.global_rotation.y = PI / 2.0
 	first_barracks.setup(&"ATBarracks")
 	primary_barracks.setup(&"ATBarracks")
@@ -1982,7 +1987,12 @@ func _test_real_forced_friendly_attack() -> void:
 	var forward: Vector3 = emission["direction"]
 	forward.y = 0.0
 	var side := forward.normalized().rotated(Vector3.UP, PI * 0.5)
-	target.global_position = attacker.global_position + side * 8.0
+	# set_simulation_position(), not a direct write: since slice R7 the terrain
+	# snap reads the store, so a test that moves the node behind the store's
+	# back has the unit snapped straight back to where the store still thinks
+	# it is. Measured when this suite first broke: 39.1 world units of
+	# divergence on OrdosAPC.
+	target.set_simulation_position(attacker.global_position + side * 8.0)
 	target.call("_snap_to_terrain")
 
 	var fired_projectiles: Array = []
@@ -2068,7 +2078,8 @@ func _test_real_forced_friendly_attack() -> void:
 	forward.y = 0.0
 	var minotaurus_initial_hull_yaw := attacker.global_rotation.y
 	var minotaurus_initial_position := attacker.global_position
-	target.global_position = attacker.global_position + Vector3.RIGHT * 35.0
+	# See the note on the first of these writes above.
+	target.set_simulation_position(attacker.global_position + Vector3.RIGHT * 35.0)
 	target.call("_snap_to_terrain")
 	var minotaurus_target_health := target.health
 	_expect(
@@ -2175,7 +2186,7 @@ func _test_real_harvester_unload_trip() -> void:
 	harvester.set_physics_process(false)
 	navigation.call("_refresh_building_blockers")
 	var front := refinery.refinery_front_position()
-	harvester.global_position = front + refinery.exit_direction() * 6.0
+	harvester.set_simulation_position(front + refinery.exit_direction() * 6.0)
 	harvester.spice = 100.0
 	harvester.stop_at_current_position()
 	var player = get_root().get_node("Players").player(1)

@@ -46,6 +46,14 @@ class FakeGrid extends RefCounted:
 
 
 class FakeMCV extends Node3D:
+	## Slice R7 migrated UnitDeploymentController's hover-cell read onto
+	## simulation_position(). No Match and no store exist in this suite, so
+	## this answers the way Unit.simulation_position() does with nothing to
+	## ask -- with the node.
+	func simulation_position() -> Vector3:
+		return global_position
+
+
 	signal deployment_animation_finished
 
 	var config_id: StringName = &"ATMCV"

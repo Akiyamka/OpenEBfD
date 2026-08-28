@@ -34,6 +34,13 @@ var _current_case := ""
 
 
 class FakeCargo extends Node3D:
+	## Slice R7 migrated this stand-in's consumers onto simulation_position().
+	## No Match and no store exist in this suite, so it answers the way
+	## Unit.simulation_position() does with nothing to ask -- with the node.
+	func simulation_position() -> Vector3:
+		return global_position
+
+
 	var owner_player_id := 1
 	var eligible := true
 	var reserved_by = null
@@ -197,6 +204,13 @@ class FakeCarrier extends Node3D:
 
 
 class FakeAbilityCarrier extends Node3D:
+	## Slice R7 migrated this stand-in's consumers onto simulation_position().
+	## No Match and no store exist in this suite, so it answers the way
+	## Unit.simulation_position() does with nothing to ask -- with the node.
+	func simulation_position() -> Vector3:
+		return global_position
+
+
 	var pickup_ok := false
 	var drop_ok := false
 	var pickup_targets: Array[Node3D] = []

@@ -95,11 +95,11 @@ func snap_body_to_terrain() -> void:
 	# Keeping this independent of CharacterBody's floor state lets authored unit
 	# collision volumes remain usable for selection while the unit follows every
 	# height change in the map instead of retaining its spawn elevation.
-	var hit := terrain_hit_at(_unit.global_position)
+	var hit := terrain_hit_at(_unit.simulation_position())
 	if hit.is_empty():
 		return
 
-	var snapped := _unit.global_position
+	var snapped: Vector3 = _unit.simulation_position()
 	snapped.y = (hit["position"] as Vector3).y
 	_unit.set_simulation_position(snapped)
 	set_slope_target(hit.get("normal", Vector3.UP) as Vector3)
@@ -119,7 +119,7 @@ func set_slope_target(terrain_normal: Vector3) -> void:
 		_visual_slope_target_basis = _visual_root_rest_basis * _flight_bank_basis()
 		return
 
-	var unit_basis := _unit.global_transform.basis.orthonormalized()
+	var unit_basis := _unit.global_transform.basis.orthonormalized() # arch-allow: global-position-read-bypasses-store -- a rotation read, and the store holds no rotation
 	var slope_forward := (-unit_basis.z).slide(_last_terrain_normal)
 	if slope_forward.length_squared() <= 0.000001:
 		slope_forward = unit_basis.x.cross(_last_terrain_normal)
@@ -160,12 +160,12 @@ func advance_slope_alignment(delta: float) -> void:
 func slope_speed_multiplier(direction: Vector3, delta: float) -> float:
 	if _unit.flight_is_airborne_phase():
 		return 1.0
-	var current_hit := terrain_hit_at(_unit.global_position)
+	var current_hit := terrain_hit_at(_unit.simulation_position())
 	if current_hit.is_empty():
 		return 1.0
 
 	var probe_distance := maxf(float(_unit.move_speed) * delta, SLOPE_PROBE_DISTANCE)
-	var ahead := _unit.global_position + direction * probe_distance
+	var ahead: Vector3 = _unit.simulation_position() + direction * probe_distance
 	var ahead_hit := terrain_hit_at(ahead)
 	if ahead_hit.is_empty():
 		return 1.0

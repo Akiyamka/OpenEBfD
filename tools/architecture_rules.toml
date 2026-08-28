@@ -35,7 +35,7 @@
 # line-scoped hatches buy the file back. A hatch that stops violating its rule
 # is itself reported, so these cannot rot silently the way the file entry
 # could.
-allow_budget = 2
+allow_budget = 7
 
 # Minimum length of a hatch reason, in characters.
 min_reason_length = 8
@@ -366,60 +366,23 @@ exempt = [
 	"scripts/world/spatial_orientation.gd",
 	#
 	# ===================================================================
-	# QUEUED -- 20 files, 53 reads, down from 22 files and 77 before slice R5
-	# took the flight group. Simulation code that should ask SimEntityState and
-	# does not yet. The slices after R5 empty this half one subsystem at a time;
-	# deleting a line is the visible event that records progress, exactly as it
-	# is for animation-completes-simulation. The counts are what make this a
-	# plan rather than a list: navigation was two thirds of the debt at 12 files
-	# and 103 reads when R3 started, and is now gone from this half entirely --
-	# R3 took ground steering, R4 the system-and-shared group, R5 flight. Combat
-	# is what is left of the large groups.
+	# QUEUED -- empty since slice R7. Every simulation read of an entity's
+	# position now asks SimEntityState. The program ran R1 through R7 and the
+	# queue went 33 files and 157 reads -> 0, one subsystem at a time:
+	# harvester, ground steering, navigation's system-and-shared group, flight,
+	# combat, and R7's tail of buildings, units, match and world.
 	#
-	# Combat -- gone from this half in slice R6. Four files migrated, plus the
-	# two combat_aim_position() accessors this rule never saw at all because an
-	# entity reading its own position is a bare read -- see the R6 paragraph in
-	# the design doc. The remaining two moved up to PERMANENT rather than being
-	# migrated: their reads are of markers, pivots, projectiles and dead
-	# fallbacks, none of which has a store entry to read from.
-	# Buildings -- 5 files, 11 reads. Rally points, refinery docks, footprint
-	# cells and survivor spawns, all derived from a building's own position.
-	"scripts/buildings/building_rally_point.gd",  # 6
-	"scripts/buildings/building_refinery_docks.gd",  # 2
-	"scripts/buildings/building_footprint.gd",  # 1
-	"scripts/buildings/building_survivors.gd",  # 1
-	"scripts/buildings/unit_push_aside.gd",  # 1
-	# Units -- 5 files, 16 reads. Transport docking, terrain snapping,
-	# deployment and production exits, plus Unit's own single qualified read
-	# (a carryall's pickup target).
-	"scripts/units/advanced_carryall_transport.gd",  # 6
-	"scripts/units/unit_terrain_alignment.gd",  # 5
-	"scripts/units/unit_deployment_controller.gd",  # 2
-	"scripts/units/unit_roster_controller.gd",  # 2
-	"scripts/units/unit.gd",  # 1
-	# Match and world -- 4 files, 7 reads. Command execution, the carryall
-	# ability's nearest-candidate search, the snap-to-ground seeding loop in
-	# Match._place_on_map(), and spice hazard damage. match_snapshot.gd used to
-	# be counted here for its read half; slice R2b moved it up to the permanent
-	# group instead -- see its entry there.
-	"scripts/match/advanced_carryall_ability.gd",  # 2
-	"scripts/match/match.gd",  # 2
-	"scripts/world/map/map_spice_hazard.gd",  # 2
-	"scripts/match/command_executor.gd",  # 1
+	# What is left in this file is the PERMANENT half above plus seven
+	# `# arch-allow:` hatches, and the hatches are the honest residue rather
+	# than unfinished work: two debug-overlay reads in the navigation facade
+	# (slice R4a), an authored exit marker and a building's inverse transform,
+	# a Node3D fallback for objects that are not entities, a rotation read, and
+	# a spice mound, which by R1's decision never gets an entity id. None of
+	# them has a store entry to read instead.
 	#
-	# Migrated and gone from this list, which is the point of keeping it:
-	# scripts/units/harvester_controller.gd (7 reads), by slice R2 itself;
-	# scripts/units/navigation/ground/ground_slot_allocator.gd (23),
-	# ground_navigation.gd (20) and steering_stabilizer.gd (10), by slice R3 --
-	# the whole ground-navigation group, every read of it simulation;
-	# shared/nav_agent_registry.gd (3), shared/nav_blocker_tracker.gd (2),
-	# ground/orca_avoidance.gd (2), ground/ground_path_follower.gd (2),
-	# ground/attack_arc_allocator.gd (2) and shared/nav_spatial_hash.gd (1), by
-	# slice R4, which also took 12 of unit_navigation_system.gd's 14 and moved
-	# that file to the permanent group for the 2 view reads it left behind;
-	# unit_flight_controller.gd (21) and air/air_navigation.gd (3), by slice R5
-	# -- the flight group, every read of it simulation, which empties the
-	# navigation subgroup of this list.
+	# A new queued entry here is a regression, not a plan. If a future slice
+	# adds one, say in its own comment why the read cannot ask the store.
+
 ]
 summary = "another entity's position read off the node instead of SimEntityState"
 why = """
@@ -476,7 +439,7 @@ kind = "slice-index"
 index = "docs/architecture/slices.md"
 summary = "comment cites a slice with no row in the slice index"
 why = """
-178 comments across scripts/, tests/ and tools/ carry their justification in a slice number, and for most of phase 3 nothing mapped a number to the change that made it -- commit subjects almost never named their own slice, and the design doc gives only 11 of 18 mentioned ids a paragraph. A number that resolves to nothing is worse than no number: it reads like a citation and costs a reader the search before they find out it is not one. docs/architecture/slices.md is that mapping, and this rule is what stops it falling behind the code that cites it -- the first comment naming a new slice fails until the slice has a row.
+230 comments across scripts/, tests/ and tools/ carry their justification in a slice number, and for most of phase 3 nothing mapped a number to the change that made it -- commit subjects almost never named their own slice, and the design doc gives only 11 of 18 mentioned ids a paragraph. A number that resolves to nothing is worse than no number: it reads like a citation and costs a reader the search before they find out it is not one. docs/architecture/slices.md is that mapping, and this rule is what stops it falling behind the code that cites it -- the first comment naming a new slice fails until the slice has a row.
 """
 instead = "add the slice to docs/architecture/slices.md with its commit, date and one clause, or drop the id from the comment and say what changed instead"
 
