@@ -1594,6 +1594,7 @@ func _test_availability_resubscribe_after_tree_reentry(token: int, local_player:
 	)
 	con_yard.set_owner_player_id(2)
 	controller.process(0.0)
+	controller.refresh_availability()
 	_expect(
 		refresh_count[0] >= 1,
 		"the surviving owner_changed connection must still refresh ATBarracks option state after resubscribing"
@@ -1620,6 +1621,7 @@ func _test_availability_forces_false_when_leaving_tree(token: int, local_player:
 	root.add_child(con_yard)
 	root.add_child(windtrap)
 	controller.process(0.0)
+	controller.refresh_availability()
 	_expect(
 		controller._is_building_available(&"ATBarracks"),
 		"prerequisite present must read available before teardown"
@@ -1737,6 +1739,7 @@ func _test_handle_building_intent_defers_start(token: int, local_player: PlayerD
 	root.add_child(con_yard)
 	root.add_child(windtrap)
 	controller.process(0.0)
+	controller.refresh_availability()
 
 	var pump := CommandPumpScript.new()
 	pump.configure_queue_controllers(controller)
@@ -1773,6 +1776,7 @@ func _test_handle_building_intent_defers_pause(token: int, local_player: PlayerD
 	root.add_child(con_yard)
 	root.add_child(windtrap)
 	controller.process(0.0)
+	controller.refresh_availability()
 
 	var pump := CommandPumpScript.new()
 	pump.configure_queue_controllers(controller)
@@ -1881,6 +1885,7 @@ func _test_availability_reacts_to_prerequisite_loss(token: int, local_player: Pl
 	root.add_child(windtrap)
 
 	controller.process(0.0)
+	controller.refresh_availability()
 	_expect(
 		latest_states.get(&"ATBarracks") == BuildingOptionStateScript.State.AVAILABLE,
 		"ATBarracks must be available once its primary and secondary prerequisites are owned"
@@ -1889,6 +1894,7 @@ func _test_availability_reacts_to_prerequisite_loss(token: int, local_player: Pl
 	root.remove_child(con_yard)
 	con_yard.free()
 	controller.process(0.0)
+	controller.refresh_availability()
 	_expect(
 		latest_states.get(&"ATBarracks") == BuildingOptionStateScript.State.DISABLED,
 		"losing the primary prerequisite must disable the entry on the next poll, with nothing already built lost"
@@ -1897,6 +1903,7 @@ func _test_availability_reacts_to_prerequisite_loss(token: int, local_player: Pl
 	var restored_con_yard := BuildingStub.new(&"ATConYard", local_player.player_id)
 	root.add_child(restored_con_yard)
 	controller.process(0.0)
+	controller.refresh_availability()
 	_expect(
 		latest_states.get(&"ATBarracks") == BuildingOptionStateScript.State.AVAILABLE,
 		"restoring the prerequisite must re-enable the entry on the next poll"
@@ -1904,12 +1911,14 @@ func _test_availability_reacts_to_prerequisite_loss(token: int, local_player: Pl
 
 	windtrap.set_owner_player_id(2)
 	controller.process(0.0)
+	controller.refresh_availability()
 	_expect(
 		latest_states.get(&"ATBarracks") == BuildingOptionStateScript.State.DISABLED,
 		"capturing a prerequisite away from the player must invalidate availability"
 	)
 	windtrap.set_owner_player_id(local_player.player_id)
 	controller.process(0.0)
+	controller.refresh_availability()
 	_expect(
 		latest_states.get(&"ATBarracks") == BuildingOptionStateScript.State.AVAILABLE,
 		"recapturing a prerequisite must restore availability"
@@ -1921,12 +1930,14 @@ func _test_availability_reacts_to_prerequisite_loss(token: int, local_player: Pl
 	unfinished_windtrap.construction_complete = false
 	root.add_child(unfinished_windtrap)
 	controller.process(0.0)
+	controller.refresh_availability()
 	_expect(
 		latest_states.get(&"ATBarracks") == BuildingOptionStateScript.State.DISABLED,
 		"a newly added unfinished prerequisite must remain unavailable"
 	)
 	unfinished_windtrap.finish_construction()
 	controller.process(0.0)
+	controller.refresh_availability()
 	_expect(
 		latest_states.get(&"ATBarracks") == BuildingOptionStateScript.State.AVAILABLE,
 		"construction completion must invalidate and restore availability"
@@ -1962,6 +1973,7 @@ func _test_availability_reacts_to_upgrade_purchase(token: int, local_player: Pla
 	root.add_child(barracks)
 
 	controller.process(0.0)
+	controller.refresh_availability()
 	_expect(
 		latest_states.get(&"ATRocketTurret") == BuildingOptionStateScript.State.DISABLED,
 		"an upgraded_primary_required entry must stay disabled while the primary is not yet upgraded"
@@ -1970,6 +1982,7 @@ func _test_availability_reacts_to_upgrade_purchase(token: int, local_player: Pla
 	local_player.grant_upgrade(&"ATConYard")
 	UpgradeEffectsScript.apply_to_existing_buildings(get_nodes_in_group("buildings"), local_player.player_id, &"ATConYard")
 	controller.process(0.0)
+	controller.refresh_availability()
 	_expect(
 		latest_states.get(&"ATRocketTurret") == BuildingOptionStateScript.State.AVAILABLE,
 		"the very next poll after a completed upgrade must unlock the entry, no controller restart needed"

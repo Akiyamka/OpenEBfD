@@ -750,6 +750,15 @@ func _advance_simulation_tick() -> void:
 	# see this function's ordering comment further down for the full argument
 	# and the history of what used to enforce this instead.
 	_admission_queue.apply_pending_entries()
+	# Availability scans run after admission so they see exactly the entities
+	# this simulation has admitted, and before the command drain so every reader
+	# in this tick -- both command-execution paths and the controllers' own
+	# advance_tick() calls -- reads one settled snapshot rather than a cache
+	# whose freshness depends on how many engine frames ran.
+	if _building_controller != null:
+		_building_controller.refresh_availability()
+	if _unit_roster_controller != null:
+		_unit_roster_controller.refresh_availability()
 	# Must run before drain(tick) below, not after: a replay command
 	# targeting `tick` has to be queued while _last_tick_drained is still
 	# tick - 1, or SimCommandBus.submit_at() (scripts/sim/command_bus.gd)

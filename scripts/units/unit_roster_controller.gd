@@ -84,15 +84,24 @@ func _exit_tree() -> void:
 	_availability_tracker.unbind()
 
 
+## Kept because Match calls controller process methods unconditionally. Match
+## refreshes availability after admission and before command execution instead
+## of making this frame callback determine a simulation verdict.
 func process(_delta: float) -> void:
+	pass
+
+
+## Match calls this after entity admission and before command execution, so
+## availability readers in that tick share the same settled snapshot.
+func refresh_availability() -> void:
 	if _refresh_availability_if_dirty():
 		_refresh_unit_option_states()
 
 
 ## Simulation half of the old process(delta): production-order progress,
-## driven from MatchClock rather than frame delta. See
-## match.gd::_advance_simulation_tick() for why this and the sibling
-## controllers' advance_tick() run in a fixed order.
+## driven from MatchClock rather than frame delta. Availability is refreshed
+## separately by Match before its command drain, so this and the sibling
+## controllers' advance_tick() calls read that snapshot in their fixed order.
 func advance_tick() -> void:
 	if _process_unit_orders():
 		_refresh_unit_option_states()

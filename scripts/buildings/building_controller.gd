@@ -209,9 +209,11 @@ func setup(
 	interaction_mode_changed.emit(false)
 
 
+## Frame half of the old process(delta): cursor and placement-preview work.
+## Availability is refreshed separately by Match before command execution, so
+## this callback cannot make a simulation verdict depend on engine frames.
 func process(_delta: float) -> void:
 	_update_mode_cursor()
-	_refresh_availability_if_dirty()
 	if _wall_line_mode:
 		_process_wall_line_preview(get_viewport().get_mouse_position())
 	elif _building_placement.is_active():
@@ -234,12 +236,19 @@ func process(_delta: float) -> void:
 
 
 ## Simulation half of the old process(delta): construction-order progress and
-## building repair, both driven from MatchClock rather than frame delta. See
-## match.gd::_advance_simulation_tick() for why this and the sibling
-## controllers' advance_tick() run in a fixed order.
+## building repair, both driven from MatchClock rather than frame delta.
+## Availability is refreshed separately by Match before its command drain, so
+## this and the sibling controllers' advance_tick() calls read that snapshot in
+## their fixed order.
 func advance_tick() -> void:
 	_process_building_order()
 	_process_repairs()
+
+
+## Match calls this after entity admission and before command execution, so
+## availability readers in that tick share the same settled snapshot.
+func refresh_availability() -> void:
+	_refresh_availability_if_dirty()
 
 
 func _exit_tree() -> void:

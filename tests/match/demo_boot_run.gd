@@ -90,6 +90,10 @@ func _initialize() -> void:
 	await _run_case("upgrade panel only lists buildings with an upgrade defined", _test_upgrade_panel_matches_controller)
 	await _run_case("upgrade slot appears after its building is placed later", _test_upgrade_availability_polls)
 	await _run_case("unit slots follow prerequisite buildings and their upgrades", _test_unit_roster_availability)
+	await _run_case(
+		"unit order execution refreshes availability after a tracked prerequisite is removed",
+		_test_unit_order_refreshes_availability_after_prerequisite_loss
+	)
 	await _run_case("shared units prefer their owner's native production building", _test_shared_unit_native_producer)
 	await _run_case("completed units emerge from primary building toward rally point", _test_unit_production_rally_and_primary)
 	await _run_case("real match units execute forced friendly attack orders", _test_real_forced_friendly_attack)
@@ -1724,6 +1728,53 @@ func _test_unit_roster_availability() -> void:
 	_expect(
 		kindjal_slot != null and kindjal_slot.visible,
 		"ATKindjal must become visible once the Barracks is upgraded"
+	)
+
+	match_instance.queue_free()
+
+
+## A tracked Barracks dirties the availability tracker synchronously when it
+## leaves the fixture's Buildings node. The following command must therefore
+## be refused on the next simulation tick even though no engine frame runs
+## between the removal and command execution.
+func _test_unit_order_refreshes_availability_after_prerequisite_loss() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	get_root().add_child(match_instance)
+	await process_frame
+	await process_frame
+
+	var buildings := match_instance.get_node("Buildings") as Node3D
+	var barracks_scene := load("res://assets/converted/buildings/ATBarracks/ATBarracks.scn") as PackedScene
+	var barracks := barracks_scene.instantiate() as Building
+	buildings.add_child(barracks)
+	barracks.call("setup", &"ATBarracks")
+	barracks.call("set_owner_player_id", 1)
+	barracks.call("finish_construction")
+	await process_frame
+	match_instance._advance_simulation_tick()
+	await process_frame
+
+	var roster = match_instance.get_node("UnitRosterController") as UnitRosterController
+	var statuses: Array[String] = []
+	roster.status_changed.connect(func(message: String) -> void:
+		statuses.append(message)
+	)
+
+	buildings.remove_child(barracks)
+	barracks.free()
+	_expect(
+		not is_instance_valid(barracks),
+		"control: the fixture must remove the completed Barracks before the order is submitted"
+	)
+	roster.handle_unit_intent(&"ATInfantry", MOUSE_BUTTON_LEFT)
+	_expect(
+		statuses.is_empty(),
+		"the unit intent must remain deferred until Match drains its scheduled tick"
+	)
+	match_instance._advance_simulation_tick()
+	_expect(
+		statuses.has("ATInfantry is not available"),
+		"a next-tick unit order must be refused after its tracked Barracks prerequisite is removed without a frame"
 	)
 
 	match_instance.queue_free()
