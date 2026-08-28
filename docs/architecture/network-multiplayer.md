@@ -2405,6 +2405,28 @@ source cites a number you cannot place.
     player 1's credits were untouched. It is R2's proven shape: the mechanism,
     the rule that queues the debt, and one real migration to prove the
     mechanism works.
+  - **`D2a`** — wall chains follow `player_id` too. `SimWallLineCommand` is a
+    third command path over the same build queue, and `D2` leaves it selecting
+    whichever player the receiving client considers local:
+    `execute_wall_line_command()` forwards only the cells and the building id
+    (`building_controller.gd:1377`) while `_submit_wall_line_command()` stamps
+    `player_id` that nothing then reads. Under lockstep the same wall command
+    would spend player 1's credits on one client and player 2's on another.
+    It is a slice of its own because the fix is a module split rather than a
+    parameter: `WallLineSession` is 378 lines with 68 touches of its queue and
+    chain, and the seam runs through the middle of it — `begin`, `click`,
+    `process_preview`, `lock_markers` and `clear_markers` are the local
+    two-click picker, while `start_chain`, `advance_chain`,
+    `place_ready_segment`, `refund_order` and `cancel_chain` are simulation
+    that has to exist per player, including the single `_chain` field that
+    cannot represent two players building at once. `D2` records the debt in a
+    comment at the method itself rather than only here, the way the phase-5
+    ownership comment it deletes did.
+
+    Worth noting for what it says about the rule: `D2`'s
+    `local-player-in-simulation` cannot catch this. The rule watches
+    `scripts/production/`, and this defect lives in `building_controller.gd` —
+    a zone rule protects the code that has moved, not the code that has not.
   - **`D3`** — unit production per player. `_production_queues` keys on
     player *and* production building instead of building alone; a completed
     unit emerges from that player's primary building (`PrimaryBuildingRegistry`
