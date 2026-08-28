@@ -2435,9 +2435,14 @@ source cites a number you cannot place.
     two-click picker, while `start_chain`, `advance_chain`,
     `place_ready_segment`, `refund_order` and `cancel_chain` are simulation
     that has to exist per player, including the single `_chain` field that
-    cannot represent two players building at once. `D2` records the debt in a
+    cannot represent two players building at once. `D2` recorded the debt in a
     comment at the method itself rather than only here, the way the phase-5
-    ownership comment it deletes did.
+    ownership comment it deletes did; **landed 2026-08-29**, and both comments
+    are gone with it. Reconnaissance widened the slice once: the preview was
+    mutated by every *cell evaluation*, not only by placement, because
+    `_evaluate_cell_availability()` bracketed its verdict in
+    `_placement.begin()` / `.cancel()` — so a remote wall line wiped a local
+    preview without placing anything at all.
 
     Worth noting for what it says about the rule: `D2`'s
     `local-player-in-simulation` cannot catch this. The rule watches
