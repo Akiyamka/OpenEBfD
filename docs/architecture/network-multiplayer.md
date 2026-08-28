@@ -2307,6 +2307,21 @@ source cites a number you cannot place.
   by the time it runs. Caching availability for every player would pay an
   N-times scan to keep answers nobody renders.
 
+  **Reversed 2026-08-28, before `D2` was written, because `D1` removed the
+  premise.** The cost argument above was about a scan running *every frame*;
+  `D1` moved the refresh onto the tick behind the availability tracker's dirty
+  flag, so it now runs when buildings are actually added, lost, captured,
+  completed or upgraded — not on a cadence at all. An N-player scan on those
+  events is not the cost the paragraph above was avoiding. The second reason is
+  correctness and it was missed the first time round:
+  `BuildingController._process_building_order()` re-checks availability on
+  **every tick**, not only at order start, so that an order whose prerequisite
+  is lost gets cancelled. "Recomputed at execution" gives a non-local player no
+  such check, which would make an order behave differently depending on whose
+  it is — the exact class of difference lockstep cannot have. So every player
+  gets a cache, all of them refreshed by `D1`'s tick phase, and only the local
+  player's is rendered.
+
   **Production state lives in a new `ProductionSystem`, not on `PlayerData`.**
   The roster already holds a `PlayerData` per player with its own credits,
   energy and upgrades, so hanging the queues there is one lookup instead of
