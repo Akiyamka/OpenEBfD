@@ -54,6 +54,17 @@ class PhysicsCombatTarget extends StaticBody3D:
 	var alive := true
 	var hit_radius := 0.5
 
+	## Slice R6 migrated CombatTargetAcquisition's candidate distances onto
+	## simulation_position(). This double stands in for a Unit or a Building
+	## there, and neither a Match nor a store exists in these suites, so it
+	## answers the same way Unit.simulation_position() does when there is no
+	## store to ask -- with the node. The third double in this program to need
+	## this; R3 fixed two in tests/navigation and tests/match, R4 one in
+	## tests/units.
+	func simulation_position() -> Vector3:
+		return global_position
+
+
 	func _init(world_position: Vector3, radius := 0.5) -> void:
 		position = world_position
 		hit_radius = radius

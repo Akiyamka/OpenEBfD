@@ -2114,6 +2114,65 @@ source cites a number you cannot place.
   two hatches, `allow_budget` unchanged at 2 — this slice needed none.
 
 
+  **Slice R6, decided 2026-08-28: the combat group, most of which turned out
+  not to be a migration at all.** Ten reads across four files moved onto
+  `simulation_position()` — target acquisition's distance and hull-aim origins,
+  the attack order's turn/pursue/fire offsets, the unit's and the building's
+  aim vectors. Two more files left the queue in the other direction, and that
+  is the substance of the slice rather than a footnote. `combat_turret.gd`'s
+  eight reads are muzzle and pivot transforms, the launch-smoke marker, the
+  model root, a projectile — which by R1's decision has no entity id at all —
+  and one dead fallback. `combat_target.gd`'s single read is that fallback's
+  twin. Both fallbacks reach a `Node3D`'s position only when the object offers
+  neither `combat_aim_position_from()` nor `combat_aim_position()`, and every
+  `Unit` and `Building` offers both, so for a real entity the line never runs.
+  Neither file was migrated because neither has anything to migrate *to*.
+
+  **The two `combat_aim_position()` accessors were migrated although the rule
+  cannot see them**, and that is the point of including them. An entity reading
+  its own `global_position` is a bare read, which R2 deliberately excluded from
+  the rule on the argument that a node reading its own mirror is a smaller
+  question than a system reading someone else's. That argument does not survive
+  a *public accessor whose answer other entities consume*: this is the point
+  every shot in the game is aimed at, laundered through a method the rule is
+  blind to. `Building`'s returned `global_position` and now returns
+  `simulation_position()`; `Unit`'s built its answer from `to_global(...)` and
+  now composes the store position with the same authored centre.
+
+  Both migrations are unguarded, and that is worth stating rather than
+  discovering: reverting `Building.combat_aim_position()` to `global_position`
+  leaves the checker silent, because a bare self-read is exactly what the rule
+  declines to match. The four ordinary migrations in this slice are each caught
+  — verified one file at a time — but these two rest on review alone. Widening
+  the rule to bare reads was measured and rejected at R2, 47 sites in 7 files
+  against 195 qualified ones, and nothing here changes that arithmetic. What
+  changes is knowing the exclusion has a shape, and that public accessors are
+  it.
+
+  **What R6 tried to fix and could not, with the measurement that stopped it.**
+  `Unit.combat_aim_position()` takes `_selection_bounds().get_center()`, the
+  model's authored centre expressed in the unit's own frame — a constant, in
+  principle. On a moving NIABTank it varied by 0.284 world units across 92
+  ticks, and slice B5 had just fixed the same class of leak on the shooter's
+  side. The obvious cause was B4's interpolation offset, which
+  `_selection_bounds()` picks up because it measures the model relative to the
+  unit. Subtracting that offset made the spread *worse*, so the components were
+  measured separately: raw centre 0.210, centre with the offset removed 0.136,
+  the offset itself 0.170, and the terrain tilt 0.00136 radians — negligible.
+  Most of what is left is the model's own animation. Tracks and turret idle
+  move the meshes the bounds are taken from, and the function's original
+  comment says that is the intent: "the converted selection volume follows the
+  visible body". **The aim point has been animation-driven since long before B4
+  added a term to it.** Making it deterministic means deciding what an aim
+  point *is* in the simulation rather than moving a read, which is the same
+  question the muzzle finding above asks and belongs with it in phase 4. The
+  attempt is recorded rather than the fix, because the code read perfectly
+  sensibly and only the number said otherwise.
+
+  After R6 the read rule matches 80 lines in 37 files: 22 permanent files
+  holding 44 reads, and a queue of 14 files holding 34 — units 16, buildings
+  11, match and world 7. Navigation and combat are both gone from it.
+
 - **Phase 4 — determinism gate.** Portable math, RNG split, the static rules
   above wired into `check_architecture.py`, and the CI test that replays one
   command log twice in-process and then compares state hashes across native and

@@ -1885,7 +1885,21 @@ func combat_aim_position() -> Vector3:
 	# below the target, so they can turn in yaw forever without ever satisfying
 	# the pitch tolerance. The converted selection volume follows the visible
 	# body and gives combat a stable centre point after runtime model swaps.
-	return to_global(_selection_bounds().get_center())
+	#
+	# The origin is the store's since slice R6, not the node's: this is the
+	# point every shooter aims at, so it belongs on the simulation's side of
+	# the mirror. The *centre* is deliberately left alone. R6 tried to hold it
+	# still against slice B4's interpolation offset and measured the attempt
+	# instead of trusting it: subtracting that offset cut the centre's spread
+	# on a moving NIABTank from 0.210 world units to 0.136 rather than to
+	# zero, because most of what remains is the model's own animation --
+	# tracks and turret idle move the meshes the bounds are taken from, and
+	# the sentence above says that is the intent. This point has been
+	# animation-driven since long before B4 added a term to it, and making it
+	# deterministic means deciding what an aim point *is* in the simulation
+	# rather than moving a read. Recorded for phase 4 beside the muzzle
+	# finding, which is the same question.
+	return simulation_position() + global_basis * _selection_bounds().get_center()
 
 
 ## Where this unit's weapons measure rules ranges from, asked by

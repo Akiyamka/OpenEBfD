@@ -330,6 +330,17 @@ exempt = [
 	"scripts/combat/authored_fire_controller.gd",
 	"scripts/combat/combat_ground_decal.gd",
 	"scripts/combat/combat_projectile.gd",
+	# Both arrived from the queued group in slice R6, and neither holds a
+	# simulation read of an entity. combat_turret.gd's eight are muzzle and
+	# pivot transforms, the launch-smoke marker, the model root, a projectile
+	# (which by R1's decision has no entity id at all) and one dead fallback;
+	# combat_target.gd's one is the twin of that fallback. Both fallbacks reach
+	# a Node3D only when the object offers neither combat_aim_position_from()
+	# nor combat_aim_position(), which every Unit and Building does -- so for a
+	# real entity the line never runs, and for anything else there is no store
+	# entry it could read instead.
+	"scripts/combat/combat_target.gd",
+	"scripts/combat/combat_turret.gd",
 	"scripts/combat/fx/impact_debris.gd",
 	"scripts/combat/turret/combat_turret_fx.gd",
 	"scripts/match/unit_command_controller.gd",
@@ -365,15 +376,12 @@ exempt = [
 	# R3 took ground steering, R4 the system-and-shared group, R5 flight. Combat
 	# is what is left of the large groups.
 	#
-	# Combat -- 6 files, 19 reads. Target acquisition, aim and the shared
-	# CombatTarget.position_of() helper every shooter routes through, which is
-	# the single highest-leverage line in this half.
-	"scripts/combat/combat_turret.gd",  # 8
-	"scripts/combat/combat_target_acquisition.gd",  # 3
-	"scripts/units/unit_attack_order.gd",  # 3
-	"scripts/units/unit_combat.gd",  # 3
-	"scripts/buildings/building_combat.gd",  # 1
-	"scripts/combat/combat_target.gd",  # 1
+	# Combat -- gone from this half in slice R6. Four files migrated, plus the
+	# two combat_aim_position() accessors this rule never saw at all because an
+	# entity reading its own position is a bare read -- see the R6 paragraph in
+	# the design doc. The remaining two moved up to PERMANENT rather than being
+	# migrated: their reads are of markers, pivots, projectiles and dead
+	# fallbacks, none of which has a store entry to read from.
 	# Buildings -- 5 files, 11 reads. Rally points, refinery docks, footprint
 	# cells and survivor spawns, all derived from a building's own position.
 	"scripts/buildings/building_rally_point.gd",  # 6

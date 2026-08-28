@@ -1212,3 +1212,4 @@ func _test_turret_range_origin_reads_the_store() -> void:
 
 	match_instance.queue_free()
 	await process_frame
+

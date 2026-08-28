@@ -989,7 +989,12 @@ func combat_is_airborne() -> bool:
 
 
 func combat_aim_position() -> Vector3:
-	return global_position
+	# The store, not the node, since slice R6: this is the point every shooter
+	# aims at, so it belongs on the simulation's side of the mirror. Unlike
+	# Unit's, it needs no interpolation correction -- nothing interpolates a
+	# building, which is also why Building answers no combat_range_origin()
+	# (see CombatTurret._range_origin(), slice B5).
+	return simulation_position()
 
 
 ## Spreads incoming fire across the footprint-facing edge instead of making

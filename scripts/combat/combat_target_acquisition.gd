@@ -111,7 +111,11 @@ func target_for(turret, hull_aim: HullAim = HullAim.NONE) -> Variant:
 		var candidate := candidate_node as Node3D
 		if not is_usable(turret, candidate, hull_aim):
 			continue
-		var distance := _shooter.global_position.distance_squared_to(candidate.global_position)
+		# simulation_position(), not global_position, since slice R6: which
+		# target a shooter picks is a simulation decision, so the distances it
+		# is picked by have to come from the store rather than from the node
+		# the view mirrors.
+		var distance: float = _shooter.simulation_position().distance_squared_to(candidate.simulation_position())
 		# Instance id breaks ties so two equidistant candidates resolve the
 		# same way on every shooter, instead of by group iteration order.
 		if distance < best_distance \
@@ -140,7 +144,7 @@ func is_usable(turret, target: Variant, hull_aim: HullAim = HullAim.NONE) -> boo
 	if turret.target_range(candidate) != CombatTurretScript.TargetRange.IN_RANGE:
 		return false
 	var target_world_position := CombatTargetScript.position_of(
-		candidate, _shooter.global_position
+		candidate, _shooter.simulation_position()
 	)
 	if not target_world_position.is_finite():
 		return false
@@ -170,7 +174,7 @@ func hull_allows(turret, target_world_position: Vector3, hull_aim: HullAim) -> b
 static func hull_bears_on(shooter: Node3D, world_position: Vector3) -> bool:
 	if shooter == null or not is_instance_valid(shooter):
 		return false
-	var offset := world_position - shooter.global_position
+	var offset: Vector3 = world_position - shooter.simulation_position()
 	offset.y = 0.0
 	if offset.length_squared() <= 0.000001:
 		return true

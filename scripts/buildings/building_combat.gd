@@ -307,7 +307,9 @@ func _advance_engagement(delta: float) -> void:
 
 
 func _target_position(target: Variant) -> Vector3:
-	return CombatTargetScript.position_of(target, _owner.global_position)
+	# simulation_position(), not global_position, since slice R6: this origin
+	# is what CombatTarget.position_of() measures a hull aim point from.
+	return CombatTargetScript.position_of(target, _owner.simulation_position())
 
 
 func _is_operational() -> bool:

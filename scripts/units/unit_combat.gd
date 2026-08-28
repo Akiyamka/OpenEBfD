@@ -391,7 +391,9 @@ func _advance_attack_order(delta: float) -> void:
 		fixed_hull_aimed = CombatTargetAcquisitionScript.hull_bears_on(
 			_owner, target_world_position
 		) if pursuing else _owner.turn_toward(
-			target_world_position - _owner.global_position, delta
+			# simulation_position(), not global_position, since slice R6: the aim
+			# vector is simulation state, advanced once per tick.
+			target_world_position - _owner.simulation_position(), delta
 		)
 	elif direct_turrets.is_empty():
 		# A limited side turret must not drag the hull away from a target already
@@ -468,7 +470,7 @@ func _hull_aim_source_for(target: Variant, may_turn: bool, delta: float) -> AimS
 	if not target_world_position.is_finite():
 		return AimSource.HULL_TURNING
 	var aimed: bool = _owner.turn_toward(
-		target_world_position - _owner.global_position, delta
+		target_world_position - _owner.simulation_position(), delta
 	) if may_turn else CombatTargetAcquisitionScript.hull_bears_on(
 		_owner, target_world_position
 	)
@@ -896,7 +898,7 @@ func _pursuit_attack_turret(attack_target: Variant):
 
 
 func _combat_target_position(attack_target: Variant) -> Vector3:
-	return CombatTargetScript.position_of(attack_target, _owner.global_position)
+	return CombatTargetScript.position_of(attack_target, _owner.simulation_position())
 
 
 func _combat_target_is_alive(attack_target: Variant) -> bool:

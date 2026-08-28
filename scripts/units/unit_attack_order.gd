@@ -188,7 +188,10 @@ func advance_pursuit(
 	_last_path_position = target_world_position
 	_repath_remaining = ATTACK_REPATH_INTERVAL_SECONDS
 	var pursuit_position := target_world_position
-	var horizontal_offset := target_world_position - _unit.global_position
+	# simulation_position(), not global_position, since slice R6: this offset
+	# decides whether the unit turns, pursues or fires, all of which the tick
+	# acts on.
+	var horizontal_offset: Vector3 = target_world_position - _unit.simulation_position()
 	horizontal_offset.y = 0.0
 	var preferred_range := float(primary_turret.maximum_range_world()) * 0.8 \
 		if primary_turret != null else 0.0
@@ -242,7 +245,7 @@ func advance_pursuit(
 		# The requested perch landed on disconnected terrain (commonly the red
 		# face or the separately connected top of a cliff). Back it toward the
 		# unit until the navigation grid accepts a firing position on this side.
-		pursuit_position = _unit.global_position.lerp(_pursuit_destination, 0.5)
+		pursuit_position = _unit.simulation_position().lerp(_pursuit_destination, 0.5)
 	_pursuit_destination = pursuit_position
 	var move_issued: bool = _unit.issue_attack_move(pursuit_position)
 	_pursuit_rejected = not move_issued
@@ -263,7 +266,7 @@ func _line_of_fire_probe(primary_turret, avoid_friendly_lines := false) -> Calla
 	if primary_turret == null or attack_target == null:
 		return Callable()
 	var muzzle_origin: Vector3 = primary_turret.muzzle_origin()
-	var muzzle_height := maxf(muzzle_origin.y - _unit.global_position.y, 0.0) \
+	var muzzle_height := maxf(muzzle_origin.y - _unit.simulation_position().y, 0.0) \
 		if muzzle_origin.is_finite() else 0.0
 	var unit := _unit
 	return func(candidate: Vector3) -> bool:
