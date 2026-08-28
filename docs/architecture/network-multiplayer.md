@@ -2294,7 +2294,7 @@ source cites a number you cannot place.
   30 input-and-view sites as its permanent one. The alternative was slices and
   tests alone, which is one slice cheaper and leaves "is the track closed" a
   judgement rather than a measurement — the same trade the read rule already
-  settled once. The queue is also the reviewable unit: `D3` through `D6` each
+  settled once. The queue is also the reviewable unit: `D2` through `D5` each
   empty a named part of it, and the track closes when it is empty.
 
   **Availability for a non-local player is recomputed at execution, not cached
@@ -2353,22 +2353,27 @@ source cites a number you cannot place.
     building's own change signals. Removals and changes to already-tracked
     buildings dirty synchronously, so those are frame-independent after `D1`;
     additions are not. That deferral is `E2a`'s, not `D1`'s.
-  - **`D2`** — `ProductionSystem` and the rule. A `PlayerProduction` per
-    player (build queue, unit queues, upgrade queue) keyed by player id, ticked
-    by Match in the fixed order the sibling controllers already run in, plus
-    `local-player-in-simulation` with its 17-site queue.
-  - **`D3`** — a build order spends the ordering player's credits and hands
-    the finished building to them. `execute_build_order_command()` selects the
-    queue by `command.player_id`. The slice is only done when a test drives
-    player 2 end to end — order, tick to completion, place — and asserts
-    player 1's credits were untouched.
-  - **`D4`** — unit production per player. `_production_queues` keys on
+  - **`D2`** — `ProductionSystem`, the rule, and the build queue made
+    per-player in one move. A `PlayerProduction` per player keyed by player id,
+    ticked by Match in the fixed order the sibling controllers already run in;
+    `local-player-in-simulation` with its 17-site queued group; and
+    `execute_build_order_command()` selecting the queue by `command.player_id`
+    rather than taking the only one there is. **Merged from what were two
+    slices, and the merge is the point.** Introducing the container with the
+    local player as its sole inhabitant would have created a per-player map
+    with one entry and no second reader for a whole slice, which is the shape
+    that makes state look tested when it is not. The slice is done when a test
+    drives player 2 end to end — order, tick to completion, place — and asserts
+    player 1's credits were untouched. It is R2's proven shape: the mechanism,
+    the rule that queues the debt, and one real migration to prove the
+    mechanism works.
+  - **`D3`** — unit production per player. `_production_queues` keys on
     player *and* production building instead of building alone; a completed
     unit emerges from that player's primary building (`PrimaryBuildingRegistry`
     is already keyed per player) and the population cap counts that player's
     units, which `_owned_unit_count(player_id)` already does.
-  - **`D5`** — upgrades per player, the same move for `UpgradeQueue`.
-  - **`D6`** — option state becomes per-player data rendered for the local
+  - **`D4`** — upgrades per player, the same move for `UpgradeQueue`.
+  - **`D5`** — option state becomes per-player data rendered for the local
     player only, and the rule's queue empties.
   - **`E1`** — a tick-driver seam. Match takes a driver rather than owning
     `FrameTickDriver`; a burst driver returns a fixed budget with no wall
@@ -2524,7 +2529,7 @@ already play before it is trusted by the mode we cannot yet test.
   data, rendered only for the local one), and input handling (local only). That
   separation is phase 3's work — the same move that takes state out of the view
   objects — and `player_id` selecting a queue falls out of it afterwards.
-  **Sliced 2026-08-28 as track `D`** (`D1` through `D6`, in the tracks D and E
+  **Sliced 2026-08-28 as track `D`** (`D1` through `D5`, in the tracks D and E
   entry under phase 3): the three roles separate in that order, `D1` first
   because the availability verdict this argument depends on turned out to be
   refreshed on frame time and read on the tick, which is a second defect living
