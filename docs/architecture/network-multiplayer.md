@@ -2328,11 +2328,31 @@ source cites a number you cannot place.
 
   The slices, in order:
 
-  - **`D1`** — availability answers on the tick, not on the frame. Both
-    controllers move their refresh onto `advance_tick()`, so nothing the
-    simulation reads is a function of how many frames happened to run. No
-    per-player work; the sidebar's update can shift by up to one tick, which
-    is the only behaviour this slice changes.
+  - **`D1`** — availability answers on the tick, not on the frame. One refresh
+    phase in `Match._advance_simulation_tick()`, placed immediately after
+    `_admission_queue.apply_pending_entries()` and before the command drain,
+    replacing the two controllers' `process(delta)` refreshes. The position is
+    the point and was corrected twice under review before any of it was
+    written: putting it at the top of each controller's `advance_tick()` would
+    have missed the command-execution readers entirely, because
+    `_advance_simulation_tick()` drains and executes commands *before* it
+    reaches the controllers; and putting it at each `execute_*` entry point
+    instead would have made a verdict depend on command order within one tick,
+    letting a building created by an earlier command count while the
+    simulation had not admitted it — against C6c's own rule. After admission
+    and before the drain, every reader in the tick sees one settled snapshot.
+    No per-player work; the sidebar's update can shift by up to one tick,
+    which is the only behaviour this slice changes.
+
+    What `D1` does **not** deliver, measured rather than assumed: a
+    *newly added* building still needs an engine frame before it affects
+    availability at all. `Building` joins `"buildings"` in `_ready()`, while
+    `SceneTree.node_added` fires during `_enter_tree()`, so
+    `BuildingAvailabilityTracker._on_node_added()` defers its `_track()` — and
+    `_track()` is the only place that marks the cache dirty and connects the
+    building's own change signals. Removals and changes to already-tracked
+    buildings dirty synchronously, so those are frame-independent after `D1`;
+    additions are not. That deferral is `E2a`'s, not `D1`'s.
   - **`D2`** — `ProductionSystem` and the rule. A `PlayerProduction` per
     player (build queue, unit queues, upgrade queue) keyed by player id, ticked
     by Match in the fixed order the sibling controllers already run in, plus
@@ -2360,6 +2380,15 @@ source cites a number you cannot place.
     (`tests/match/demo_boot_run.gd:131`). `MatchClock`'s own class comment
     already names the second driver phase 5 will bring, so the seam is owed
     twice over.
+  - **`E2a`** — the frameless sweep. Nine `call_deferred` / `set_deferred`
+    sites in `scripts/` each hold work that only runs at end of engine frame,
+    which in a loop that runs ticks without frames is never.
+    `BuildingAvailabilityTracker`'s deferred `_track()` is the one `D1` turned
+    up and left; the slice's job is to find what the other eight do to a
+    frameless run and give each one a tick-time answer or a documented reason
+    it does not need one. It sits before `E2` because `E2`'s test is what
+    proves the sweep worked, and a slice whose product is a fix wants its
+    reader waiting for it rather than the other way round.
   - **`E2`** — a state hash on `SimEntityState`, and the test that makes the
     track falsifiable: N ticks with no frames must hash identically to N ticks
     interleaved with frames. This is the acceptance test for `E` and phase 4's
