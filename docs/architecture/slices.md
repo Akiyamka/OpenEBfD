@@ -1,8 +1,10 @@
 # Phase 3 slice index
 
 Phase 3 was built as numbered slices — `A1a`, `B3d`, `C6b`, `R2b` — and that
-numbering is load-bearing in the source: 178 comments across `scripts/`,
-`tests/` and `tools/` justify themselves by naming a slice. This file is the
+numbering is load-bearing in the source: 230 comments across `scripts/`,
+`tests/` and `tools/` justify themselves by naming a slice — 178 when this
+file was written three slices ago, which is the rate the rule below has to
+keep up with. This file is the
 lookup those comments assume exists. A reader who hits "since slice C5" in
 `scripts/units/unit.gd` comes here to find the commit that did it.
 
