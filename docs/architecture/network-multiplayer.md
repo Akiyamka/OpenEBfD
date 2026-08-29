@@ -2553,8 +2553,32 @@ source cites a number you cannot place.
     the checker validates that a rule has a violating fixture, but nothing
     validates that an exempt path still names a file that exists; a stale
     exemption would sit there silently protecting nothing.
-  - **`D6`** — option state becomes per-player data rendered for the local
-    player only, closing the three local id lists `Match` fills from
+  - **`D6`** — **landed 2026-08-30, and not what this bullet said.** The plan
+    called for option state to become per-player data. That was wrong: option
+    state is what the sidebar draws, so computing it for every player would be
+    state whose only reader renders one of them — the defect `D3` was sent back
+    for and the reason `D4a` was cancelled. What was actually broken sat one
+    level below: the per-player availability caches looped the **local**
+    player's id list, so a remote verdict was bounded by whose sidebar happened
+    to be drawn.
+
+    Measured before writing the brief, only two of the four lists were ever
+    house-bound. `producible_unit_ids()` walks the whole manifest with no house
+    filter and says why in its own comment — every producible unit stays a
+    candidate and `TechnologyTree` hides the rest, so a captured Great-House
+    building can expose its roster. The unit roster therefore had no
+    divergence at all, and the comment `D3` left claiming otherwise described a
+    hole that did not exist; `D6` corrected it. Buildings and upgrades adopted
+    the same rule through `production_candidate_ids()`.
+
+    The slice also closed the two debts recorded against it: building progress
+    moved onto an explicit `build_queue_progressed(player_id)` signal and the
+    resources handler stopped refreshing option state, and the doubled word in
+    six upgrade messages was fixed — `D4` had preserved it so its own status
+    audit could stay verbatim.
+
+    Superseded plan text, for the record: option state per-player, closing the
+    three local id lists `Match` fills from
     `_local_player_*` (`match.gd:186-190`) and the two debts recorded earlier
     against this work while it still carried the id `D5`: the building progress
     bar's wallet coupling, and the doubled "upgrade upgrade" text in five
