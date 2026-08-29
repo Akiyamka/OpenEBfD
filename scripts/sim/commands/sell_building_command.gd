@@ -3,7 +3,7 @@ extends SimCommand
 
 ## "Sell": left-click in sell mode on one of the player's own buildings,
 ## refunding it and starting its sale/demolition sequence
-## (BuildingSaleService, scripts/buildings/building_sale_service.gd). Named
+## (BuildingSaleService, scripts/production/building_sale_service.gd). Named
 ## by stable entity id (scripts/sim/entity_registry.gd) rather than by Node,
 ## since sim-zone code may never hold a Node reference -- see
 ## docs/architecture/network-multiplayer.md, decision 3, and the
@@ -27,7 +27,8 @@ extends SimCommand
 ## (scripts/buildings/building_controller.gd), reached through
 ## CommandExecutor.execute()'s dispatch (scripts/match/command_executor.gd)
 ## on the tick the bus schedules it for. Every verdict -- is a sale already
-## in progress, does this building belong to the local player -- is
+## in progress for this command's player, does this building belong to that
+## player -- is
 ## deliberately absent from this struct and recomputed at execution time
 ## against the world as it stands then, not the world as it stood at the
 ## click: a check run at click time would let two clients reach different

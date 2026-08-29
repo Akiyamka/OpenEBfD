@@ -525,14 +525,14 @@ func _execute_sell_building(command: SimSellBuildingCommand) -> Dictionary:
 	var node := _entities.node_for(command.entity_id)
 	if node == null:
 		return {}
-	_building_controller.execute_sell_building_command(node)
+	_building_controller.execute_sell_building_command(node, command.player_id)
 	return {}
 
 
 ## The repair-toggle counterpart to _execute_sell_building() above -- same
 ## dead-id handling, same reason a resolved Node crosses into
-## BuildingController rather than a bare id. Which direction the toggle goes
-## is not this method's concern: BuildingController.
+## BuildingController rather than a bare id. The command player travels with
+## that Node; only the toggle direction remains BuildingController's concern.
 ## execute_repair_building_command() reads is_repairing off `node` itself,
 ## on this tick, per SimRepairBuildingCommand's doc comment.
 func _execute_repair_building(command: SimRepairBuildingCommand) -> Dictionary:
@@ -541,5 +541,5 @@ func _execute_repair_building(command: SimRepairBuildingCommand) -> Dictionary:
 	var node := _entities.node_for(command.entity_id)
 	if node == null:
 		return {}
-	_building_controller.execute_repair_building_command(node)
+	_building_controller.execute_repair_building_command(node, command.player_id)
 	return {}

@@ -60,6 +60,7 @@ readonly SUITES=(
 	tests/match/admission_run.gd
 	tests/match/interpolation_run.gd
 	tests/match/command_bus_wiring_run.gd tests/maps/run.gd
+	tests/match/building_command_ownership_run.gd
 	tests/navigation/run.gd
 	tests/navigation/store_reads_run.gd
 	tests/net/loopback_run.gd

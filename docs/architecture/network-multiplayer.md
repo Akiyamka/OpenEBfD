@@ -90,7 +90,7 @@ Today three tick domains coexist and all of them advance from frame `delta`:
   turrets, linger effects);
 - `scripts/buildings/production_queue.gd` — `BUILD_TICKS_PER_SECOND := 60.0`
   (production and upgrade queues);
-- `scripts/buildings/building_repair_service.gd` —
+- `scripts/production/building_repair_service.gd` —
   `RULE_TICKS_PER_SECOND := 25.0`;
 - `scripts/combat/ballistics.gd:15` documents that it deliberately uses a rate
   of its own.
@@ -963,7 +963,8 @@ source cites a number you cannot place.
   at one point instead of wherever the killing blow landed.
 
   Every despawn of an id-carrying entity routes through this, not just the
-  two death sequences: `BuildingSaleService._finish()` and the two
+  two death sequences: `BuildingSaleService._finish()` (in
+  `scripts/production/building_sale_service.gd`) and the two
   `UnitDeploymentController` conversions (MCV to construction yard and back)
   free a `Unit` or a `Building` too, and leaving them on the old path would
   recreate the "one concept, several mechanisms" problem this slice exists to

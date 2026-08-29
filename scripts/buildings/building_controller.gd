@@ -3,6 +3,7 @@ extends Node3D
 
 const AutoloadLookupScript := preload("res://scripts/players/autoload_lookup.gd")
 const TerrainProbeScript := preload("res://scripts/world/terrain_probe.gd")
+const EntityQueryScript := preload("res://scripts/world/entity_query.gd")
 const AuthoredModelScript := preload("res://scripts/world/authored_model.gd")
 const RuleTicksScript := preload("res://scripts/rules/rule_ticks.gd")
 const SimBuildOrderCommandScript := preload("res://scripts/sim/commands/build_order_command.gd")
@@ -32,9 +33,9 @@ const WallChainScript := preload("res://scripts/buildings/wall_chain.gd")
 const DoubleClickTrackerScript := preload("res://scripts/buildings/double_click_tracker.gd")
 const CursorManagerScript := preload("res://scripts/ui/cursor_manager.gd")
 const GameSettingsCatalogScript := preload("res://scripts/rules/game_settings_catalog.gd")
-const BuildingRepairServiceScript := preload("res://scripts/buildings/building_repair_service.gd")
+const BuildingRepairServiceScript := preload("res://scripts/production/building_repair_service.gd")
 const PlacementPointerGestureScript := preload("res://scripts/buildings/placement_pointer_gesture.gd")
-const BuildingSaleServiceScript := preload("res://scripts/buildings/building_sale_service.gd")
+const BuildingSaleServiceScript := preload("res://scripts/production/building_sale_service.gd")
 const BuildingCatalogViewScript := preload("res://scripts/buildings/building_catalog_view.gd")
 const WallLineSessionScript := preload("res://scripts/buildings/wall_line_session.gd")
 const BuildingAvailabilityTrackerScript := preload(
@@ -226,6 +227,7 @@ func setup(
 		Callable(self, "_building_display_name"),
 		Callable(self, "_building_scene_path")
 	)
+	_repair_service.configure(_players())
 	if not _production_system.build_order_ready.is_connected(_on_production_build_order_ready):
 		_production_system.build_order_ready.connect(_on_production_build_order_ready)
 	if not _production_system.build_order_canceled.is_connected(_on_production_build_order_canceled):
@@ -886,20 +888,25 @@ func _submit_repair_building_command(building: Node3D) -> void:
 ## is_repairing is now necessarily read here, at execution time, rather than
 ## at the click: two clicks landing on the same tick then toggle twice, which
 ## is what the player actually did.
-func execute_repair_building_command(building: Node3D) -> void:
-	if not _is_local_player_building(building):
-		status_changed.emit("You can only repair your own buildings")
+func execute_repair_building_command(building: Node3D, player_id: int) -> void:
+	var is_local_command := player_id == _local_player_id()
+	if not _is_player_building(building, player_id):
+		if is_local_command:
+			status_changed.emit("You can only repair your own buildings")
 		return
 	if not &"health" in building or not &"max_health" in building or float(building.get("health")) >= float(building.get("max_health")):
-		status_changed.emit("Only damaged buildings can be repaired")
+		if is_local_command:
+			status_changed.emit("Only damaged buildings can be repaired")
 		return
 	var repairing := bool(building.get("is_repairing")) if &"is_repairing" in building else false
 	if repairing:
 		_set_building_repairing(building, false)
-		status_changed.emit("%s repair canceled" % _building_name(building))
+		if is_local_command:
+			status_changed.emit("%s repair canceled" % _building_name(building))
 		return
 	_set_building_repairing(building, true)
-	status_changed.emit("%s repair started" % _building_name(building))
+	if is_local_command:
+		status_changed.emit("%s repair started" % _building_name(building))
 
 
 func _process_repairs() -> void:
@@ -911,9 +918,7 @@ func _process_repairs() -> void:
 	# is a simulation write, so this must walk the same population the tick
 	# itself simulates, not everything the view layer can currently see.
 	buildings.assign(get_tree().get_nodes_in_group("sim_buildings"))
-	_repair_service.advance_tick(
-		buildings, repair_health, _local_player(), Callable(self, "_config_of")
-	)
+	_repair_service.advance_tick(buildings, repair_health, Callable(self, "_config_of"))
 
 
 func _set_building_repairing(building: Node3D, active: bool) -> void:
@@ -1022,22 +1027,29 @@ func _submit_sell_building_command(building: Node3D) -> void:
 ## resolved from the SimSellBuildingCommand it just drained, on the tick the
 ## bus scheduled it for. This is the entire remaining body of what used to be
 ## _try_sell_building() before the command bus existed, unchanged.
-func execute_sell_building_command(building: Node3D) -> void:
-	if _sale_service.is_active():
+func execute_sell_building_command(building: Node3D, player_id: int) -> void:
+	var is_local_command := player_id == _local_player_id()
+	if _sale_service.is_active(player_id):
 		return
 
-	if not _is_local_player_building(building):
-		status_changed.emit("You can only sell your own buildings")
+	if not _is_player_building(building, player_id):
+		if is_local_command:
+			status_changed.emit("You can only sell your own buildings")
 		return
 
-	_set_sell_mode(false)
+	if is_local_command:
+		_set_sell_mode(false)
 	# Technology and production only count completed buildings. A selling
 	# building remains visible until its transition finishes, but must stop
 	# satisfying prerequisites the instant its sale begins.
 	if building.has_method("begin_construction"):
 		building.call("begin_construction")
-	_refresh_building_option_states()
-	_sale_service.start(building, _local_player(), _config_of(building))
+	if is_local_command:
+		_refresh_building_option_states()
+	var players = _players()
+	var player = players.player(player_id) if players != null else null
+	if player != null:
+		_sale_service.start(building, player_id, player, _config_of(building))
 
 
 func _update_mode_cursor() -> void:
@@ -1084,6 +1096,12 @@ func _is_local_player_building(building: Node3D) -> bool:
 	)
 
 
+## Command execution decides ownership from the player in that command. The
+## local-player predicate above remains for input-side cursors and selection.
+func _is_player_building(building: Node3D, player_id: int) -> bool:
+	return building != null and EntityQueryScript.is_owned_by(building, player_id)
+
+
 func _can_repair_building(building: Node3D) -> bool:
 	return _is_local_player_building(building) \
 		and &"health" in building \
@@ -1095,7 +1113,9 @@ func _cursor_manager() -> Variant:
 	return AutoloadLookupScript.cursors(self)
 
 
-func _on_building_sale_completed(display_name: String, refund: int) -> void:
+func _on_building_sale_completed(player_id: int, display_name: String, refund: int) -> void:
+	if player_id != _local_player_id():
+		return
 	status_changed.emit("%s sold; refunded %d" % [display_name, refund])
 
 
@@ -1223,25 +1243,6 @@ func _on_building_queue_ready(order: BuildingOrder) -> void:
 	_refresh_building_option_states()
 
 
-func _cancel_building_order() -> void:
-	var order := _building_queue.current_order()
-	if order == null:
-		return
-
-	var display_name := String(order.display_name)
-	var refunded := _building_queue.cancel()
-	var player = _local_player()
-	if player != null and refunded > 0:
-		player.add_money(refunded)
-
-	_building_placement.cancel()
-	# The wall chain only auto-orders a later buildable cell after the current
-	# one finishes (blocked cells in between are skipped), so cancelling the
-	# in-flight order is enough to stop the whole chain.
-	_production_system.cancel_wall_chain(_local_player_id())
-	_wall_session.clear_markers()
-	status_changed.emit("%s canceled; refunded %d" % [display_name, refunded])
-	_refresh_building_option_states()
 
 
 func _begin_ready_building_placement() -> void:

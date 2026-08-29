@@ -600,7 +600,7 @@ func _test_fixed_wall_marker_lifecycle(token: int) -> int:
 		"a completed segment must remove only its own fixed marker"
 	)
 
-	controller._cancel_building_order()
+	controller._production_system.cancel_wall_chain(1)
 	_expect(
 		controller._wall_session.markers().is_empty(),
 		"canceling wall construction must remove all remaining fixed markers"
@@ -765,7 +765,7 @@ func _test_sell_click_defers_to_the_tick(token: int, local_player: PlayerData) -
 
 	controller._try_sell_building(Vector2.ZERO)
 	_expect(
-		not controller._sale_service.is_active(),
+		not controller._sale_service.is_active(local_player.player_id),
 		"a sell click must not start the sale before its command executes"
 	)
 	_expect(
@@ -774,7 +774,7 @@ func _test_sell_click_defers_to_the_tick(token: int, local_player: PlayerData) -
 	)
 	pump.pump()
 	_expect(
-		controller._sale_service.is_active(),
+		controller._sale_service.is_active(local_player.player_id),
 		"a sell click must start the sale once its command executes"
 	)
 
@@ -1741,7 +1741,7 @@ func _test_wall_chain_owner_comes_from_roster(token: int, local_player: PlayerDa
 				controller._wall_chain.owner_player_id
 			]
 		)
-	controller._cancel_building_order()
+	controller._production_system.cancel_wall_chain(local_player.player_id)
 	controller.free()
 	return token
 

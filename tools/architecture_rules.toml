@@ -59,7 +59,7 @@ non-portable math. See docs/architecture/network-multiplayer.md.
 include = ["scripts/sim/**/*.gd"]
 
 [zones.production]
-description = "Per-player production simulation modules."
+description = "Per-player simulation modules, including production, repairs and sales."
 include = ["scripts/production/**/*.gd"]
 
 
@@ -146,7 +146,7 @@ exempt = [
 	# Suspected, unaudited -- each gates something a command can observe:
 	"scripts/units/unit_combat.gd",
 	"scripts/units/unit_deploy_state.gd",
-	"scripts/buildings/building_sale_service.gd",
+	"scripts/production/building_sale_service.gd",
 	# The dispatcher, not a decision of its own: it routes to the handlers
 	# above and must survive them, so it is cleared only when they all are.
 	"scripts/units/unit.gd",
