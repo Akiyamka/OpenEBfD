@@ -165,7 +165,7 @@ func advance_tick() -> void:
 			build_order_canceled.emit(player_id, order, refunded)
 			continue
 		# Building option progress currently refreshes indirectly through
-		# PlayerData.resources_changed(); D5 should replace that wallet coupling
+		# PlayerData.resources_changed(); D6 should replace that wallet coupling
 		# with explicit player-keyed progress state, like UnitProductionSystem.
 		queue.advance_tick(player.money, Callable(player, &"spend_money"))
 

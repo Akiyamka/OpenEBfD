@@ -23,7 +23,7 @@ signal status_changed(status: String)
 signal upgrade_option_state_changed(option_state: BuildingOptionState)
 
 var _building_configs: Dictionary = {}
-## D5: this remains the local sidebar's upgrade list. Remote players may use
+## D6: this remains the local sidebar's upgrade list. Remote players may use
 ## other house-specific ids, but the input panel deliberately renders only it.
 var _upgrade_option_ids: Array[StringName] = []
 var _upgrade_availability: Dictionary = {}

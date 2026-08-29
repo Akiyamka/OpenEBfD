@@ -2470,7 +2470,7 @@ source cites a number you cannot place.
     emits `resources_changed`, which `BuildingController` turns back into an
     option-state refresh. That side channel is undeclared, untested, and silent
     for a `cost <= 0` order. It is named in a comment at
-    `ProductionSystem.advance_tick()` and is `D5`'s to remove.
+    `ProductionSystem.advance_tick()` and is `D6`'s to remove.
 
     Also worth recording: the running local-player inventory stops being
     comparable here. `_local_player()` in the roster became `_sidebar_player()`,
@@ -2529,7 +2529,7 @@ source cites a number you cannot place.
     one.
 
     Without the gate the dock signal has no reader, so the slice collapses
-    rather than shrinks. `D5` revisits this area with the per-player option-state
+    rather than shrinks. `D6` revisits this area with the per-player option-state
     design in hand and can decide then; the group mismatch above is the fact it
     will need.
   - **`D5`** — repairs and sales per player, the last live divergence in the
@@ -2547,9 +2547,10 @@ source cites a number you cannot place.
     this diverges the tick and option state cannot.
   - **`D6`** — option state becomes per-player data rendered for the local
     player only, closing the three local id lists `Match` fills from
-    `_local_player_*` (`match.gd:186-190`) and the two debts recorded against
-    `D5` earlier: the building progress bar's wallet coupling, and the doubled
-    "upgrade upgrade" text in five messages.
+    `_local_player_*` (`match.gd:186-190`) and the two debts recorded earlier
+    against this work while it still carried the id `D5`: the building progress
+    bar's wallet coupling, and the doubled "upgrade upgrade" text in five
+    messages.
   - **`E1`** — a tick-driver seam. Match takes a driver rather than owning
     `FrameTickDriver`; a burst driver returns a fixed budget with no wall
     clock and no `MAX_TICKS_PER_FRAME` clamp to apply. This seam is already
@@ -2704,7 +2705,7 @@ already play before it is trusted by the mode we cannot yet test.
   data, rendered only for the local one), and input handling (local only). That
   separation is phase 3's work — the same move that takes state out of the view
   objects — and `player_id` selecting a queue falls out of it afterwards.
-  **Sliced 2026-08-28 as track `D`** (`D1` through `D5`, in the tracks D and E
+  **Sliced 2026-08-28 as track `D`** (`D1` through `D6`, in the tracks D and E
   entry under phase 3): the three roles separate in that order, `D1` first
   because the availability verdict this argument depends on turned out to be
   refreshed on frame time and read on the tick, which is a second defect living
