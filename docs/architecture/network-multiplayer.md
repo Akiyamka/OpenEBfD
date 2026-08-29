@@ -2532,8 +2532,24 @@ source cites a number you cannot place.
     rather than shrinks. `D5` revisits this area with the per-player option-state
     design in hand and can decide then; the group mismatch above is the fact it
     will need.
-  - **`D5`** — option state becomes per-player data rendered for the local
-    player only, and the rule's queue empties.
+  - **`D5`** — repairs and sales per player, the last live divergence in the
+    track. `D2`'s report listed repairs, sales, unit production and upgrades as
+    deferred; `D3` and `D4` took the last two and these were never assigned a
+    slice. Measured 2026-08-29: `_process_repairs()` charges `_local_player()`
+    **every tick**, so each client repairs a different player's buildings;
+    `execute_sell_building_command()` and `execute_repair_building_command()`
+    refuse a non-local player outright through `_is_local_player_building()`;
+    and `CommandExecutor._execute_sell_building()` / `_execute_repair_building()`
+    resolve the entity and drop `command.player_id` on the floor, which is why
+    the controller entry points have no player parameter at all.
+    `BuildingSaleService` is additionally a single match-wide state machine, so
+    one player selling blocks every other. Ordered ahead of option state because
+    this diverges the tick and option state cannot.
+  - **`D6`** — option state becomes per-player data rendered for the local
+    player only, closing the three local id lists `Match` fills from
+    `_local_player_*` (`match.gd:186-190`) and the two debts recorded against
+    `D5` earlier: the building progress bar's wallet coupling, and the doubled
+    "upgrade upgrade" text in five messages.
   - **`E1`** — a tick-driver seam. Match takes a driver rather than owning
     `FrameTickDriver`; a burst driver returns a fixed budget with no wall
     clock and no `MAX_TICKS_PER_FRAME` clamp to apply. This seam is already
