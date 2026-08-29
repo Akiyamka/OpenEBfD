@@ -1904,9 +1904,10 @@ func _test_unit_roster_availability() -> void:
 		"ATKindjal must retain its slot behind an unupgraded Barracks"
 	)
 	var roster = match_instance.get_node("UnitRosterController") as UnitRosterController
+	var unit_production = match_instance.get_node("UnitProductionSystem") as UnitProductionSystem
 	roster.handle_unit_intent(&"ATInfantry", MOUSE_BUTTON_LEFT)
 	_expect(
-		roster._unit_queue_size(&"ATBarracks") == 0,
+		unit_production.unit_queue_size_for_player(1, &"ATBarracks") == 0,
 		"a unit intent must not add to the queue before its command executes"
 	)
 	# handle_unit_intent() now only submits a SimUnitOrderCommand; the
@@ -1917,7 +1918,7 @@ func _test_unit_roster_availability() -> void:
 	# command-bus suite pumps a tick, instead of waiting on real frame time.
 	match_instance._advance_simulation_tick()
 	_expect(
-		roster._unit_queue_size(&"ATBarracks") == 0,
+		unit_production.unit_queue_size_for_player(1, &"ATBarracks") == 0,
 		"a unit intent's command must not bypass an unfinished production building once it executes"
 	)
 
@@ -2056,13 +2057,14 @@ func _test_unit_production_rally_and_primary() -> void:
 	players.designate_primary_building(primary_barracks, 1, "ATBarracks")
 
 	var roster = match_instance.get_node("UnitRosterController") as UnitRosterController
+	var unit_production = match_instance.get_node("UnitProductionSystem") as UnitProductionSystem
 	var units := match_instance.get_node("Units") as Node3D
 	var units_before := units.get_children().duplicate()
 	roster.handle_unit_intent(&"ATInfantry", MOUSE_BUTTON_LEFT)
 	roster.handle_unit_intent(&"ATInfantry", MOUSE_BUTTON_LEFT, 10)
 	roster.handle_unit_intent(&"ATInfantry", MOUSE_BUTTON_LEFT)
 	_expect(
-		roster._unit_queue_size(&"ATBarracks") == 0,
+		unit_production.unit_queue_size_for_player(1, &"ATBarracks") == 0,
 		"a burst of unit intents must not add to the queue before their commands execute"
 	)
 	# handle_unit_intent() now only submits a SimUnitOrderCommand per click;
@@ -2072,10 +2074,10 @@ func _test_unit_production_rally_and_primary() -> void:
 	# click gets its own pump the same way.
 	match_instance._advance_simulation_tick()
 	_expect(
-		roster._unit_queue_size(&"ATBarracks") == 12,
+		unit_production.unit_queue_size_for_player(1, &"ATBarracks") == 12,
 		"left click must add units, while shift+left click adds ten more, once their commands execute"
 	)
-	var infantry_queue: BuildingQueue = roster._production_queues.get(&"ATBarracks")
+	var infantry_queue: BuildingQueue = unit_production.unit_queue_for_player(1, &"ATBarracks")
 	roster.handle_unit_intent(&"ATInfantry", MOUSE_BUTTON_RIGHT)
 	_expect(
 		infantry_queue != null and not infantry_queue.current_order().manually_paused,
@@ -2090,7 +2092,7 @@ func _test_unit_production_rally_and_primary() -> void:
 	# MatchClock.SECONDS_PER_TICK period per call. 2 simulated seconds is
 	# roundi(2.0 / SECONDS_PER_TICK) ticks at the fixed 25 Hz rate.
 	for _i in roundi(2.0 / MatchClockScript.SECONDS_PER_TICK):
-		roster.advance_tick()
+		unit_production.advance_tick()
 	_expect(
 		units.get_children().size() == units_before.size(),
 		"a paused unit order must not complete"
@@ -2098,24 +2100,24 @@ func _test_unit_production_rally_and_primary() -> void:
 	roster.handle_unit_intent(&"ATInfantry", MOUSE_BUTTON_RIGHT)
 	match_instance._advance_simulation_tick()
 	_expect(
-		roster._unit_queue_size(&"ATBarracks") == 11 and infantry_queue.current_order().manually_paused,
+		unit_production.unit_queue_size_for_player(1, &"ATBarracks") == 11 and infantry_queue.current_order().manually_paused,
 		"a second right click must remove one queued unit without resuming production"
 	)
 	roster.handle_unit_intent(&"ATInfantry", MOUSE_BUTTON_RIGHT, 10)
 	match_instance._advance_simulation_tick()
 	_expect(
-		roster._unit_queue_size(&"ATBarracks") == 1 and infantry_queue.current_order().manually_paused,
+		unit_production.unit_queue_size_for_player(1, &"ATBarracks") == 1 and infantry_queue.current_order().manually_paused,
 		"shift+right click must remove ten queued units without resuming production"
 	)
 	roster.handle_unit_intent(&"ATInfantry", MOUSE_BUTTON_LEFT)
 	match_instance._advance_simulation_tick()
 	_expect(
-		roster._unit_queue_size(&"ATBarracks") == 1 and not infantry_queue.current_order().manually_paused,
+		unit_production.unit_queue_size_for_player(1, &"ATBarracks") == 1 and not infantry_queue.current_order().manually_paused,
 		"left click on a paused unit order must resume it without adding another unit"
 	)
 	# Same 2-second-to-ticks conversion as above.
 	for _i in roundi(2.0 / MatchClockScript.SECONDS_PER_TICK):
-		roster.advance_tick()
+		unit_production.advance_tick()
 
 	var produced: Unit
 	for candidate in units.get_children():
@@ -2192,7 +2194,7 @@ func _test_unit_production_rally_and_primary() -> void:
 	roster.handle_unit_intent(&"ATInfantry", MOUSE_BUTTON_RIGHT, 10)
 	match_instance._advance_simulation_tick()
 	_expect(
-		roster._unit_queue_size(&"ATBarracks") == 0,
+		unit_production.unit_queue_size_for_player(1, &"ATBarracks") == 0,
 		"shift+right click must not reduce the unit queue below zero"
 	)
 
@@ -2222,10 +2224,9 @@ func _test_shared_unit_native_producer() -> void:
 	atreides_factory.set_owner_player_id(1)
 	await process_frame
 
-	var roster = match_instance.get_node("UnitRosterController") as UnitRosterController
-	var harvester_definition: Resource = roster._unit_scene_catalog.definition_for(&"Harvester")
+	var unit_production = match_instance.get_node("UnitProductionSystem") as UnitProductionSystem
 	_expect(
-		roster._production_building_id(harvester_definition) == &"ATFactory",
+		unit_production.production_building_id_for(1, &"Harvester") == &"ATFactory",
 		"an Atreides player must prefer ATFactory over an owned captured HKFactory"
 	)
 

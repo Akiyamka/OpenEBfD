@@ -3,6 +3,7 @@ extends Node3D
 const PlayerDataScript := preload("res://scripts/players/player_data.gd")
 const BuildingControllerScript := preload("res://scripts/buildings/building_controller.gd")
 const ProductionSystemScript := preload("res://scripts/production/production_system.gd")
+const UnitProductionSystemScript := preload("res://scripts/production/unit_production_system.gd")
 const BuildingUpgradeControllerScript := preload("res://scripts/buildings/building_upgrade_controller.gd")
 const UnitCommandControllerScript := preload("res://scripts/match/unit_command_controller.gd")
 const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
@@ -78,6 +79,9 @@ var _replay_player: ReplayPlayer
 var _command_executor: CommandExecutor
 var _building_controller: BuildingController
 var _production_system: ProductionSystem
+## Authoritative player-keyed unit queues, producers and spawned-unit ownership.
+## UnitRosterController remains the local sidebar/input renderer.
+var _unit_production_system: UnitProductionSystem
 var _building_upgrade_controller: BuildingUpgradeController
 var _unit_command_controller: UnitCommandController
 var _unit_deployment_controller
@@ -190,7 +194,11 @@ func _ready() -> void:
 		_players(), Callable(_building_controller, "_is_building_available_for_player")
 	)
 	_setup_building_upgrade_controller()
+	_setup_unit_production_system()
 	_setup_unit_roster_controller()
+	_unit_production_system.configure(
+		_players(), Callable(_unit_roster_controller, "is_unit_available_for")
+	)
 	# Built last, once every collaborator it dispatches to exists: Move needs
 	# the navigation system and the deployment controller, and the three queue
 	# order types need the controllers that own those queues. It is only ever
@@ -296,7 +304,15 @@ func _setup_unit_roster_controller() -> void:
 	add_child(_unit_roster_controller)
 	_unit_roster_controller.status_changed.connect(_update_selection_label)
 	_unit_roster_controller.unit_option_state_changed.connect(side_panel.set_building_option_state)
-	_unit_roster_controller.setup(_unit_option_ids, _command_bus, Callable(self, "next_orderable_tick"))
+	_unit_roster_controller.setup(
+		_unit_option_ids, _unit_production_system, _command_bus, Callable(self, "next_orderable_tick")
+	)
+
+
+func _setup_unit_production_system() -> void:
+	_unit_production_system = UnitProductionSystemScript.new()
+	_unit_production_system.name = "UnitProductionSystem"
+	add_child(_unit_production_system)
 
 
 func _setup_unit_command_controller() -> void:
@@ -804,8 +820,8 @@ func _advance_simulation_tick() -> void:
 		_building_controller.advance_tick()
 	if _building_upgrade_controller != null:
 		_building_upgrade_controller.advance_tick()
-	if _unit_roster_controller != null:
-		_unit_roster_controller.advance_tick()
+	if _unit_production_system != null:
+		_unit_production_system.advance_tick()
 	for unit in get_tree().get_nodes_in_group("sim_units"):
 		if is_instance_valid(unit):
 			unit.sim_tick()

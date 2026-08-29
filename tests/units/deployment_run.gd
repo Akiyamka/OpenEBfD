@@ -11,6 +11,7 @@ const SimTickPumpScript := preload("res://tests/combat/support/sim_tick_pump.gd"
 
 const UnitDeploymentControllerScript := preload("res://scripts/units/unit_deployment_controller.gd")
 const UnitRosterControllerScript := preload("res://scripts/units/unit_roster_controller.gd")
+const UnitProductionSystemScript := preload("res://scripts/production/unit_production_system.gd")
 const NavConstantsScript := preload("res://scripts/units/navigation/shared/nav_constants.gd")
 const SpatialOrientationScript := preload("res://scripts/world/spatial_orientation.gd")
 const UnitScene := preload("res://scenes/units/unit.tscn")
@@ -451,10 +452,13 @@ func _test_captured_factory_mcv() -> void:
 	parent_marker.add_to_group("units")
 	units.add_child(parent_marker)
 	var roster = UnitRosterControllerScript.new()
+	var unit_production = UnitProductionSystemScript.new()
+	world.add_child(unit_production)
+	unit_production.configure(players, Callable())
 	world.add_child(roster)
-	roster.setup([&"ORMCV"])
+	roster.setup([&"ORMCV"], unit_production)
 	_expect(
-		roster._spawn_completed_unit(&"ORMCV", &"ORFactory"),
+		unit_production.spawn_completed_unit(1, &"ORMCV", &"ORFactory"),
 		"the captured ORFactory must be able to produce ORMCV"
 	)
 	var produced: Unit

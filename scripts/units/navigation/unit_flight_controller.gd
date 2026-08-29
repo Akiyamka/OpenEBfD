@@ -209,7 +209,7 @@ func can_enter_pickup_sequence() -> bool:
 	return carryall or advanced_carryall
 
 
-## Called only by UnitRosterController right after spawn (Unit.begin_hangar_takeoff).
+## Called only by UnitProductionSystem right after spawn (Unit.begin_hangar_takeoff).
 func begin_hangar_takeoff(rally_point: Vector3, exit_point: Vector3) -> void:
 	_post_takeoff_move_target = rally_point
 	_post_takeoff_exit_point = Vector3.INF

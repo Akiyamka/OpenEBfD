@@ -4,11 +4,10 @@ extends SimCommand
 ## "Unit order": the sidebar's left/right click on a unit slot -- add
 ## quantity units to a production-building type's queue, resume a paused
 ## order, pause a running one, or remove queued units and possibly cancel the
-## active one, with a partial refund. Addressed to the issuing player's own
-## UnitRosterController, not to any entity: today a match has exactly one
-## UnitRosterController, always the local player's (see that class's
-## _production_queues field, keyed by production-building type, not by
-## player), so there is no Node this command names -- only unit_id, which
+## active one, with a partial refund. Addressed to the command player through
+## UnitProductionSystem's player-keyed state, not to any entity: Match still
+## has one local UnitRosterController, but it only renders local outcomes, so
+## there is no Node this command names -- only unit_id, which
 ## mouse button was pressed, and quantity. Named by StringName config id
 ## rather than by Node, since sim-zone code may never hold a Node reference --
 ## see docs/architecture/network-multiplayer.md, decision 3, and the

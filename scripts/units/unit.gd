@@ -890,7 +890,7 @@ func move_to(world_position: Vector3, exit_point := Vector3.INF) -> void:
 	_set_movement_animation(global_position.distance_to(target_position) > arrival_radius)
 
 
-## Called only by UnitRosterController right after producing a flying unit:
+## Called only by UnitProductionSystem right after producing a flying unit:
 ## the unit first moves along the apron to `exit_point`, then takes off clear of
 ## the producer and moves toward `rally_point`.
 ## Non-flying units fall back to an ordinary move order.
