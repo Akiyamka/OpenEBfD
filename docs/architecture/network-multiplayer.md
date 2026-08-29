@@ -2498,16 +2498,26 @@ source cites a number you cannot place.
     the unit path, the upgrade execution verdict is computed live rather than
     read from a cache, so threading the player through it is enough for
     lockstep while the cache stays local view state.
-  - **`D4a`** — teach `BuildingAvailabilityTracker` the two transitions it
-    cannot see, then convert the frame poll to a tick-phase per-player cache.
-    `PlayerData.grant_upgrade()` writes a dictionary and emits nothing, and
-    `Building.add_refinery_dock_upgrade()` delegates to the dock model and
-    emits nothing either — `upgrade_level_changed` is the building's global
-    level, not dock state. A dirty-gated per-player cache on today's tracker
-    would keep showing an already-purchased upgrade, so the tracker comes
-    first. Measured for scale before deferring: ~10-15 upgrade ids per house
-    against the base's buildings each frame, with a field compare inside, about
-    an order of magnitude lighter than the tech-tree scan `D1` removed.
+  - **`D4a`** — make refinery dock state observable, subscribe the tracker to
+    it, then convert the upgrade availability poll from `process(delta)` to a
+    tick-phase per-player cache like `D2` and `D3` have.
+
+    **Corrected 2026-08-29, before `D4a` was written.** `D4` recorded *two*
+    transitions the tracker cannot see. Re-measured, there is one. The purchase
+    is covered after all, by a hop I traced past rather than followed:
+    `PlayerData.grant_upgrade()` does emit nothing, but the completion goes on
+    to call `UpgradeEffects.apply_to_existing_buildings()`, which calls
+    `Building.set_upgrade_level()`, which emits `upgrade_level_changed` — and
+    the tracker subscribes to that. The order cannot start unless the player
+    owns a building of the type (`_is_upgrade_available` requires it), so at
+    least one such building always fires. Only the dock is a real gap:
+    `BuildingRefineryDocks.add_upgrade()` writes `refinery_upgrade_state += 1`
+    on a plain `@export_enum` field, and that file declares no signals at all.
+
+    Measured for scale before deferring it out of `D4`: ~10-15 upgrade ids per
+    house against the base's buildings each frame, with a field compare inside
+    — about an order of magnitude lighter than the tech-tree scan `D1` removed,
+    which is why this was never urgent.
   - **`D5`** — option state becomes per-player data rendered for the local
     player only, and the rule's queue empties.
   - **`E1`** — a tick-driver seam. Match takes a driver rather than owning
