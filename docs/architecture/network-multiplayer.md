@@ -2448,11 +2448,34 @@ source cites a number you cannot place.
     `local-player-in-simulation` cannot catch this. The rule watches
     `scripts/production/`, and this defect lives in `building_controller.gd` —
     a zone rule protects the code that has moved, not the code that has not.
-  - **`D3`** — unit production per player. `_production_queues` keys on
-    player *and* production building instead of building alone; a completed
-    unit emerges from that player's primary building (`PrimaryBuildingRegistry`
-    is already keyed per player) and the population cap counts that player's
-    units, which `_owned_unit_count(player_id)` already does.
+  - **`D3`** — unit production per player, in a `UnitProductionSystem` that is
+    a `Node` rather than a `RefCounted`: unit spawning is world-facing, and a
+    node in the Match tree reaches `get_tree()`, the `sim_buildings` and
+    `sim_units` groups and the units parent directly instead of through the
+    provider callables `ProductionSystem` already carries five of. Queues key on
+    player *and* production building; a completed unit emerges from that
+    player's primary building and the population cap counts that player's units.
+    Availability became a per-player cache in the roster, mirroring what `D2`
+    did to `BuildingCatalogView`, because the verdict is read on the command
+    execution path. **Landed 2026-08-29.**
+
+    Two findings the slice turned up, both about readers rather than writers.
+    First, moving `_process_unit_orders()` out of the controller would have
+    frozen the sidebar's progress bar: the coupling `if _process_unit_orders():
+    _refresh_unit_option_states()` was its only per-tick refresh, and *nothing*
+    in `tests/` observes `unit_option_state_changed`. `D3` replaced it with an
+    explicit `unit_queue_progressed(player_id)` signal. Second, and worth
+    recording against `D2`: the building path lost the same coupling then and
+    did not break, because paying for an order moves `PlayerData.money`, which
+    emits `resources_changed`, which `BuildingController` turns back into an
+    option-state refresh. That side channel is undeclared, untested, and silent
+    for a `cost <= 0` order. It is named in a comment at
+    `ProductionSystem.advance_tick()` and is `D5`'s to remove.
+
+    Also worth recording: the running local-player inventory stops being
+    comparable here. `_local_player()` in the roster became `_sidebar_player()`,
+    which is honest — every one of its five callers is view code — but the
+    tracking regex no longer sees it, so `48` is not `54` minus six.
   - **`D4`** — upgrades per player, the same move for `UpgradeQueue`.
   - **`D5`** — option state becomes per-player data rendered for the local
     player only, and the rule's queue empties.
