@@ -2476,7 +2476,38 @@ source cites a number you cannot place.
     comparable here. `_local_player()` in the roster became `_sidebar_player()`,
     which is honest — every one of its five callers is view code — but the
     tracking regex no longer sees it, so `48` is not `54` minus six.
-  - **`D4`** — upgrades per player, the same move for `UpgradeQueue`.
+  - **`D4`** — upgrades per player, in a `UpgradeProductionSystem` `Node`
+    alongside `D3`'s. Queue, credits, the granted purchase and the buildings it
+    is applied to all take the command's player. `UpgradeOrder.target_refinery`
+    stopped being a `Node` held across ticks and became an `EntityNodeIndex`
+    id. **Landed 2026-08-29.**
+
+    Three things this slice settled that the one-line plan above did not
+    anticipate. First, five helpers were neither simulation nor view — a
+    catalog lookup, a display name and build-time arithmetic — and had readers
+    on both sides of the split; they went to a shared `UpgradeRules` rather
+    than to either owner. Second, `UpgradeOrder.display_name` already holds
+    `"ATConYard upgrade"` and five sites format it again, so the shipping text
+    reads "ATConYard upgrade upgrade paused"; `D4` preserved it verbatim rather
+    than mixing a text fix into a move and turning the string audit from "must
+    match" into a list of intended differences. Third, the per-tick progress
+    reader came up for the third time in the track and was carried across
+    explicitly, as `D3` did for units.
+
+    Availability did **not** move, and that is the split's whole point: unlike
+    the unit path, the upgrade execution verdict is computed live rather than
+    read from a cache, so threading the player through it is enough for
+    lockstep while the cache stays local view state.
+  - **`D4a`** — teach `BuildingAvailabilityTracker` the two transitions it
+    cannot see, then convert the frame poll to a tick-phase per-player cache.
+    `PlayerData.grant_upgrade()` writes a dictionary and emits nothing, and
+    `Building.add_refinery_dock_upgrade()` delegates to the dock model and
+    emits nothing either — `upgrade_level_changed` is the building's global
+    level, not dock state. A dirty-gated per-player cache on today's tracker
+    would keep showing an already-purchased upgrade, so the tracker comes
+    first. Measured for scale before deferring: ~10-15 upgrade ids per house
+    against the base's buildings each frame, with a field compare inside, about
+    an order of magnitude lighter than the tech-tree scan `D1` removed.
   - **`D5`** — option state becomes per-player data rendered for the local
     player only, and the rule's queue empties.
   - **`E1`** — a tick-driver seam. Match takes a driver rather than owning
