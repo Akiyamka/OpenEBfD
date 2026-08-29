@@ -54,8 +54,13 @@ func upgrade_option_ids() -> Array[StringName]:
 	return _upgrade_option_ids.duplicate()
 
 
-## Availability cache is a local, view-only frame poll. D4a will teach its
-## tracker about purchases and dock-state writes before this becomes tick data.
+## Availability cache is a local, view-only frame poll, deliberately
+## unconditional. Gating it on BuildingAvailabilityTracker was tried and
+## abandoned: the tracker dirties on the immediate "buildings" join while the
+## verdict below reads sim_buildings, which the admission queue fills a tick
+## later (building.gd's _ready() comment), so a poll that consumed the flag
+## inside that window would never retry. See the D4a entry in
+## docs/architecture/network-multiplayer.md.
 func process(_delta: float) -> void:
 	_poll_upgrade_availability()
 

@@ -2498,26 +2498,40 @@ source cites a number you cannot place.
     the unit path, the upgrade execution verdict is computed live rather than
     read from a cache, so threading the player through it is enough for
     lockstep while the cache stays local view state.
-  - **`D4a`** — make refinery dock state observable, subscribe the tracker to
-    it, then convert the upgrade availability poll from `process(delta)` to a
-    tick-phase per-player cache like `D2` and `D3` have.
+  - **`D4a`** — **abandoned 2026-08-29, before any of it landed.** The plan was
+    to gate `BuildingUpgradeController`'s per-frame availability poll on a
+    `BuildingAvailabilityTracker` dirty flag, and to make refinery dock state
+    observable so the gate could not go stale on it. Reviewing and then
+    prototyping it turned up two failure modes the gate itself introduces, and
+    together they cost more than the gate saves.
 
-    **Corrected 2026-08-29, before `D4a` was written.** `D4` recorded *two*
-    transitions the tracker cannot see. Re-measured, there is one. The purchase
-    is covered after all, by a hop I traced past rather than followed:
-    `PlayerData.grant_upgrade()` does emit nothing, but the completion goes on
-    to call `UpgradeEffects.apply_to_existing_buildings()`, which calls
-    `Building.set_upgrade_level()`, which emits `upgrade_level_changed` — and
-    the tracker subscribes to that. The order cannot start unless the player
-    owns a building of the type (`_is_upgrade_available` requires it), so at
-    least one such building always fires. Only the dock is a real gap:
-    `BuildingRefineryDocks.add_upgrade()` writes `refinery_upgrade_state += 1`
-    on a plain `@export_enum` field, and that file declares no signals at all.
+    First, the freshness signal and the verdict read **different groups, one
+    tick apart**. `Building._ready()` joins `"buildings"` immediately, while
+    entry into `sim_buildings` goes through the admission queue and lands on the
+    next simulation tick — the reasoning is written out at `building.gd:279-291`.
+    The tracker watches `"buildings"`; `D4` made the upgrade verdict read
+    `sim_buildings`. A frame poll that consumes the dirty flag inside that
+    window never retries, so a newly placed building's upgrade slot never
+    appears. The unconditional poll hides this by trying again every frame.
 
-    Measured for scale before deferring it out of `D4`: ~10-15 upgrade ids per
-    house against the base's buildings each frame, with a field compare inside
-    — about an order of magnitude lighter than the tech-tree scan `D1` removed,
-    which is why this was never urgent.
+    Second, `tests/match/demo_boot_run.gd:1836` calls `PlayerData.grant_upgrade()`
+    directly and requires the purchased slot to vanish. That transition emits
+    nothing — not a building signal, not a production event. It is a test
+    shortcut rather than a shipping path (`grant_upgrade()` has exactly one
+    caller in `scripts/`, `upgrade_production_system.gd:208`), but the gate
+    turns it from harmless into a stale sidebar.
+
+    Against that: the poll is ~10-15 upgrade ids per house against the base's
+    buildings each frame, with a field compare inside — roughly an order of
+    magnitude lighter than the technology-tree scan `D1` removed, and never
+    measured as a problem. The estimate was mine, and `make godot-perf`, which
+    the tracker's own comment cites, measured the unit grid rather than this
+    one.
+
+    Without the gate the dock signal has no reader, so the slice collapses
+    rather than shrinks. `D5` revisits this area with the per-player option-state
+    design in hand and can decide then; the group mismatch above is the fact it
+    will need.
   - **`D5`** — option state becomes per-player data rendered for the local
     player only, and the rule's queue empties.
   - **`E1`** — a tick-driver seam. Match takes a driver rather than owning
