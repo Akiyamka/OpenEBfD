@@ -4,10 +4,9 @@ extends SimCommand
 ## "Upgrade order": the sidebar's left/right click on an upgrade slot -- start
 ## a fresh global-type or refinery-dock order, resume a paused one, pause a
 ## running one, or cancel a ready/paused one. Addressed to the issuing
-## player's own BuildingUpgradeController queue, not to any entity: today a
-## match has exactly one BuildingUpgradeController, always the local player's
-## (see that class's _upgrade_queue field), so there is no Node this command
-## names -- only upgrade_id (a building config id either way -- see
+## player's own UpgradeProductionSystem queue, not to any entity. The
+## BuildingUpgradeController is the local input/sidebar renderer, so there is
+## no Node this command names -- only upgrade_id (a building config id either way -- see
 ## BuildingUpgradeController.handle_upgrade_intent()'s doc comment on the two
 ## upgrade shapes sharing one queue) and which mouse button was pressed. Named
 ## by StringName config id rather than by Node, since sim-zone code may never

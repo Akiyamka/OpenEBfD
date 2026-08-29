@@ -11,12 +11,15 @@ const UpgradeOrderScript := preload("res://scripts/buildings/upgrade_order.gd")
 const UpgradeEffectsScript := preload("res://scripts/buildings/upgrade_effects.gd")
 const BuildingScript := preload("res://scripts/buildings/building.gd")
 const BuildingUpgradeControllerScript := preload("res://scripts/buildings/building_upgrade_controller.gd")
+const EntityNodeIndexScript := preload("res://scripts/match/entity_node_index.gd")
 const CommandPumpScript := preload("res://tests/match/support/command_pump.gd")
 const BuildingOptionStateScript := preload("res://scripts/buildings/building_option_state.gd")
 const BuildingSurvivorsScript := preload("res://scripts/buildings/building_survivors.gd")
 const TechnologyTreeScript := preload("res://scripts/buildings/technology_tree.gd")
 const BuildingDefinitionCatalogScript := preload("res://scripts/buildings/building_definition_catalog.gd")
 const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
+const UpgradeProductionSystemScript := preload("res://scripts/production/upgrade_production_system.gd")
+const UpgradeRulesScript := preload("res://scripts/buildings/upgrade_rules.gd")
 
 var _assertions := 0
 var _failures := 0
@@ -431,6 +434,12 @@ func _test_automatic_refinery_upgrade(token: int, local_player: PlayerData) -> i
 
 	var controller := BuildingUpgradeControllerScript.new()
 	root.add_child(controller)
+	var entity_index := EntityNodeIndexScript.new()
+	entity_index.register(full_refinery, SimEntityRegistry.Kind.BUILDING)
+	entity_index.register(eligible_refinery, SimEntityRegistry.Kind.BUILDING)
+	var production := UpgradeProductionSystemScript.new()
+	root.add_child(production)
+	production.configure(root.get_node("Players"), entity_index)
 	var option_states: Array[BuildingOptionState] = []
 	controller.upgrade_option_state_changed.connect(func(state: BuildingOptionState) -> void:
 		if state.building_id == &"ATRefineryDock":
@@ -439,7 +448,7 @@ func _test_automatic_refinery_upgrade(token: int, local_player: PlayerData) -> i
 	var pump := CommandPumpScript.new()
 	pump.configure_queue_controllers(null, null, controller)
 	var upgrade_ids: Array[StringName] = [&"ATRefineryDock"]
-	controller.setup(upgrade_ids, pump.bus(), Callable(pump, "next_orderable_tick"))
+	controller.setup(upgrade_ids, production, pump.bus(), Callable(pump, "next_orderable_tick"))
 	_expect(
 		not option_states.is_empty() and option_states.back().state == BuildingOptionStateScript.State.AVAILABLE,
 		"the dock option must be visible while any compatible refinery can upgrade"
@@ -448,20 +457,20 @@ func _test_automatic_refinery_upgrade(token: int, local_player: PlayerData) -> i
 	var building_count_before := get_nodes_in_group("buildings").size()
 	controller.handle_upgrade_intent(&"ATRefineryDock", MOUSE_BUTTON_LEFT)
 	_expect(
-		controller._upgrade_queue.current_order() == null,
+		production.current_order_for_player(local_player.player_id) == null,
 		"a queue command must not start an order before its scheduled tick executes"
 	)
 	pump.pump()
-	var order: UpgradeOrder = controller._upgrade_queue.current_order()
+	var order: UpgradeOrder = production.current_order_for_player(local_player.player_id)
 	_expect(order != null, "clicking the dock option must start an order once its command executes")
-	_expect(order != null and order.target_refinery == eligible_refinery, "automatic selection must skip a full refinery")
+	_expect(order != null and order.target_refinery == entity_index.id_for(eligible_refinery), "automatic selection must skip a full refinery")
 
 	local_player.add_money(2400)
 	# process(delta) no longer drives simulation; advance_tick() does, one
 	# MatchClock.SECONDS_PER_TICK period per call. 20 simulated seconds is
 	# roundi(20.0 / SECONDS_PER_TICK) ticks at the fixed 25 Hz rate.
 	for _i in roundi(20.0 / MatchClockScript.SECONDS_PER_TICK):
-		controller.advance_tick()
+		production.advance_tick()
 	_expect(eligible_refinery.refinery_upgrade_state == 1, "completion must advance the selected refinery to state 1")
 	_expect(get_nodes_in_group("buildings").size() == building_count_before, "completion must not add a RefineryDock building")
 
@@ -469,7 +478,7 @@ func _test_automatic_refinery_upgrade(token: int, local_player: PlayerData) -> i
 	pump.pump()
 	# Same 20-second-to-ticks conversion as above.
 	for _i in roundi(20.0 / MatchClockScript.SECONDS_PER_TICK):
-		controller.advance_tick()
+		production.advance_tick()
 	_expect(eligible_refinery.refinery_upgrade_state == 2, "the next order must advance the refinery to state 2")
 	_expect(get_nodes_in_group("buildings").size() == building_count_before, "the second completion must not add a building either")
 	_expect(
@@ -478,6 +487,7 @@ func _test_automatic_refinery_upgrade(token: int, local_player: PlayerData) -> i
 	)
 
 	controller.free()
+	production.free()
 	eligible_refinery.free()
 	full_refinery.free()
 	return token
@@ -495,32 +505,32 @@ func _test_missing_survivor_count(token: int) -> int:
 
 func _test_dock_upgrade_build_time(token: int) -> int:
 	var definitions := BuildingDefinitionCatalogScript.new()
-	var controller := BuildingUpgradeControllerScript.new()
-	root.add_child(controller)
-	var no_ids: Array[StringName] = []
-	controller.setup(no_ids)
 	var dock_config: Resource = definitions.definition(&"ATRefineryDock")
 	# 720 rule ticks (DEFAULT_DOCK_UPGRADE_BUILD_TIME_TICKS) -> roundi(720 * 25 / 60) = 300 sim ticks.
 	_expect(
-		controller._upgrade_build_time_sim_ticks(dock_config, true) == 300,
+		UpgradeRulesScript.build_time_sim_ticks(dock_config, true) == 300,
 		"refinery docks must use Rules.txt UpgradeBuildTime (720 rule ticks -> 300 sim ticks) instead of ordinary BuildTime"
 	)
-	controller.free()
 	return token
 
 
 func _test_con_yard_upgrade_build_time(token: int, local_player: PlayerData) -> int:
 	var controller := BuildingUpgradeControllerScript.new()
 	root.add_child(controller)
+	var entity_index := EntityNodeIndexScript.new()
+	var production := UpgradeProductionSystemScript.new()
+	root.add_child(production)
+	production.configure(root.get_node("Players"), entity_index)
 	var upgrade_ids: Array[StringName] = [&"ATConYard"]
-	controller.setup(upgrade_ids)
+	controller.setup(upgrade_ids, production)
 
 	var con_yard := BuildingScript.new()
 	con_yard.config_id = &"ATConYard"
 	con_yard.owner_player_id = local_player.player_id
 	root.add_child(con_yard)
-	controller._start_global_upgrade_order(&"ATConYard")
-	var order: UpgradeOrder = controller._upgrade_queue.current_order()
+	entity_index.register(con_yard, SimEntityRegistry.Kind.BUILDING)
+	production.execute_upgrade_order(local_player.player_id, &"ATConYard", MOUSE_BUTTON_LEFT)
+	var order: UpgradeOrder = production.current_order_for_player(local_player.player_id)
 	_expect(order != null, "an owned Construction Yard must start its upgrade order")
 	# 864 rule ticks (the linked MCV's build time) -> roundi(864 * 25 / 60) = 360 sim ticks.
 	_expect(
@@ -531,10 +541,11 @@ func _test_con_yard_upgrade_build_time(token: int, local_player: PlayerData) -> 
 	# 0.1 simulated seconds is roundi(0.1 / SECONDS_PER_TICK) ticks -- a short
 	# elapsed time, same intent as the old controller.process(0.1) call.
 	for _i in roundi(0.1 / MatchClockScript.SECONDS_PER_TICK):
-		controller.advance_tick()
+		production.advance_tick()
 	_expect(not local_player.has_purchased_upgrade(&"ATConYard"), "Construction Yard upgrade must not complete on its first short tick")
 
 	controller.free()
+	production.free()
 	con_yard.free()
 	return token
 

@@ -158,10 +158,10 @@ func configure_move(
 	_rebuild_executor()
 
 
-## The panel intents' counterpart to configure_move(): the controllers that
-## own the production and upgrade queues a build/unit/upgrade order command
-## is addressed to. They are handed to the CommandExecutor, exactly as Match
-## hands them to its own, rather than being dispatched to from pump() --
+## The panel intents' counterpart to configure_move(): command-facing
+## controllers that route a build/unit/upgrade order into the production
+## system that owns its queue. They are handed to the CommandExecutor,
+## exactly as Match hands them to its own, rather than being dispatched to from pump() --
 ## a harness that answers "which command is this" in its own match statement
 ## would be testing a dispatch the game does not have.
 func configure_queue_controllers(

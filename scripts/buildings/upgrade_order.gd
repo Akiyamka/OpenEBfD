@@ -9,7 +9,7 @@ const ProductionProgressScript := preload("res://scripts/buildings/production_pr
 ## the building whose next tech level gets unlocked player-wide; for a
 ## REFINERY_DOCK order it is the dock's own building id (e.g.
 ## "ATRefineryDock"), and target_refinery is the automatically selected
-## Refinery instance whose internal dock state advances on completion.
+## Refinery entity id whose internal dock state advances on completion.
 
 enum Kind { GLOBAL_TYPE, REFINERY_DOCK }
 
@@ -23,7 +23,7 @@ var elapsed_ticks := 0
 var charge_accumulator := 0.0
 var manually_paused := false
 var ready := false
-var target_refinery: Node3D = null
+var target_refinery := 0
 
 
 func progress_percent() -> float:

@@ -64,16 +64,17 @@ var _classifier: SelectionClassifier
 ## SelectionTargetAbilityController instance, so both sides resolve a given
 ## ability id to the same handler. See _execute_target_ability().
 var _target_ability_handlers: Array = []
-## Owners of the production and upgrade queues -- see _init()'s doc comment
-## for why they live here rather than being dispatched to from Match.
+## Command-facing receivers for production and upgrade order commands. Their
+## production systems own the queues; these controllers submit or route the
+## command without creating a second dispatch point in Match.
 var _building_controller
 var _unit_roster_controller
 var _building_upgrade_controller
 
 
-## The three queue controllers are the collaborators for command types that
-## name no entity at all -- a production or upgrade order is addressed to a
-## player's queue, so there is nothing here for EntityNodeIndex to resolve.
+## The three command-facing controllers are collaborators for command types
+## that name no entity at all -- a production or upgrade order is addressed
+## to a player's queue, so there is nothing here for EntityNodeIndex to resolve.
 ## They are constructor arguments rather than a second dispatch point in
 ## Match for a reason worth stating: this class is where "which command is
 ## this" gets answered, and it has to stay the only place that answers it.

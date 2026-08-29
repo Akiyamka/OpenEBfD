@@ -275,8 +275,8 @@ func process(_delta: float) -> void:
 ## Simulation half of the old process(delta): construction-order progress and
 ## building repair, both driven from MatchClock rather than frame delta.
 ## Availability is refreshed separately by Match before its command drain, so
-## this and the sibling controllers' advance_tick() calls read that snapshot in
-## their fixed order.
+## this controller and the sibling production systems' tick work read that
+## snapshot in their fixed order.
 func advance_tick() -> void:
 	_process_repairs()
 

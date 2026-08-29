@@ -4,6 +4,7 @@ const PlayerDataScript := preload("res://scripts/players/player_data.gd")
 const BuildingControllerScript := preload("res://scripts/buildings/building_controller.gd")
 const ProductionSystemScript := preload("res://scripts/production/production_system.gd")
 const UnitProductionSystemScript := preload("res://scripts/production/unit_production_system.gd")
+const UpgradeProductionSystemScript := preload("res://scripts/production/upgrade_production_system.gd")
 const BuildingUpgradeControllerScript := preload("res://scripts/buildings/building_upgrade_controller.gd")
 const UnitCommandControllerScript := preload("res://scripts/match/unit_command_controller.gd")
 const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
@@ -82,6 +83,9 @@ var _production_system: ProductionSystem
 ## Authoritative player-keyed unit queues, producers and spawned-unit ownership.
 ## UnitRosterController remains the local sidebar/input renderer.
 var _unit_production_system: UnitProductionSystem
+## Authoritative player-keyed upgrade queues and dock/global upgrade effects.
+## BuildingUpgradeController remains the local sidebar/input renderer.
+var _upgrade_production_system: UpgradeProductionSystem
 var _building_upgrade_controller: BuildingUpgradeController
 var _unit_command_controller: UnitCommandController
 var _unit_deployment_controller
@@ -193,6 +197,7 @@ func _ready() -> void:
 	_production_system.configure(
 		_players(), Callable(_building_controller, "_is_building_available_for_player")
 	)
+	_setup_upgrade_production_system()
 	_setup_building_upgrade_controller()
 	_setup_unit_production_system()
 	_setup_unit_roster_controller()
@@ -201,7 +206,8 @@ func _ready() -> void:
 	)
 	# Built last, once every collaborator it dispatches to exists: Move needs
 	# the navigation system and the deployment controller, and the three queue
-	# order types need the controllers that own those queues. It is only ever
+	# order types need their command-facing controllers, which route mutations
+	# to the authoritative production systems. It is only ever
 	# used from _advance_simulation_tick(), so nothing above needs it earlier,
 	# and one construction with everything present beats a setter someone can
 	# forget to call.
@@ -290,7 +296,9 @@ func _setup_building_upgrade_controller() -> void:
 	side_panel.upgrade_intent_pressed.connect(_on_panel_upgrade_intent)
 	_building_upgrade_controller.status_changed.connect(_update_selection_label)
 	_building_upgrade_controller.upgrade_option_state_changed.connect(side_panel.set_upgrade_option_state)
-	_building_upgrade_controller.setup(_upgrade_option_ids, _command_bus, Callable(self, "next_orderable_tick"))
+	_building_upgrade_controller.setup(
+		_upgrade_option_ids, _upgrade_production_system, _command_bus, Callable(self, "next_orderable_tick")
+	)
 	# setup() filters upgrade_grid_ids down to buildings that actually have
 	# an upgrade defined (see BuildingUpgradeController.upgrade_option_ids());
 	# the panel grid must be built from that filtered set, not the raw roster,
@@ -313,6 +321,13 @@ func _setup_unit_production_system() -> void:
 	_unit_production_system = UnitProductionSystemScript.new()
 	_unit_production_system.name = "UnitProductionSystem"
 	add_child(_unit_production_system)
+
+
+func _setup_upgrade_production_system() -> void:
+	_upgrade_production_system = UpgradeProductionSystemScript.new()
+	_upgrade_production_system.name = "UpgradeProductionSystem"
+	add_child(_upgrade_production_system)
+	_upgrade_production_system.configure(_players(), _entity_index)
 
 
 func _setup_unit_command_controller() -> void:
@@ -451,17 +466,18 @@ func _process(delta: float) -> void:
 ##
 ## Every command type goes through CommandExecutor, the three that name a
 ## production or upgrade queue included. Those have nothing for its
-## EntityNodeIndex to resolve and are forwarded straight to the controller
-## that owns the queue -- but they are dispatched in the same single place as
+## EntityNodeIndex to resolve and are forwarded straight to their
+## command-facing controller, which calls the authoritative production system
+## where appropriate -- but they are dispatched in the same single place as
 ## the rest, because two match statements on type_id() would let a new
 ## command type be registered in one and forgotten in the other, and the
 ## symptom of that is the command quietly never running at all.
 ##
-## They execute here, before any controller's own advance_tick() below, for
-## the same reason every other command does: commands, then systems.
+## They execute here, before the simulation systems below, for the same reason
+## every other command does: commands, then systems.
 ##
 ## _unit_navigation_system.sim_tick() runs immediately after the command drain
-## above, before any of the three controllers below it: navigation is the
+## above, before any of the simulation systems below it: navigation is the
 ## direct consumer of the move commands that loop just executed, so a move
 ## order targeting this tick is acted on this tick instead of one tick late.
 ## That is the same "commands, then systems" reasoning the drain's own
@@ -818,8 +834,8 @@ func _advance_simulation_tick() -> void:
 		_production_system.advance_tick()
 	if _building_controller != null:
 		_building_controller.advance_tick()
-	if _building_upgrade_controller != null:
-		_building_upgrade_controller.advance_tick()
+	if _upgrade_production_system != null:
+		_upgrade_production_system.advance_tick()
 	if _unit_production_system != null:
 		_unit_production_system.advance_tick()
 	for unit in get_tree().get_nodes_in_group("sim_units"):

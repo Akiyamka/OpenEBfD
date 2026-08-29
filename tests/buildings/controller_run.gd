@@ -2067,8 +2067,8 @@ func _test_availability_reacts_to_prerequisite_loss(token: int, local_player: Pl
 ## ATConYard plus any house's Barracks (upgraded_primary_required: true,
 ## assets/converted/rules/buildings/ATRocketTurret.tres) -- this drives a
 ## purchase through the same PlayerData.grant_upgrade + UpgradeEffects path
-## BuildingUpgradeController._complete_global_upgrade() uses and checks that
-## BuildingController's own polling loop (not a re-setup) picks it up.
+## UpgradeProductionSystem uses and checks that BuildingController's own
+## polling loop (not a re-setup) picks it up.
 func _test_availability_reacts_to_upgrade_purchase(token: int, local_player: PlayerData) -> int:
 	var controller := _new_controller()
 	var latest_states: Dictionary = {}
