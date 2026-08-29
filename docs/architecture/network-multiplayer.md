@@ -2534,7 +2534,7 @@ source cites a number you cannot place.
     design in hand and can decide then; the group mismatch above is the fact it
     will need.
   - **`D5`** — repairs and sales per player, the last live divergence in the
-    track. `D2`'s report listed repairs, sales, unit production and upgrades as
+    track. **Landed 2026-08-29.** `D2`'s report listed repairs, sales, unit production and upgrades as
     deferred; `D3` and `D4` took the last two and these were never assigned a
     slice. Measured 2026-08-29: `_process_repairs()` charges `_local_player()`
     **every tick**, so each client repairs a different player's buildings;
@@ -2546,6 +2546,13 @@ source cites a number you cannot place.
     `BuildingSaleService` is additionally a single match-wide state machine, so
     one player selling blocks every other. Ordered ahead of option state because
     this diverges the tick and option state cannot.
+    Landing note: the move broke a manifest exemption nobody would have noticed
+    until the checker went red — `animation-completes-simulation` exempts the
+    sale service **by path**, and F2 keeps its `animation_finished` callback for
+    `E3`, so the exemption had to move with the file. Worth recording because
+    the checker validates that a rule has a violating fixture, but nothing
+    validates that an exempt path still names a file that exists; a stale
+    exemption would sit there silently protecting nothing.
   - **`D6`** — option state becomes per-player data rendered for the local
     player only, closing the three local id lists `Match` fills from
     `_local_player_*` (`match.gd:186-190`) and the two debts recorded earlier
