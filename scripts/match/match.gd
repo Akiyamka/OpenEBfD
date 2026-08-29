@@ -252,12 +252,13 @@ func _on_building_resources_changed(credits: int, energy: int) -> void:
 
 
 func _setup_building_controller() -> void:
-	var building_grid_ids := _building_option_ids + _wall_building_ids
+	var sidebar_building_ids := _building_option_ids + _wall_building_ids
+	var catalog_building_ids := _building_definition_catalog.production_candidate_ids()
 	# Units live in the same grid as buildings -- the panel sorts every id
 	# into its tab by art sidebar_type -- but only building ids go to
 	# BuildingController below; unit clicks route to UnitRosterController.
 	side_panel.configure_ordered_roster(
-		building_grid_ids + _unit_option_ids, _sidebar_house_pages, _local_player_subhouse_ids()
+		sidebar_building_ids + _unit_option_ids, _sidebar_house_pages, _local_player_subhouse_ids()
 	)
 	_building_controller = BuildingControllerScript.new()
 	_building_controller.name = "BuildingController"
@@ -272,7 +273,7 @@ func _setup_building_controller() -> void:
 		terrain,
 		camera,
 		$Buildings,
-		building_grid_ids,
+		catalog_building_ids,
 		_production_system,
 		PLACEMENT_ARROW_SCENE,
 		PLACEMENT_BUILDING_SCENE,

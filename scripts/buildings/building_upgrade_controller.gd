@@ -194,23 +194,23 @@ func _on_upgrade_order_execution(
 		UpgradeProductionSystem.UpgradeOrderOutcome.ORDERED:
 			status_changed.emit("%s ordered" % execution.display_name)
 		UpgradeProductionSystem.UpgradeOrderOutcome.PAUSED:
-			status_changed.emit("%s upgrade paused" % execution.display_name)
+			status_changed.emit("%s paused" % execution.display_name)
 		UpgradeProductionSystem.UpgradeOrderOutcome.NO_REFINERY:
 			status_changed.emit("No refinery can receive this upgrade")
 		UpgradeProductionSystem.UpgradeOrderOutcome.RESUMED:
-			status_changed.emit("%s upgrade resumed" % execution.display_name)
+			status_changed.emit("%s resumed" % execution.display_name)
 		UpgradeProductionSystem.UpgradeOrderOutcome.WAITING_CREDITS:
-			status_changed.emit("%s upgrade is waiting for credits" % execution.display_name)
+			status_changed.emit("%s is waiting for credits" % execution.display_name)
 		UpgradeProductionSystem.UpgradeOrderOutcome.ALREADY_RUNNING:
-			status_changed.emit("%s upgrade is already running" % execution.display_name)
+			status_changed.emit("%s is already running" % execution.display_name)
 		UpgradeProductionSystem.UpgradeOrderOutcome.GLOBAL_RULES_MISSING:
 			status_changed.emit("Upgrade rules are not loaded")
 		UpgradeProductionSystem.UpgradeOrderOutcome.NOT_AVAILABLE:
-			status_changed.emit("%s upgrade is not available" % execution.display_name)
+			status_changed.emit("%s is not available" % execution.display_name)
 		UpgradeProductionSystem.UpgradeOrderOutcome.CANCELED:
 			status_changed.emit("%s canceled; refunded %d" % [execution.display_name, execution.refunded])
 		UpgradeProductionSystem.UpgradeOrderOutcome.UPGRADED:
-			status_changed.emit("%s upgraded" % execution.display_name)
+			status_changed.emit("%s completed" % execution.display_name)
 		UpgradeProductionSystem.UpgradeOrderOutcome.LOST_REFINERY:
 			status_changed.emit("%s lost its refinery before it could be completed" % execution.display_name)
 		UpgradeProductionSystem.UpgradeOrderOutcome.DOCK_CANNOT_RECEIVE:

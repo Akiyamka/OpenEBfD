@@ -42,8 +42,9 @@ var max_tech_level: int = TechnologyTreeScript.UNLIMITED_TECH_LEVEL
 var _command_bus: SimCommandBus
 var _submit_tick_provider: Callable
 
-## D6: this remains the local sidebar's unit list. Availability is cached for
-## every player, but a remote unit outside this list cannot be ordered yet.
+## This remains the local sidebar's unit list. Availability is cached for every
+## player from the same full producible-unit candidate set, so remote orders do
+## not depend on which house's sidebar happens to be rendered.
 var _unit_ids: Array[StringName] = []
 var _unit_definitions: Dictionary = {}
 var _technology_tree: TechnologyTree = TechnologyTreeScript.new()

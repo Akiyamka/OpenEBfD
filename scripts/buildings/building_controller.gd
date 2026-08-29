@@ -232,6 +232,8 @@ func setup(
 		_production_system.build_order_ready.connect(_on_production_build_order_ready)
 	if not _production_system.build_order_canceled.is_connected(_on_production_build_order_canceled):
 		_production_system.build_order_canceled.connect(_on_production_build_order_canceled)
+	if not _production_system.build_queue_progressed.is_connected(_on_build_queue_progressed):
+		_production_system.build_queue_progressed.connect(_on_build_queue_progressed)
 	if not _production_system.wall_chain_execution.is_connected(_on_production_wall_chain_execution):
 		_production_system.wall_chain_execution.connect(_on_production_wall_chain_execution)
 	if not _sale_service.completed.is_connected(_on_building_sale_completed):
@@ -1202,7 +1204,11 @@ func _on_local_player_changed(_player_id: int) -> void:
 
 func _on_local_player_resources_changed(_player_id: int, _money: int, _energy: int) -> void:
 	_refresh_player_resources()
-	_refresh_building_option_states()
+
+
+func _on_build_queue_progressed(player_id: int) -> void:
+	if _production_system.build_queue_for_player(player_id) == _building_queue:
+		_refresh_building_option_states()
 
 
 func _refresh_player_resources() -> void:

@@ -59,6 +59,22 @@ func all_ids() -> Array[StringName]:
 	return result
 
 
+## Authoritative production candidates include all houses and sub-houses.
+## TechnologyTree filters this union for the player that submitted an order;
+## unlike a sidebar roster, it must not be limited by one local player's house.
+func production_candidate_ids() -> Array[StringName]:
+	var result: Array[StringName] = []
+	for config_id in all_ids():
+		var item = definition(config_id)
+		if item == null or item.building_group_id == &"RefineryDock":
+			continue
+		if item.building_group_id != &"Wall" \
+		and (item.primary_building_ids.is_empty() or item.cost <= 0):
+			continue
+		result.append(config_id)
+	return result
+
+
 func buildable_ids_for_house(house_id: StringName, subhouse_ids: Array[StringName]) -> Array[StringName]:
 	var result: Array[StringName] = []
 	for config_id in all_ids():

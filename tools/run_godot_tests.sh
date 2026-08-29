@@ -34,6 +34,7 @@ readonly SUITES=(
 	tests/buildings/primary_building_run.gd tests/buildings/upgrade_run.gd tests/buildings/building_death_run.gd tests/rules/run.gd
 	tests/production/unit_production_run.gd
 	tests/production/upgrade_production_run.gd
+	tests/production/catalog_availability_run.gd
 	tests/combat/bullet_rules_run.gd tests/combat/turret_mount_run.gd
 	tests/combat/fire_sequence_run.gd
 	tests/combat/deploy_fire_run.gd

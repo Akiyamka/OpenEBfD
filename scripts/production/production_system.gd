@@ -9,6 +9,7 @@ const WallLineScript := preload("res://scripts/buildings/wall_line.gd")
 
 signal build_order_ready(player_id: int, order)
 signal build_order_canceled(player_id: int, order, refunded: int)
+signal build_queue_progressed(player_id: int)
 signal wall_chain_execution(player_id: int, execution: WallChainExecution)
 
 
@@ -164,10 +165,8 @@ func advance_tick() -> void:
 				_end_wall_chain(player_id)
 			build_order_canceled.emit(player_id, order, refunded)
 			continue
-		# Building option progress currently refreshes indirectly through
-		# PlayerData.resources_changed(); D6 should replace that wallet coupling
-		# with explicit player-keyed progress state, like UnitProductionSystem.
-		queue.advance_tick(player.money, Callable(player, &"spend_money"))
+		if queue.advance_tick(player.money, Callable(player, &"spend_money")):
+			build_queue_progressed.emit(player_id)
 
 
 func _production_for(player_id: int) -> PlayerProduction:
