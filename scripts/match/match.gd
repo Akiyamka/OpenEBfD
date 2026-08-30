@@ -421,8 +421,7 @@ func _snap_to_ground(point: Vector3) -> Vector3:
 
 func _process(delta: float) -> void:
 	var due := _tick_driver.pending_ticks(delta)
-	for _i in due:
-		_advance_simulation_tick()
+	advance_ticks(due)
 
 	_refresh_sidebar_house_pages()
 	if _building_controller != null:
@@ -869,6 +868,20 @@ func _advance_simulation_tick() -> void:
 ## The simulation's current tick, for later slices and tests that need a way
 ## to observe it without reaching into _clock directly.
 func current_tick() -> int:
+	return _clock.current_tick()
+
+
+## Advances the simulation by exactly count whole ticks without making callers
+## reach into the private tick method. This replaces 68 hand-rolled test loops,
+## including 36 call()-by-string reaches whose rename failure would otherwise
+## wait until runtime. A non-positive count is a no-op, matching
+## FrameTickDriver.pending_ticks() for a non-positive delta; no clamp belongs
+## here, because MAX_TICKS_PER_FRAME is frame-pacing policy and _process()
+## already receives the driver's clamped result. Returns the new clock boundary
+## so callers need not make a second accessor call to record it.
+func advance_ticks(count: int) -> int:
+	for _i in count:
+		_advance_simulation_tick()
 	return _clock.current_tick()
 
 

@@ -6,7 +6,7 @@ extends SceneTree
 ## explicitly, and assertions on the running match's own state rather than on
 ## a reconstruction of it.
 ##
-## Every case drives Match._advance_simulation_tick() by hand and sets the
+## Every case drives Match.advance_ticks() by hand and sets the
 ## driver's sub-tick accumulator by hand, then calls the view's own _process()
 ## directly, because an awaited frame advances the clock by however much wall
 ## time it happened to take and is not guaranteed to produce a tick at all --
@@ -191,7 +191,7 @@ func _drive_until_moving(match_instance: Node, unit: Unit) -> bool:
 	var store = match_instance.entity_state()
 	unit.move_to(unit.global_position + Vector3(10.0, 0.0, 0.0))
 	for _tick in 60:
-		match_instance.call("_advance_simulation_tick")
+		match_instance.advance_ticks(1)
 		if not store.has_position(unit.entity_id):
 			continue
 		var previous: Vector3 = store.previous_position(unit.entity_id)
@@ -326,7 +326,7 @@ func _test_blend_span_is_a_whole_tick() -> void:
 	)
 	# One more driven tick, so the pair below is one deliberate tick's worth of
 	# travel rather than whatever the loop above happened to stop on.
-	match_instance.call("_advance_simulation_tick")
+	match_instance.advance_ticks(1)
 	var store = match_instance.entity_state()
 	var previous: Vector3 = store.previous_position(scout.entity_id)
 	var current: Vector3 = store.position(scout.entity_id)
@@ -430,7 +430,7 @@ func _test_standing_unit_has_no_visual_offset() -> void:
 	var store = match_instance.entity_state()
 	var settled := false
 	for _tick in 40:
-		match_instance.call("_advance_simulation_tick")
+		match_instance.advance_ticks(1)
 		var previous: Vector3 = store.previous_position(scout.entity_id)
 		var current: Vector3 = store.position(scout.entity_id)
 		if previous.distance_to(current) <= POSITION_EPSILON:
@@ -521,7 +521,7 @@ func _test_projectile_visual_blends_between_ticks() -> void:
 
 	# One tick: the admission drain (slice C6b) admits it as the tick's first
 	# statement, and the "sim_projectiles" walk later in the same tick flies it.
-	match_instance.call("_advance_simulation_tick")
+	match_instance.advance_ticks(1)
 	_expect(
 		bool(projectile.get("_has_tick_history")),
 		"one driven tick must have given the projectile a previous position -- if this fails, the "

@@ -13,9 +13,9 @@ extends SceneTree
 ## frame. FrameTickDriver.MAX_TICKS_PER_FRAME is 5, so up to five ticks can
 ## run with no engine frame boundary between them; a real match reaches that
 ## condition under ordinary frame-time variance, not just under test. Driving
-## Match._advance_simulation_tick() directly, twice, with no await between,
-## reproduces exactly that condition without waiting on real frame timing or
-## depending on the test runner's own frame pacing.
+## Match.advance_ticks(1) directly, twice, with no await between, reproduces
+## exactly that condition without waiting on real frame timing or depending
+## on the test runner's own frame pacing.
 ##
 ## The second case pins a defect this suite's own review round found rather
 ## than shipped with the original slice: Unit.prepare_model_for_corpse() used
@@ -115,7 +115,7 @@ func _test_dead_building_stops_ticking_same_frame() -> void:
 	var turret: CombatTurret = building.combat_turrets[0]
 
 	turret.reload_ticks_remaining = 5
-	match_instance.call("_advance_simulation_tick")
+	match_instance.advance_ticks(1)
 	# The canary. Without this, a turret that never ticked at all -- e.g. one
 	# this suite failed to wire into the "buildings" group at all -- would
 	# also leave reload_ticks_remaining unchanged after death below, and the
@@ -141,7 +141,7 @@ func _test_dead_building_stops_ticking_same_frame() -> void:
 	# no apply_pending_releases() drain -- between them: this is exactly the
 	# mid-frame condition FrameTickDriver.MAX_TICKS_PER_FRAME's five-tick
 	# allowance makes possible, reproduced directly instead of waited for.
-	match_instance.call("_advance_simulation_tick")
+	match_instance.advance_ticks(1)
 	_expect(
 		turret.reload_ticks_remaining == 4,
 		"a dead building's turret must not keep reloading on a tick that runs before the frame that killed it ends"
@@ -200,7 +200,7 @@ func _test_dead_unit_corpse_branch_halts_and_drains() -> void:
 		"the unit must not be freed yet -- deferred despawn means the node is only queued for deletion once the tick drains"
 	)
 
-	match_instance.call("_advance_simulation_tick")
+	match_instance.advance_ticks(1)
 	_expect(
 		unit.is_queued_for_deletion(),
 		"the unit must be actually freed once apply_pending_releases() drains the tick that killed it -- this is the "

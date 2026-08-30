@@ -69,6 +69,16 @@ func _initialize() -> void:
 		_test_match_loop_drives_the_clock
 	)
 	await _run_case(
+		"the public tick pump advances an exact count and reports its boundary",
+		_test_advance_ticks_advances_exact_count,
+		2
+	)
+	await _run_case(
+		"the public tick pump leaves the clock unchanged for zero ticks",
+		_test_advance_ticks_zero_is_a_no_op,
+		1
+	)
+	await _run_case(
 		"a real unit's turret reload advances from the match loop alone",
 		_test_match_loop_drives_unit_turret_reload
 	)
@@ -122,10 +132,18 @@ func _initialize() -> void:
 	quit(0)
 
 
-func _run_case(case_name: String, test: Callable) -> void:
+func _run_case(case_name: String, test: Callable, expected_assertions: int = -1) -> void:
 	_current_case = case_name
 	var failures_before := _failures
+	var assertions_before := _assertions
 	await test.call()
+	var actual_assertions := _assertions - assertions_before
+	if expected_assertions >= 0 and actual_assertions != expected_assertions:
+		_failures += 1
+		printerr("FAIL: %s: case ended after %d assertions; expected %d" % [
+			case_name, actual_assertions, expected_assertions,
+		])
+		return
 	if _failures == failures_before:
 		print("PASS: %s" % case_name)
 
@@ -149,7 +167,7 @@ func _test_authored_collision_meshes() -> void:
 	# agents on the first drain. Driven directly rather than awaited, because
 	# an awaited frame only advances the clock by however much wall time it
 	# happened to take and is not guaranteed to produce a tick at all.
-	match_instance.call("_advance_simulation_tick")
+	match_instance.advance_ticks(1)
 	var navigation := match_instance.get_node_or_null("UnitNavigationSystem")
 
 	for unit_name in [&"ScoutA", &"OrdosAPC", &"NIABTank"]:
@@ -393,7 +411,7 @@ func _test_mech_gait_speeds() -> void:
 	# See _test_authored_collision_meshes() above: the navigation arrival
 	# tolerance read further down needs ScoutA to actually hold an agent, and
 	# since slice C6c that happens on the first tick, not in Match._ready().
-	match_instance.call("_advance_simulation_tick")
+	match_instance.advance_ticks(1)
 
 	var unit := match_instance.get_node("Units/ScoutA") as Unit
 	unit.setup(&"ATMongoose")
@@ -692,11 +710,11 @@ func _test_player_two_build_order_owns_credits_and_building() -> void:
 	order.building_id = &"ATBarracks"
 	order.button_index = MOUSE_BUTTON_LEFT
 	match_instance._command_bus.submit(order, match_instance.next_orderable_tick())
-	match_instance.call("_advance_simulation_tick")
+	match_instance.advance_ticks(1)
 
 	var ready := false
 	for _tick in 2000:
-		match_instance.call("_advance_simulation_tick")
+		match_instance.advance_ticks(1)
 		var current_order: BuildingOrder = _queue_for_test(controller, 2).current_order()
 		if current_order != null and current_order.ready:
 			ready = true
@@ -709,7 +727,7 @@ func _test_player_two_build_order_owns_credits_and_building() -> void:
 	place.nav_cell = placement_cell
 	place.rotation_quarter_turns = 0
 	match_instance._command_bus.submit(place, match_instance.next_orderable_tick())
-	match_instance.call("_advance_simulation_tick")
+	match_instance.advance_ticks(1)
 
 	var placed := _newest_building_with_config(match_instance, &"ATBarracks")
 	_expect(placed != null, "the player-2 place command must add a Barracks")
@@ -752,10 +770,10 @@ func _test_player_two_placement_does_not_touch_local_preview() -> void:
 	order.building_id = &"ATBarracks"
 	order.button_index = MOUSE_BUTTON_LEFT
 	match_instance._command_bus.submit(order, match_instance.next_orderable_tick())
-	match_instance.call("_advance_simulation_tick")
+	match_instance.advance_ticks(1)
 	var ready := false
 	for _tick in 2000:
-		match_instance.call("_advance_simulation_tick")
+		match_instance.advance_ticks(1)
 		var current_order: BuildingOrder = _queue_for_test(controller, 2).current_order()
 		if current_order != null and current_order.ready:
 			ready = true
@@ -787,7 +805,7 @@ func _test_player_two_placement_does_not_touch_local_preview() -> void:
 	place.nav_cell = placement_cell
 	place.rotation_quarter_turns = 0
 	match_instance._command_bus.submit(place, match_instance.next_orderable_tick())
-	match_instance.call("_advance_simulation_tick")
+	match_instance.advance_ticks(1)
 
 	var placed := _newest_building_with_config(match_instance, &"ATBarracks")
 	_expect(placed != null and placed.owner_player_id == 2, "player 2's building must still place")
@@ -919,6 +937,30 @@ func _test_match_loop_drives_the_clock() -> void:
 			% [advanced, frames]
 	)
 
+	match_instance.queue_free()
+
+
+func _test_advance_ticks_advances_exact_count() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	get_root().add_child(match_instance)
+	await process_frame
+	var started_tick: int = match_instance.current_tick()
+	var final_tick: int = match_instance.advance_ticks(7)
+	_expect(
+		match_instance.current_tick() - started_tick == 7,
+		"advance_ticks(7) must advance exactly 7 ticks"
+	)
+	_expect(final_tick == match_instance.current_tick(), "advance_ticks() must return the clock boundary it reached")
+	match_instance.queue_free()
+
+
+func _test_advance_ticks_zero_is_a_no_op() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	get_root().add_child(match_instance)
+	await process_frame
+	var started_tick: int = match_instance.current_tick()
+	match_instance.advance_ticks(0)
+	_expect(match_instance.current_tick() == started_tick, "advance_ticks(0) must not advance a tick")
 	match_instance.queue_free()
 
 
@@ -1715,7 +1757,7 @@ func _test_dying_building_survives_sidebar_refresh() -> void:
 	# Match._advance_simulation_tick()'s own doc comment on why the drain
 	# sits at the end of the tick), so the node is not actually freed until a
 	# tick's drain runs. Nothing here has advanced a tick yet.
-	match_instance.call("_advance_simulation_tick")
+	match_instance.advance_ticks(1)
 	_expect(con_yard.is_queued_for_deletion(), "the killing blow must free the Construction Yard")
 
 	var buildings_root := match_instance.get_node("Buildings")
@@ -1916,7 +1958,7 @@ func _test_unit_roster_availability() -> void:
 	# command bus schedules -- see UnitRosterController.execute_unit_order_
 	# command(). Drive that one tick directly, the same way every other
 	# command-bus suite pumps a tick, instead of waiting on real frame time.
-	match_instance._advance_simulation_tick()
+	match_instance.advance_ticks(1)
 	_expect(
 		unit_production.unit_queue_size_for_player(1, &"ATBarracks") == 0,
 		"a unit intent's command must not bypass an unfinished production building once it executes"
@@ -1964,7 +2006,7 @@ func _test_unit_order_refreshes_availability_after_prerequisite_loss() -> void:
 	barracks.call("set_owner_player_id", 1)
 	barracks.call("finish_construction")
 	await process_frame
-	match_instance._advance_simulation_tick()
+	match_instance.advance_ticks(1)
 	await process_frame
 
 	var roster = match_instance.get_node("UnitRosterController") as UnitRosterController
@@ -1984,7 +2026,7 @@ func _test_unit_order_refreshes_availability_after_prerequisite_loss() -> void:
 		statuses.is_empty(),
 		"the unit intent must remain deferred until Match drains its scheduled tick"
 	)
-	match_instance._advance_simulation_tick()
+	match_instance.advance_ticks(1)
 	_expect(
 		statuses.has("ATInfantry is not available"),
 		"a next-tick unit order must be refused after its tracked Barracks prerequisite is removed without a frame"
@@ -2072,7 +2114,7 @@ func _test_unit_production_rally_and_primary() -> void:
 	# advanced between them), so one pump executes all three in click order --
 	# see UnitRosterController.execute_unit_order_command(). Every following
 	# click gets its own pump the same way.
-	match_instance._advance_simulation_tick()
+	match_instance.advance_ticks(1)
 	_expect(
 		unit_production.unit_queue_size_for_player(1, &"ATBarracks") == 12,
 		"left click must add units, while shift+left click adds ten more, once their commands execute"
@@ -2083,7 +2125,7 @@ func _test_unit_production_rally_and_primary() -> void:
 		infantry_queue != null and not infantry_queue.current_order().manually_paused,
 		"a pause command must not take effect before it executes"
 	)
-	match_instance._advance_simulation_tick()
+	match_instance.advance_ticks(1)
 	_expect(
 		infantry_queue != null and infantry_queue.current_order().manually_paused,
 		"right click must pause the active unit production order once its command executes"
@@ -2098,19 +2140,19 @@ func _test_unit_production_rally_and_primary() -> void:
 		"a paused unit order must not complete"
 	)
 	roster.handle_unit_intent(&"ATInfantry", MOUSE_BUTTON_RIGHT)
-	match_instance._advance_simulation_tick()
+	match_instance.advance_ticks(1)
 	_expect(
 		unit_production.unit_queue_size_for_player(1, &"ATBarracks") == 11 and infantry_queue.current_order().manually_paused,
 		"a second right click must remove one queued unit without resuming production"
 	)
 	roster.handle_unit_intent(&"ATInfantry", MOUSE_BUTTON_RIGHT, 10)
-	match_instance._advance_simulation_tick()
+	match_instance.advance_ticks(1)
 	_expect(
 		unit_production.unit_queue_size_for_player(1, &"ATBarracks") == 1 and infantry_queue.current_order().manually_paused,
 		"shift+right click must remove ten queued units without resuming production"
 	)
 	roster.handle_unit_intent(&"ATInfantry", MOUSE_BUTTON_LEFT)
-	match_instance._advance_simulation_tick()
+	match_instance.advance_ticks(1)
 	_expect(
 		unit_production.unit_queue_size_for_player(1, &"ATBarracks") == 1 and not infantry_queue.current_order().manually_paused,
 		"left click on a paused unit order must resume it without adding another unit"
@@ -2192,7 +2234,7 @@ func _test_unit_production_rally_and_primary() -> void:
 	roster.handle_unit_intent(&"ATInfantry", MOUSE_BUTTON_LEFT)
 	roster.handle_unit_intent(&"ATInfantry", MOUSE_BUTTON_RIGHT)
 	roster.handle_unit_intent(&"ATInfantry", MOUSE_BUTTON_RIGHT, 10)
-	match_instance._advance_simulation_tick()
+	match_instance.advance_ticks(1)
 	_expect(
 		unit_production.unit_queue_size_for_player(1, &"ATBarracks") == 0,
 		"shift+right click must not reduce the unit queue below zero"
@@ -2443,7 +2485,7 @@ func _test_real_harvester_unload_trip() -> void:
 	await physics_frame
 	# See _test_authored_collision_meshes(): the harvester becomes a
 	# navigation agent on the first tick, not in Match._ready().
-	match_instance.call("_advance_simulation_tick")
+	match_instance.advance_ticks(1)
 
 	var navigation = match_instance.get_node("UnitNavigationSystem")
 	harvester.set_process(false)

@@ -527,8 +527,7 @@ func _test_unit_admission_deferred_to_next_tick() -> void:
 	# No await between these two: an awaited frame drives ticks of its own
 	# (Match._process -> FrameTickDriver), and "the next tick" has to mean the
 	# next one, not the next few.
-	match_instance.call("_advance_simulation_tick")
-	match_instance.call("_advance_simulation_tick")
+	match_instance.advance_ticks(2)
 
 	_expect(spawned.size() == 1, "the stand-in replay player must have created exactly one unit")
 	_expect(samples.size() == 2, "the tick-end probe must have sampled exactly the two ticks driven above")
@@ -612,8 +611,7 @@ func _test_building_admission_deferred_to_next_tick() -> void:
 		)
 		reference_samples.append(reference.is_in_group(Building.SIM_BUILDINGS_GROUP))
 
-	match_instance.call("_advance_simulation_tick")
-	match_instance.call("_advance_simulation_tick")
+	match_instance.advance_ticks(2)
 
 	_expect(spawned.size() == 1, "the stand-in replay player must have created exactly one building")
 	_expect(samples.size() == 2, "the tick-end probe must have sampled exactly the two ticks driven above")
@@ -694,8 +692,7 @@ func _test_navigation_agent_waits_for_admission() -> void:
 		var reference_has_agent: bool = navigation._agents.has(reference.get_instance_id())
 		reference_samples.append(reference_has_agent)
 
-	match_instance.call("_advance_simulation_tick")
-	match_instance.call("_advance_simulation_tick")
+	match_instance.advance_ticks(2)
 
 	_expect(agent_samples.size() == 2, "the tick-end probe must have sampled exactly the two ticks driven above")
 	if agent_samples.size() != 2:
@@ -842,8 +839,7 @@ func _test_pending_building_blocker_refresh_survives_a_drain() -> void:
 		pending_samples.append(navigation._pending_building_entries.size())
 		reference_samples.append(_any_blocked(navigation, reference_cells))
 
-	match_instance.call("_advance_simulation_tick")
-	match_instance.call("_advance_simulation_tick")
+	match_instance.advance_ticks(2)
 
 	_expect(spawned.size() == 1, "the stand-in replay player must have created exactly one building")
 	_expect(blocked_samples.size() == 2, "the tick-end probe must have sampled exactly the two ticks driven above")

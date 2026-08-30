@@ -96,7 +96,9 @@ files by glob; a **rule** forbids something inside exactly one zone:
 Also enforced tree-wide: `own-tick-rate`, which forbids a module from
 declaring a tick rate of its own. See "The simulation tick" below for why.
 
-Only `scripts/` is scanned; `tests/` may still reach into internals.
+Both `scripts/` and `tests/` are scanned. The `all` and `sim` zones remain
+runtime-only, so tests may still reach into internals except where a dedicated
+tests-zone rule says otherwise.
 
 Adding a rule is a manifest entry plus a fixture — never a code change, unless
 the rule needs real analysis, in which case add a `kind` in the checker.

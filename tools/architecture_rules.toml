@@ -19,7 +19,8 @@
 # `—`, `--` and `:`.
 
 [settings]
-# Total `# arch-allow:` comments permitted under scripts/. Ratchet this down as
+# Total `# arch-allow:` comments permitted under scanned scripts/ and tests/.
+# Ratchet this down as
 # hatches are removed, never up — the same idiom as `max-file-lines` in
 # .gdlintrc. The checker prints the live count on every run and suggests
 # lowering the budget when the tree is cleaner than the budget allows.
@@ -46,8 +47,12 @@ min_reason_length = 8
 # ---------------------------------------------------------------------------
 
 [zones.all]
-description = "Every runtime script. tests/ is not scanned and may reach into internals."
+description = "Every runtime script. tests/ is scanned only by its own zone and may otherwise reach into runtime internals."
 include = ["scripts/**/*.gd"]
+
+[zones.tests]
+description = "Tests scanned only for hand-driven simulation ticks; general reaches into runtime internals remain allowed."
+include = ["tests/**/*.gd"]
 
 [zones.sim]
 description = """
@@ -66,6 +71,15 @@ include = ["scripts/production/**/*.gd"]
 # ---------------------------------------------------------------------------
 # Module boundary rules
 # ---------------------------------------------------------------------------
+
+[[rules]]
+id = "hand-driven-simulation-tick"
+zone = "tests"
+kind = "forbid-in-strings"
+pattern = '_advance_simulation_tick'
+summary = "test drives Match's private simulation tick"
+why = "the tick loop's shape is simulation, not test scaffolding: hand-driven copies must all change when a tick gains a phase, and call() by string would defer a renamed method's failure until runtime"
+instead = "call Match.advance_ticks(count), the same entry point Match._process() uses"
 
 [[rules]]
 id = "local-player-in-simulation"

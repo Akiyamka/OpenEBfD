@@ -89,6 +89,10 @@ def scripts(fixture: str) -> dict[str, str]:
     return {f"scripts/{fixture}.gd": fixture}
 
 
+def tests(fixture: str) -> dict[str, str]:
+    return {f"tests/{fixture}.gd": fixture}
+
+
 CASES: tuple[Case, ...] = (
     # -- module boundary rules ------------------------------------------------
     Case("clean tree", scripts("clean")),
@@ -313,6 +317,24 @@ CASES: tuple[Case, ...] = (
         EXIT_CLEAN,
         forbid_rules=("sim-no-await",),
     ),
+    Case(
+        "hand-driven simulation ticks in tests are found through strings",
+        tests("hand_driven_simulation_tick"),
+        EXIT_FINDINGS,
+        expect_rules=("hand-driven-simulation-tick",),
+    ),
+    Case(
+        "hand-driven simulation tick comments in tests are allowed",
+        tests("hand_driven_simulation_tick_comment"),
+        EXIT_CLEAN,
+        forbid_rules=("hand-driven-simulation-tick",),
+    ),
+    Case(
+        "runtime-only rules do not reach tests",
+        tests("private_owner_access"),
+        EXIT_CLEAN,
+        forbid_rules=("private-owner-access",),
+    ),
     # -- escape hatches -------------------------------------------------------
     Case(
         "hatch with a reason suppresses its rule",
@@ -519,6 +541,13 @@ def run_case(case: Case) -> list[str]:
             destination.startswith("scripts/production/") for destination in files
         ):
             files["scripts/production/_zone_filler.gd"] = "clean"
+        # Tests are scanned alongside scripts now, but the tests zone has exactly
+        # one rule. Every fixture tree still needs a test file so the zone cannot
+        # quietly become empty and turn its protection into a no-op.
+        if case.manifest is None and not any(
+            destination.startswith("tests/") for destination in files
+        ):
+            files["tests/_zone_filler.gd"] = "clean"
         # Same shape as the zone filler above, for the same reason. The real
         # manifest's `unindexed-slice-reference` resolves its index against the
         # scanned root, so a throwaway tree needs one or the checker errors out
@@ -577,6 +606,8 @@ def check_glob_translation() -> list[str]:
         ("scripts/**/*.gd", "scripts/units/air/flight.gd", True),
         ("scripts/**/*.gd", "scripts/unit.gd.txt", False),
         ("scripts/**/*.gd", "tests/unit.gd", False),
+        ("tests/**/*.gd", "tests/match/run.gd", True),
+        ("tests/**/*.gd", "scripts/match/run.gd", False),
         ("scripts/sim/**/*.gd", "scripts/sim/tick.gd", True),
         ("scripts/sim/**/*.gd", "scripts/sim/units/tick.gd", True),
         ("scripts/sim/**/*.gd", "scripts/units/tick.gd", False),

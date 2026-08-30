@@ -49,7 +49,7 @@ EXIT_FINDINGS = 1
 EXIT_BROKEN_CONFIG = 2
 
 DEFAULT_RULES_PATH = "tools/architecture_rules.toml"
-SCAN_GLOB = "scripts/**/*.gd"
+SCAN_GLOBS = ("scripts/**/*.gd", "tests/**/*.gd")
 
 RULE_KINDS = frozenset(
     {"forbid", "forbid-in-strings", "require-preload", "slice-index"}
@@ -446,7 +446,8 @@ def parse_hatches(
 
 def load_sources(root: Path, known_rules: set[str], min_reason: int) -> list[Source]:
     sources: list[Source] = []
-    for path in sorted(root.glob(SCAN_GLOB)):
+    paths = sorted({path for glob in SCAN_GLOBS for path in root.glob(glob)})
+    for path in paths:
         relative = path.relative_to(root).as_posix()
         text = path.read_text(encoding="utf-8")
         raw = text.splitlines()
@@ -726,7 +727,7 @@ def check(root: Path, rules_path: Path, allow_budget: int | None) -> int:
     sources = load_sources(root, known_rules, manifest.settings.min_reason_length)
     if not sources:
         raise ConfigError(
-            f"{root}: `{SCAN_GLOB}` matched no files; nothing was checked"
+            f"{root}: none of {SCAN_GLOBS} matched files; nothing was checked"
         )
 
     for name, zone in manifest.zones.items():

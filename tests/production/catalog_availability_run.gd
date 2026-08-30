@@ -71,10 +71,10 @@ func _test_remote_catalog_candidates() -> void:
 	_add_remote_building_prerequisites(match_instance)
 	_add_remote_ix_res_centre(match_instance)
 	await process_frame
-	match_instance._advance_simulation_tick()
+	match_instance.advance_ticks(1)
 
 	_submit_build(match_instance, 2, &"IXResCentre")
-	match_instance._advance_simulation_tick()
+	match_instance.advance_ticks(1)
 	var building_controller = match_instance.get_node("BuildingController") as BuildingController
 	_expect(
 		building_controller.building_queue_for_player(2).current_order() != null,
@@ -86,7 +86,7 @@ func _test_remote_catalog_candidates() -> void:
 	)
 
 	_submit_upgrade(match_instance, 2, &"IXResCentre")
-	match_instance._advance_simulation_tick()
+	match_instance.advance_ticks(1)
 	var upgrades = match_instance.get_node("UpgradeProductionSystem")
 	_expect(
 		upgrades.current_order_for_player(2) != null,
@@ -115,7 +115,7 @@ func _test_local_sidebar_stays_filtered() -> void:
 
 func _test_building_queue_progress_reaches_sidebar() -> void:
 	var match_instance = await _new_match()
-	match_instance._advance_simulation_tick()
+	match_instance.advance_ticks(1)
 	var controller = match_instance.get_node("BuildingController") as BuildingController
 	var observed_progress: Array[float] = []
 	controller.building_option_state_changed.connect(func(option_state) -> void:
@@ -124,7 +124,7 @@ func _test_building_queue_progress_reaches_sidebar() -> void:
 	)
 	_submit_build(match_instance, 1, &"ATBarracks")
 	for _tick in 100:
-		match_instance._advance_simulation_tick()
+		match_instance.advance_ticks(1)
 		if observed_progress.size() >= 3:
 			break
 	_expect(observed_progress.size() >= 3, "queue progress must emit at least three sidebar states")

@@ -274,12 +274,12 @@ func _submit_wall_line(match_instance, wall_cell: Vector2i) -> void:
 	command.start_cell = wall_cell
 	command.end_cell = wall_cell
 	match_instance._command_bus.submit(command, match_instance.next_orderable_tick())
-	match_instance.call("_advance_simulation_tick")
+	match_instance.advance_ticks(1)
 
 
 func _advance_until_wall(match_instance) -> Building:
 	for _tick in 2000:
-		match_instance.call("_advance_simulation_tick")
+		match_instance.advance_ticks(1)
 		for node in match_instance.get_node("Buildings").get_children():
 			var building := node as Building
 			if building != null and building.config_id == &"ATWall":

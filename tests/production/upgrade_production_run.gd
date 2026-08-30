@@ -69,11 +69,11 @@ func _test_player_two_global_upgrade_owns_everything() -> void:
 	var player_two = players.player(2)
 	_add_con_yard(match_instance, 2, Vector3(80.0, 8.0, 40.0))
 	await process_frame
-	match_instance._advance_simulation_tick()
+	match_instance.advance_ticks(1)
 	var player_one_money_before: int = player_one.money
 	var player_two_money_before: int = player_two.money
 	_submit(match_instance, 2, &"ATConYard")
-	match_instance._advance_simulation_tick()
+	match_instance.advance_ticks(1)
 	var production = match_instance.get_node("UpgradeProductionSystem")
 	_expect(
 		production.current_order_for_player(2) != null
@@ -81,7 +81,7 @@ func _test_player_two_global_upgrade_owns_everything() -> void:
 		"player 2's order must land in player 2's queue and leave player 1's untouched"
 	)
 	for _tick in 400:
-		match_instance._advance_simulation_tick()
+		match_instance.advance_ticks(1)
 		if player_two.has_purchased_upgrade(&"ATConYard"):
 			break
 	_expect(player_two.money < player_two_money_before, "player 2 must pay from player 2 credits")
@@ -96,9 +96,9 @@ func _test_player_two_dock_binds_to_its_owner() -> void:
 	var player_one_refinery := _add_refinery(match_instance, 1, Vector3(48.0, 8.0, 40.0))
 	var player_two_refinery := _add_refinery(match_instance, 2, Vector3(80.0, 8.0, 40.0))
 	await process_frame
-	match_instance._advance_simulation_tick()
+	match_instance.advance_ticks(1)
 	_submit(match_instance, 2, &"ATRefineryDock")
-	match_instance._advance_simulation_tick()
+	match_instance.advance_ticks(1)
 	var production = match_instance.get_node("UpgradeProductionSystem")
 	var dock_order = production.current_order_for_player(2)
 	_expect(
@@ -106,7 +106,7 @@ func _test_player_two_dock_binds_to_its_owner() -> void:
 		"player 2's dock order must bind to player 2's refinery entity id"
 	)
 	for _tick in 320:
-		match_instance._advance_simulation_tick()
+		match_instance.advance_ticks(1)
 		if player_two_refinery.refinery_upgrade_state == 1:
 			break
 	_expect(player_two_refinery.refinery_upgrade_state == 1, "player 2's refinery must receive the dock")
@@ -116,7 +116,7 @@ func _test_player_two_dock_binds_to_its_owner() -> void:
 
 func _test_upgrade_queue_progress_reaches_sidebar() -> void:
 	var match_instance: Variant = await _new_match()
-	match_instance._advance_simulation_tick()
+	match_instance.advance_ticks(1)
 	var controller = match_instance.get_node("BuildingUpgradeController")
 	var observed_progress: Array[float] = []
 	controller.upgrade_option_state_changed.connect(func(option_state) -> void:
@@ -125,7 +125,7 @@ func _test_upgrade_queue_progress_reaches_sidebar() -> void:
 	)
 	_submit(match_instance, 1, &"ATConYard")
 	for _tick in 100:
-		match_instance._advance_simulation_tick()
+		match_instance.advance_ticks(1)
 		if observed_progress.size() >= 3:
 			break
 	_expect(observed_progress.size() >= 3, "queue progress must emit at least three sidebar states")

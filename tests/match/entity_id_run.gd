@@ -390,7 +390,7 @@ func _test_every_unit_and_building_is_in_both_its_view_group_and_its_sim_group()
 	# frame advances the clock by however much wall time it happened to take
 	# and is not guaranteed to produce a tick at all, which would leave this
 	# case asserting the mid-tick divergence instead of the settled state.
-	match_instance.call("_advance_simulation_tick")
+	match_instance.advance_ticks(1)
 
 	var tree := get_root().get_tree()
 	var view_units := tree.get_nodes_in_group("units")
@@ -446,7 +446,7 @@ func _test_every_unit_and_building_is_in_both_its_view_group_and_its_sim_group()
 ## the fixture's own buildings carry no CombatTurret, so a HKGunTurret is
 ## added for this case alone.
 ##
-## Both halves drive match_instance.call("_advance_simulation_tick") directly
+## Both halves drive match_instance.advance_ticks(1) directly
 ## rather than await process_frame, so the case controls exactly one tick per
 ## call instead of however many FrameTickDriver decides a frame owes.
 func _test_removing_sim_group_membership_stops_ticking_without_touching_the_view_group() -> void:
@@ -463,7 +463,7 @@ func _test_removing_sim_group_membership_stops_ticking_without_touching_the_view
 	scout.set("_previous_global_position", sentinel)
 	scout.remove_from_group("sim_units")
 	_expect(scout.is_in_group("units"), "removing \"sim_units\" must not remove \"units\" too")
-	match_instance.call("_advance_simulation_tick")
+	match_instance.advance_ticks(1)
 	var after_removal: Vector3 = scout.get("_previous_global_position")
 	_expect(
 		after_removal == sentinel,
@@ -475,7 +475,7 @@ func _test_removing_sim_group_membership_stops_ticking_without_touching_the_view
 	# the wrong reason: not because removal stopped the tick, but because
 	# nothing was ever ticking ScoutA in the first place.
 	scout.add_to_group("sim_units")
-	match_instance.call("_advance_simulation_tick")
+	match_instance.advance_ticks(1)
 	var after_rejoin: Vector3 = scout.get("_previous_global_position")
 	_expect(
 		after_rejoin != sentinel,
@@ -507,14 +507,14 @@ func _test_removing_sim_group_membership_stops_ticking_without_touching_the_view
 	turret.reload_ticks_remaining = 5
 	building.remove_from_group("sim_buildings")
 	_expect(building.is_in_group("buildings"), "removing \"sim_buildings\" must not remove \"buildings\" too")
-	match_instance.call("_advance_simulation_tick")
+	match_instance.advance_ticks(1)
 	_expect(
 		turret.reload_ticks_remaining == 5,
 		"a building left in \"buildings\" but removed from \"sim_buildings\" must not be ticked"
 	)
 	# Positive control, same reason as the unit half above.
 	building.add_to_group("sim_buildings")
-	match_instance.call("_advance_simulation_tick")
+	match_instance.advance_ticks(1)
 	_expect(
 		turret.reload_ticks_remaining == 4,
 		"sanity check: rejoining \"sim_buildings\" must make the building tick again"

@@ -76,7 +76,7 @@ func _test_player_two_unit_order_owns_everything() -> void:
 	var player_two = players.player(2)
 	var producers := _add_barracks_for_both_players(match_instance)
 	await process_frame
-	match_instance._advance_simulation_tick()
+	match_instance.advance_ticks(1)
 
 	var player_one_money_before: int = player_one.money
 	var player_two_money_before: int = player_two.money
@@ -86,7 +86,7 @@ func _test_player_two_unit_order_owns_everything() -> void:
 	command.unit_id = &"ATInfantry"
 	command.button_index = MOUSE_BUTTON_LEFT
 	match_instance._command_bus.submit(command, match_instance.next_orderable_tick())
-	match_instance._advance_simulation_tick()
+	match_instance.advance_ticks(1)
 
 	var production = match_instance.get_node_or_null("UnitProductionSystem")
 	_expect(
@@ -98,7 +98,7 @@ func _test_player_two_unit_order_owns_everything() -> void:
 		"player 1's queue must stay untouched by player 2's order"
 	)
 	for _tick in 2000:
-		match_instance._advance_simulation_tick()
+		match_instance.advance_ticks(1)
 		if _newest_unit(match_instance, &"ATInfantry", units_before) != null:
 			break
 	var produced := _newest_unit(match_instance, &"ATInfantry", units_before)
@@ -123,7 +123,7 @@ func _test_unit_queue_progress_reaches_sidebar() -> void:
 	await process_frame
 	_add_barracks_for_both_players(match_instance)
 	await process_frame
-	match_instance._advance_simulation_tick()
+	match_instance.advance_ticks(1)
 	var roster = match_instance.get_node("UnitRosterController")
 	var observed_progress: Array[float] = []
 	roster.unit_option_state_changed.connect(func(option_state) -> void:
@@ -136,7 +136,7 @@ func _test_unit_queue_progress_reaches_sidebar() -> void:
 	command.button_index = MOUSE_BUTTON_LEFT
 	match_instance._command_bus.submit(command, match_instance.next_orderable_tick())
 	for _tick in 100:
-		match_instance._advance_simulation_tick()
+		match_instance.advance_ticks(1)
 		if observed_progress.size() >= 3:
 			break
 	_expect(observed_progress.size() >= 3, "queue progress must emit at least three sidebar states")
@@ -156,7 +156,7 @@ func _test_completion_refreshes_next_queued_option_state() -> void:
 	await process_frame
 	_add_barracks_for_both_players(match_instance)
 	await process_frame
-	match_instance._advance_simulation_tick()
+	match_instance.advance_ticks(1)
 	var roster = match_instance.get_node("UnitRosterController")
 	var production = match_instance.get_node("UnitProductionSystem")
 	var observed := {"latest_infantry_state": null}
@@ -176,7 +176,7 @@ func _test_completion_refreshes_next_queued_option_state() -> void:
 	command.quantity = 2
 	match_instance._command_bus.submit(command, match_instance.next_orderable_tick())
 	for _tick in 2000:
-		match_instance._advance_simulation_tick()
+		match_instance.advance_ticks(1)
 		if not completion_states.is_empty():
 			break
 	_expect(completion_states.size() == 1, "the first completed order must emit one sidebar refresh")
@@ -198,14 +198,14 @@ func _test_unit_availability_follows_command_player() -> void:
 	await process_frame
 	_add_barracks_for_player(match_instance, 2, Vector3(80.0, 8.0, 40.0))
 	await process_frame
-	match_instance._advance_simulation_tick()
+	match_instance.advance_ticks(1)
 	var production = match_instance.get_node("UnitProductionSystem")
 	var player_two_order := SimUnitOrderCommandScript.new()
 	player_two_order.player_id = 2
 	player_two_order.unit_id = &"ATInfantry"
 	player_two_order.button_index = MOUSE_BUTTON_LEFT
 	match_instance._command_bus.submit(player_two_order, match_instance.next_orderable_tick())
-	match_instance._advance_simulation_tick()
+	match_instance.advance_ticks(1)
 	_expect(
 		_unit_queue_size(production, match_instance, 2, &"ATBarracks") == 1,
 		"the player with the prerequisite must have the real-bus order accepted"
@@ -215,7 +215,7 @@ func _test_unit_availability_follows_command_player() -> void:
 	player_one_order.unit_id = &"ATInfantry"
 	player_one_order.button_index = MOUSE_BUTTON_LEFT
 	match_instance._command_bus.submit(player_one_order, match_instance.next_orderable_tick())
-	match_instance._advance_simulation_tick()
+	match_instance.advance_ticks(1)
 	_expect(
 		_unit_queue_size(production, match_instance, 1, &"ATBarracks") == 0,
 		"the player without the prerequisite must have the real-bus order refused"

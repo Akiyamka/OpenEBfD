@@ -2583,16 +2583,25 @@ source cites a number you cannot place.
     against this work while it still carried the id `D5`: the building progress
     bar's wallet coupling, and the doubled "upgrade upgrade" text in five
     messages.
-  - **`E1`** — a tick-driver seam. Match takes a driver rather than owning
-    `FrameTickDriver`; a burst driver returns a fixed budget with no wall
-    clock and no `MAX_TICKS_PER_FRAME` clamp to apply. This seam is already
-    wanted and already improvised: **70 direct calls to
-    `_advance_simulation_tick()` across 11 test files** exist because an
-    awaited frame "only advances the clock by however much wall time it
-    happened to take and is not guaranteed to produce a tick at all"
-    (`tests/match/demo_boot_run.gd:131`). `MatchClock`'s own class comment
-    already names the second driver phase 5 will bring, so the seam is owed
-    twice over.
+  - **`E1`** — a public tick pump on `Match`:
+    `advance_ticks(count: int) -> int`. Measured before the migration, **68
+    direct calls to `_advance_simulation_tick()` across 10 test files** — 36
+    through `call()` by string and 32 direct — existed because an awaited
+    frame "only advances the clock by however much wall time it happened to
+    take and is not guaranteed to produce a tick at all"
+    (`tests/match/demo_boot_run.gd:167`). The pump replaces those hand-driven
+    copies, returns the clock boundary it reaches, and is the entry point a
+    headless runner can loop without frame time. `_process()` calls it only
+    after `FrameTickDriver` has applied `MAX_TICKS_PER_FRAME`; the clamp is
+    frame pacing, not a simulation limit. The injectable-driver plan moves to
+    phase 5, where the turn scheduler is its actual second reader, rather than
+    introducing an unused seam here.
+
+    Superseded plan text, for the record: a tick-driver seam where Match takes
+    a driver rather than owning `FrameTickDriver`; a burst driver returns a
+    fixed budget with no wall clock and no `MAX_TICKS_PER_FRAME` clamp to
+    apply. `MatchClock`'s own class comment already names the second driver
+    phase 5 will bring.
   - **`E2a`** — the frameless sweep. Nine `call_deferred` / `set_deferred`
     sites in `scripts/` each hold work that only runs at end of engine frame,
     which in a loop that runs ticks without frames is never.
@@ -2611,9 +2620,9 @@ source cites a number you cannot place.
     severed flight's: read the clip's authored length once, complete on a tick
     deadline. The rule's exempt list is the file list, and it shrinks to zero.
   - **`E4`** — the headless entry point: boot a match with no view, feed a
-    recorded command log, run to the end of it, exit. Production code is
-    almost ready for it — `await` appears at exactly 2 sites in all of
-    `scripts/`, both in `match.gd`.
+    recorded command log, loop `Match.advance_ticks()`, run to the end of it,
+    exit. Production code is almost ready for it — `await` appears at exactly
+    2 sites in all of `scripts/`, both in `match.gd`.
   - **`E5`** — measure it and record the number. Ticks per second headless
     against the 25 a second real time gives, on the same machine, with the
     command beside it. Until that number exists, "faster than real time" is a

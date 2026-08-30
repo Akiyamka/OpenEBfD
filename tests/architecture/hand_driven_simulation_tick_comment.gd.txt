@@ -1,0 +1,5 @@
+extends RefCounted
+
+# match_instance.call("_advance_simulation_tick")
+func drive() -> void:
+	pass

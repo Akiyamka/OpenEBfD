@@ -1,7 +1,7 @@
 extends SceneTree
 
 ## Slice D5's binding regression. These cases submit remote repair and sale
-## commands to the real Match bus and drive Match._advance_simulation_tick()
+## commands to the real Match bus and drive Match.advance_ticks()
 ## directly, so they prove the command's player id reaches the execution path
 ## rather than merely exercising a controller helper in isolation.
 
@@ -85,8 +85,7 @@ func _test_repairs_charge_each_owner() -> void:
 	_expect(remote_building.is_repairing, "setup: player-2's repair command must start player 2's repair")
 	# ATSmWindtrap's 12-health pulse costs 0.6 credits, so two pulses are
 	# needed to cross the service's integer-credit carry boundary.
-	for _tick in 20:
-		match_instance.call("_advance_simulation_tick")
+	match_instance.advance_ticks(20)
 	var player_one_spent: int = player_one_before - player_one.money
 	var player_two_spent: int = player_two_before - player_two.money
 	_expect(local_building.health > local_building.max_health - 100.0, "setup: player 1's damaged building must repair")
@@ -192,7 +191,7 @@ func _submit_repair(match_instance, building: Building, player_id: int) -> void:
 	command.player_id = player_id
 	command.entity_id = building.entity_id
 	match_instance._command_bus.submit(command, match_instance.next_orderable_tick())
-	match_instance.call("_advance_simulation_tick")
+	match_instance.advance_ticks(1)
 
 
 func _submit_sale(match_instance, building: Building, player_id: int) -> void:
@@ -200,7 +199,7 @@ func _submit_sale(match_instance, building: Building, player_id: int) -> void:
 	command.player_id = player_id
 	command.entity_id = building.entity_id
 	match_instance._command_bus.submit(command, match_instance.next_orderable_tick())
-	match_instance.call("_advance_simulation_tick")
+	match_instance.advance_ticks(1)
 
 
 func _finish_sale(match_instance, building: Building) -> void:
@@ -209,7 +208,7 @@ func _finish_sale(match_instance, building: Building) -> void:
 	if player == null:
 		return
 	player.animation_finished.emit(&"sell")
-	match_instance.call("_advance_simulation_tick")
+	match_instance.advance_ticks(1)
 
 
 func _free_match(match_instance) -> void:
