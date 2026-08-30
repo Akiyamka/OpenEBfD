@@ -2602,20 +2602,54 @@ source cites a number you cannot place.
     fixed budget with no wall clock and no `MAX_TICKS_PER_FRAME` clamp to
     apply. `MatchClock`'s own class comment already names the second driver
     phase 5 will bring.
-  - **`E2a`** — the frameless sweep. Nine `call_deferred` / `set_deferred`
-    sites in `scripts/` each hold work that only runs at end of engine frame,
-    which in a loop that runs ticks without frames is never.
-    `BuildingAvailabilityTracker`'s deferred `_track()` is the one `D1` turned
-    up and left; the slice's job is to find what the other eight do to a
-    frameless run and give each one a tick-time answer or a documented reason
-    it does not need one. It sits before `E2` because `E2`'s test is what
-    proves the sweep worked, and a slice whose product is a fix wants its
-    reader waiting for it rather than the other way round.
   - **`E2`** — a state hash on `SimEntityState`, and the test that makes the
     track falsifiable: N ticks with no frames must hash identically to N ticks
-    interleaved with frames. This is the acceptance test for `E` and phase 4's
-    replay-hash primitive in embryo, which is why it comes before the runner
-    rather than after it.
+    interleaved with frames. It moved ahead of E2a because the hash is phase
+    4's primitive regardless of the sweep, and it binds every deferred effect
+    that reaches the state it observes; it does not select E2a's scope. The
+    boundary is explicit: ascending live entity ids, then each live id's
+    position, health, shields and owner player id, in raw packed-array bytes.
+    `previous_position` is derived interpolation state and is outside it.
+    State that still lives on nodes is outside it too: `Unit.invulnerable` is
+    the known example, owed to E2a rather than staged here. `capture()` still
+    walks stale presence bytes after a registry release while `has_position()`
+    rejects that id; the hash follows the reader and excludes it. That
+    snapshot disagreement is recorded, not changed, because snapshot restore
+    behaviour needs its own slice. The parity arms run sequentially: Match
+    walks six tree-wide group lists per tick (units twice, linger effects,
+    projectiles, buildings and spice mounds), so two live matches would tick
+    one another's entities.
+
+    The gate is green as landed: over a 40-tick window that places a building,
+    produces a unit, runs an attack and despawns an entity, the frameless and
+    the framed arm end on the same hash. That is a result rather than a clean
+    bill of health, and it is what E2a is owed less by — the deferred
+    availability registration and the default rally point each fired once in
+    the framed arm and not at all in the frameless one, and neither moved
+    observable state inside the window. What makes the green mean anything is
+    the pair of controls beside it: a deliberately deferred store write does
+    make the two hashes differ, and invulnerability does diverge across the
+    arms while the hash stays equal. Measured, not assumed — with `state_hash()`
+    stubbed to a constant the parity case still passes and only the first
+    control catches it, so the parity case on its own proves nothing.
+  - **`E2a`** — the frameless sweep. There are seven runtime
+    `call_deferred`/`set_deferred` calls in `scripts/`, not nine; counting two
+    comments produced the old number. Its eight-site audit includes those
+    seven plus the editor-only `UnitEditorPreview` call. The deferred tracker
+    registration, default building rally point, wall topology refresh,
+    deployment-finished emission and projectile free each have effects that
+    are either node/view/queue lifecycle state or reach the hash only through
+    a later stored write; E2a owes a per-site regression where that later path
+    matters. The editor preview is structurally unreachable at runtime.
+    Of the 21 timer/tween sites in `scripts/`, exactly one touches simulation
+    state: Unit's temporary invulnerability timer, which is simulation-relevant
+    but lives on Unit rather than in SimEntityState. Two more were counted as
+    simulation state when this scope was first drafted and are not — the
+    deployment sounds at `unit_deploy_state.gd:250`, whose timeout only reaches
+    `SfxSectionCatalog.play_at()`, and the laser retention at
+    `combat_projectile.gd:772`, built only after `_finish()` has already zeroed
+    the projectile's velocity and removed it from `sim_projectiles`. The
+    remaining 18 are FX, audio and corpse debris.
   - **`E3`** — sever the six `animation_finished` completions the way `B3d`
     severed flight's: read the clip's authored length once, complete on a tick
     deadline. The rule's exempt list is the file list, and it shrinks to zero.

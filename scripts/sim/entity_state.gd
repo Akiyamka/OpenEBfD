@@ -513,6 +513,50 @@ func has_owner_player_id(id: int) -> bool:
 	)
 
 
+## Returns a deterministic hash of the state simulation can observe: entity
+## liveness, then position, health, shields and owner_player_id for every
+## live id whose public reader accepts that field. previous_position() is
+## deliberately outside this boundary because it is B4's derived view blend
+## source, not state produced by a tick. Simulation state kept outside this
+## store is invisible too; Unit.invulnerable is the known example.
+##
+## The fold starts at SimEntityRegistry.live_ids(), rather than capture()'s
+## presence arrays: release() leaves old presence bytes behind, but a released
+## id is unobservable (position() rejects it), so it cannot affect this hash.
+## Values are folded as Packed*Array.to_byte_array() output, not rounded
+## arithmetic. The 32-bit FNV-1a product is masked after every byte. Its
+## largest intermediate is 0xffffffff * 16777619, below signed 64-bit range,
+## so this does not rely on GDScript's signed-integer overflow behaviour.
+func state_hash() -> int:
+	var hash := 2166136261
+	for id in _registry.live_ids():
+		hash = _fold_hash_bytes(hash, PackedInt32Array([id]).to_byte_array())
+		hash = _fold_hash_presence(hash, has_position(id))
+		if has_position(id):
+			hash = _fold_hash_bytes(hash, PackedVector3Array([_position[id]]).to_byte_array())
+		hash = _fold_hash_presence(hash, has_health(id))
+		if has_health(id):
+			hash = _fold_hash_bytes(hash, PackedFloat32Array([_health[id]]).to_byte_array())
+		hash = _fold_hash_presence(hash, has_shields(id))
+		if has_shields(id):
+			hash = _fold_hash_bytes(hash, PackedFloat32Array([_shields[id]]).to_byte_array())
+		hash = _fold_hash_presence(hash, has_owner_player_id(id))
+		if has_owner_player_id(id):
+			hash = _fold_hash_bytes(hash, PackedInt32Array([_owner_player_id[id]]).to_byte_array())
+	return hash
+
+
+func _fold_hash_presence(hash: int, present: bool) -> int:
+	return _fold_hash_bytes(hash, PackedByteArray([1 if present else 0]))
+
+
+func _fold_hash_bytes(hash: int, bytes: PackedByteArray) -> int:
+	var result := hash
+	for byte in bytes:
+		result = ((result ^ int(byte)) * 16777619) & 0xffffffff
+	return result
+
+
 ## Array length backing the position field this store holds -- the id
 ## high-water mark among ids that have actually had a position written,
 ## plus one. Test-facing: proves restore() replaced the arrays rather than

@@ -145,6 +145,10 @@ func _initialize() -> void:
 		"restore() fails closed on malformed owner_player_id data and leaves prior contents untouched",
 		_test_restore_fails_closed_on_malformed_owner_player_id_data
 	)
+	_run_case("state_hash() changes for every stored observation", _test_state_hash_observed_fields)
+	_run_case("state_hash() includes live ids, including unwritten ones", _test_state_hash_liveness)
+	_run_case("state_hash() excludes released rows", _test_state_hash_excludes_released_rows)
+	_run_case("state_hash() is stable and independent of write order", _test_state_hash_stability)
 	_finish("SimEntityState tests")
 
 
@@ -751,4 +755,82 @@ func _test_restore_fails_closed_on_malformed_owner_player_id_data() -> void:
 	_expect(
 		state.owner_player_id(a) == 2,
 		"a failed restore() must leave the store's prior owner_player_id contents completely untouched"
+	)
+
+
+func _test_state_hash_observed_fields() -> void:
+	var registry := SimEntityRegistryScript.new()
+	var state := SimEntityStateScript.new(registry)
+	var id := registry.allocate(SimEntityRegistryScript.Kind.UNIT)
+	state.set_position(id, Vector3(1.0, 2.0, 3.0))
+	state.set_health(id, 10.0)
+	state.set_shields(id, 20.0)
+	state.set_owner_player_id(id, 1)
+	var before := state.state_hash()
+	state.set_position(id, Vector3(4.0, 2.0, 3.0))
+	_expect(state.state_hash() != before, "a position mutation must change state_hash()")
+	before = state.state_hash()
+	state.set_health(id, 11.0)
+	_expect(state.state_hash() != before, "a health mutation must change state_hash()")
+	before = state.state_hash()
+	state.set_shields(id, 21.0)
+	_expect(state.state_hash() != before, "a shields mutation must change state_hash()")
+	before = state.state_hash()
+	state.set_owner_player_id(id, 2)
+	_expect(state.state_hash() != before, "an owner_player_id mutation must change state_hash()")
+
+
+func _test_state_hash_liveness() -> void:
+	var registry := SimEntityRegistryScript.new()
+	var state := SimEntityStateScript.new(registry)
+	var before := state.state_hash()
+	var id := registry.allocate(SimEntityRegistryScript.Kind.UNIT)
+	_expect(
+		state.state_hash() != before,
+		"allocating a live id with no writes must change state_hash(): entity existence is observable state"
+	)
+	before = state.state_hash()
+	registry.release(id)
+	_expect(state.state_hash() != before, "releasing a live id must change state_hash()")
+
+
+func _test_state_hash_excludes_released_rows() -> void:
+	var registry := SimEntityRegistryScript.new()
+	var state := SimEntityStateScript.new(registry)
+	var before := state.state_hash()
+	var id := registry.allocate(SimEntityRegistryScript.Kind.UNIT)
+	state.set_position(id, Vector3(8.0, 9.0, 10.0))
+	state.set_health(id, 12.0)
+	state.set_shields(id, 13.0)
+	state.set_owner_player_id(id, 3)
+	registry.release(id)
+	_expect(
+		state.state_hash() == before,
+		"a written row released before hashing must be excluded: capture() presence bytes are not the hash traversal"
+	)
+
+
+func _test_state_hash_stability() -> void:
+	var first_registry := SimEntityRegistryScript.new()
+	var first := SimEntityStateScript.new(first_registry)
+	var first_a := first_registry.allocate(SimEntityRegistryScript.Kind.UNIT)
+	var first_b := first_registry.allocate(SimEntityRegistryScript.Kind.BUILDING)
+	first.set_position(first_a, Vector3(1.0, 2.0, 3.0))
+	first.set_health(first_b, 50.0)
+	first.set_shields(first_a, 4.0)
+	first.set_owner_player_id(first_b, 2)
+	var first_hash := first.state_hash()
+	_expect(first.state_hash() == first_hash, "hashing the same store twice must be stable")
+
+	var second_registry := SimEntityRegistryScript.new()
+	var second := SimEntityStateScript.new(second_registry)
+	var second_a := second_registry.allocate(SimEntityRegistryScript.Kind.UNIT)
+	var second_b := second_registry.allocate(SimEntityRegistryScript.Kind.BUILDING)
+	second.set_owner_player_id(second_b, 2)
+	second.set_shields(second_a, 4.0)
+	second.set_health(second_b, 50.0)
+	second.set_position(second_a, Vector3(1.0, 2.0, 3.0))
+	_expect(
+		second.state_hash() == first_hash,
+		"equivalent stores written in a different order must have the same hash"
 	)
