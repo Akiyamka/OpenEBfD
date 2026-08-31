@@ -58,7 +58,18 @@ RULE_KINDS = frozenset(
 SETTINGS_KEYS = frozenset({"allow_budget", "min_reason_length"})
 ZONE_KEYS = frozenset({"description", "include", "exclude", "allow_empty"})
 RULE_KEYS = frozenset(
-    {"id", "zone", "kind", "pattern", "index", "exempt", "summary", "why", "instead"}
+    {
+        "id",
+        "zone",
+        "kind",
+        "pattern",
+        "index",
+        "exempt",
+        "cleared",
+        "summary",
+        "why",
+        "instead",
+    }
 )
 
 RULE_ID_RE = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
@@ -140,9 +151,10 @@ class Rule:
     pattern: re.Pattern[str] | None
     index: str | None
     exempt: tuple[re.Pattern[str], ...]
+    cleared: tuple[re.Pattern[str], ...]
 
     def applies_to(self, relative: str) -> bool:
-        if any(pattern.fullmatch(relative) for pattern in self.exempt):
+        if any(pattern.fullmatch(relative) for pattern in self.exempt + self.cleared):
             return False
         return self.zone.matches(relative)
 
@@ -203,6 +215,31 @@ def _text(table: dict[str, object], key: str, where: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ConfigError(f"{where}: `{key}` is required and must be a non-empty string")
     return " ".join(value.split())
+
+
+def _cleared_paths(value: object, where: str, min_reason_length: int) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        raise ConfigError(f"{where}: expected a list of tables with `path` and `reason`")
+    paths: list[str] = []
+    for number, entry in enumerate(value, 1):
+        entry_where = f"{where}[{number}]"
+        if not isinstance(entry, dict):
+            raise ConfigError(f"{entry_where}: expected a table with `path` and `reason`")
+        _require_keys(entry, frozenset({"path", "reason"}), entry_where)
+        path = entry.get("path")
+        if not isinstance(path, str) or not path.strip():
+            raise ConfigError(f"{entry_where}: `path` is required and must be a non-empty string")
+        reason = entry.get("reason")
+        if not isinstance(reason, str) or len(reason.strip()) < min_reason_length:
+            raise ConfigError(
+                f"{entry_where}: `reason` is required and must be at least "
+                f"{min_reason_length} characters"
+            )
+        normalized = path.strip()
+        if normalized in paths:
+            raise ConfigError(f"{entry_where}: duplicate cleared path `{normalized}`")
+        paths.append(normalized)
+    return tuple(paths)
 
 
 def load_manifest(path: Path) -> Manifest:
@@ -305,6 +342,17 @@ def load_manifest(path: Path) -> Manifest:
         elif index is not None:
             raise ConfigError(f"{where}: `index` is only meaningful for `slice-index`")
 
+        exempt_paths = _string_list(table.get("exempt", []), f"{where}.exempt")
+        cleared_paths = _cleared_paths(
+            table.get("cleared", []), f"{where}.cleared", settings.min_reason_length
+        )
+        overlap = sorted(set(exempt_paths) & set(cleared_paths))
+        if overlap:
+            raise ConfigError(
+                f"{where}: path(s) appear in both `exempt` and `cleared`: "
+                f"{', '.join(overlap)}"
+            )
+
         rules.append(
             Rule(
                 id=rule_id,
@@ -315,10 +363,8 @@ def load_manifest(path: Path) -> Manifest:
                 instead=_text(table, "instead", where),
                 pattern=pattern,
                 index=index,
-                exempt=tuple(
-                    glob_to_regex(item)
-                    for item in _string_list(table.get("exempt", []), f"{where}.exempt")
-                ),
+                exempt=tuple(glob_to_regex(item) for item in exempt_paths),
+                cleared=tuple(glob_to_regex(item) for item in cleared_paths),
             )
         )
 

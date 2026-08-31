@@ -15,6 +15,7 @@ extends RefCounted
 ## mid-deploy runs the corpse handoff and then _exit_tree() as well.
 
 const SpatialOrientationScript := preload("res://scripts/world/spatial_orientation.gd")
+const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 const AuthoredReloadSoundScript := preload(
 	"res://scripts/combat/authored_reload_sound.gd"
 )
@@ -216,7 +217,21 @@ func start_transition(candidates: Array[StringName]) -> void:
 		animation.loop_mode = Animation.LOOP_NONE
 	_transition_player.stop()
 	_transition_player.play(_transition_animation)
+	# The transition may keep playing for presentation, but its gameplay
+	# completion is fixed from authored data here rather than waiting for the
+	# AnimationPlayer signal on an engine frame. A prior fire clip can leave
+	# this player speed-scaled, so use the same effective duration as its sound
+	# schedule below.
+	_unit.queue_deployment_animation_finished(_transition_completion_ticks(animation))
 	_schedule_authored_sounds()
+
+
+func _transition_completion_ticks(animation: Animation) -> int:
+	if animation == null:
+		return 1
+	var speed_scale := maxf(absf(_transition_player.speed_scale), 0.01)
+	var seconds := animation.length / speed_scale
+	return maxi(int(ceilf(seconds / MatchClockScript.SECONDS_PER_TICK)), 1)
 
 
 ## The Kindjal and the Mortar author a reload inside `Deploy Gun` itself -- the
@@ -267,14 +282,6 @@ func _play_authored_sound(section: StringName) -> void:
 	SfxSectionCatalogScript.play_at(
 		_unit.get_parent(), _unit.global_position, section
 	)
-
-
-## True when the finished clip is the transition this machine is waiting for;
-## the facade emits the signal, so subscribers stay attached to the Unit.
-func on_animation_finished(animation_name: StringName, player: AnimationPlayer) -> bool:
-	return is_transitioning() \
-		and player == _transition_player \
-		and animation_name == _transition_animation
 
 
 ## The deployment strategy calls this after the animation-to-world handoff.

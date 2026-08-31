@@ -142,14 +142,16 @@ instead = "MatchClock.TICKS_PER_SECOND for simulation time, or RuleTicks for a r
 id = "animation-completes-simulation"
 zone = "all"
 # Match the decision handlers, including descriptive names a class gives them
-# once it has more than one.  `emit_` (with or without a leading private `_`)
-# is deliberately excluded: it names a signal emitter, not a handler waiting
-# for AnimationPlayer's frame-time decision.  The rejected
+# once it has more than one. `exempt` is the unaudited backlog that shrinks as
+# work lands; `cleared` records an audited verdict for a match that is not a
+# defect. `emit_` and `queue_` (with or without a leading private `_`) are
+# deliberately excluded: they name signal emission or tick-completion
+# scheduling, not a handler waiting for AnimationPlayer's frame-time decision. The rejected
 # `animation_finished\.connect\(` alternative sees generic plumbing
 # (AuthoredModel.play_one_shot()) rather than the decision and misses callers;
 # matching `play_one_shot(` sees only its callback callers and misses direct
 # connections.
-pattern = 'func (?!_?emit_)\w*animation_finished\s*\('
+pattern = 'func (?!_?(?:emit|queue)_)\w*animation_finished\s*\('
 exempt = [
 	# Phase 4's audit backlog. Every entry here handles AnimationPlayer's
 	# animation_finished signal, which fires on engine frame time. Where that
@@ -160,29 +162,30 @@ exempt = [
 	# the same question answered before phase 4's determinism gate: does it
 	# read live animation state to decide *when, or whether*, something
 	# happens? Reading a clip's authored length once is fine; waiting on its
-	# finished signal is not. Delete the entry when its file is fixed or
-	# cleared -- an emptying list is the progress report.
+	# finished signal is not. Delete an entry when its file is fixed; record an
+	# audited non-defect in `cleared` instead. The emptying exempt list is the
+	# progress report.
 	#
 	# Proven defective (see the phase 3 entry, slice B3d's sweep):
 	"scripts/units/unit_locomotion.gd",
 	# Suspected, unaudited -- each gates something a command can observe:
 	"scripts/units/unit_combat.gd",
-	"scripts/units/unit_deploy_state.gd",
 	"scripts/production/building_sale_service.gd",
-	# Surfaced by E2b's widened handler-name pattern; none of these four files
-	# has been audited yet. building_placement.gd clears invulnerability and
-	# calls finish_construction() from the frame-time callback, so its entry is
-	# command-observable as well as load-bearing.
+	# Surfaced by E2b's widened handler-name pattern. building_placement.gd
+	# clears invulnerability and calls finish_construction() from the frame-time
+	# callback, so its entry is command-observable as well as load-bearing.
 	"scripts/buildings/building_placement.gd",
 	"scripts/effects/death_corpse.gd",
+	# E3b: its construction-yard deconstruct callback is a direct
+	# AnimationPlayer completion and spawns the packed MCV.
 	"scripts/units/unit_deployment_controller.gd",
-	"scripts/units/combat_deploy_strategy.gd",
 	# The dispatcher, not a decision of its own: it routes to the handlers
 	# above and must survive them, so it is cleared only when they all are.
 	"scripts/units/unit.gd",
 	# Cosmetic, audited and cleared: picks the next idle clip and nothing else.
 	"scripts/units/unit_idle_animations.gd",
 ]
+cleared = [{ path = "scripts/units/combat_deploy_strategy.gd", reason = "Both matching handlers subscribe to Unit.deployment_animation_finished, a project signal scheduled by simulation rather than AnimationPlayer." }]
 summary = "simulation state completed from an animation signal"
 why = """
 AnimationPlayer's animation_finished fires on engine frame time, so a \

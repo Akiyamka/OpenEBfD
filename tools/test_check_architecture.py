@@ -188,12 +188,28 @@ CASES: tuple[Case, ...] = (
         forbid_rules=("animation-completes-simulation",),
     ),
     Case(
+        # Queueing a completion for a later simulation tick is scheduling-side
+        # plumbing, like emitting it; neither waits on AnimationPlayer.
+        "a queued animation completion is not a handler",
+        scripts("queue_animation_finished"),
+        EXIT_CLEAN,
+        forbid_rules=("animation-completes-simulation",),
+    ),
+    Case(
         # The exempt list in architecture_rules.toml is phase 4's audit
         # backlog, not a blessing -- this proves an entry on it really does
         # silence the rule, so that deleting one is a meaningful event.
         "the animation handler is allowed where phase 4 still owes an audit",
         {"scripts/units/unit_locomotion.gd": "animation_completes_simulation"},
         EXIT_CLEAN,
+    ),
+    Case(
+        # `cleared` is a recorded audited verdict, distinct from the shrinking
+        # unaudited `exempt` backlog, but it must suppress the same finding.
+        "an audited animation handler is allowed where cleared records its verdict",
+        {"scripts/units/combat_deploy_strategy.gd": "descriptive_animation_completes_simulation"},
+        EXIT_CLEAN,
+        forbid_rules=("animation-completes-simulation",),
     ),
     Case(
         "zone globs reach nested directories",
@@ -451,6 +467,28 @@ CASES: tuple[Case, ...] = (
         EXIT_BROKEN_CONFIG,
         manifest=MINIMAL_MANIFEST.replace("allow_budget = 0", "allow_budget = -1"),
         expect_text=("must be an integer >= 0",),
+    ),
+    Case(
+        "a cleared entry needs a structured reason",
+        scripts("clean"),
+        EXIT_BROKEN_CONFIG,
+        manifest=MINIMAL_MANIFEST.replace(
+            "summary = \"summary\"",
+            'cleared = [{ path = "scripts/clean.gd" }]\nsummary = "summary"',
+        ),
+        expect_text=("`reason` is required",),
+    ),
+    Case(
+        "a path cannot be both exempt and cleared",
+        scripts("clean"),
+        EXIT_BROKEN_CONFIG,
+        manifest=MINIMAL_MANIFEST.replace(
+            "summary = \"summary\"",
+            'exempt = ["scripts/clean.gd"]\n'
+            'cleared = [{ path = "scripts/clean.gd", reason = "audited clean handler" }]\n'
+            'summary = "summary"',
+        ),
+        expect_text=("both `exempt` and `cleared`",),
     ),
     # -- slice index ----------------------------------------------------------
     Case(

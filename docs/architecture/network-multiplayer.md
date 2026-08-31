@@ -2355,8 +2355,8 @@ source cites a number you cannot place.
   ticks in a fixed order beside the other controllers. `ProductionSystem` is
   that owner; `PlayerData` stays about resources.
 
-  **The twelve animation-completion handlers across ten audit-queue files come
-  into phase 3 as `E3`.** They
+  **The animation-completion audit queue across ten files comes into phase 3 as
+  `E3`.** It
   were carried into phase 4 deliberately (see that phase's entry below), and
   `E` takes them back for a mechanical reason: a loop that runs ticks without
   frames never fires `AnimationPlayer`'s `animation_finished`, so a unit that
@@ -2692,13 +2692,33 @@ source cites a number you cannot place.
     change. **`E2c`** owns the separate entity-lifecycle half: deployment
     completion, projectile free, invulnerability, and the remaining handlers
     whose frame-time completion changes simulation state.
-  - **`E3`** — audit the ten-file queue and sever the handlers that complete
-    simulation state, the way `B3d` severed flight's: read the clip's authored
-    length once, complete on a tick deadline. Twelve handlers match the widened
-    pattern, but twelve is the queue's size and not the work — the list already
-    records `unit_idle_animations.gd` as cosmetic, audited and cleared, and
-    `unit.gd` as the dispatcher that clears only once the handlers it routes to
-    do. The exempt list is the file list, and it shrinks to zero.
+  - **`E3`** — audit the ten-file queue, split three ways by subsystem, and
+    sever the handlers that complete simulation state, the way `B3d` severed
+    flight's: read the clip's authored length once and complete on a tick
+    deadline. `E3a` takes deployment: `UnitDeployState` now reads its selected
+    clip's authored length once, divides it by the transition player's retained
+    `speed_scale`, and queues that many simulation ticks; the old
+    `Unit._on_animation_finished()` route and deploy predicate are gone. A
+    frameless real-Match regression proves both a completely unadvanced player
+    and one advanced through its whole clip reach the same deadline.
+
+    The audit also corrected the queue's ownership: the
+    `unit_deployment_controller.gd:356` callback is bound by
+    `AuthoredModel.play_one_shot()` to the Construction Yard's `deconstruct`
+    clip and spawns the packed MCV, so it belongs to building work in `E3b`,
+    not deployment's project-signal subscription. `CombatDeployStrategy`'s two
+    similarly named methods really do subscribe to
+    `Unit.deployment_animation_finished`; their names are correct and are not
+    renamed merely to satisfy a suffix regex. The widened `E2b` pattern also
+    found scheduling-side `queue_deployment_animation_finished`; excluding
+    `queue_`, like its existing `emit_` exclusion, keeps scheduling from being
+    miscounted as a handler.
+
+    That distinction required the rule to split its lists. `exempt` is the
+    unaudited work queue and shrinks as defects are fixed; `cleared` is a
+    structured, reason-required record of audited matching files that are not
+    defects. The checker suppresses either list but rejects an overlap, so a
+    file cannot silently move from the work queue into an undocumented waiver.
   - **`E4`** — the headless entry point: boot a match with no view, feed a
     recorded command log, loop `Match.advance_ticks()`, run to the end of it,
     exit. Production code is almost ready for it — `await` appears at exactly
@@ -2729,12 +2749,14 @@ source cites a number you cannot place.
   The backlog is not kept here, on purpose — a list in prose is a second place
   to keep correct, and it would be wrong the first time someone fixed one
   without coming back. It lives in `tools/architecture_rules.toml` as the
-  `exempt` list of the `animation-completes-simulation` rule, which is the audit
-  queue and the enforcement in one object: a **new** handler trips the rule
-  immediately, and deleting an entry is the visible event that records progress.
-  Read that list; it is current by construction. `tools/test_check_architecture.py`
-  proves both halves — that the shape is caught, and that an exemption really
-  does silence it, so removing one means something.
+  `exempt` list of the `animation-completes-simulation` rule, which is the
+  unaudited queue and the enforcement in one object: a **new** handler trips
+  the rule immediately, and deleting an exempt entry is the visible event that
+  records fixed work. Its companion `cleared` list holds structured audited
+  non-defects, because a name-matching file cannot leave the rule altogether
+  merely because the audit found it safe. Read both lists; they are current by
+  construction. `tools/test_check_architecture.py` proves the pattern, both
+  suppression lists, and that the two cannot overlap.
 
   What each entry needs before this gate closes is one question, the same one
   B3b answered "no" for authored building fire and B3d answered "yes" for

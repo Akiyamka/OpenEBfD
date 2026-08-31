@@ -36,6 +36,8 @@ const SimAdmissionQueueScript := preload("res://scripts/match/sim_admission_queu
 const SimUnitOrderCommandScript := preload("res://scripts/sim/commands/unit_order_command.gd")
 const UnitScene := preload("res://scenes/units/unit.tscn")
 const BuildingFootprintScript := preload("res://scripts/buildings/building_footprint.gd")
+const AtKindjalScene := preload("res://scenes/units/at_kindjal.tscn")
+const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 
 
 ## Stands in for ReplayPlayer at ReplayPlayer's own, named position in
@@ -144,6 +146,14 @@ func _initialize() -> void:
 	await _run_case(
 		"clipless MCV and combat deploy transitions complete on the next frameless match tick",
 		_test_clipless_deployment_completions
+	)
+	await _run_case(
+		"an authored combat-deploy transition completes on its frameless tick deadline",
+		_test_authored_deployment_completion_is_frameless
+	)
+	await _run_case(
+		"an authored combat-deploy deadline is unchanged by animation frame pacing",
+		_test_authored_deployment_completion_ignores_animation_pacing
 	)
 	await _run_case(
 		"a unit created mid-tick inside a real Match is not in \"sim_units\" for the rest of "
@@ -581,6 +591,95 @@ func _test_clipless_deployment_completions() -> void:
 		_expect(not kindjal.is_deployed() and not kindjal.is_deploying(), "the next tick must complete clipless combat undeployment")
 	match_instance.queue_free()
 	await process_frame
+
+
+## The measured window in both arms below has no await: only Match.advance_ticks()
+## advances simulation. The paced arm advances AnimationPlayer through the whole
+## clip before its first tick, reproducing the old frame-time trigger at a
+## deliberately different pace from the frameless arm's zero player advancement.
+func _test_authored_deployment_completion_is_frameless() -> void:
+	var result := await _run_authored_kindjal_deployment(0.0)
+	_expect(bool(result.get("started", false)), "the authored Kindjal deployment must start")
+	_expect(
+		int(result.get("tick_delta", -1)) == int(result.get("expected_ticks", -2)),
+		"the authored deployment must complete after exactly its tick deadline without frames"
+	)
+	_expect(
+		bool(result.get("pending_before_deadline", false)),
+		"a frameless authored deployment must remain pending until its final deadline tick"
+	)
+
+
+func _test_authored_deployment_completion_ignores_animation_pacing() -> void:
+	var frameless := await _run_authored_kindjal_deployment(0.0)
+	var fully_advanced := await _run_authored_kindjal_deployment(1.0)
+	_expect(bool(frameless.get("started", false)), "the frameless comparison arm must start")
+	_expect(bool(fully_advanced.get("started", false)), "the paced comparison arm must start")
+	_expect(
+		int(frameless.get("tick_delta", -1)) == int(fully_advanced.get("tick_delta", -2)),
+		"zero and complete AnimationPlayer advancement must take the same number of simulation ticks"
+	)
+	_expect(
+		int(fully_advanced.get("tick_delta", -1)) == int(fully_advanced.get("expected_ticks", -2)),
+		"fully advancing the visual clip must not complete deployment before the tick deadline"
+	)
+	_expect(
+		bool(fully_advanced.get("pending_before_deadline", false)),
+		"the fully advanced visual clip must still leave deployment pending one tick before its deadline"
+	)
+
+
+func _run_authored_kindjal_deployment(animation_pacing: float) -> Dictionary:
+	var match_instance := MatchFixtureScene.instantiate()
+	root.add_child(match_instance)
+	for _warmup in 3:
+		await process_frame
+	match_instance.set_process(false)
+	var kindjal := AtKindjalScene.instantiate() as Unit
+	match_instance.get_node("Units").add_child(kindjal)
+	# Admission is outside the measured window. The unit must join sim_units
+	# before its deadline can be driven by Match's real unit loop.
+	match_instance.advance_ticks(1)
+	var player := kindjal.get_node("VisualRoot").find_child(
+		"AnimationPlayer", true, false
+	) as AnimationPlayer
+	if player == null:
+		match_instance.queue_free()
+		await process_frame
+		return {"started": false}
+	# A pre-existing fire sequence can leave this player sped up. The deadline
+	# must read that scale once just as authored sound scheduling already does.
+	player.speed_scale = 0.5
+	var deploy_result: Dictionary = match_instance._unit_deployment_controller.try_deploy(kindjal)
+	var started := bool(deploy_result.get("started", false))
+	if not started:
+		match_instance.queue_free()
+		await process_frame
+		return {"started": false}
+	var animation := player.get_animation(player.current_animation)
+	var animation_seconds := animation.length if animation != null else 0.0
+	var expected_ticks := maxi(
+		int(ceilf(animation_seconds / absf(player.speed_scale) / MatchClockScript.SECONDS_PER_TICK)), 1
+	)
+	if animation_pacing > 0.0:
+		player.advance(animation_seconds / absf(player.speed_scale) + animation_pacing)
+	var completed_before_ticks := kindjal.is_deployed()
+	var start_tick: int = match_instance.current_tick()
+	match_instance.advance_ticks(expected_ticks - 1)
+	var pending_before_deadline := kindjal.is_deploying()
+	match_instance.advance_ticks(1)
+	var result := {
+		"started": true,
+		"completed_before_ticks": completed_before_ticks,
+		"pending_before_deadline": pending_before_deadline,
+		"expected_ticks": expected_ticks,
+		"tick_delta": match_instance.current_tick() - start_tick,
+		"deployed": kindjal.is_deployed(),
+	}
+	_expect(bool(result["deployed"]), "the Kindjal must be deployed after its authored deadline")
+	match_instance.queue_free()
+	await process_frame
+	return result
 
 
 ## UnitDeploymentController validates the MCV's current cell, unlike combat

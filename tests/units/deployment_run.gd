@@ -8,6 +8,7 @@ const LegacyRulesFixture := preload("res://tests/support/legacy_rules_fixture.gd
 ## helper's own doc comment: it was written for exactly this failure and
 ## already names three suites that hit it before this one.
 const SimTickPumpScript := preload("res://tests/combat/support/sim_tick_pump.gd")
+const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 
 const UnitDeploymentControllerScript := preload("res://scripts/units/unit_deployment_controller.gd")
 const UnitRosterControllerScript := preload("res://scripts/units/unit_roster_controller.gd")
@@ -231,9 +232,18 @@ func _test_unit_deployment_animation() -> void:
 		"the MCV must align with the future building axis before its transition"
 	)
 	_expect(player != null and player.current_animation == &"Move_Stop", "the source-backed Move_Stop transition must play after alignment")
-	if player != null:
-		player.animation_finished.emit(&"Move_Stop")
-	_expect(finished[0] == 1, "the strategy handoff must wait for the authored transition to finish")
+	var animation: Animation = player.get_animation(&"Move_Stop") if player != null else null
+	var completion_ticks := maxi(
+		int(ceilf(animation.length / MatchClockScript.SECONDS_PER_TICK)) if animation != null else 0,
+		1
+	)
+	var completion_pump := SimTickPumpScript.new()
+	for _tick in completion_ticks:
+		completion_pump.advance(unit, MatchClockScript.SECONDS_PER_TICK)
+	_expect(
+		finished[0] == 1,
+		"the strategy handoff must complete on the authored transition's tick deadline"
+	)
 	unit.finish_deployment(false)
 	_expect(not unit.is_deploying(), "a failed handoff must release the MCV")
 	world.queue_free()
@@ -486,7 +496,14 @@ func _test_captured_factory_mcv() -> void:
 	var animation_player := produced.get_node("VisualRoot").find_child(
 		"AnimationPlayer", true, false
 	) as AnimationPlayer
-	animation_player.animation_finished.emit(&"Move_Stop")
+	var transition: Animation = animation_player.get_animation(&"Move_Stop") if animation_player != null else null
+	var transition_ticks := maxi(
+		int(ceilf(transition.length / MatchClockScript.SECONDS_PER_TICK)) if transition != null else 0,
+		1
+	)
+	var transition_pump := SimTickPumpScript.new()
+	for _tick in transition_ticks:
+		transition_pump.advance(produced, MatchClockScript.SECONDS_PER_TICK)
 	var con_yard := buildings.get_child(buildings.get_child_count() - 1) as Building
 	_expect(con_yard.config_id == &"ORConYard", "the captured ORFactory MCV must deploy ORConYard")
 	_expect(con_yard.owner_player_id == 1, "the deployed ORConYard must still belong to the Atreides player")

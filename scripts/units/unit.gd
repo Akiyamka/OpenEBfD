@@ -176,7 +176,7 @@ var invulnerable := false:
 		invulnerable = value
 		_invulnerability_remaining_ticks = normalized_remaining
 var _invulnerability_remaining_ticks := 0
-var _deployment_animation_completion_pending := false
+var _deployment_animation_completion_ticks := 0
 ## The clamp is a simulation decision -- see SimEntityState's doc comment
 ## (scripts/sim/entity_state.gd) on why it happens here, once, rather than
 ## inside the store: this setter is the only place that knows max_health.
@@ -1736,17 +1736,20 @@ func grant_temporary_invulnerability(duration: float) -> void:
 	_set_invulnerability_state(true, ticks)
 
 
-## The clipless fallback cannot emit inside deploy(): CombatDeployStrategy
-## attaches its listener after that method returns. Unit.sim_tick() consumes
-## this pending completion after either deployment caller has attached.
-func queue_deployment_animation_finished() -> void:
-	_deployment_animation_completion_pending = true
+## Deployment cannot emit inside deploy(): CombatDeployStrategy attaches its
+## listener after that method returns. Unit.sim_tick() consumes this pending
+## completion after either deployment caller has attached. Authored clips pass
+## their fixed tick deadline; a clipless fallback remains one tick.
+func queue_deployment_animation_finished(delay_ticks: int = 1) -> void:
+	_deployment_animation_completion_ticks = maxi(delay_ticks, 1)
 
 
 func _consume_pending_deployment_animation_completion() -> void:
-	if not _deployment_animation_completion_pending:
+	if _deployment_animation_completion_ticks <= 0:
 		return
-	_deployment_animation_completion_pending = false
+	_deployment_animation_completion_ticks -= 1
+	if _deployment_animation_completion_ticks > 0:
+		return
 	emit_deployment_animation_finished()
 
 
@@ -2514,9 +2517,6 @@ func _on_animation_finished(animation_name: StringName, player: AnimationPlayer)
 	if _harvester_owns_animation():
 		return
 	if _combat.on_animation_finished(animation_name, player):
-		return
-	if _deploy.on_animation_finished(animation_name, player):
-		deployment_animation_finished.emit()
 		return
 	if _locomotion.on_animation_finished(
 		animation_name, player, _idle_animations.play_sequence
