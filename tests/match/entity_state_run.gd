@@ -141,6 +141,14 @@ func _initialize() -> void:
 		_test_owner_assigned_before_registration_reaches_the_store
 	)
 	await _run_case(
+		"invulnerability assigned before add_child() reaches the store at registration",
+		_test_invulnerability_assigned_before_registration_reaches_the_store
+	)
+	await _run_case(
+		"temporary invulnerability expires from advance_ticks without a rendered frame",
+		_test_temporary_invulnerability_expires_frameless
+	)
+	await _run_case(
 		"every fixture building already has a store position once the match finishes booting, "
 			+ "and a building added afterward lands in the store exactly where it was told to",
 		_test_building_position_reaches_the_store
@@ -691,6 +699,67 @@ func _test_owner_assigned_before_registration_reaches_the_store() -> void:
 	await process_frame
 
 
+func _test_invulnerability_assigned_before_registration_reaches_the_store() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	get_root().add_child(match_instance)
+	for _warmup in 3:
+		await process_frame
+	var store = match_instance.entity_state()
+	_expect(store != null, "Match must expose a live SimEntityState")
+	if store == null:
+		match_instance.queue_free()
+		return
+
+	var building := ConYardScene.instantiate() as Building
+	building.set_invulnerable(true)
+	_expect(building.entity_id == 0, "the pre-registration building must not have an id yet")
+	match_instance.get_node("Buildings").add_child(building)
+	await process_frame
+	_expect(
+		store.has_invulnerability(building.entity_id) and store.invulnerable(building.entity_id)
+		and store.invulnerability_remaining_ticks(building.entity_id) == -1,
+		"registration must push pre-placement indefinite invulnerability into the store"
+	)
+	building.queue_free()
+	match_instance.queue_free()
+	await process_frame
+
+
+func _test_temporary_invulnerability_expires_frameless() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	get_root().add_child(match_instance)
+	for _warmup in 3:
+		await process_frame
+	match_instance.set_process(false)
+	var unit := match_instance.get_node("Units/ScoutA") as Unit
+	var store = match_instance.entity_state()
+	_expect(store != null, "Match must expose a live SimEntityState")
+	if store == null:
+		match_instance.queue_free()
+		return
+	unit.invulnerable = true
+	_expect(
+		store.invulnerable(unit.entity_id) and store.invulnerability_remaining_ticks(unit.entity_id) == -1,
+		"a direct public true write after the default false state must mean indefinite protection"
+	)
+	unit.invulnerable = false
+	_expect(
+		not store.invulnerable(unit.entity_id) and store.invulnerability_remaining_ticks(unit.entity_id) == 0,
+		"a direct public false write must pair false with a zero expiry"
+	)
+	unit.grant_temporary_invulnerability(0.01)
+	_expect(unit.invulnerable, "the temporary grant must be active before the first tick")
+	match_instance.advance_ticks(1)
+	_expect(not unit.invulnerable, "one frameless tick must expire a 0.01-second temporary grant")
+	_expect(
+		store.has_invulnerability(unit.entity_id) and not store.invulnerable(unit.entity_id)
+		and store.invulnerability_remaining_ticks(unit.entity_id) == 0,
+		"expiry must update the store's boolean and countdown together"
+	)
+	match_instance.queue_free()
+	await process_frame
+
+
 ## Slice R1's positive case, in two halves that fail for different reasons.
 ## The first half is Match._place_on_map()'s snap-to-ground loop over
 ## scene-authored buildings, the exact counterpart of the unit loop
@@ -1212,4 +1281,3 @@ func _test_turret_range_origin_reads_the_store() -> void:
 
 	match_instance.queue_free()
 	await process_frame
-

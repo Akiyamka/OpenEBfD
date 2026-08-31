@@ -1,15 +1,15 @@
 class_name SimEntityState
 extends RefCounted
 
-## Flat hot-state store for entity position, health, shields and owner
-## player id -- the container decision 3 promises in
+## Flat hot-state store for entity position, health, shields, owner player id
+## and invulnerability (including its expiry) -- the container decision 3 promises in
 ## docs/architecture/network-multiplayer.md ("Simulation core owns state;
 ## nodes are views"): "hot state -- position, velocity, facing, health,
 ## owner -- lives in flat Packed*Arrays indexed by entity id." Slice C1
 ## (phase 3) built the container with position alone; nothing wrote into it.
 ## Slice C2 wired unit position writes through it. Slice C3 added health and
-## shields for both units and buildings. This slice, C4, adds owner player
-## id, also for both kinds -- see Unit.owner_player_id
+## shields for both units and buildings. Slice C4 added owner player id, also
+## for both kinds -- see Unit.owner_player_id
 ## (scripts/units/unit.gd) and Building.owner_player_id
 ## (scripts/buildings/building.gd), whose own doc comments explain why this
 ## property's setter is the chokepoint here too, for the identical reason
@@ -20,6 +20,10 @@ extends RefCounted
 ## and confirmed, not assumed -- see "Registration-time push" below for what
 ## the sweep found. Facing and velocity are still not staged: facing has no
 ## reader yet either, and velocity stays out for the reason recorded below.
+## E2c adds invulnerability as the paired boolean/countdown DamagePolicy
+## observes: protection with a different expiry has a different future and
+## therefore belongs in this authoritative state and its hash, unlike the
+## view-only selection flag parity deliberately leaves outside.
 ##
 ## Both kinds share this store. `SimEntityRegistry` already allocates ids for
 ## `Kind.BUILDING` from the identical id space `Kind.UNIT` uses (see
@@ -85,10 +89,11 @@ extends RefCounted
 ## Writing to such an id is refused and logged the same way, not corrected
 ## into the array's stale slot.
 ##
-## Snapshot: capture()/restore() gain a `health`/`shields` pair of fields
-## each, alongside `position`, in the same JSON-safe Dictionary shape --
+## Snapshot: capture()/restore() carry health, shields, owner player id and
+## invulnerability plus its expiry alongside `position`, in the same JSON-safe
+## Dictionary shape --
 ## see position's own section below for why that shape exists at all.
-## Absent `health`/`shields`/`*_written_ids` keys restore as empty rather
+## Absent later-field/`*_written_ids` keys restore as empty rather
 ## than as a failure, so a version-1 snapshot captured before this slice
 ## landed still restores cleanly; present-but-malformed data still fails
 ## closed, exactly as position's fields already do.
@@ -150,6 +155,18 @@ extends RefCounted
 ## whatever the mirror currently holds into this store the moment
 ## `_entity_id` becomes nonzero, so a write that happened before
 ## registration is not lost. See those methods' own doc comments.
+##
+## --- Invulnerability (E2c) ---
+##
+## Storage is one `PackedByteArray` boolean and one `PackedInt32Array`
+## countdown under one presence bit. `false` is always stored with `0`; `true`
+## with `-1` is indefinite protection and `true` with a positive count is
+## temporary protection. The public writers normalize that invariant before
+## calling set_invulnerability(), so capture, restore and state_hash never
+## encode an impossible pair. Temporary counts are decremented only by a
+## simulation tick, then write false/zero together. Like owner, the pair is
+## pushed on registration because a scene or snapshot can set it before the
+## entity receives an id.
 ##
 ## --- Position (slice C1/C2) ---
 ##
@@ -305,6 +322,17 @@ var _shields_has_value: PackedByteArray = PackedByteArray()
 ## being written for the same id.
 var _owner_player_id: PackedInt32Array = PackedInt32Array()
 var _owner_player_id_has_value: PackedByteArray = PackedByteArray()
+
+## Invulnerability is a simulation decision read by DamagePolicy.  A value of
+## -1 means indefinite protection (used by construction); positive values are
+## tick countdowns, and zero accompanies a false value. The expiry is stored,
+## hashed, captured and restored with the boolean: equal protection with
+## different expiry is already a different future. Unit/Building push this
+## pair again when registration gives them an entity id, closing the same
+## pre-registration gap their owner_player_id fields have.
+var _invulnerable: PackedByteArray = PackedByteArray()
+var _invulnerability_remaining_ticks: PackedInt32Array = PackedInt32Array()
+var _invulnerability_has_value: PackedByteArray = PackedByteArray()
 
 
 func _init(registry: SimEntityRegistry) -> void:
@@ -513,12 +541,50 @@ func has_owner_player_id(id: int) -> bool:
 	)
 
 
+## Writes invulnerability and its expiry together so the hash can never see a
+## protected entity without the future-changing countdown that qualifies it.
+func set_invulnerability(id: int, value: bool, remaining_ticks: int) -> void:
+	if not _registry.is_alive(id):
+		push_error(
+			"SimEntityState.set_invulnerability(): id %d is not alive (dead or never allocated) -- write refused" % id
+		)
+		return
+	_ensure_invulnerability_capacity(id)
+	_invulnerable[id] = 1 if value else 0
+	_invulnerability_remaining_ticks[id] = remaining_ticks if value else 0
+	_invulnerability_has_value[id] = 1
+
+
+func has_invulnerability(id: int) -> bool:
+	return (
+		_registry.is_alive(id)
+		and id < _invulnerability_has_value.size()
+		and _invulnerability_has_value[id] == 1
+	)
+
+
+func invulnerable(id: int) -> bool:
+	if not has_invulnerability(id):
+		push_error("SimEntityState.invulnerable(): id %d has no invulnerability state" % id)
+		return false
+	return _invulnerable[id] == 1
+
+
+func invulnerability_remaining_ticks(id: int) -> int:
+	if not has_invulnerability(id):
+		push_error("SimEntityState.invulnerability_remaining_ticks(): id %d has no invulnerability state" % id)
+		return 0
+	return _invulnerability_remaining_ticks[id]
+
+
 ## Returns a deterministic hash of the state simulation can observe: entity
-## liveness, then position, health, shields and owner_player_id for every
+## liveness, then position, health, shields, owner_player_id and
+## invulnerability (including its expiry) for every
 ## live id whose public reader accepts that field. previous_position() is
 ## deliberately outside this boundary because it is B4's derived view blend
 ## source, not state produced by a tick. Simulation state kept outside this
-## store is invisible too; Unit.invulnerable is the known example.
+## store is invisible too; there is no known blind spot among this sweep's
+## entity lifecycle state.
 ##
 ## The fold starts at SimEntityRegistry.live_ids(), rather than capture()'s
 ## presence arrays: release() leaves old presence bytes behind, but a released
@@ -543,6 +609,12 @@ func state_hash() -> int:
 		hash = _fold_hash_presence(hash, has_owner_player_id(id))
 		if has_owner_player_id(id):
 			hash = _fold_hash_bytes(hash, PackedInt32Array([_owner_player_id[id]]).to_byte_array())
+		hash = _fold_hash_presence(hash, has_invulnerability(id))
+		if has_invulnerability(id):
+			hash = _fold_hash_bytes(hash, PackedByteArray([_invulnerable[id]]))
+			hash = _fold_hash_bytes(
+				hash, PackedInt32Array([_invulnerability_remaining_ticks[id]]).to_byte_array()
+			)
 	return hash
 
 
@@ -599,6 +671,14 @@ func capture() -> Dictionary:
 		if _owner_player_id_has_value[id] == 1:
 			owner_player_id_written_ids.append(id)
 			owner_player_id_rows.append(_owner_player_id[id])
+	var invulnerability_written_ids: Array = []
+	var invulnerable_rows: Array = []
+	var invulnerability_remaining_ticks_rows: Array = []
+	for id in _invulnerability_has_value.size():
+		if _invulnerability_has_value[id] == 1:
+			invulnerability_written_ids.append(id)
+			invulnerable_rows.append(_invulnerable[id] == 1)
+			invulnerability_remaining_ticks_rows.append(_invulnerability_remaining_ticks[id])
 	return {
 		"version": 1,
 		"written_ids": written_ids,
@@ -609,6 +689,9 @@ func capture() -> Dictionary:
 		"shields": shields_rows,
 		"owner_player_id_written_ids": owner_player_id_written_ids,
 		"owner_player_id": owner_player_id_rows,
+		"invulnerability_written_ids": invulnerability_written_ids,
+		"invulnerable": invulnerable_rows,
+		"invulnerability_remaining_ticks": invulnerability_remaining_ticks_rows,
 	}
 
 
@@ -673,6 +756,23 @@ func restore(data: Dictionary) -> bool:
 	owner_ids = owner_parsed["ids"]
 	owner_values = owner_parsed["values"]
 
+	var invulnerability_ids: Array
+	var invulnerable_values: Array
+	var invulnerable_parsed := _parse_bool_field(data, "invulnerability_written_ids", "invulnerable")
+	if invulnerable_parsed.is_empty():
+		return false
+	invulnerability_ids = invulnerable_parsed["ids"]
+	invulnerable_values = invulnerable_parsed["values"]
+	var expiry_parsed := _parse_int_field(
+		data, "invulnerability_written_ids", "invulnerability_remaining_ticks"
+	)
+	if expiry_parsed.is_empty():
+		return false
+	if invulnerability_ids != expiry_parsed["ids"]:
+		push_error("SimEntityState.restore(): invulnerability ids differ between value and expiry")
+		return false
+	var invulnerability_expiry_values: Array = expiry_parsed["values"]
+
 	var max_id := 0
 	for id in ids:
 		max_id = maxi(max_id, int(id))
@@ -721,6 +821,21 @@ func restore(data: Dictionary) -> bool:
 		new_owner_player_id[id] = int(owner_values[i])
 		new_owner_player_id_has_value[id] = 1
 
+	var max_invulnerability_id := 0
+	for id in invulnerability_ids:
+		max_invulnerability_id = maxi(max_invulnerability_id, int(id))
+	var new_invulnerable := PackedByteArray()
+	new_invulnerable.resize(max_invulnerability_id + 1)
+	var new_invulnerability_remaining_ticks := PackedInt32Array()
+	new_invulnerability_remaining_ticks.resize(max_invulnerability_id + 1)
+	var new_invulnerability_has_value := PackedByteArray()
+	new_invulnerability_has_value.resize(max_invulnerability_id + 1)
+	for i in invulnerability_ids.size():
+		var id: int = invulnerability_ids[i]
+		new_invulnerable[id] = 1 if bool(invulnerable_values[i]) else 0
+		new_invulnerability_remaining_ticks[id] = int(invulnerability_expiry_values[i])
+		new_invulnerability_has_value[id] = 1
+
 	_position = new_position
 	_position_previous = new_position.duplicate()
 	_has_value = new_has_value
@@ -739,6 +854,9 @@ func restore(data: Dictionary) -> bool:
 	_shields_has_value = new_shields_has_value
 	_owner_player_id = new_owner_player_id
 	_owner_player_id_has_value = new_owner_player_id_has_value
+	_invulnerable = new_invulnerable
+	_invulnerability_remaining_ticks = new_invulnerability_remaining_ticks
+	_invulnerability_has_value = new_invulnerability_has_value
 	return true
 
 
@@ -774,6 +892,15 @@ func _ensure_owner_player_id_capacity(id: int) -> void:
 	var new_size := id + 1
 	_owner_player_id.resize(new_size)
 	_owner_player_id_has_value.resize(new_size)
+
+
+func _ensure_invulnerability_capacity(id: int) -> void:
+	if id < _invulnerable.size():
+		return
+	var new_size := id + 1
+	_invulnerable.resize(new_size)
+	_invulnerability_remaining_ticks.resize(new_size)
+	_invulnerability_has_value.resize(new_size)
 
 
 ## Shared parsing for restore()'s health and shields fields, which are
@@ -840,6 +967,30 @@ func _parse_int_field(data: Dictionary, ids_key: String, values_key: String) -> 
 			return {}
 		if ids[i] < 1:
 			push_error("SimEntityState.restore(): malformed '%s' id at index %d" % [ids_key, i])
+			return {}
+	return {"ids": ids, "values": values}
+
+
+func _parse_bool_field(data: Dictionary, ids_key: String, values_key: String) -> Dictionary:
+	var raw_ids: Variant = data.get(ids_key, [])
+	var raw_values: Variant = data.get(values_key, [])
+	if not raw_values is Array:
+		push_error("SimEntityState.restore(): snapshot '%s' field is malformed" % values_key)
+		return {}
+	if not (raw_ids is Array or raw_ids is PackedInt32Array):
+		push_error("SimEntityState.restore(): snapshot '%s' field is malformed" % ids_key)
+		return {}
+	var ids := _coerce_id_list(raw_ids)
+	var values: Array = raw_values
+	if ids.size() != values.size():
+		push_error("SimEntityState.restore(): '%s' and '%s' have different lengths" % [ids_key, values_key])
+		return {}
+	for i in values.size():
+		if not values[i] is bool:
+			push_error("SimEntityState.restore(): malformed '%s' entry at index %d" % [values_key, i])
+			return {}
+		if ids[i] < 1:
+			push_error("SimEntityState.restore(): malformed '%s' id at index %d" % [values_key, i])
 			return {}
 	return {"ids": ids, "values": values}
 

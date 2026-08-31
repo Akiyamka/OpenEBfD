@@ -2644,6 +2644,32 @@ source cites a number you cannot place.
     E2b records those four files as unaudited rather than fixing them; that
     severing remains E3. It lands first because E2a already had two scope
     decisions made against that id, and renaming E2a would invalidate them.
+  - **`E2c`** — the entity-lifecycle half of the frameless sweep. A clipless
+    deploy no longer completes through a frame-deferred call: it records a
+    pending completion which `Unit.sim_tick()` consumes on the next tick. The
+    extra tick is a subscriber-ordering constraint, not latency for its own
+    sake: the MCV controller connects before `deploy()`, while
+    `CombatDeployStrategy` connects afterwards, so immediate emission would
+    strand combat units in transition.
+
+    Temporary invulnerability and its remaining tick count moved from the
+    node-owned blind spot into `SimEntityState`; `-1` is indefinite placement
+    protection and positive values count down at 25 Hz. Both values are pushed
+    at registration, hashed, captured and restored, so equal protection with
+    different expiry cannot hide a future divergence. E2's old invulnerability
+    boundary control is therefore replaced by local selection, which can still
+    diverge after a deferred frame callback without changing the simulation
+    hash.
+
+    Projectile cleanup has two lifecycle phases: a hitscan can finish inside
+    `launch()` before queued admission, while a flight projectile finishes
+    after admission. Finished projectiles now remain tick-admitted for a
+    deterministic cleanup countdown (four ticks for the 0.16-second laser
+    visual, one for ordinary cleanup), so the former cannot rejoin after being
+    removed and the latter is not abandoned after removal. This is bounded-node
+    cleanup rather than a hash fix: finished projectile ticks only preserve
+    previous position and `advance()` no-ops, and no shipping reader observes
+    their finish state.
   - **`E2a`** — the placement-side frameless sweep. Its one fix replaces
     `BuildingAvailabilityTracker`'s post-`node_added` `call_deferred()` with
     the added node's `ready` signal: `node_added` comes before

@@ -199,7 +199,16 @@ var rally_point := Vector3.ZERO
 var combat_turrets: Array = []
 
 var current_state := &""
-var invulnerable := false
+var invulnerable := false:
+	set(value):
+		var normalized_remaining := _invulnerability_remaining_ticks if value and _invulnerability_remaining_ticks > 0 else -1 if value else 0
+		if _entity_id != 0:
+			var store = MatchLookupScript.entity_state(self)
+			if store != null:
+				store.set_invulnerability(_entity_id, value, normalized_remaining)
+		invulnerable = value
+		_invulnerability_remaining_ticks = normalized_remaining
+var _invulnerability_remaining_ticks := 0
 ## Pre-placed buildings are operational immediately. BuildingPlacement marks
 ## newly placed buildings incomplete until StatePlayer actually finishes the
 ## authored construct clip; unit production uses this instead of mere tree/group
@@ -372,6 +381,7 @@ func _register_entity_id() -> void:
 		var store = MatchLookupScript.entity_state(self)
 		if store != null:
 			store.set_owner_player_id(_entity_id, owner_player_id)
+			store.set_invulnerability(_entity_id, invulnerable, _invulnerability_remaining_ticks)
 
 
 func _release_entity_id() -> void:
@@ -884,6 +894,11 @@ func setup(building_id: StringName) -> void:
 
 
 func set_invulnerable(value: bool) -> void:
+	_set_invulnerability_state(value, -1 if value else 0)
+
+
+func _set_invulnerability_state(value: bool, remaining_ticks: int) -> void:
+	_invulnerability_remaining_ticks = remaining_ticks if value else 0
 	invulnerable = value
 
 

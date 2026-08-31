@@ -163,7 +163,20 @@ var unit_definition: Resource
 var target_position: Vector3
 var is_selected := false
 var is_hovered := false
-var invulnerable := false
+var invulnerable := false:
+	set(value):
+		# Direct public writes are indefinite when true. Temporary protection
+		# goes through _set_invulnerability_state(), which installs its positive
+		# countdown before assigning this property.
+		var normalized_remaining := _invulnerability_remaining_ticks if value and _invulnerability_remaining_ticks > 0 else -1 if value else 0
+		if _entity_id != 0:
+			var store = MatchLookupScript.entity_state(self)
+			if store != null:
+				store.set_invulnerability(_entity_id, value, normalized_remaining)
+		invulnerable = value
+		_invulnerability_remaining_ticks = normalized_remaining
+var _invulnerability_remaining_ticks := 0
+var _deployment_animation_completion_pending := false
 ## The clamp is a simulation decision -- see SimEntityState's doc comment
 ## (scripts/sim/entity_state.gd) on why it happens here, once, rather than
 ## inside the store: this setter is the only place that knows max_health.
@@ -453,6 +466,7 @@ func _register_entity_id() -> void:
 		var store = MatchLookupScript.entity_state(self)
 		if store != null:
 			store.set_owner_player_id(_entity_id, owner_player_id)
+			store.set_invulnerability(_entity_id, invulnerable, _invulnerability_remaining_ticks)
 
 
 func _release_entity_id() -> void:
@@ -577,6 +591,8 @@ func simulation_position() -> Vector3:
 func sim_tick() -> void:
 	if _simulation_halted:
 		return
+	_consume_pending_deployment_animation_completion()
+	_advance_invulnerability_tick()
 	for turret in combat_turrets:
 		turret.advance_tick()
 	_advance_locomotion_tick()
@@ -1710,14 +1726,43 @@ func _transport_reservation() -> Node3D:
 
 
 func set_invulnerable(value: bool) -> void:
-	invulnerable = value
+	_set_invulnerability_state(value, -1 if value else 0)
 
 
 func grant_temporary_invulnerability(duration: float) -> void:
 	# Mirrors Building.set_invulnerable/take_damage; used e.g. by
 	# BuildingSurvivors for the 1s post-spawn splash immunity from §2.1.
-	invulnerable = true
-	get_tree().create_timer(duration).timeout.connect(_clear_invulnerability)
+	var ticks := maxi(int(ceilf(duration / MatchClockScript.SECONDS_PER_TICK)), 1)
+	_set_invulnerability_state(true, ticks)
+
+
+## The clipless fallback cannot emit inside deploy(): CombatDeployStrategy
+## attaches its listener after that method returns. Unit.sim_tick() consumes
+## this pending completion after either deployment caller has attached.
+func queue_deployment_animation_finished() -> void:
+	_deployment_animation_completion_pending = true
+
+
+func _consume_pending_deployment_animation_completion() -> void:
+	if not _deployment_animation_completion_pending:
+		return
+	_deployment_animation_completion_pending = false
+	emit_deployment_animation_finished()
+
+
+func _advance_invulnerability_tick() -> void:
+	if _invulnerability_remaining_ticks <= 0:
+		return
+	_invulnerability_remaining_ticks -= 1
+	if _invulnerability_remaining_ticks == 0:
+		_set_invulnerability_state(false, 0)
+	else:
+		_set_invulnerability_state(true, _invulnerability_remaining_ticks)
+
+
+func _set_invulnerability_state(value: bool, remaining_ticks: int) -> void:
+	_invulnerability_remaining_ticks = remaining_ticks if value else 0
+	invulnerable = value
 
 
 func take_damage(amount: float, death_cause: StringName = &"") -> void:

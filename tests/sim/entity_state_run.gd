@@ -149,6 +149,16 @@ func _initialize() -> void:
 	_run_case("state_hash() includes live ids, including unwritten ones", _test_state_hash_liveness)
 	_run_case("state_hash() excludes released rows", _test_state_hash_excludes_released_rows)
 	_run_case("state_hash() is stable and independent of write order", _test_state_hash_stability)
+	_run_case(
+		"invulnerability and its differing expiry are hash-observed and snapshot round-trip",
+		_test_invulnerability_hash_and_snapshot
+	)
+	_run_case(
+		"restore() accepts an old snapshot without invulnerability keys", _test_restore_without_invulnerability_keys
+	)
+	_run_case(
+		"restore() fails closed on malformed invulnerability data", _test_restore_malformed_invulnerability
+	)
 	_finish("SimEntityState tests")
 
 
@@ -807,6 +817,65 @@ func _test_state_hash_excludes_released_rows() -> void:
 	_expect(
 		state.state_hash() == before,
 		"a written row released before hashing must be excluded: capture() presence bytes are not the hash traversal"
+	)
+
+
+func _test_invulnerability_hash_and_snapshot() -> void:
+	var registry := SimEntityRegistryScript.new()
+	var state := SimEntityStateScript.new(registry)
+	var id := registry.allocate(SimEntityRegistryScript.Kind.UNIT)
+	state.set_invulnerability(id, true, 3)
+	var before := state.state_hash()
+	state.set_invulnerability(id, true, 2)
+	_expect(
+		state.state_hash() != before,
+		"equal invulnerable booleans with different remaining expiry must hash differently"
+	)
+	state.set_invulnerability(id, false, 0)
+	var snapshot := state.capture()
+	var restored_registry := SimEntityRegistryScript.new()
+	var restored := SimEntityStateScript.new(restored_registry)
+	restored_registry.allocate(SimEntityRegistryScript.Kind.UNIT)
+	_expect(restored.restore(snapshot), "a capture containing invulnerability must restore")
+	_expect(
+		restored.has_invulnerability(id) and not restored.invulnerable(id)
+		and restored.invulnerability_remaining_ticks(id) == 0,
+		"a legitimately written false invulnerability value must survive capture then restore"
+	)
+
+
+func _test_restore_without_invulnerability_keys() -> void:
+	var registry := SimEntityRegistryScript.new()
+	var state := SimEntityStateScript.new(registry)
+	var id := registry.allocate(SimEntityRegistryScript.Kind.UNIT)
+	_expect(
+		state.restore({"version": 1, "written_ids": [], "position": []}),
+		"an old version-1 snapshot without invulnerability keys must restore"
+	)
+	_expect(not state.has_invulnerability(id), "the omitted old-snapshot field must restore as empty")
+
+
+func _test_restore_malformed_invulnerability() -> void:
+	var registry := SimEntityRegistryScript.new()
+	var state := SimEntityStateScript.new(registry)
+	var id := registry.allocate(SimEntityRegistryScript.Kind.UNIT)
+	state.set_invulnerability(id, true, 4)
+	_expect(
+		not state.restore(
+			{
+				"version": 1,
+				"written_ids": [],
+				"position": [],
+				"invulnerability_written_ids": [id],
+				"invulnerable": ["not a bool"],
+				"invulnerability_remaining_ticks": [4],
+			}
+		),
+		"malformed present invulnerability data must fail closed"
+	)
+	_expect(
+		state.invulnerable(id) and state.invulnerability_remaining_ticks(id) == 4,
+		"a failed restore must leave prior invulnerability contents untouched"
 	)
 
 

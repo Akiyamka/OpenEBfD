@@ -24,7 +24,8 @@ func _initialize() -> void:
 	LegacyRulesFixture.install(root)
 	await _run_case("frameless and framed windows agree on the observed simulation state", _test_parity_gate)
 	await _run_case("a deferred in-boundary write makes the gate fail without spoiling its start control", _test_in_boundary_control)
-	await _run_case("invulnerability can diverge outside the hash boundary while the hash stays equal", _test_out_of_boundary_control)
+	await _run_case("selection can diverge outside the hash boundary while the hash stays equal", _test_out_of_boundary_control)
+	await _run_case("invulnerability divergence now changes the observed-state hash", _test_invulnerability_hash_payoff)
 	if _failures > 0:
 		printerr("Frameless parity tests: %d failures after %d assertions" % [_failures, _assertions])
 		quit(1)
@@ -71,25 +72,35 @@ func _test_in_boundary_control() -> void:
 
 func _test_out_of_boundary_control() -> void:
 	var result := await _run_two_arms(false, true)
-	_expect(bool(result["starts_equal"]), "the invulnerability control must also begin from equal state")
+	_expect(bool(result["starts_equal"]), "the selection control must also begin from equal state")
+	_expect(
+		bool(result["frameless_selected"]) != bool(result["framed_selected"]),
+		"the deferred view-selection field must differ after frames run in only one arm"
+	)
+	_expect(bool(result["hashes_equal"]), "selection is outside SimEntityState, so its divergence must not change the hash")
+
+
+func _test_invulnerability_hash_payoff() -> void:
+	var result := await _run_two_arms(false, false, true)
+	_expect(bool(result["starts_equal"]), "the invulnerability payoff arms must start equal")
 	_expect(
 		bool(result["frameless_invulnerable"]) != bool(result["framed_invulnerable"]),
-		"the timer-owned invulnerable field must differ after frames run in only one arm"
+		"the payoff must actually make invulnerability differ across the two arms"
 	)
-	_expect(bool(result["hashes_equal"]), "invulnerable is outside SimEntityState, so its divergence must not change the hash")
+	_expect(not bool(result["hashes_equal"]), "stored invulnerability divergence must now change state_hash()")
 
 
-func _run_two_arms(defer_position_write: bool, diverge_invulnerability: bool) -> Dictionary:
+func _run_two_arms(defer_position_write: bool, diverge_selection: bool, diverge_stored_invulnerability := false) -> Dictionary:
 	var frameless: Variant = await _boot_arm()
 	var frameless_inputs := _prepare_scenario(frameless)
 	var frameless_start := _snapshot(frameless, frameless_inputs)
-	var frameless_final := await _run_window(frameless, frameless_inputs, false, defer_position_write, diverge_invulnerability)
+	var frameless_final := await _run_window(frameless, frameless_inputs, false, defer_position_write, diverge_selection, diverge_stored_invulnerability)
 	await _teardown_arm(frameless)
 
 	var framed: Variant = await _boot_arm()
 	var framed_inputs := _prepare_scenario(framed)
 	var framed_start := _snapshot(framed, framed_inputs)
-	var framed_final := await _run_window(framed, framed_inputs, true, defer_position_write, diverge_invulnerability)
+	var framed_final := await _run_window(framed, framed_inputs, true, defer_position_write, diverge_selection, diverge_stored_invulnerability)
 	await _teardown_arm(framed)
 	return {
 		"starts_equal": frameless_start["tick"] == framed_start["tick"]
@@ -100,6 +111,8 @@ func _run_two_arms(defer_position_write: bool, diverge_invulnerability: bool) ->
 			and frameless_final["tick"] - frameless_start["tick"] == WINDOW_TICKS,
 		"hashes_equal": frameless_final["hash"] == framed_final["hash"],
 		"scenario_ran": bool(frameless_final["scenario_ran"]) and bool(framed_final["scenario_ran"]),
+		"frameless_selected": frameless_final["selected"],
+		"framed_selected": framed_final["selected"],
 		"frameless_invulnerable": frameless_final["invulnerable"],
 		"framed_invulnerable": framed_final["invulnerable"],
 	}
@@ -164,14 +177,16 @@ func _snapshot(match_instance, inputs: Dictionary) -> Dictionary:
 
 
 func _run_window(
-		match_instance, inputs: Dictionary, framed: bool, defer_position_write: bool, diverge_invulnerability: bool
+		match_instance, inputs: Dictionary, framed: bool, defer_position_write: bool, diverge_selection: bool, diverge_invulnerability: bool
 	) -> Dictionary:
 	var attacker := inputs["attacker"] as Unit
 	var victim := inputs["victim"] as Building
 	if defer_position_write:
 		attacker.call_deferred("set_simulation_position", attacker.simulation_position() + Vector3(3.0, 0.0, 0.0))
-	if diverge_invulnerability:
-		attacker.grant_temporary_invulnerability(0.01)
+	if diverge_selection:
+		attacker.call_deferred("set", "is_selected", true)
+	if diverge_invulnerability and not framed:
+		attacker.set_invulnerable(true)
 	for tick_index in WINDOW_TICKS:
 		if tick_index == 3 and is_instance_valid(victim):
 			victim.request_despawn()
@@ -191,6 +206,7 @@ func _run_window(
 		"tick": match_instance.current_tick(),
 		"hash": match_instance.entity_state().state_hash(),
 		"scenario_ran": barracks_present and scout_produced and victim_released and attacker.has_attack_order(),
+		"selected": attacker.is_selected,
 		"invulnerable": attacker.invulnerable,
 	}
 

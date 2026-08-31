@@ -31,6 +31,7 @@ const MatchFixtureScene := preload("res://tests/fixtures/match_fixture.tscn")
 const ATRocketTurretScene := preload("res://assets/converted/buildings/ATRocketTurret/ATRocketTurret.scn")
 const ATBarracksScene := preload("res://assets/converted/buildings/ATBarracks/ATBarracks.scn")
 const CombatProjectileScript := preload("res://scripts/combat/combat_projectile.gd")
+const CombatBullets := preload("res://tests/combat/support/combat_bullets.gd")
 const SimAdmissionQueueScript := preload("res://scripts/match/sim_admission_queue.gd")
 const SimUnitOrderCommandScript := preload("res://scripts/sim/commands/unit_order_command.gd")
 const UnitScene := preload("res://scenes/units/unit.tscn")
@@ -131,6 +132,18 @@ func _initialize() -> void:
 	await _run_case(
 		"a projectile built with no Match in the tree joins its group immediately",
 		_test_no_match_fallback_joins_immediately
+	)
+	await _run_case(
+		"a hitscan finished before admission is retained and freed by frameless cleanup ticks",
+		_test_hitscan_cleanup_after_pending_admission
+	)
+	await _run_case(
+		"a flight projectile finished after admission is freed by the next frameless tick",
+		_test_flight_cleanup_after_admission
+	)
+	await _run_case(
+		"clipless MCV and combat deploy transitions complete on the next frameless match tick",
+		_test_clipless_deployment_completions
 	)
 	await _run_case(
 		"a unit created mid-tick inside a real Match is not in \"sim_units\" for the rest of "
@@ -458,6 +471,140 @@ func _test_no_match_fallback_joins_immediately() -> void:
 	)
 	projectile.queue_free()
 	await process_frame
+
+
+## These cleanup cases intentionally stop Match's frame driver before the
+## measured window. The only progress after launch/finish is advance_ticks(),
+## so a Timer or call_deferred cleanup cannot make either pass.
+func _test_hitscan_cleanup_after_pending_admission() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	root.add_child(match_instance)
+	for _warmup in 3:
+		await process_frame
+	match_instance.set_process(false)
+	var target := match_instance.get_node("Units/ScoutA") as Unit
+	var projectile := CombatProjectileScript.new()
+	match_instance.add_child(projectile)
+	var bullet = CombatBullets.new().runtime_bullet(&"Laser_B")
+	_expect(
+		projectile.launch(bullet, CombatBullets.emission(target.global_position + Vector3(0.0, 0.0, 3.0), Vector3.FORWARD), target),
+		"a shipped Laser_B hitscan must launch"
+	)
+	_expect(projectile.is_finished(), "the hitscan must finish inside launch(), before admission drains")
+	_expect(
+		not projectile.is_in_group(CombatProjectileScript.SIM_PROJECTILES_GROUP),
+		"the finished hitscan must still be pending, not synchronously admitted"
+	)
+	match_instance.advance_ticks(1)
+	_expect(
+		is_instance_valid(projectile) and projectile.is_in_group(CombatProjectileScript.SIM_PROJECTILES_GROUP),
+		"on the tick after finishing, the hitscan must be admitted while its four-tick laser cleanup remains"
+	)
+	match_instance.advance_ticks(3)
+	_expect(projectile.is_queued_for_deletion(), "four frameless cleanup ticks must queue-free the finished hitscan")
+	match_instance.queue_free()
+	await process_frame
+
+
+func _test_flight_cleanup_after_admission() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	root.add_child(match_instance)
+	for _warmup in 3:
+		await process_frame
+	match_instance.set_process(false)
+	var target := match_instance.get_node("Units/ScoutA") as Unit
+	var projectile := CombatProjectileScript.new()
+	match_instance.add_child(projectile)
+	var bullet = CombatBullets.new().runtime_bullet(&"Rocket_B")
+	_expect(
+		projectile.launch(bullet, CombatBullets.emission(target.global_position + Vector3(0.0, 0.0, 20.0), Vector3.FORWARD), target),
+		"a positive-speed Rocket_B must launch"
+	)
+	match_instance.advance_ticks(1)
+	_expect(
+		projectile.is_in_group(CombatProjectileScript.SIM_PROJECTILES_GROUP) and projectile.state == CombatProjectileScript.State.FLYING,
+		"the flight projectile must be admitted and still flying before it finishes"
+	)
+	projectile.call("_expire", &"test_cleanup")
+	_expect(
+		projectile.is_in_group(CombatProjectileScript.SIM_PROJECTILES_GROUP),
+		"a finished post-admission flight projectile remains grouped until its cleanup tick"
+	)
+	match_instance.advance_ticks(1)
+	_expect(projectile.is_queued_for_deletion(), "the next frameless tick must queue-free a finished flight projectile")
+	match_instance.queue_free()
+	await process_frame
+
+
+func _test_clipless_deployment_completions() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	root.add_child(match_instance)
+	for _warmup in 3:
+		await process_frame
+	match_instance.set_process(false)
+	var production = match_instance.get_node("UnitProductionSystem") as UnitProductionSystem
+	production.spawn_completed_unit(1, &"ATMCV", &"ATConYard")
+	var mcv := match_instance.get_node_or_null("Units/ATMCV") as Unit
+	_expect(mcv != null, "the real production system must create an ATMCV for the MCV path")
+	if mcv != null:
+		var deployment_position := _first_mcv_deployment_position(match_instance, mcv)
+		_expect(deployment_position != Vector3.INF, "the fixture must find a legal MCV deployment cell")
+		if deployment_position != Vector3.INF:
+			mcv.set_simulation_position(deployment_position)
+		mcv._animation_director.clear()
+		var buildings_before := (match_instance.get_node("Buildings") as Node).get_child_count()
+		var mcv_result: Dictionary = match_instance._unit_deployment_controller.try_deploy(mcv)
+		_expect(bool(mcv_result.get("started", false)), "the real MCV controller must start clipless deployment")
+		match_instance.advance_ticks(1)
+		_expect(
+			(match_instance.get_node("Buildings") as Node).get_child_count() == buildings_before + 1,
+			"the next frameless tick must consume clipless MCV completion and place its building"
+		)
+
+	var kindjal := UnitScene.instantiate() as Unit
+	kindjal.config_id = &"ATKindjal"
+	match_instance.get_node("Units").add_child(kindjal)
+	_expect(kindjal != null, "the real production system must create an ATKindjal for combat deploy")
+	if kindjal != null:
+		kindjal._animation_director.clear()
+		var deploy_result: Dictionary = match_instance._unit_deployment_controller.try_deploy(kindjal)
+		_expect(bool(deploy_result.get("started", false)), "CombatDeployStrategy.try_deploy() must start clipless deployment")
+		match_instance.advance_ticks(1)
+		_expect(kindjal.is_deployed(), "the next tick must complete clipless combat deployment")
+		# A normally modelled Kindjal recenters its live turret in _process(), a
+		# view-domain gate deliberately outside this frameless regression. Remove
+		# that independent gate so the test reaches the clipless undeploy handoff.
+		kindjal.combat_turrets.clear()
+		var undeploy_result: Dictionary = match_instance._unit_deployment_controller.try_deploy(kindjal)
+		_expect(bool(undeploy_result.get("started", false)), "CombatDeployStrategy.try_undeploy() must start clipless undeployment")
+		match_instance.advance_ticks(1)
+		_expect(not kindjal.is_deployed() and not kindjal.is_deploying(), "the next tick must complete clipless combat undeployment")
+	match_instance.queue_free()
+	await process_frame
+
+
+## UnitDeploymentController validates the MCV's current cell, unlike combat
+## deployment. Search the real loaded grid through its public cursor-equivalent
+## predicate so this fixture neither guesses terrain coordinates nor bypasses
+## the production placement check it is meant to exercise.
+func _first_mcv_deployment_position(match_instance: Node, mcv: Unit) -> Vector3:
+	var terrain := match_instance.get("terrain") as Node
+	var grid := terrain.get("navigation_grid") as MapNavigationGrid
+	var anchor := grid.world_to_grid((match_instance.get_node("Buildings/ATConYard") as Building).global_position)
+	for radius in range(4, 28):
+		for x in range(-radius, radius + 1):
+			for y in [-radius, radius]:
+				var candidate := anchor + Vector2i(x, y)
+				mcv.set_simulation_position(grid.grid_to_world(candidate))
+				if match_instance._unit_deployment_controller.can_issue_deploy(mcv):
+					return grid.grid_to_world(candidate)
+		for y in range(-radius + 1, radius):
+			for x in [-radius, radius]:
+				var candidate := anchor + Vector2i(x, y)
+				mcv.set_simulation_position(grid.grid_to_world(candidate))
+				if match_instance._unit_deployment_controller.can_issue_deploy(mcv):
+					return grid.grid_to_world(candidate)
+	return Vector3.INF
 
 
 ## Installs the two tick-position stand-ins declared at the top of this file

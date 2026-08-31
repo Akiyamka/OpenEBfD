@@ -96,6 +96,10 @@ var _visual_rest_position := Vector3.ZERO
 ## nothing is interpolated until there are genuinely two ticks to blend.
 var _previous_tick_position := Vector3.ZERO
 var _has_tick_history := false
+## Finished projectiles stay admitted until tick cleanup handles them. A
+## hitscan can finish before admission, while a flight projectile finishes
+## after admission; this one path covers both lifecycles.
+var _cleanup_remaining_ticks := 0
 
 
 func _init() -> void:
@@ -342,6 +346,11 @@ func _hide_fx_object(node: Node, object_name: String) -> void:
 ## sim_tick() call, the same single step a 20 Hz-or-faster physics frame used
 ## to hand it.
 func sim_tick() -> void:
+	if _cleanup_remaining_ticks > 0:
+		_cleanup_remaining_ticks -= 1
+		if _cleanup_remaining_ticks == 0:
+			_queue_free_finished()
+		return
 	# Before the advance, not after: this is the position the *previous* tick
 	# left behind, which is one half of what _process() blends between. Taken
 	# here rather than inside advance() because advance() is also reached
@@ -750,15 +759,6 @@ func _expire(reason: StringName) -> void:
 func _finish(reason: StringName, world_position: Vector3) -> void:
 	finish_reason = reason
 	velocity = Vector3.ZERO
-	# queue_free() does not drop group membership until the frame ends, so
-	# leave the group explicitly here -- the same reason
-	# CombatLingerEffect._finish() does (see combat_linger_effect.gd):
-	# otherwise a finished projectile could still be listed by
-	# Match._advance_simulation_tick()'s SIM_PROJECTILES_GROUP loop on a later
-	# tick this same frame, before the deferred free actually lands. advance()
-	# already no-ops once state leaves FLYING, so this is not a correctness
-	# fix, just the same tidiness the sibling loop already keeps.
-	remove_from_group(SIM_PROJECTILES_GROUP)
 	var keeps_laser_visual: bool = (
 		bullet != null
 		and bullet.is_laser()
@@ -766,18 +766,10 @@ func _finish(reason: StringName, world_position: Vector3) -> void:
 		and LaserBeamScript.build(self, bullet.id(), _launch_position, world_position)
 	)
 	finished.emit(finish_reason, world_position)
-	if not is_inside_tree():
-		return
 	if keeps_laser_visual:
-		var cleanup := Timer.new()
-		cleanup.name = "LaserCleanup"
-		cleanup.one_shot = true
-		cleanup.wait_time = LaserBeamScript.LIFETIME_SECONDS
-		add_child(cleanup)
-		cleanup.timeout.connect(_queue_free_finished)
-		cleanup.start()
+		_cleanup_remaining_ticks = 4
 	else:
-		call_deferred("_queue_free_finished")
+		_cleanup_remaining_ticks = 1
 
 
 func _queue_free_finished() -> void:

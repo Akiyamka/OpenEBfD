@@ -205,7 +205,10 @@ func start_transition(candidates: Array[StringName]) -> void:
 	_transition_animation = StringName(found.get("name", &""))
 
 	if _transition_player == null:
-		_unit.call_deferred("emit_deployment_animation_finished")
+		# CombatDeployStrategy connects after deploy() returns, whereas the MCV
+		# controller connects before it. Queue the clipless completion for the
+		# next simulation tick so both subscribers observe the same handoff.
+		_unit.queue_deployment_animation_finished()
 		return
 
 	var animation := _transition_player.get_animation(_transition_animation)
