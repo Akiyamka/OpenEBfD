@@ -314,13 +314,29 @@ func _ready() -> void:
 	_add_selection_collision()
 	_add_selection_halo()
 	_rally.configure(self)
-	# Placement assigns a newly-built node's final position immediately after it
-	# enters the tree. Deferring this lets both pre-placed and newly-built
-	# production buildings receive a point in front of their final transform.
+	# Deferred because placement assigns a newly-built node's final position
+	# immediately after it enters the tree. Calling this here instead would
+	# compute the default from the pre-placement transform and then latch it:
+	# BuildingRallyPoint._assign() sets _has_point, and set_default_if_unset()
+	# returns early forever after.
+	#
+	# Left deferred rather than moved onto the tick, and E2a measured why that
+	# costs a frameless loop nothing: point() materializes this same
+	# default synchronously on every read, unit production and refinery
+	# unloading both reach it through rally_point_position(), no shipping code
+	# reads the stored field directly, and rally_point_changed has no connect()
+	# site in scripts/ or tests/. The deferral only makes an otherwise lazy
+	# materialization eager, and nothing can observe which one happened.
 	call_deferred("_set_default_rally_point_if_unset")
 	if _has_wall_role():
-		# BuildingPlacement writes placement_anchor_cell and the final transform
-		# immediately after add_child(), so defer adjacency until both exist.
+		# Deferred because BuildingPlacement writes placement_anchor_cell and the
+		# final transform immediately after add_child(), so adjacency needs both
+		# to exist before anything computes it.
+		#
+		# Left deferred: E2a measured that no shipping reader of wall
+		# topology exists outside BuildingWallVisual and that navigation never
+		# consults wall connectivity, so a frameless run can draw a new wall
+		# stub wrongly while simulating identically.
 		call_deferred("refresh_wall_connections")
 
 

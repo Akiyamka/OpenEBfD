@@ -170,6 +170,10 @@ func defer_adjacent_refresh() -> void:
 	var tree := _owner.get_tree()
 	if tree == null:
 		return
+	# No shipping reader of these wall-topology values exists outside this
+	# visual module, and navigation never reads wall connectivity. Deferring a
+	# neighbour refresh can therefore leave a frameless view stale, not change
+	# the simulation it draws.
 	for candidate in tree.get_nodes_in_group("wall_buildings"):
 		if candidate == _owner or not is_instance_valid(candidate) \
 		or candidate.is_queued_for_deletion():

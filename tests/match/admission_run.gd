@@ -29,8 +29,10 @@ extends SceneTree
 const LegacyRulesFixture := preload("res://tests/support/legacy_rules_fixture.gd")
 const MatchFixtureScene := preload("res://tests/fixtures/match_fixture.tscn")
 const ATRocketTurretScene := preload("res://assets/converted/buildings/ATRocketTurret/ATRocketTurret.scn")
+const ATBarracksScene := preload("res://assets/converted/buildings/ATBarracks/ATBarracks.scn")
 const CombatProjectileScript := preload("res://scripts/combat/combat_projectile.gd")
 const SimAdmissionQueueScript := preload("res://scripts/match/sim_admission_queue.gd")
+const SimUnitOrderCommandScript := preload("res://scripts/sim/commands/unit_order_command.gd")
 const UnitScene := preload("res://scenes/units/unit.tscn")
 const BuildingFootprintScript := preload("res://scripts/buildings/building_footprint.gd")
 
@@ -153,6 +155,10 @@ func _initialize() -> void:
 		"a building whose admission is still pending survives navigation's drain and gets its "
 			+ "blocker refresh on the tick that admits it",
 		_test_pending_building_blocker_refresh_survives_a_drain
+	)
+	await _run_case(
+		"a unit order accepts a prerequisite building placed in the preceding frameless tick",
+		_test_frameless_placed_prerequisite_refreshes_unit_availability
 	)
 
 	if _failures > 0:
@@ -566,6 +572,52 @@ func _test_unit_admission_deferred_to_next_tick() -> void:
 		reference_samples.size() == 2 and reference_samples[0] and reference_samples[1],
 		"positive control: a unit that was already in the match must read as a \"sim_units\" member "
 			+ "on both ticks, or the probe is not running and every sample above is vacuous"
+	)
+
+	match_instance.queue_free()
+	await process_frame
+
+
+## A building created after Match has refreshed availability for tick N must
+## dirty both availability caches before the unit-order command on tick N+1.
+## The replay stand-in creates the real prerequisite at its named position in
+## Match._advance_simulation_tick(): after the admission/availability phases
+## and before command execution. No frame may run between the two explicit
+## advance_ticks() calls below, or the old call_deferred() registration would
+## flush and make the regression pass for the wrong reason.
+func _test_frameless_placed_prerequisite_refreshes_unit_availability() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	root.add_child(match_instance)
+	for _warmup in 5:
+		await process_frame
+
+	var hooks := _install_tick_hooks(match_instance)
+	var spawner: TickHookReplayPlayer = hooks[0]
+	var placed: Array[Building] = []
+	spawner.hook = func() -> void:
+		var barracks := ATBarracksScene.instantiate() as Building
+		barracks.owner_player_id = 1
+		barracks.position = Vector3(80.0, 8.0, 40.0)
+		(match_instance.get_node("Buildings") as Node).add_child(barracks)
+		barracks.finish_construction()
+		placed.append(barracks)
+
+	# The first tick creates the completed prerequisite after its availability
+	# refresh. The second must register it, refresh the cache, then accept this
+	# order -- with no process_frame between either tick.
+	match_instance.advance_ticks(1)
+	var order := SimUnitOrderCommandScript.new()
+	order.player_id = 1
+	order.unit_id = &"ATInfantry"
+	order.button_index = MOUSE_BUTTON_LEFT
+	match_instance._command_bus.submit_at(order, match_instance.current_tick() + 1)
+	match_instance.advance_ticks(1)
+
+	var production := match_instance.get_node("UnitProductionSystem") as UnitProductionSystem
+	_expect(placed.size() == 1, "control: the replay hook must place one Barracks during the first tick")
+	_expect(
+		production.unit_queue_size_for_player(1, &"ATBarracks") == 1,
+		"the next-tick unit order must accept a completed Barracks placed without an engine frame"
 	)
 
 	match_instance.queue_free()

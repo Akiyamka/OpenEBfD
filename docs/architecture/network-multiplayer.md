@@ -2644,24 +2644,28 @@ source cites a number you cannot place.
     E2b records those four files as unaudited rather than fixing them; that
     severing remains E3. It lands first because E2a already had two scope
     decisions made against that id, and renaming E2a would invalidate them.
-  - **`E2a`** — the frameless sweep. There are seven runtime
-    `call_deferred`/`set_deferred` calls in `scripts/`, not nine; counting two
-    comments produced the old number. Its eight-site audit includes those
-    seven plus the editor-only `UnitEditorPreview` call. The deferred tracker
-    registration, default building rally point, wall topology refresh,
-    deployment-finished emission and projectile free each have effects that
-    are either node/view/queue lifecycle state or reach the hash only through
-    a later stored write; E2a owes a per-site regression where that later path
-    matters. The editor preview is structurally unreachable at runtime.
-    Of the 21 timer/tween sites in `scripts/`, exactly one touches simulation
-    state: Unit's temporary invulnerability timer, which is simulation-relevant
-    but lives on Unit rather than in SimEntityState. Two more were counted as
-    simulation state when this scope was first drafted and are not — the
-    deployment sounds at `unit_deploy_state.gd:250`, whose timeout only reaches
-    `SfxSectionCatalog.play_at()`, and the laser retention at
-    `combat_projectile.gd:772`, built only after `_finish()` has already zeroed
-    the projectile's velocity and removed it from `sim_projectiles`. The
-    remaining 18 are FX, audio and corpse debris.
+  - **`E2a`** — the placement-side frameless sweep. Its one fix replaces
+    `BuildingAvailabilityTracker`'s post-`node_added` `call_deferred()` with
+    the added node's `ready` signal: `node_added` comes before
+    `Building._ready()` joins `"buildings"`, while `ready` runs later in that
+    same tick. The old call needed a rendered frame, leaving the dirty-gated
+    availability caches clean when a next-tick unit order read them. The
+    admission regression creates and completes a real Barracks inside tick N,
+    drives tick N+1 without a frame, and observes its Infantry order accepted.
+
+    Three audited calls remain deferred for measured reasons. Rally readers
+    reach `BuildingRallyPoint.point()`, which materializes the default
+    synchronously; no shipping reader bypasses it, so the deferred call merely
+    changes an unobservable eager-versus-lazy moment. `rally_point_changed` is
+    declared and emitted but has no `connect()` site in `scripts/` or `tests/`;
+    that reader-less signal is recorded, not removed. The placement wall
+    refresh and its neighbour refresh have no shipping topology reader outside
+    `BuildingWallVisual`, and navigation never reads wall connectivity, so a
+    frameless run can draw stale wall stubs while simulating identically.
+    There are six runtime `call_deferred`/`set_deferred` calls after this
+    change. **`E2c`** owns the separate entity-lifecycle half: deployment
+    completion, projectile free, invulnerability, and the remaining handlers
+    whose frame-time completion changes simulation state.
   - **`E3`** — audit the ten-file queue and sever the handlers that complete
     simulation state, the way `B3d` severed flight's: read the clip's authored
     length once, complete on a tick deadline. Twelve handlers match the widened

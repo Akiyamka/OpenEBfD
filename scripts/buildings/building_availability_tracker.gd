@@ -99,13 +99,17 @@ func _on_node_added(node: Node) -> void:
 		return
 	# node_added fires for every node entering the tree -- projectiles,
 	# decals, particles, corpses -- so cheaply rule out anything that can
-	# never end up a tracked building before paying for a deferred call.
+	# never end up a tracked building before waiting for its ready signal.
 	# Building (and the BuildingStub test double, which is a plain Node, not
 	# Node3D) always declares construction_completed; incidental scenery
 	# never does, so that alone is the filter -- do not additionally require
 	# `is Node3D` here, or the test double stops matching.
 	if node.has_signal("construction_completed"):
-		call_deferred("_track", node)
+		# The signal fires after Building._ready() has joined "buildings", but
+		# still within the tick that created this node. call_deferred() needed a
+		# rendered frame to make that same post-ready check, leaving a frameless
+		# tick loop with a clean availability cache on the next order.
+		node.ready.connect(_track.bind(node), CONNECT_ONE_SHOT)
 
 
 func _on_node_removed(node: Node) -> void:
