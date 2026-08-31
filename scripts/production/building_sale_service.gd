@@ -29,31 +29,21 @@ func start(building: Node3D, player_id: int, player, config: Resource) -> bool:
 	sale.refund = maxi(int(config.cost) / 2, 0) if config != null else 0
 	_by_player_id[player_id] = sale
 	var animation_player := building.get_node_or_null("StatePlayer") as AnimationPlayer
-	if AuthoredModelScript.play_one_shot(
-		building, &"sell", _on_animation_finished.bind(player_id, building, &"sell")
-	):
+	if AuthoredModelScript.play_one_shot(building, &"sell"):
+		building.call("queue_authored_completion", &"sell", _finish.bind(player_id, building))
 		return true
 	if animation_player != null and animation_player.has_animation(&"construct"):
 		var animation := animation_player.get_animation(&"construct")
 		if animation != null:
 			animation.loop_mode = Animation.LOOP_NONE
-		animation_player.animation_finished.connect(
-			_on_animation_finished.bind(player_id, building, &"construct"), CONNECT_ONE_SHOT
-		)
 		AuthoredModelScript.play_state(building, &"construct")
 		animation_player.seek(animation.length if animation != null else 0.0, true)
 		animation_player.play_backwards(&"construct")
 		animation_player.advance(0.0)
+		building.call("queue_authored_completion", &"construct", _finish.bind(player_id, building))
 		return true
 	_finish(player_id, building)
 	return true
-
-
-func _on_animation_finished(
-		animation_name: StringName, player_id: int, building: Node3D, sale_animation: StringName
-) -> void:
-	if animation_name == sale_animation:
-		_finish(player_id, building)
 
 
 func _finish(player_id: int, building: Node3D) -> void:

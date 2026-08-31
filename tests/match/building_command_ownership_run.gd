@@ -9,6 +9,7 @@ const LegacyRulesFixture := preload("res://tests/support/legacy_rules_fixture.gd
 const MatchFixtureScene := preload("res://tests/fixtures/match_fixture.tscn")
 const SimRepairBuildingCommandScript := preload("res://scripts/sim/commands/repair_building_command.gd")
 const SimSellBuildingCommandScript := preload("res://scripts/sim/commands/sell_building_command.gd")
+const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 const ATConYardScene := preload("res://assets/converted/buildings/ATConYard/ATConYard.scn")
 const ATSmWindtrapScene := preload("res://assets/converted/buildings/ATSmWindtrap/ATSmWindtrap.scn")
 
@@ -207,8 +208,15 @@ func _finish_sale(match_instance, building: Building) -> void:
 	_expect(player != null, "setup: the sale fixture must provide a StatePlayer")
 	if player == null:
 		return
-	player.animation_finished.emit(&"sell")
-	match_instance.advance_ticks(1)
+	var sell := player.get_animation(&"sell")
+	var speed_scale := maxf(absf(player.speed_scale), 0.01)
+	var completion_ticks := maxi(
+		int(ceilf(sell.length / speed_scale / MatchClockScript.SECONDS_PER_TICK)) if sell != null else 0,
+		1
+	)
+	# _submit_sale() has already advanced the command tick, which schedules and
+	# consumes the first building countdown tick in Match's fixed order.
+	match_instance.advance_ticks(maxi(completion_ticks - 1, 0))
 
 
 func _free_match(match_instance) -> void:

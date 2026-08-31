@@ -107,7 +107,7 @@ static func play_clip(clip: Dictionary) -> bool:
 	return true
 
 
-static func play_one_shot(root: Node, clip: StringName, on_finished: Callable = Callable()) -> bool:
+static func play_one_shot(root: Node, clip: StringName) -> bool:
 	var found := find_clip(animation_players(root), [clip])
 	var player := found.get("player") as AnimationPlayer
 	if player == null:
@@ -115,8 +115,6 @@ static func play_one_shot(root: Node, clip: StringName, on_finished: Callable = 
 	var animation := player.get_animation(clip)
 	if animation != null:
 		animation.loop_mode = Animation.LOOP_NONE
-	if on_finished.is_valid() and not player.animation_finished.is_connected(on_finished):
-		player.animation_finished.connect(on_finished, CONNECT_ONE_SHOT)
 	if root.has_method("play_state"):
 		root.call("play_state", clip)
 		return true

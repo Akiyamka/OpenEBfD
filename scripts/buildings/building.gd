@@ -209,6 +209,13 @@ var invulnerable := false:
 		invulnerable = value
 		_invulnerability_remaining_ticks = normalized_remaining
 var _invulnerability_remaining_ticks := 0
+## Authored building clips remain presentation, but the simulation decisions
+## they gate must land on Match's integer clock. Callers schedule a completion
+## after starting a known clip; this Building owns the countdown because it is
+## the entity Match walks through "sim_buildings" for construction, sales and
+## Construction Yard packing alike.
+var _authored_completion_remaining_ticks := 0
+var _authored_completion := Callable()
 ## Pre-placed buildings are operational immediately. BuildingPlacement marks
 ## newly placed buildings incomplete until StatePlayer actually finishes the
 ## authored construct clip; unit production uses this instead of mere tree/group
@@ -509,11 +516,44 @@ func simulation_position() -> Vector3:
 func sim_tick() -> void:
 	if _simulation_halted:
 		return
+	_consume_authored_completion()
+	if _simulation_halted:
+		return
 	for turret in combat_turrets:
 		turret.advance_tick()
 	_building_combat.sim_tick()
 	_authored_fire_controller.advance(MatchClockScript.SECONDS_PER_TICK)
 	_refinery_docks.advance(MatchClockScript.SECONDS_PER_TICK)
+
+
+## Schedules an already-authored clip's simulation handoff. The AnimationPlayer
+## still plays normally for the view; only its frame-time finished signal is no
+## longer allowed to decide when construction, sale, or deconstruction lands.
+func queue_authored_completion(clip_name: StringName, completion: Callable) -> bool:
+	var clip := AuthoredModelScript.find_clip(
+		AuthoredModelScript.animation_players(self), [clip_name]
+	)
+	var player := clip.get("player") as AnimationPlayer
+	if player == null or not completion.is_valid():
+		return false
+	var seconds := AuthoredModelScript.clip_length(clip) / maxf(absf(player.speed_scale), 0.01)
+	_authored_completion_remaining_ticks = maxi(
+		int(ceilf(seconds / MatchClockScript.SECONDS_PER_TICK)), 1
+	)
+	_authored_completion = completion
+	return true
+
+
+func _consume_authored_completion() -> void:
+	if _authored_completion_remaining_ticks <= 0:
+		return
+	_authored_completion_remaining_ticks -= 1
+	if _authored_completion_remaining_ticks > 0:
+		return
+	var completion := _authored_completion
+	_authored_completion = Callable()
+	if completion.is_valid():
+		completion.call()
 
 
 ## True once this building has been despawned (request_despawn() below) or,

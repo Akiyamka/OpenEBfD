@@ -240,11 +240,10 @@ func try_undeploy(building: Node3D, move_target: Vector3, move_mode := 0) -> Dic
 		_on_undeploying_building_exiting.bind(undeployment_id), CONNECT_ONE_SHOT
 	)
 
-	if AuthoredModelScript.play_one_shot(
-		building,
-		&"deconstruct",
-		_on_undeployment_animation_finished.bind(undeployment_id)
-	):
+	if AuthoredModelScript.play_one_shot(building, &"deconstruct"):
+		building.call(
+			"queue_authored_completion", &"deconstruct", _finish_undeployment.bind(undeployment_id)
+		)
 		return _result(true, "%s packing into %s" % [String(building.get("config_id")), String(unit_id)])
 
 	# Lightweight/test buildings without an authored deconstruct clip still obey
@@ -351,15 +350,6 @@ func _on_construction_yard_completed(building: Node3D) -> void:
 	if players != null:
 		players.set_main_base(EntityQueryScript.owner_id_of(building), building)
 	construction_yard_deployed.emit(building)
-
-
-func _on_undeployment_animation_finished(
-		animation_name: StringName, undeployment_id: int
-	) -> void:
-	if animation_name != &"deconstruct":
-		_abort_undeployment(undeployment_id, true)
-		return
-	_finish_undeployment(undeployment_id)
 
 
 func _finish_undeployment(undeployment_id: int) -> void:

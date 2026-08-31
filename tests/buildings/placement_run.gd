@@ -6,6 +6,7 @@ const BuildingBakeBuilderScript := preload("res://converters/building_bake_build
 const ATBarracksScene := preload("res://assets/converted/buildings/ATBarracks/ATBarracks.scn")
 const PlacementArrowScene := preload("res://assets/converted/placement/build_arrow.scn")
 const PlacementBuildingScene := preload("res://assets/converted/placement/build_building.scn")
+const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 
 var _assertions := 0
 var _failures := 0
@@ -53,7 +54,8 @@ func _initialize() -> void:
 	_run_case("begin validation and cancel", _test_begin_and_cancel)
 	_run_case("failed placement keeps active state", _test_failed_placement_keeps_active)
 	_run_case("footprint occupancy and single spawn handoff", _test_occupancy_and_single_spawn)
-	_run_case("construction completes only after construct animation", _test_construction_waits_for_animation)
+	_run_case("construction completes on its frameless construct tick deadline", _test_construction_waits_for_animation)
+	_run_case("construct completion ignores visual frame pacing", _test_construct_completion_ignores_frame_pacing)
 	_run_case("building art uses the Helipad-calibrated scale", _test_building_art_scale)
 	_run_case("placement rotation turns footprint and spawned building", _test_rotated_placement)
 	_run_case("unmaterialed preview mesh gets fallback material", _test_unmaterialed_preview_mesh_gets_fallback_material)
@@ -254,13 +256,54 @@ func _test_construction_waits_for_animation(token: int) -> int:
 		idle_state != null and not idle_state.visible,
 		"placement must hide the completed model before the first animation frame"
 	)
-	if player != null:
-		player.animation_finished.emit(&"construct")
-	_expect(building.is_construction_complete(), "only the construct animation completion signal may make the building operational")
+	var construct := player.get_animation(&"construct") if player != null else null
+	var completion_ticks := maxi(
+		int(ceilf(construct.length / MatchClockScript.SECONDS_PER_TICK)) if construct != null else 0, 1
+	)
+	for _tick in completion_ticks - 1:
+		building.sim_tick()
+	_expect(not building.is_construction_complete(), "construct must remain incomplete before its authored tick deadline")
+	building.sim_tick()
+	_expect(building.is_construction_complete(), "construct must become operational from ticks alone, without animation_finished")
 	_expect(building.current_state == &"idle", "a completed construct animation must transition the building to idle")
 
 	_free_pair(pair)
 	return token
+
+
+func _test_construct_completion_ignores_frame_pacing(token: int) -> int:
+	var first_pair := _new_placement()
+	var second_pair := _new_placement()
+	var first = _place_animated_barracks(first_pair)
+	var second = _place_animated_barracks(second_pair)
+	var first_player := first.get_node_or_null("StatePlayer") as AnimationPlayer
+	var second_player := second.get_node_or_null("StatePlayer") as AnimationPlayer
+	var construct := first_player.get_animation(&"construct") if first_player != null else null
+	var completion_ticks := maxi(
+		int(ceilf(construct.length / MatchClockScript.SECONDS_PER_TICK)) if construct != null else 0, 1
+	)
+	if first_player != null:
+		first_player.advance(0.0)
+	if second_player != null and construct != null:
+		second_player.advance(construct.length * 2.0)
+	for _tick in completion_ticks - 1:
+		first.sim_tick()
+		second.sim_tick()
+	_expect(not first.is_construction_complete() and not second.is_construction_complete(), "neither visual pacing arm may complete construct before the same tick deadline")
+	first.sim_tick()
+	second.sim_tick()
+	_expect(first.is_construction_complete() and second.is_construction_complete(), "an unadvanced player and one advanced past construct must complete on the identical tick")
+
+	_free_pair(first_pair)
+	_free_pair(second_pair)
+	return token
+
+
+func _place_animated_barracks(pair: Array) -> Building:
+	var placement = pair[0] as BuildingPlacement
+	placement.begin(&"ATBarracks", "Barracks", _rows(["X"]))
+	placement.try_place_at_hover_cell(Vector2i(5, 7), ATBarracksScene, 1)
+	return pair[1].get_child(0) as Building
 
 
 func _test_building_art_scale(token: int) -> int:

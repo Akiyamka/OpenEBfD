@@ -1045,11 +1045,10 @@ func _play_placed_building_animation(building: Node3D) -> void:
 	# correct orientation for its neighbours right away.
 	if building.has_method("_refresh_wall_topology"):
 		building.call("_refresh_wall_topology")
-	if AuthoredModelScript.play_one_shot(
-		building,
-		&"construct",
-		_on_placed_building_animation_finished.bind(building)
-	):
+	if AuthoredModelScript.play_one_shot(building, &"construct"):
+		building.call(
+			"queue_authored_completion", &"construct", _finish_placed_building_construction.bind(building)
+		)
 		BuildingConstructionSoundScript.play(building)
 		return
 	# No construct clip means the building pops in instantly - there is no
@@ -1059,13 +1058,13 @@ func _play_placed_building_animation(building: Node3D) -> void:
 	_finish_building_construction(building)
 
 
-func _on_placed_building_animation_finished(animation_name: StringName, building: Node3D) -> void:
-	if animation_name != &"construct":
-		return
+func _finish_placed_building_construction(building: Node3D) -> void:
 	if is_instance_valid(building):
 		_play_building_state(building, &"idle")
 		_set_building_invulnerable(building, false)
 		_finish_building_construction(building)
+
+
 
 
 func _begin_building_construction(building: Node3D) -> void:

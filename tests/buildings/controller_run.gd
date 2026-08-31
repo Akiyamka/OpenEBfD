@@ -12,6 +12,7 @@ const PlacementContextScript := preload("res://scripts/buildings/placement_conte
 const ProductionSystemScript := preload("res://scripts/production/production_system.gd")
 const SimBuildOrderCommandScript := preload("res://scripts/sim/commands/build_order_command.gd")
 const CommandPumpScript := preload("res://tests/match/support/command_pump.gd")
+const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 
 ## Status line each mode emits on its way out, keyed the same as _enter_mode().
 const MODE_CANCEL_STATUS := {
@@ -647,8 +648,7 @@ func _test_sale_animation(token: int, local_player: PlayerData) -> int:
 	_expect(player != null and player.current_animation == &"sell", "sale must play the authored sell clip")
 	_expect(not building.is_construction_complete(), "a selling building must stop satisfying technology prerequisites immediately")
 	_expect(not building.is_queued_for_deletion(), "the building must remain until sell finishes")
-	if player != null:
-		player.animation_finished.emit(&"sell")
+	_advance_building_clip_deadline(building, player, &"sell")
 	# Slice C5: BuildingSaleService._finish() now despawns through
 	# request_despawn(), which -- because install_match_lookup_stub() above
 	# gave `building` a resolvable entity id -- queues it in this pump's own
@@ -698,7 +698,7 @@ func _test_sale_construct_fallback(token: int, local_player: PlayerData) -> int:
 	_expect(is_equal_approx(player.current_animation_position, construct.length), "sale fallback must start at the end of construct")
 	_expect(player.get_playing_speed() < 0.0, "sale fallback must reverse construct")
 	_expect(not building.is_queued_for_deletion(), "the building must remain until reversed construct finishes")
-	player.animation_finished.emit(&"construct")
+	_advance_building_clip_deadline(building, player, &"construct")
 	# See _test_sale_animation()'s identical comment above: install_match_
 	# lookup_stub() gave `building` a resolvable entity id, so request_
 	# despawn() queued it in this pump's EntityNodeIndex rather than freeing
@@ -710,6 +710,19 @@ func _test_sale_construct_fallback(token: int, local_player: PlayerData) -> int:
 	controller.free()
 	building.free()
 	return token
+
+
+func _advance_building_clip_deadline(
+		building: Building, player: AnimationPlayer, clip_name: StringName
+	) -> void:
+	var clip := player.get_animation(clip_name) if player != null else null
+	var speed_scale := maxf(absf(player.speed_scale), 0.01) if player != null else 1.0
+	var completion_ticks := maxi(
+		int(ceilf(clip.length / speed_scale / MatchClockScript.SECONDS_PER_TICK)) if clip != null else 0,
+		1
+	)
+	for _tick in completion_ticks:
+		building.sim_tick()
 
 
 ## A sell click that resolves to no building must not put anything on the

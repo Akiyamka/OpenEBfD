@@ -329,7 +329,13 @@ func _test_house_construction_yards() -> void:
 			"%s must hide its completed model during the handoff" % house_case[3]
 		)
 		_expect(players.main_base_for_player(house_case[0]) == null, "an incomplete Construction Yard must not become the main base")
-		state_player.animation_finished.emit(&"construct")
+		var construct: Animation = state_player.get_animation(&"construct")
+		var construct_ticks := maxi(
+			int(ceilf(construct.length / maxf(absf(state_player.speed_scale), 0.01) / MatchClockScript.SECONDS_PER_TICK)),
+			1
+		)
+		for _tick in construct_ticks:
+			con_yard.sim_tick()
 		_expect(con_yard.is_construction_complete(), "the authored construct clip must finish construction")
 		_expect(players.main_base_for_player(house_case[0]) == con_yard, "the completed Construction Yard must become the player's main base")
 		await process_frame
@@ -383,7 +389,13 @@ func _test_house_construction_yard_undeployment() -> void:
 		_expect(state_player.current_animation == &"deconstruct", "%s must play its authored deconstruct clip while packing" % house_case[2])
 		_expect(units.get_child_count() == 0, "the MCV must not appear before packing finishes")
 
-		state_player.animation_finished.emit(&"deconstruct")
+		var deconstruct: Animation = state_player.get_animation(&"deconstruct")
+		var completion_ticks := maxi(
+			int(ceilf(deconstruct.length / maxf(absf(state_player.speed_scale), 0.01) / MatchClockScript.SECONDS_PER_TICK)),
+			1
+		)
+		for _tick in completion_ticks:
+			building.sim_tick()
 		_expect(building.is_queued_for_deletion(), "the packed Construction Yard must release its world node")
 		_expect(units.get_child_count() == 1, "packing must spawn exactly one MCV")
 		if units.get_child_count() == 0:

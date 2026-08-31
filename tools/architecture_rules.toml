@@ -170,22 +170,17 @@ exempt = [
 	"scripts/units/unit_locomotion.gd",
 	# Suspected, unaudited -- each gates something a command can observe:
 	"scripts/units/unit_combat.gd",
-	"scripts/production/building_sale_service.gd",
-	# Surfaced by E2b's widened handler-name pattern. building_placement.gd
-	# clears invulnerability and calls finish_construction() from the frame-time
-	# callback, so its entry is command-observable as well as load-bearing.
-	"scripts/buildings/building_placement.gd",
 	"scripts/effects/death_corpse.gd",
-	# E3b: its construction-yard deconstruct callback is a direct
-	# AnimationPlayer completion and spawns the packed MCV.
-	"scripts/units/unit_deployment_controller.gd",
 	# The dispatcher, not a decision of its own: it routes to the handlers
 	# above and must survive them, so it is cleared only when they all are.
 	"scripts/units/unit.gd",
 	# Cosmetic, audited and cleared: picks the next idle clip and nothing else.
 	"scripts/units/unit_idle_animations.gd",
 ]
-cleared = [{ path = "scripts/units/combat_deploy_strategy.gd", reason = "Both matching handlers subscribe to Unit.deployment_animation_finished, a project signal scheduled by simulation rather than AnimationPlayer." }]
+cleared = [
+	{ path = "scripts/units/combat_deploy_strategy.gd", reason = "Both matching handlers subscribe to Unit.deployment_animation_finished, a project signal scheduled by simulation rather than AnimationPlayer." },
+	{ path = "scripts/units/unit_deployment_controller.gd", reason = "Its remaining deployment handler subscribes to Unit.deployment_animation_finished, a project signal scheduled by Unit.sim_tick(), not AnimationPlayer." },
+]
 summary = "simulation state completed from an animation signal"
 why = """
 AnimationPlayer's animation_finished fires on engine frame time, so a \

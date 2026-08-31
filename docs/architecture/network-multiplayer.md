@@ -2702,6 +2702,24 @@ source cites a number you cannot place.
     frameless real-Match regression proves both a completely unadvanced player
     and one advanced through its whole clip reach the same deadline.
 
+    `E3b` applies that same deadline to buildings. `Building` owns one pending
+    authored-completion countdown because its `sim_tick()` is already reached
+    through `sim_buildings`: construction, both sale variants, and Construction
+    Yard deconstruction all act on that entity, while neither
+    `BuildingSaleService` nor `UnitDeploymentController` has a Match tick site.
+    The deadline reads the clip length once and divides it by the selected
+    player's `abs(speed_scale)`, clamped to `0.01`, matching the visual and the
+    construction-sound schedule. Reversing `construct` for a sale changes its
+    direction but not its authored duration, so the fallback uses that same
+    calculation. `building_placement.gd`, `building_sale_service.gd`, and
+    `unit_deployment_controller.gd` no longer let either `play_one_shot()` or a
+    direct `animation_finished` connection complete simulation state; the
+    clipless sale branch remains deliberately synchronous because it has no
+    frame-time completion to sever. This relies on the C6c lifecycle invariant:
+    a placed building is admitted to `sim_buildings` on its next tick, and a
+    selling or deconstructing building remains there until its deadline calls
+    `request_despawn()`.
+
     The audit also corrected the queue's ownership: the
     `unit_deployment_controller.gd:356` callback is bound by
     `AuthoredModel.play_one_shot()` to the Construction Yard's `deconstruct`
