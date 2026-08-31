@@ -141,7 +141,15 @@ instead = "MatchClock.TICKS_PER_SECOND for simulation time, or RuleTicks for a r
 [[rules]]
 id = "animation-completes-simulation"
 zone = "all"
-pattern = 'func _?on_animation_finished\s*\('
+# Match the decision handlers, including descriptive names a class gives them
+# once it has more than one.  `emit_` (with or without a leading private `_`)
+# is deliberately excluded: it names a signal emitter, not a handler waiting
+# for AnimationPlayer's frame-time decision.  The rejected
+# `animation_finished\.connect\(` alternative sees generic plumbing
+# (AuthoredModel.play_one_shot()) rather than the decision and misses callers;
+# matching `play_one_shot(` sees only its callback callers and misses direct
+# connections.
+pattern = 'func (?!_?emit_)\w*animation_finished\s*\('
 exempt = [
 	# Phase 4's audit backlog. Every entry here handles AnimationPlayer's
 	# animation_finished signal, which fires on engine frame time. Where that
@@ -161,6 +169,14 @@ exempt = [
 	"scripts/units/unit_combat.gd",
 	"scripts/units/unit_deploy_state.gd",
 	"scripts/production/building_sale_service.gd",
+	# Surfaced by E2b's widened handler-name pattern; none of these four files
+	# has been audited yet. building_placement.gd clears invulnerability and
+	# calls finish_construction() from the frame-time callback, so its entry is
+	# command-observable as well as load-bearing.
+	"scripts/buildings/building_placement.gd",
+	"scripts/effects/death_corpse.gd",
+	"scripts/units/unit_deployment_controller.gd",
+	"scripts/units/combat_deploy_strategy.gd",
 	# The dispatcher, not a decision of its own: it routes to the handlers
 	# above and must survive them, so it is cleared only when they all are.
 	"scripts/units/unit.gd",

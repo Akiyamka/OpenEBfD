@@ -1,0 +1,5 @@
+extends RefCounted
+
+
+func emit_deployment_animation_finished() -> void:
+	pass

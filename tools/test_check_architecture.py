@@ -172,6 +172,22 @@ CASES: tuple[Case, ...] = (
         expect_rules=("animation-completes-simulation",),
     ),
     Case(
+        # E2b widened the shape from only `on_animation_finished` to the
+        # descriptive handler names a class needs once it has more than one.
+        "a descriptive animation-finished handler is found",
+        scripts("descriptive_animation_completes_simulation"),
+        EXIT_FINDINGS,
+        expect_rules=("animation-completes-simulation",),
+    ),
+    Case(
+        # `emit_` describes a signal emitter rather than a callback which
+        # waits for AnimationPlayer, and must not create a future false alarm.
+        "an animation-finished emitter is not a handler",
+        scripts("emit_animation_finished"),
+        EXIT_CLEAN,
+        forbid_rules=("animation-completes-simulation",),
+    ),
+    Case(
         # The exempt list in architecture_rules.toml is phase 4's audit
         # backlog, not a blessing -- this proves an entry on it really does
         # silence the rule, so that deleting one is a meaningful event.

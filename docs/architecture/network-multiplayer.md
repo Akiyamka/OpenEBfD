@@ -2355,7 +2355,8 @@ source cites a number you cannot place.
   ticks in a fixed order beside the other controllers. `ProductionSystem` is
   that owner; `PlayerData` stays about resources.
 
-  **The six animation-completed transitions come into phase 3 as `E3`.** They
+  **The twelve animation-completion handlers across ten audit-queue files come
+  into phase 3 as `E3`.** They
   were carried into phase 4 deliberately (see that phase's entry below), and
   `E` takes them back for a mechanical reason: a loop that runs ticks without
   frames never fires `AnimationPlayer`'s `animation_finished`, so a unit that
@@ -2632,6 +2633,17 @@ source cites a number you cannot place.
     arms while the hash stays equal. Measured, not assumed — with `state_hash()`
     stubbed to a constant the parity case still passes and only the first
     control catches it, so the parity case on its own proves nothing.
+  - **`E2b`** — **landed before `E2a`, despite the letter.** The older
+    `animation-completes-simulation` pattern matched only the exact
+    `on_animation_finished` handler name. Once a class had more than one such
+    handler, descriptive names made six handlers in four files invisible both
+    to enforcement and to its audit queue; the widened suffix pattern finds
+    twelve handlers across ten queued files. `building_placement.gd` is the
+    command-observable case: its frame-time construct callback clears the
+    placed building's invulnerability and calls `finish_construction()`.
+    E2b records those four files as unaudited rather than fixing them; that
+    severing remains E3. It lands first because E2a already had two scope
+    decisions made against that id, and renaming E2a would invalidate them.
   - **`E2a`** — the frameless sweep. There are seven runtime
     `call_deferred`/`set_deferred` calls in `scripts/`, not nine; counting two
     comments produced the old number. Its eight-site audit includes those
@@ -2650,9 +2662,13 @@ source cites a number you cannot place.
     `combat_projectile.gd:772`, built only after `_finish()` has already zeroed
     the projectile's velocity and removed it from `sim_projectiles`. The
     remaining 18 are FX, audio and corpse debris.
-  - **`E3`** — sever the six `animation_finished` completions the way `B3d`
-    severed flight's: read the clip's authored length once, complete on a tick
-    deadline. The rule's exempt list is the file list, and it shrinks to zero.
+  - **`E3`** — audit the ten-file queue and sever the handlers that complete
+    simulation state, the way `B3d` severed flight's: read the clip's authored
+    length once, complete on a tick deadline. Twelve handlers match the widened
+    pattern, but twelve is the queue's size and not the work — the list already
+    records `unit_idle_animations.gd` as cosmetic, audited and cleared, and
+    `unit.gd` as the dispatcher that clears only once the handlers it routes to
+    do. The exempt list is the file list, and it shrinks to zero.
   - **`E4`** — the headless entry point: boot a match with no view, feed a
     recorded command log, loop `Match.advance_ticks()`, run to the end of it,
     exit. Production code is almost ready for it — `await` appears at exactly
@@ -2677,7 +2693,7 @@ source cites a number you cannot place.
   how a slice stops being reviewable. **Reassigned 2026-08-28 to phase 3's slice
   `E3`** — see tracks D and E above. Not because the argument for deferring them
   changed, but because a headless loop that runs ticks without frames never
-  fires the signal at all, so the six of them block `E` rather than merely
+  fires the signal at all, so the whole queue blocks `E` rather than merely
   waiting for phase 4.
 
   The backlog is not kept here, on purpose — a list in prose is a second place

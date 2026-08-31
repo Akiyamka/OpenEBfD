@@ -1,0 +1,5 @@
+extends RefCounted
+
+
+func _on_turret_animation_finished() -> void:
+	pass
