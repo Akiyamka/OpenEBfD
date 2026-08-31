@@ -833,7 +833,7 @@ func _advance_locomotion_tick() -> void:
 		_set_movement_animation(true)
 		_snap_to_terrain(delta)
 		return
-	_locomotion.advance_start_transition(delta)
+	_locomotion.advance_transitions(delta, _idle_animations.play_sequence)
 	var offset := target_position - global_position
 	offset.y = 0.0
 	var requested_velocity := Vector3.ZERO
@@ -1149,7 +1149,7 @@ func navigation_step(horizontal_velocity: Vector3, delta: float) -> void:
 		velocity = Vector3.ZERO
 		_set_navigation_debug_direction(Vector3.ZERO)
 		return
-	_locomotion.advance_start_transition(delta)
+	_locomotion.advance_transitions(delta, _idle_animations.play_sequence)
 	# Preserve the requested course before a tracked unit possibly converts its
 	# translational velocity to zero while turning in place. This is the value
 	# shown by the selected-unit navigation debug arrow.
@@ -2516,11 +2516,7 @@ func restore_combat_turret_poses() -> void:
 func _on_animation_finished(animation_name: StringName, player: AnimationPlayer) -> void:
 	if _harvester_owns_animation():
 		return
-	if _combat.on_animation_finished(animation_name, player):
-		return
-	if _locomotion.on_animation_finished(
-		animation_name, player, _idle_animations.play_sequence
-	):
+	if _locomotion.on_animation_finished(animation_name, player):
 		return
 	_idle_animations.on_animation_finished(animation_name, player)
 

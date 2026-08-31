@@ -169,13 +169,11 @@ func advance_sequences(
 ## including its `target == null` skip: a man whose target died mid-clip still
 ## racks the bolt.
 ##
-## Two paths reach here with a clip that genuinely ended, and both should sound:
-## the integrator landing on `duration`, and `finish_animation()` jumping
-## `elapsed` to `duration` because the AnimationPlayer reported the clip
-## finished. That matters -- every authored reload sits 42-52 frames into its
-## clip, near the end. A burst cut short is the opposite case and stays silent:
-## cancellation goes through `cancel_sequences()` -> `_stop_sequence()`, which
-## never comes past here.
+## The simulation integrator reaches here when its authored sequence lands on
+## `duration`. Every authored reload sits 42-52 frames into its clip, near the
+## end. A burst cut short is the opposite case and stays silent: cancellation
+## goes through `cancel_sequences()` -> `_stop_sequence()`, which never comes
+## past here.
 func _play_crossed_sounds(
 	state: Dictionary, elapsed: float, source: Object
 	) -> int:
@@ -242,27 +240,6 @@ func has_blocking_sequence(sequences: Dictionary) -> bool:
 		if bool((state_value as Dictionary).get("blocking", false)):
 			return true
 	return false
-
-
-func finish_animation(
-	sequences: Dictionary,
-	player: AnimationPlayer,
-	animation_name: StringName,
-	source: Object,
-	reload_after_animation: bool
-	) -> int:
-	for weapon_index: Variant in sequences.keys():
-		var state: Dictionary = sequences[weapon_index]
-		if state.get("player") != player \
-		or StringName(state.get("animation", &"")) != animation_name:
-			continue
-		state["elapsed"] = float(state.get("duration", 0.0))
-		sequences[weapon_index] = state
-		var restore_idle := advance_sequences(
-			sequences, 0.0, source, reload_after_animation
-		)
-		return 2 if restore_idle else 1
-	return 0
 
 
 ## `stop(true)` deliberately keeps the pose the clip last wrote (see

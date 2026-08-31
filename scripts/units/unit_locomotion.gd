@@ -20,6 +20,7 @@ extends RefCounted
 const AuthoredFireControllerScript := preload(
 	"res://scripts/combat/authored_fire_controller.gd"
 )
+const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 const SpatialOrientationScript := preload("res://scripts/world/spatial_orientation.gd")
 
 const MOVING_ANIMATION := &"Move"
@@ -47,6 +48,7 @@ var _movement_animation_active := false
 var _state := State.IDLE
 var _gait_elapsed := 0.0
 var _start_remaining := 0.0
+var _stop_remaining_ticks := 0
 ## Authored speed keys from the Move clip's XBF events: [{time, speed}, ...],
 ## sorted by time and starting at 0. Empty means "no authored profile", which
 ## is the ordinary non-mech case as well as a mech whose model carries none.
@@ -78,6 +80,7 @@ func adopt_definition(unit_definition: Resource) -> void:
 	_gait_elapsed = 0.0
 	_state = State.IDLE
 	_start_remaining = 0.0
+	_stop_remaining_ticks = 0
 
 
 func uses_mech_gait() -> bool:
@@ -101,6 +104,7 @@ func reset_to_idle(play_idle: Callable) -> void:
 	_state = State.IDLE
 	_gait_elapsed = 0.0
 	_start_remaining = 0.0
+	_stop_remaining_ticks = 0
 	for player in _players:
 		player.speed_scale = 1.0
 		play_idle.call(player)
@@ -205,16 +209,19 @@ func advance_gait(delta: float, animation_speed_scale: float) -> void:
 	)
 
 
-func advance_start_transition(delta: float) -> void:
-	if _state != State.STARTING or delta <= 0.0:
+func advance_transitions(delta: float, play_idle: Callable) -> void:
+	if delta <= 0.0:
 		return
-	# Physics owns the transition deadline as well as AnimationPlayer. This
-	# keeps deterministic/manual simulations moving even when no render frame
-	# advances the player, while the normal animation_finished path can still
-	# switch to Move first during ordinary scene playback.
-	_start_remaining = maxf(_start_remaining - delta, 0.0)
-	if _start_remaining <= 0.0:
-		_begin_mech_move(gait_cadence())
+	if _state == State.STARTING:
+		_start_remaining = maxf(_start_remaining - delta, 0.0)
+		if _start_remaining <= 0.0:
+			_begin_mech_move(gait_cadence())
+		return
+	if _state != State.STOPPING:
+		return
+	_stop_remaining_ticks = maxi(_stop_remaining_ticks - 1, 0)
+	if _stop_remaining_ticks <= 0:
+		_finish_mech_stop(play_idle)
 
 
 ## The movement half of Unit._set_movement_animation(): the flight and
@@ -230,6 +237,7 @@ func apply_movement_animation(
 	if not is_moving:
 		_gait_elapsed = 0.0
 		_start_remaining = 0.0
+		_stop_remaining_ticks = 0
 	_movement_animation_active = is_moving
 	for player in _players:
 		if is_moving and player.has_animation(MOVING_ANIMATION):
@@ -244,20 +252,8 @@ func apply_movement_animation(
 ## Continues the mech chain when one of its clips ends. Returns true when the
 ## finished clip belonged to locomotion — including the plain "this unit is
 ## moving, so it must not fall into the idle chain" case.
-func on_animation_finished(
-	animation_name: StringName, player: AnimationPlayer, play_idle: Callable
-) -> bool:
+func on_animation_finished(animation_name: StringName, player: AnimationPlayer) -> bool:
 	if _uses_mech_gait:
-		if _state == State.STARTING and animation_name == MOVE_START_ANIMATION:
-			_begin_mech_move(gait_cadence())
-			return true
-		if _state == State.STOPPING and animation_name == MOVE_STOP_ANIMATION:
-			_state = State.IDLE
-			_start_remaining = 0.0
-			for animation_player in _players:
-				animation_player.speed_scale = 1.0
-				play_idle.call(animation_player)
-			return true
 		var active_turn_animation := TURN_LEFT_ANIMATION \
 			if _state == State.TURNING_LEFT else TURN_RIGHT_ANIMATION
 		if (
@@ -341,13 +337,22 @@ func _apply_mech_animation(
 	if not is_moving:
 		_gait_elapsed = 0.0
 		_start_remaining = 0.0
-		if _state == State.STOPPING and _any_animation_playing(MOVE_STOP_ANIMATION):
+		if _state == State.STOPPING and _stop_remaining_ticks > 0:
 			return
 		if was_moving and _any_player_has_animation(MOVE_STOP_ANIMATION):
 			_state = State.STOPPING
-			_play_mech_clip(MOVE_STOP_ANIMATION, gait_cadence())
+			var stop_speed_scale := gait_cadence()
+			_stop_remaining_ticks = maxi(
+				int(ceilf(
+					_animation_playback_duration(MOVE_STOP_ANIMATION, stop_speed_scale)
+					/ MatchClockScript.SECONDS_PER_TICK
+				)),
+				1
+			)
+			_play_mech_clip(MOVE_STOP_ANIMATION, stop_speed_scale)
 			return
 		_state = State.IDLE
+		_stop_remaining_ticks = 0
 		for player in _players:
 			player.speed_scale = 1.0
 			play_idle.call(player)
@@ -356,6 +361,7 @@ func _apply_mech_animation(
 	if turn_animation in [TURN_LEFT_ANIMATION, TURN_RIGHT_ANIMATION] \
 	and _any_player_has_animation(turn_animation):
 		_start_remaining = 0.0
+		_stop_remaining_ticks = 0
 		_state = State.TURNING_LEFT if turn_animation == TURN_LEFT_ANIMATION \
 			else State.TURNING_RIGHT
 		# TurnRate already controls the physical hull yaw. These authored clips
@@ -363,7 +369,9 @@ func _apply_mech_animation(
 		_play_mech_clip(turn_animation, 1.0)
 		return
 
-	if _state == State.STARTING and _any_animation_playing(MOVE_START_ANIMATION):
+	# The start deadline is simulation-owned. A player that reaches its last
+	# frame early must neither restart the visual clip nor reset that deadline.
+	if _state == State.STARTING:
 		return
 	if _state == State.MOVING:
 		_play_mech_clip(MOVING_ANIMATION, move_speed_scale)
@@ -371,6 +379,7 @@ func _apply_mech_animation(
 
 	if _any_player_has_animation(MOVE_START_ANIMATION):
 		_state = State.STARTING
+		_stop_remaining_ticks = 0
 		var start_speed_scale := gait_cadence()
 		_start_remaining = _animation_playback_duration(
 			MOVE_START_ANIMATION, start_speed_scale
@@ -385,7 +394,17 @@ func _apply_mech_animation(
 func _begin_mech_move(speed_scale: float) -> void:
 	_state = State.MOVING
 	_start_remaining = 0.0
+	_stop_remaining_ticks = 0
 	_play_mech_clip(MOVING_ANIMATION, speed_scale)
+
+
+func _finish_mech_stop(play_idle: Callable) -> void:
+	_state = State.IDLE
+	_start_remaining = 0.0
+	_stop_remaining_ticks = 0
+	for player in _players:
+		player.speed_scale = 1.0
+		play_idle.call(player)
 
 
 func _play_mech_clip(animation_name: StringName, speed_scale: float) -> void:
@@ -427,20 +446,9 @@ func _any_player_has_animation(animation_name: StringName) -> bool:
 	return false
 
 
-func _any_animation_playing(animation_name: StringName) -> bool:
-	for player in _players:
-		if (
-			player.has_animation(animation_name)
-			and player.current_animation == animation_name
-			and player.is_playing()
-		):
-			return true
-	return false
-
-
 func _animation_playback_duration(animation_name: StringName, speed_scale: float) -> float:
 	var duration := 0.0
-	var safe_speed_scale := maxf(speed_scale, 0.000001)
+	var safe_speed_scale := maxf(absf(speed_scale), 0.01)
 	for player in _players:
 		if not player.has_animation(animation_name):
 			continue

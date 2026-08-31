@@ -480,14 +480,12 @@ func _test_mech_gait_speeds() -> void:
 		and is_zero_approx(unit._locomotion.gait_phase()),
 		"Devastator must finish Move_Start before beginning its zero-speed Move phase"
 	)
-	if devastator_player != null:
-		devastator_player.animation_finished.emit(&"Move_Start")
-	unit.navigation_step(Vector3.ZERO, 0.1)
 	_expect(
-		unit._locomotion.gait_phase() > 0.0
+		_advance_mech_until_clip(unit, devastator_player, &"Move", Vector3.ZERO)
+		and unit._locomotion.gait_phase() > 0.0
 		and devastator_player != null
 		and devastator_player.current_animation == &"Move",
-		"an authored zero-speed Move phase must advance instead of resetting to idle"
+		"the tick-owned Move_Start deadline must enter Move and advance its authored zero-speed phase"
 	)
 
 	var navigation = unit.get("_navigation_system")
@@ -561,11 +559,11 @@ func _test_mech_locomotion_transitions() -> void:
 		"a mech must remain in place while Move_Start is playing"
 	)
 
-	if player != null:
-		player.animation_finished.emit(&"Move_Start")
 	_expect(
-		player != null and player.current_animation == &"Move",
-		"Move_Start completion must enter the looping Move animation"
+		_advance_mech_until_clip(
+			unit, player, &"Move", forward * unit.navigation_move_speed()
+		),
+		"the tick-owned Move_Start deadline must enter the looping Move animation"
 	)
 	unit.navigation_step(forward * unit.navigation_move_speed(), tick_delta)
 	_expect(
@@ -578,11 +576,9 @@ func _test_mech_locomotion_transitions() -> void:
 		player != null and player.current_animation == &"Move_Stop",
 		"a moving mech must play Move_Stop when its order ends"
 	)
-	if player != null:
-		player.animation_finished.emit(&"Move_Stop")
 	_expect(
-		player != null and _is_unit_idle(player),
-		"Move_Stop completion must return the mech to Stationary"
+		_advance_mech_until_idle(unit, player),
+		"the tick-owned Move_Stop deadline must return the mech to Stationary"
 	)
 
 	unit.rotation = Vector3.ZERO
@@ -609,6 +605,28 @@ func _test_mech_locomotion_transitions() -> void:
 	)
 
 	match_instance.queue_free()
+
+
+func _advance_mech_until_clip(
+	unit: Unit, player: AnimationPlayer, animation_name: StringName, velocity: Vector3
+	) -> bool:
+	if player == null:
+		return false
+	for _tick in 100:
+		unit.navigation_step(velocity, MatchClockScript.SECONDS_PER_TICK)
+		if player.current_animation == animation_name:
+			return true
+	return false
+
+
+func _advance_mech_until_idle(unit: Unit, player: AnimationPlayer) -> bool:
+	if player == null:
+		return false
+	for _tick in 100:
+		unit.navigation_step(Vector3.ZERO, MatchClockScript.SECONDS_PER_TICK)
+		if _is_unit_idle(player):
+			return true
+	return false
 
 
 func _unit_animation_player(unit: Unit) -> AnimationPlayer:

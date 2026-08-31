@@ -1039,23 +1039,3 @@ func configure_combat_turrets() -> void:
 func bind_combat_turrets() -> void:
 	for turret in _owner.combat_turrets:
 		turret.bind_model(_owner.visual_root, turret.weapon_index())
-
-
-## unit.gd's _on_animation_finished() dispatch. Returns true when the fire-
-## sequence lifecycle claimed this animation event, in which case the facade
-## must stop dispatching to the other model-driving modules (deploy,
-## locomotion, idle) -- exactly the fire_finish_result > 0 branch this
-## replaces.
-func on_animation_finished(animation_name: StringName, player: AnimationPlayer) -> bool:
-	var fire_finish_result: int = _authored_fire_controller.finish_animation(
-		_weapon_fire_sequences,
-		player,
-		animation_name,
-		_owner,
-		_reload_starts_after_fire_animation()
-	)
-	if fire_finish_result <= 0:
-		return false
-	if fire_finish_result == 2 and not _owner.is_movement_animation_active():
-		_owner.restore_movement_animation()
-	return true

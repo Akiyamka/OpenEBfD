@@ -143,8 +143,10 @@ id = "animation-completes-simulation"
 zone = "all"
 # Match the decision handlers, including descriptive names a class gives them
 # once it has more than one. `exempt` is the unaudited backlog that shrinks as
-# work lands; `cleared` records an audited verdict for a match that is not a
-# defect. `emit_` and `queue_` (with or without a leading private `_`) are
+# work lands; an empty `exempt` means every matching file has been audited.
+# `cleared` records an audited verdict for a match that is not a defect, so it
+# remains non-empty after that queue closes. `emit_` and `queue_` (with or
+# without a leading private `_`) are
 # deliberately excluded: they name signal emission or tick-completion
 # scheduling, not a handler waiting for AnimationPlayer's frame-time decision. The rejected
 # `animation_finished\.connect\(` alternative sees generic plumbing
@@ -152,34 +154,14 @@ zone = "all"
 # matching `play_one_shot(` sees only its callback callers and misses direct
 # connections.
 pattern = 'func (?!_?(?:emit|queue)_)\w*animation_finished\s*\('
-exempt = [
-	# Phase 4's audit backlog. Every entry here handles AnimationPlayer's
-	# animation_finished signal, which fires on engine frame time. Where that
-	# handler completes *simulation* state, how many ticks something takes
-	# depends on how fast the machine ran -- slice B3d removed exactly that
-	# from UnitFlightController, and tests/units/flight_run.gd now proves the
-	# severing directly. These have NOT been audited the same way. Each needs
-	# the same question answered before phase 4's determinism gate: does it
-	# read live animation state to decide *when, or whether*, something
-	# happens? Reading a clip's authored length once is fine; waiting on its
-	# finished signal is not. Delete an entry when its file is fixed; record an
-	# audited non-defect in `cleared` instead. The emptying exempt list is the
-	# progress report.
-	#
-	# Proven defective (see the phase 3 entry, slice B3d's sweep):
-	"scripts/units/unit_locomotion.gd",
-	# Suspected, unaudited -- each gates something a command can observe:
-	"scripts/units/unit_combat.gd",
-	"scripts/effects/death_corpse.gd",
-	# The dispatcher, not a decision of its own: it routes to the handlers
-	# above and must survive them, so it is cleared only when they all are.
-	"scripts/units/unit.gd",
-	# Cosmetic, audited and cleared: picks the next idle clip and nothing else.
-	"scripts/units/unit_idle_animations.gd",
-]
+exempt = []
 cleared = [
 	{ path = "scripts/units/combat_deploy_strategy.gd", reason = "Both matching handlers subscribe to Unit.deployment_animation_finished, a project signal scheduled by simulation rather than AnimationPlayer." },
 	{ path = "scripts/units/unit_deployment_controller.gd", reason = "Its remaining deployment handler subscribes to Unit.deployment_animation_finished, a project signal scheduled by Unit.sim_tick(), not AnimationPlayer." },
+	{ path = "scripts/units/unit_locomotion.gd", reason = "The surviving handler only restarts a completed turn clip for a visual loop; start and stop transitions finish on tick-owned deadlines." },
+	{ path = "scripts/units/unit_idle_animations.gd", reason = "Its handler only chains cosmetic idle clips and changes no simulation-owned state." },
+	{ path = "scripts/effects/death_corpse.gd", reason = "The death signal controls only an unselectable, unsnapshotted corpse's local resource lifetime; it joins no simulation group." },
+	{ path = "scripts/units/unit.gd", reason = "The dispatcher now routes only the locomotion turn-loop and cosmetic idle handlers; it makes no simulation completion decision." },
 ]
 summary = "simulation state completed from an animation signal"
 why = """

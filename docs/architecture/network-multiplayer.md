@@ -2737,6 +2737,28 @@ source cites a number you cannot place.
     structured, reason-required record of audited matching files that are not
     defects. The checker suppresses either list but rejects an overlap, so a
     file cannot silently move from the work queue into an undocumented waiver.
+
+    **E3 is closed.** E3a moved deploy transitions to their authored
+    tick-deadlines; E3b did the same for building construction and sale; E3c
+    closed locomotion and unit fire. E3c found that `Move_Start` and authored
+    fire were not missing tick completion at all: both already had integrators,
+    while their animation-finished handlers were early shortcuts that made
+    completion frame-paced. It removed those shortcuts and gave the genuinely
+    frameless `Move_Stop` transition an authored, gait-speed-scaled tick
+    deadline. The next audit work is the measured eleven non-locomotion
+    `is_playing()`/`current_animation` sites: one fire-controller binding, one
+    animation-director playback choice, five cosmetic idle decisions, and four
+    movement-sound decisions. They are classified before a later dedicated
+    rule/probe slice, not folded into E3.
+
+    E3c also changed the contract of the two long-standing mech-transition
+    regressions in `demo_boot_run.gd`: their old direct
+    `animation_finished.emit()` assertions described the removed early path,
+    not a visual requirement. They now drive fixed simulation ticks through
+    the authored deadline and still require the same visible outcomes: the
+    looping Move clip (including its zero-speed gait phase) and Stationary
+    after Move_Stop. This preserves the visual chain while making its moment
+    independent of render-frame signal pacing.
   - **`E4`** — the headless entry point: boot a match with no view, feed a
     recorded command log, loop `Match.advance_ticks()`, run to the end of it,
     exit. Production code is almost ready for it — `await` appears at exactly
