@@ -56,7 +56,14 @@ The driver sends you exactly one of these. Do the step, write the files, stop.
 2. Choose the next slice. Prefer the smallest slice that leaves the tree in a
    defensible state: one that removes an `exempt` entry entirely beats one that
    shrinks two halfway.
-3. Write **`.pipeline/slice.md`** — the brief both the reviewer and the coder
+3. **Add the slice's row to `docs/architecture/plan.md` with status
+   `in-flight`, before writing any handoff file.** The queue is the only place
+   a reader who arrives mid-run can see what is being worked on — a slice that
+   exists solely in `.pipeline/` is invisible to anyone not reading the
+   driver's output, and `.pipeline/` is gitignored. The row carries the `why
+   now` reasoning in short form; the argument in full goes in the brief below,
+   not here.
+4. Write **`.pipeline/slice.md`** — the brief both the reviewer and the coder
    work from. It must contain:
    - **Goal** — one sentence, in terms of behaviour, not files.
    - **Why now** — what it unblocks, and which source above put it in the queue.
@@ -70,7 +77,7 @@ The driver sends you exactly one of these. Do the step, write the files, stop.
      name the command and what its output must say.
    - **Risks** — the determinism, module-boundary or tick-rate rules this slice
      comes closest to breaking, from `AGENTS.md`.
-4. Write **`.pipeline/slice.json`** matching `tools/pipeline/schemas/slice.json`.
+5. Write **`.pipeline/slice.json`** matching `tools/pipeline/schemas/slice.json`.
    Set `revision` to 1 for a fresh slice. Set `needs_godot_tests` true whenever
    the slice touches runtime code — the container suite is slow, so it is opt-in
    per slice, and getting this wrong means shipping untested runtime changes.
@@ -103,7 +110,12 @@ The code review passed. Read `.pipeline/code-verdict.json` and
 1. Read the actual diff (`git diff`, `git status`). Do not take the coder's
    report for what landed — check it. A report that disagrees with the diff is
    itself a reason to stop and say so instead of committing.
-2. Update `docs/architecture/plan.md`: mark the slice landed.
+2. Update `docs/architecture/plan.md`: flip the slice's row from `in-flight` to
+   `landed`. A commit cannot contain its own hash, so write `pending` in place
+   of one and fill it in at the next `STEP=next-slice` refresh — the same
+   escape `slices.md` already documents for a row that lands alongside the code
+   citing it. Refreshing that hash is part of step 1 of `next-slice`, not an
+   optional tidy-up.
 3. If any comment under `scripts/**/*.gd` now says `slice <id>` for this slice,
    add its row to `docs/architecture/slices.md`. The `unindexed-slice-reference`
    rule fails the build otherwise. Read that file's own "Reading the table"

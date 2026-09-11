@@ -351,6 +351,10 @@ preflight() {
 }
 
 # ------------------------------------------------------------------- the slice
+#
+# Every prompt below is a double-quoted string, so a backtick inside one is
+# command substitution rather than markdown formatting. Name fields in plain
+# words here; the markdown belongs in roles/*.md, which nothing expands.
 
 run_slice() {
   local slice_number="$1"
@@ -383,6 +387,11 @@ $(json_pretty "$PIPE/slice.json")" ;;
   esac
 
   [[ -f "$PIPE/slice.md" ]] || die "архитектор не написал .pipeline/slice.md"
+  # .pipeline/ is gitignored, so the queue row is the only trace of an in-flight
+  # slice that a second reader can see. Without this gate it was written at
+  # landing instead -- the file said "empty" for the whole run.
+  grep -q "$SLICE_ID" "$REPO_ROOT/docs/architecture/plan.md" \
+    || die "слайс $SLICE_ID не заведён в очередь docs/architecture/plan.md — на время прогона очередь врала бы"
   ok "слайс ${BOLD}${SLICE_ID}${OFF}: $(json_field "$PIPE/slice.json" title)"
 
   # ---- 2. reviewer reviews the plan --------------------------------------
@@ -431,7 +440,7 @@ $(json_pretty "$PIPE/plan-verdict.json")" ;;
 Follow the STEP=plan-questions section of tools/pipeline/roles/architect.md.
 The reviewer's questions are in .pipeline/plan-verdict.json.
 
-Answer them by rewriting .pipeline/slice.md, then bump `revision` in
+Answer them by rewriting .pipeline/slice.md, then bump the revision field in
 .pipeline/slice.json. Write no code."
         expect_json "$ARCHITECT" slice.json "$SCHEMAS/slice.json" "правка слайса"
         if [[ "$(json_field "$PIPE/slice.json" status)" == "blocked" ]]; then
