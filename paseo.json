@@ -1,0 +1,13 @@
+{
+  "scripts": {
+    "slice": {
+      "command": "tools/pipeline/run.sh 1"
+    },
+    "slice-x3": {
+      "command": "tools/pipeline/run.sh 3"
+    },
+    "slice-check": {
+      "command": "tools/pipeline/run.sh --check"
+    }
+  }
+}

@@ -9,6 +9,27 @@ tools/pipeline/run.sh 3        # three slices in a row
 tools/pipeline/run.sh --check  # preflight only, creates nothing
 ```
 
+## Running it from Paseo instead of a terminal
+
+`paseo.json` registers the driver as workspace scripts, so `slice`,
+`slice-x3` and `slice-check` appear in the Paseo UI with start/stop and a
+managed terminal behind each:
+
+```bash
+paseo script ls
+paseo script start slice        # same thing from the CLI
+paseo script stop slice
+```
+
+Do **not** drive a slice by typing at the architect in the Paseo chat. It is one
+agent with no reviewer, no coder, no tree fingerprint and no round limits, and
+its own brief forbids it from writing code — so the best case is that it plans
+and stops. The chat is for asking the architect things, not for running work.
+
+One operational note: the daemon belongs to whoever started it. Started by the
+desktop app, it dies when you quit the app, and a run dies with it. `paseo start`
+from a terminal outlives the app.
+
 ## The roles
 
 | role | model | mode | lifetime |
