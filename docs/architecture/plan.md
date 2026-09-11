@@ -35,7 +35,7 @@ when the slice is actually handed out, and is not duplicated here.
 
 | id | title | why now | source | status |
 | --- | --- | --- | --- | --- |
-| _empty_ | | | | |
+| E4 | Add a headless replay entry point | Next in `network-multiplayer.md`'s `## Order of work`, immediately after E3 closed (slice E3c); the machine-checked backlogs in `tools/architecture_rules.toml` (`animation-completes-simulation` and both `global-position-*` exempt lists) were fully drained, leaving the prose order as the only source pointing anywhere | `network-multiplayer.md`, `## Order of work` | landed — commit pending (this commit; see its `Slice: E4` trailer) |
 
 **status** is one of `queued`, `in-flight`, `landed`, `abandoned`. A landed row
 stays for one further slice with its commit hash, then moves to `slices.md` and

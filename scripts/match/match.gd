@@ -871,6 +871,22 @@ func current_tick() -> int:
 	return _clock.current_tick()
 
 
+## Loads a replay only after comparing its recorded starting-state digest and
+## scene path with this live match. ReplayPlayer owns the comparisons; Match
+## supplies the two facts it alone knows about the running scene.
+func load_replay(path: String) -> Dictionary:
+	var snapshot_path := _snapshot_storage_path()
+	var expected_snapshot_digest := FileAccess.get_sha256(snapshot_path) if FileAccess.file_exists(snapshot_path) else ""
+	return _replay_player.load(path, expected_snapshot_digest, scene_file_path)
+
+
+## Whether a loaded replay has submitted all of its records. This is exposed
+## alongside load_replay() so callers do not reach through Match's replay
+## boundary into _replay_player.
+func replay_exhausted() -> bool:
+	return _replay_player.is_exhausted()
+
+
 ## Advances the simulation by exactly count whole ticks without making callers
 ## reach into the private tick method. This replaces 68 hand-rolled test loops,
 ## including 36 call()-by-string reaches whose rename failure would otherwise

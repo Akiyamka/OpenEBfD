@@ -72,7 +72,8 @@ func is_loaded() -> bool:
 
 
 ## Reads `path` via ReplayFile.read() (scripts/match/replay_file.gd) and, if
-## it parses, checks its snapshot_digest against `expected_snapshot_digest`
+## it parses, checks its scene_path against `expected_scene_path`, then its
+## snapshot_digest against `expected_snapshot_digest`
 ## -- the digest of the match's *current* MatchSnapshot file
 ## (FileAccess.get_sha256() of Match._snapshot_storage_path(),
 ## scripts/match/match.gd, or "" when no such file exists yet). A mismatch
@@ -85,7 +86,7 @@ func is_loaded() -> bool:
 ## there, not a missing one, so it never coincidentally matches a real
 ## digest.
 ##
-## A failed check (bad file, or a digest mismatch) leaves this player
+## A failed check (bad file, a scene mismatch, or a digest mismatch) leaves this player
 ## exactly as it was before the call -- is_loaded() and is_exhausted() keep
 ## reporting whatever a prior successful load() left them at, if any --
 ## since nothing here is mutated until the digest check has already passed.
@@ -94,10 +95,18 @@ func is_loaded() -> bool:
 ## shape ReplayFile.read() and ReplayRecorder.start() use, for the same
 ## reason: loading a file on request is ordinary code, not something a
 ## signal is the right tool for.
-func load(path: String, expected_snapshot_digest: String) -> Dictionary:
+func load(path: String, expected_snapshot_digest: String, expected_scene_path: String) -> Dictionary:
 	var result := ReplayFileScript.read(path)
 	if not bool(result.get("ok", false)):
 		return result
+	var recorded_scene_path := String(result.get("scene_path", ""))
+	if recorded_scene_path != expected_scene_path:
+		return {
+			"ok": false,
+			"message": "Replay scene_path \"%s\" does not match the running match scene_path \"%s\": %s" % [
+				recorded_scene_path, expected_scene_path, path,
+			],
+		}
 	var recorded_digest := String(result.get("snapshot_digest", ""))
 	if recorded_digest != expected_snapshot_digest:
 		return {

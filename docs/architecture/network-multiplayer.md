@@ -2763,6 +2763,49 @@ source cites a number you cannot place.
     recorded command log, loop `Match.advance_ticks()`, run to the end of it,
     exit. Production code is almost ready for it — `await` appears at exactly
     2 sites in all of `scripts/`, both in `match.gd`.
+
+    *Landed.* `Match.load_replay(path)` and `Match.replay_exhausted()`
+    (`scripts/match/match.gd`) are thin delegators to the `_replay_player`
+    field `_ready()` already constructed but nothing had ever called `.load()`
+    on. `ReplayPlayer.load()` (`scripts/match/replay_player.gd`) grew a second
+    required check, against `scene_path`, ahead of the existing
+    `snapshot_digest` one — plan review for this slice found that an
+    empty-snapshot replay recorded for one scene could otherwise load
+    successfully against a different empty-snapshot scene and resolve stable
+    entity ids against the wrong nodes with no error at all. Both checks now
+    fail closed with a message naming the mismatched field.
+
+    `tools/run_headless_match.gd` is the entry point itself: `--replay`
+    (required), `--scene` (default `demo_match.tscn`, what actually boots —
+    the replay's header is validated against it, never used to select it) and
+    `--max-ticks` (a safety bound, so a replay that never reports itself
+    exhausted cannot hang the process the way AGENTS.md's "a headless run
+    that hangs" section warns a stuck `SceneTree` script otherwise would).
+    Its `--replay` existence check runs strictly before `--scene` is
+    instantiated, in its own phase, precisely because a bogus scene path must
+    never mask a missing replay file behind an unrelated error. Its boot
+    settle calls `set_process(false)` on the match instance before the first
+    awaited frame, the same way `tests/match/frameless_parity_run.gd`'s
+    `_boot_arm()` already did for a different reason — without it,
+    `Match._process()` advances the clock through `FrameTickDriver` during
+    the settle itself, and an early-scheduled command goes stale before
+    `load_replay()` is even called, making playback frame-dependent despite
+    the whole point of this slice.
+
+    Verified two ways, because a `tests/**/*.gd` suite driving `Match`'s
+    public API cannot prove the standalone script's own argument parsing,
+    check ordering or exit codes: `tests/match/headless_replay_run.gd` boots
+    a real `Match` frameless, asserts `current_tick() == 0` before
+    `load_replay()` runs, and asserts a replayed move command's simulated
+    effect actually happened, not just that `replay_exhausted()` went true.
+    `tools/smoke_test_headless_match.sh` runs the actual script as a
+    subprocess five times against a committed fixture
+    (`tests/fixtures/headless_match_smoke.oebr`) and checks both exit codes
+    and, for the ordering and scene-identity scenarios, that the output names
+    the field that failed — now a `make godot-test` step in its own right.
+
+    `E5` is next and unblocked: the entry point it needs to measure now
+    exists.
   - **`E5`** — measure it and record the number. Ticks per second headless
     against the 25 a second real time gives, on the same machine, with the
     command beside it. Until that number exists, "faster than real time" is a

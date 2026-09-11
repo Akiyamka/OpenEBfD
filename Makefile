@@ -60,6 +60,7 @@ godot-test:
 	$(MAKE) unit-definitions-check
 	$(MAKE) lint
 	./tools/run_godot_tests.sh
+	./tools/smoke_test_headless_match.sh
 
 # Frame-time smoke test. Deliberately outside godot-test: the numbers are
 # machine-specific, so it reports rather than asserts unless PERF_BUDGET_MS is

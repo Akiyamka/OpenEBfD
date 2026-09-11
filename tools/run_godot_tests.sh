@@ -62,6 +62,7 @@ readonly SUITES=(
 	tests/match/admission_run.gd
 	tests/match/interpolation_run.gd
 	tests/match/frameless_parity_run.gd
+	tests/match/headless_replay_run.gd
 	tests/match/command_bus_wiring_run.gd tests/maps/run.gd
 	tests/match/building_command_ownership_run.gd
 	tests/navigation/run.gd

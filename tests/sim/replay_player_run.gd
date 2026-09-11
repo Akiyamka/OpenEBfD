@@ -44,6 +44,10 @@ func _initialize() -> void:
 		_test_load_fails_on_snapshot_digest_mismatch
 	)
 	_run_case(
+		"load() fails closed when scene_path does not match the running match",
+		_test_load_fails_on_scene_path_mismatch
+	)
+	_run_case(
 		"an empty replay (header, zero records) plays back as a no-op and is exhausted immediately",
 		_test_empty_replay_is_noop_and_exhausted_immediately
 	)
@@ -156,7 +160,7 @@ func _test_round_trip_record_playback_record_produces_identical_files() -> void:
 	playback_bus.input_delay_ticks = 9
 
 	var replay_player := ReplayPlayerScript.new()
-	var load_result := replay_player.load(record_path, "")
+	var load_result := replay_player.load(record_path, "", SCENE_PATH)
 	_expect(bool(load_result.get("ok", false)), "the recorded replay must load back: %s" % [load_result.get("message", "")])
 
 	var second_recorder := ReplayRecorderScript.new()
@@ -203,7 +207,7 @@ func _test_load_fails_on_snapshot_digest_mismatch() -> void:
 	file.close()
 
 	var player := ReplayPlayerScript.new()
-	var result := player.load(path, "def456")
+	var result := player.load(path, "def456", SCENE_PATH)
 	_expect(
 		not bool(result.get("ok", true)),
 		"a replay whose snapshot_digest does not match the match's current digest must fail to load"
@@ -221,13 +225,35 @@ func _test_load_fails_on_snapshot_digest_mismatch() -> void:
 	empty_digest_file.close()
 
 	var empty_digest_player := ReplayPlayerScript.new()
-	var empty_digest_result := empty_digest_player.load(empty_digest_path, "def456")
+	var empty_digest_result := empty_digest_player.load(empty_digest_path, "def456", SCENE_PATH)
 	_expect(
 		not bool(empty_digest_result.get("ok", true)),
 		"a replay recorded with no snapshot (empty digest) must fail to load against a match that has one"
 	)
 
 	_remove_if_exists(empty_digest_path)
+
+
+func _test_load_fails_on_scene_path_mismatch() -> void:
+	var path := _temp_path("scene_path_mismatch")
+	_remove_if_exists(path)
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	ReplayFileScript.write_header(file, "res://tests/fixtures/match_fixture.tscn", "", 0, PackedByteArray())
+	file.close()
+
+	var player := ReplayPlayerScript.new()
+	var result := player.load(path, "", SCENE_PATH)
+	_expect(
+		not bool(result.get("ok", true)),
+		"a replay whose scene_path does not match the running match must fail to load"
+	)
+	_expect(
+		String(result.get("message", "")).contains("scene_path"),
+		"a scene-path failure must name scene_path so callers can distinguish it from a digest failure"
+	)
+	_expect(not player.is_loaded(), "a failed scene-path check must leave the player unloaded")
+
+	_remove_if_exists(path)
 
 
 func _test_empty_replay_is_noop_and_exhausted_immediately() -> void:
@@ -238,7 +264,7 @@ func _test_empty_replay_is_noop_and_exhausted_immediately() -> void:
 	file.close()
 
 	var player := ReplayPlayerScript.new()
-	var load_result := player.load(path, "")
+	var load_result := player.load(path, "", SCENE_PATH)
 	_expect(bool(load_result.get("ok", false)), "a header-only replay must still load: %s" % [load_result.get("message", "")])
 	_expect(player.is_loaded(), "a successful load must leave the player loaded")
 	_expect(
@@ -278,7 +304,7 @@ func _test_play_tick_drops_a_record_whose_tick_has_already_passed() -> void:
 	file.close()
 
 	var player := ReplayPlayerScript.new()
-	var load_result := player.load(path, "")
+	var load_result := player.load(path, "", SCENE_PATH)
 	_expect(bool(load_result.get("ok", false)), "a well-formed replay must load: %s" % [load_result.get("message", "")])
 
 	var bus := SimCommandBusScript.new()
@@ -294,4 +320,3 @@ func _test_play_tick_drops_a_record_whose_tick_has_already_passed() -> void:
 	_expect(player.is_exhausted(), "the record must still be consumed (and dropped), not left stuck forever")
 
 	_remove_if_exists(path)
-
