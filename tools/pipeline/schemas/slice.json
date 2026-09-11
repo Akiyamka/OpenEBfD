@@ -1,0 +1,19 @@
+{
+  "$comment": "Architect -> driver. Written to .pipeline/slice.json on STEP=next-slice.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "id", "title", "revision"],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["ready", "blocked", "done"],
+      "$comment": "ready = slice.md is written and the pipeline may proceed; blocked = a human decision is required, see `blocked_on`; done = the queue in docs/architecture/plan.md is empty."
+    },
+    "id":       { "type": "string", "minLength": 1, "$comment": "Slice id in the project's own scheme, e.g. E4 or R5b. Becomes the `Slice:` commit trailer." },
+    "title":    { "type": "string", "minLength": 1 },
+    "revision": { "type": "integer", "$comment": "Starts at 1; incremented every time the architect rewrites slice.md after reviewer questions." },
+    "touches":  { "type": "array", "items": { "type": "string" }, "$comment": "Paths the slice is expected to change. Advisory: the reviewer flags work outside it rather than the driver blocking it." },
+    "needs_godot_tests": { "type": "boolean", "$comment": "True when the slice touches runtime code, so `make godot-test` is part of acceptance rather than just `make lint`." },
+    "blocked_on": { "type": "array", "items": { "type": "string" }, "$comment": "Questions only the human can answer. Required in practice when status=blocked." }
+  }
+}

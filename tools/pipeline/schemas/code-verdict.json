@@ -1,0 +1,44 @@
+{
+  "$comment": "Reviewer -> driver. Written to .pipeline/code-verdict.json on STEP=review-code.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "slice_id", "checks_run"],
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["approved", "rework", "escalate"],
+      "$comment": "approved = the architect lands it; rework = back to the same coder with `findings`; escalate = stop, a human is needed."
+    },
+    "slice_id": { "type": "string", "minLength": 1 },
+    "checks_run": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["command", "exit_code"],
+        "properties": {
+          "command":   { "type": "string", "minLength": 1 },
+          "exit_code": { "type": "integer" },
+          "summary":   { "type": "string" }
+        }
+      },
+      "$comment": "Commands the reviewer actually ran, with real exit codes. An approval with an empty checks_run is rejected by the driver."
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["summary", "severity", "failure"],
+        "properties": {
+          "file":     { "type": "string" },
+          "line":     { "type": "integer" },
+          "severity": { "type": "string", "enum": ["blocker", "major", "minor"] },
+          "summary":  { "type": "string", "minLength": 1 },
+          "failure":  { "type": "string", "minLength": 1, "$comment": "Concrete inputs or state -> wrong behaviour. A finding that cannot name one is style, and style is not a rework reason." }
+        }
+      }
+    },
+    "notes": { "type": "string" }
+  }
+}

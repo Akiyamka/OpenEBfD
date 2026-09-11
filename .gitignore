@@ -34,3 +34,8 @@ scenes/debug
 
 # Godot writes importer sidecars next to the tracked cursor Blender sources.
 cursors_bend_files/*.blend.import
+
+# Slice pipeline handoffs and run archives (tools/pipeline/run.sh). The briefs
+# and verdicts are working state between three agents, not project history --
+# what survives a slice is its commit, its plan.md row and its slices.md row.
+.pipeline/

@@ -1,0 +1,29 @@
+{
+  "$comment": "Reviewer -> driver. Written to .pipeline/plan-verdict.json on STEP=review-plan.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "slice_id", "revision"],
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["approved", "changes_requested", "escalate"],
+      "$comment": "approved = hand to the coder; changes_requested = back to the architect with `questions`; escalate = the slice needs a human, the driver stops."
+    },
+    "slice_id": { "type": "string", "minLength": 1 },
+    "revision": { "type": "integer", "$comment": "The slice.json revision this verdict was formed against. The driver rejects a verdict for a stale revision." },
+    "questions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["question", "why"],
+        "properties": {
+          "question": { "type": "string", "minLength": 1 },
+          "why":      { "type": "string", "minLength": 1, "$comment": "What goes wrong during implementation if this stays unanswered. A question with no failure mode behind it is noise." },
+          "blocking": { "type": "boolean" }
+        }
+      }
+    },
+    "notes": { "type": "string" }
+  }
+}
