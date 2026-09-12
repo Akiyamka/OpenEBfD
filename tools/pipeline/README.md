@@ -118,6 +118,36 @@ the most useful thing in the room when you take over. Find them with
 `paseo ls --label pipeline=openebfd`, attach with `paseo attach <id>`, and delete
 them yourself when you are done.
 
+## Answering a handback, and resuming
+
+A stop is not a dead end. The reviewer and the coder are left alive precisely so
+the slice can carry on with their context intact:
+
+```bash
+# only if the stop actually needs a decision from you
+$EDITOR .pipeline/answer.md
+
+tools/pipeline/run.sh --resume       # or the `slice-resume` script in Paseo
+```
+
+Your answer is a file handoff like every other one: in the plan phase it goes to
+the architect, who folds it into `.pipeline/slice.md` and bumps the revision; in
+the code phase it goes to the coder. The phase is worked out from disk — a
+`coder-report.md` means the stop happened at or after code review.
+
+**Often no answer is needed.** A run that stopped because it used up its three
+plan rounds may already have a newer revision waiting that the reviewer never
+saw: the architect answers the round-three questions and bumps the revision, and
+*then* the loop runs out. Check `revision` in `.pipeline/slice.json` against the
+`revision` in `.pipeline/plan-verdict.json` — if the slice is ahead, resuming
+alone is enough, and a round budget is all that was missing.
+
+Resuming deliberately skips the clean-tree check: a handed-back slice leaves the
+architect's queue row and, in the code phase, the coder's whole diff behind.
+Requiring a clean tree would mean destroying the thing being resumed. The
+reviewer's fingerprint check still runs every round, which is the control that
+matters.
+
 ## Constraints this repo puts on it
 
 - **No worktrees, no parallelism.** All three roles share the one checkout.

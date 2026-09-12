@@ -8,6 +8,9 @@
     },
     "slice-check": {
       "command": "tools/pipeline/run.sh --check"
+    },
+    "slice-resume": {
+      "command": "tools/pipeline/run.sh --resume"
     }
   }
 }

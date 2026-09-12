@@ -19,6 +19,13 @@
 # Usage:  tools/pipeline/run.sh [slices]     # default 1
 #         SLICE_LIMIT=3 tools/pipeline/run.sh
 #         tools/pipeline/run.sh --check       # preflight only, creates nothing
+#         tools/pipeline/run.sh --resume      # continue a handed-back slice
+#
+# Resuming picks the slice back up from whatever .pipeline/ still holds, reusing
+# the reviewer and coder the handback deliberately left alive. Write your own
+# input to .pipeline/answer.md first if the stop needed a decision from you --
+# it reaches the architect (plan phase) or the coder (code phase) as one more
+# file handoff, which is what every other role already gets.
 #
 # Stops and hands the run back to you when: the architect reports `blocked`, the
 # reviewer says `escalate`, a round limit is hit, or the reviewer mutates the
@@ -64,7 +71,15 @@ MAX_CODE_ROUNDS="${MAX_CODE_ROUNDS:-3}"
 STEP_TIMEOUT="${STEP_TIMEOUT:-5400}"
 
 CHECK_ONLY=0
-if [[ "${1:-}" == "--check" ]]; then CHECK_ONLY=1; shift; fi
+RESUME=0
+while [[ "${1:-}" == --* ]]; do
+  case "$1" in
+    --check)  CHECK_ONLY=1 ;;
+    --resume) RESUME=1 ;;
+    *) printf 'неизвестный флаг: %s\n' "$1" >&2; exit 2 ;;
+  esac
+  shift
+done
 SLICE_LIMIT="${SLICE_LIMIT:-${1:-1}}"
 if (( CHECK_ONLY )); then SLICE_LIMIT=0; fi
 
@@ -101,7 +116,12 @@ handback() {
   printf '%s\n' "$1"
   if [[ -n "${SLICE_ID:-}" ]]; then archive_run "${SLICE_ID}" "handback"; fi
   printf '%s\n' "${DIM}Артефакты: ${ARCHIVE_DIR:-$PIPE}${OFF}"
-  printf '%s\n' "${DIM}Агенты оставлены живыми: paseo ls --label run=$RUN_ID${OFF}"
+  printf '%s\n' "${DIM}Агенты оставлены живыми: paseo ls --label pipeline=openebfd${OFF}"
+  printf '\n%s\n' "${BOLD}Как продолжить:${OFF}"
+  printf '%s\n' "  1. Если нужно твоё решение — напиши его в ${BOLD}.pipeline/answer.md${OFF}"
+  printf '%s\n' "     (обычным текстом; он уйдёт архитектору или кодеру как обычный хендоф)."
+  printf '%s\n' "  2. ${BOLD}tools/pipeline/run.sh --resume${OFF}  — или скрипт ${BOLD}slice-resume${OFF} в Paseo."
+  printf '%s\n' "${DIM}  Если прогон встал только из-за лимита раундов, ответ не нужен — просто продолжи.${OFF}"
   exit 2
 }
 
@@ -324,7 +344,14 @@ preflight() {
   # The reviewer forms its verdict from `git diff`. Anything already dirty here
   # would show up as this slice's work and be reviewed as if the coder wrote it.
   if [[ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]]; then
-    if (( CHECK_ONLY )); then
+    if (( RESUME )); then
+      # A handed-back slice leaves real work behind -- the architect's queue row,
+      # and the coder's diff when the stop came during code review. Demanding a
+      # clean tree here would mean the only way to resume is to destroy what we
+      # are resuming. The reviewer's fingerprint check still runs every round,
+      # which is the protection that actually matters.
+      log "возобновление: дерево не пустое, это ожидаемо"
+    elif (( CHECK_ONLY )); then
       warn "рабочее дерево грязное — настоящий запуск здесь бы остановился"
     else
       die "рабочее дерево грязное — закоммить или отложи изменения перед запуском"
@@ -356,11 +383,82 @@ preflight() {
 # command substitution rather than markdown formatting. Name fields in plain
 # words here; the markdown belongs in roles/*.md, which nothing expands.
 
+# Everything a resumed slice needs is already on disk; this only works out which
+# phase it stopped in. The coder's report is the marker: it exists only once the
+# coder has run, so its presence means the stop happened at or after code review.
+resume_phase() {
+  if [[ -f "$PIPE/coder-report.md" ]]; then printf 'code'; else printf 'plan'; fi
+}
+
+# Hand the human's answer to whichever role is about to act on it. Optional: a
+# run that stopped only because it ran out of rounds often needs no answer at
+# all, just more rounds.
+deliver_answer() {
+  local phase="$1"
+  if [[ ! -f "$PIPE/answer.md" ]]; then
+    log "ответа от человека нет (.pipeline/answer.md) — продолжаю с тем, что есть"
+    return 0
+  fi
+  if [[ "$phase" == "plan" ]]; then
+    send_step "$ARCHITECT" "STEP=human-answer" \
+"STEP=human-answer
+
+The run stopped and the human answered. Their answer is .pipeline/answer.md.
+
+Fold it into .pipeline/slice.md the way you fold in a reviewer's questions --
+by making the brief say what it failed to say, not by appending a note. Then
+bump the revision field in .pipeline/slice.json. Write no code."
+    expect_json "$ARCHITECT" slice.json "$SCHEMAS/slice.json" "ответ человека"
+  else
+    send_step "$CODER" "STEP=human-answer" \
+"STEP=human-answer
+
+The run stopped and the human answered. Their answer is .pipeline/answer.md.
+
+Act on it, then update .pipeline/coder-report.md with what you changed. Do not
+commit."
+  fi
+  mv -f "$PIPE/answer.md" "$PIPE/answer.used.md"
+}
+
 run_slice() {
   local slice_number="$1"
-  SLICE_ID=""
-  clear_handoffs
+  local phase="plan"
 
+  if (( RESUME )); then
+    # Only the first slice of an invocation resumes; any after it start normally.
+    RESUME=0
+    [[ -f "$PIPE/slice.json" ]] || die "нечего возобновлять: нет .pipeline/slice.json"
+    [[ -f "$PIPE/slice.md" ]]   || die "нечего возобновлять: нет .pipeline/slice.md"
+    SLICE_ID="$(json_field "$PIPE/slice.json" id)"
+    phase="$(resume_phase)"
+    step "возобновление слайса $SLICE_ID · фаза: $phase · ревизия $(json_field "$PIPE/slice.json" revision)"
+
+    REVIEWER="$(find_agent "$LABEL_NS" "role=reviewer" "slice=$SLICE_ID")"
+    if [[ -n "$REVIEWER" ]]; then
+      ok "ревьювер ${DIM}${REVIEWER:0:8}${OFF} жив — его контекст по этому слайсу сохранён"
+    else
+      REVIEWER="$(create_agent reviewer "$REVIEWER_PROVIDER" "$REVIEWER_MODE" \
+                  "$REVIEWER_THINKING" "slice=$SLICE_ID" "run=$RUN_ID")"
+      [[ -n "$REVIEWER" ]] || die "не удалось поднять ревьювера для возобновления"
+      warn "прежний ревьювер не найден, создан новый — он перечитает слайс с нуля"
+    fi
+    await_settled "$REVIEWER" "ревьювер на возобновлении"
+
+    if [[ "$phase" == "code" ]]; then
+      CODER="$(find_agent "$LABEL_NS" "role=coder" "slice=$SLICE_ID")"
+      [[ -n "$CODER" ]] || die "фаза кода, но кодера со слайсом $SLICE_ID нет — его контекст потерян, начни слайс заново"
+      ok "кодер ${DIM}${CODER:0:8}${OFF} жив"
+      await_settled "$CODER" "кодер на возобновлении"
+    fi
+
+    deliver_answer "$phase"
+  else
+    SLICE_ID=""
+    clear_handoffs
+  fi
+
+  if [[ "$phase" == "plan" ]] && [[ -z "$SLICE_ID" ]]; then
   # ---- 1. architect hands out a slice ------------------------------------
   step "слайс $slice_number · архитектор выбирает работу"
   send_step "$ARCHITECT" "STEP=next-slice" \
@@ -399,9 +497,11 @@ $(json_pretty "$PIPE/slice.json")" ;;
               "$REVIEWER_THINKING" "slice=$SLICE_ID" "run=$RUN_ID")"
   [[ -n "$REVIEWER" ]] || die "не нашёл созданного ревьювера по меткам"
   await_settled "$REVIEWER" "создание ревьювера"
+  fi
 
   local round approved=0
-  for (( round = 1; round <= MAX_PLAN_ROUNDS; round++ )); do
+  if [[ "$phase" == "code" ]]; then approved=1; fi
+  for (( round = 1; approved == 0 && round <= MAX_PLAN_ROUNDS; round++ )); do
     step "слайс $SLICE_ID · ревью плана, раунд $round/$MAX_PLAN_ROUNDS"
 
     local before; before="$(tree_fingerprint)"
@@ -458,6 +558,7 @@ $(json_pretty "$PIPE/slice.json")"
 $(json_pretty "$PIPE/plan-verdict.json")"
 
   # ---- 3. coder implements ------------------------------------------------
+  if [[ "$phase" == "plan" ]]; then
   step "слайс $SLICE_ID · реализация"
   CODER="$(create_agent coder "$CODER_PROVIDER" "$CODER_MODE" \
            "$CODER_THINKING" "slice=$SLICE_ID" "run=$RUN_ID")"
@@ -476,6 +577,7 @@ Implement it, run the checks the brief requires, and write
   [[ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]] \
     || die "кодер ничего не изменил в дереве — нечего ревьюить"
   ok "кодер отработал"
+  fi
 
   # ---- 4. reviewer reviews the code --------------------------------------
   approved=0
