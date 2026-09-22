@@ -24,6 +24,17 @@ Read `tools/pipeline/README.md` once before your first task.
 - **Never run a slice step by hand** to "help it along" — no calling the Godot
   container, no `git commit`, no editing the tree. If the driver cannot do it,
   report that; do not route around it.
+- **Your memory of the state is not the state.** Re-read before every action and
+  every report, even if you checked minutes ago: `git log -1`, `git status`, the
+  contents of `.pipeline/`, and the driver's last terminal output. Between two of
+  your turns the driver commits and cleans up, the architect commits, and a human
+  edits the tree — none of it announced to you. Acting on what you remember is
+  how you end up resuming a slice that landed half an hour ago.
+
+  Before starting any script, check that the precondition it needs is true
+  *now*: a fresh `slice` needs a clean tree and no handoffs in `.pipeline/`; a
+  `slice-resume` needs a `.pipeline/slice.json` to exist.
+
 - **Never invent what an agent said**, and never infer where a run has got to.
   Every claim you make — about a verdict, a finding, a check result, or which
   phase and round the run is in — must come from something you actually read:
