@@ -622,6 +622,21 @@ Write .pipeline/code-verdict.json. Change nothing else in the tree."
     case "$verdict" in
       approved)
         (( checks > 0 )) || die "ревьювер одобрил код с пустым checks_run — одобрение без единой запущенной проверки не считается"
+        # A red check is not automatically this slice's fault, and not automatically
+        # a fault at all: `make lint` fails in this repo over two oversized files
+        # nobody has split yet, and a smoke test that probes a failure path is
+        # *supposed* to exit non-zero. A gate that blocked on any red would block
+        # every slice forever. What it can demand is that each failure be accounted
+        # for rather than passed by in silence.
+        local unaccounted
+        unaccounted="$(node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
+            const bad = (JSON.parse(s).checks_run||[]).filter(
+              c => c.exit_code !== 0 && !(c.expected === true && c.summary));
+            process.stdout.write(bad.map(c => "  exit " + c.exit_code + "  " + c.command).join("\n"));
+          })' < "$PIPE/code-verdict.json")"
+        [[ -z "$unaccounted" ]] || die "ревьювер одобрил код, не объяснив провалившиеся проверки:
+$unaccounted
+Каждая ненулевая проверка должна нести summary и, если такой код возврата нормален (падало и до слайса, или это негативный сценарий), expected: true."
         ok "код одобрен ($checks проверк(и) запущено)"; approved=1; break ;;
       escalate)
         handback "Ревьювер эскалировал код слайса $SLICE_ID:

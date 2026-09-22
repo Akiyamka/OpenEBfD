@@ -89,6 +89,15 @@ Judge, in this order:
 4. **Are the tests worth anything?** A test that would still pass with the
    change reverted is not a test. Say so.
 
+**Account for every non-zero exit code.** `make lint` fails in this repo today
+over two oversized files (`tests/navigation/run.gd`,
+`converters/model_bake_builder.gd`) that no slice has split yet, and `make`
+reports a failed recipe as exit 2 — which is *not* the checker's own exit 2
+meaning "nothing was checked". So a red check is a question, not a verdict: say in that check's `summary` what failed, and set `expected: true` when the
+non-zero code is fine — it was already failing before this slice, or the check
+deliberately probes a failure path and a zero would have been the bug. The driver refuses an approval carrying a
+failure you passed by in silence.
+
 Write `.pipeline/code-verdict.json` against
 `tools/pipeline/schemas/code-verdict.json`. Every finding needs a `failure`:
 concrete inputs or state leading to wrong behaviour. If you cannot write one,

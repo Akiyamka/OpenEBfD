@@ -2,43 +2,93 @@
   "$comment": "Reviewer -> driver. Written to .pipeline/code-verdict.json on STEP=review-code.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["verdict", "slice_id", "checks_run"],
+  "required": [
+    "verdict",
+    "slice_id",
+    "checks_run"
+  ],
   "properties": {
     "verdict": {
       "type": "string",
-      "enum": ["approved", "rework", "escalate"],
+      "enum": [
+        "approved",
+        "rework",
+        "escalate"
+      ],
       "$comment": "approved = the architect lands it; rework = back to the same coder with `findings`; escalate = stop, a human is needed."
     },
-    "slice_id": { "type": "string", "minLength": 1 },
+    "slice_id": {
+      "type": "string",
+      "minLength": 1
+    },
     "checks_run": {
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["command", "exit_code"],
+        "required": [
+          "command",
+          "exit_code"
+        ],
         "properties": {
-          "command":   { "type": "string", "minLength": 1 },
-          "exit_code": { "type": "integer" },
-          "summary":   { "type": "string" }
+          "command": {
+            "type": "string",
+            "minLength": 1
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "summary": {
+            "type": "string",
+            "$comment": "Required whenever exit_code is non-zero: what failed, and why it does or does not implicate this slice."
+          },
+          "expected": {
+            "type": "boolean",
+            "$comment": "True when a non-zero exit is fine and `summary` says why -- the command was already failing before this slice, or the check deliberately probes a failure path. The driver refuses an `approved` verdict carrying a failure that is neither."
+          }
         }
       },
-      "$comment": "Commands the reviewer actually ran, with real exit codes. An approval with an empty checks_run is rejected by the driver."
+      "$comment": "Commands the reviewer actually ran, with real exit codes. An approval with an empty checks_run is rejected by the driver, and so is an approval where a command exited non-zero without being marked `expected` and explained. A red check is not proof of a bad slice: `make lint` is red in this repo over two unrelated oversized files, and a smoke scenario that probes a failure path is supposed to exit non-zero -- so the gate demands an account of each failure rather than blocking on any red at all."
     },
     "findings": {
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["summary", "severity", "failure"],
+        "required": [
+          "summary",
+          "severity",
+          "failure"
+        ],
         "properties": {
-          "file":     { "type": "string" },
-          "line":     { "type": "integer" },
-          "severity": { "type": "string", "enum": ["blocker", "major", "minor"] },
-          "summary":  { "type": "string", "minLength": 1 },
-          "failure":  { "type": "string", "minLength": 1, "$comment": "Concrete inputs or state -> wrong behaviour. A finding that cannot name one is style, and style is not a rework reason." }
+          "file": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer"
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "blocker",
+              "major",
+              "minor"
+            ]
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1
+          },
+          "failure": {
+            "type": "string",
+            "minLength": 1,
+            "$comment": "Concrete inputs or state -> wrong behaviour. A finding that cannot name one is style, and style is not a rework reason."
+          }
         }
       }
     },
-    "notes": { "type": "string" }
+    "notes": {
+      "type": "string"
+    }
   }
 }

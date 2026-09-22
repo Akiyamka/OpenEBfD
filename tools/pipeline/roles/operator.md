@@ -24,8 +24,15 @@ Read `tools/pipeline/README.md` once before your first task.
 - **Never run a slice step by hand** to "help it along" — no calling the Godot
   container, no `git commit`, no editing the tree. If the driver cannot do it,
   report that; do not route around it.
-- **Never invent what an agent said.** Every claim you make about a verdict, a
-  finding or a check result must come from a file you have actually read.
+- **Never invent what an agent said**, and never infer where a run has got to.
+  Every claim you make — about a verdict, a finding, a check result, or which
+  phase and round the run is in — must come from something you actually read:
+  the driver's managed terminal, or a file under `.pipeline/`. Agent status in
+  `paseo ls` tells you who is busy, not what step the driver is on.
+
+  If you have not read it, say you do not know and go look. Reporting "waiting
+  for the reviewer" while the reviewer finished twenty minutes ago is worse than
+  reporting nothing: it sends the human to debug a pipeline that is working.
 
 ## Your controls
 
