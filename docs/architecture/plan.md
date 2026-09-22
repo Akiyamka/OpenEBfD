@@ -35,7 +35,7 @@ when the slice is actually handed out, and is not duplicated here.
 
 | id | title | why now | source | status |
 | --- | --- | --- | --- | --- |
-| E5 | Measure headless tick throughput | Immediately next in `network-multiplayer.md`'s `## Order of work` after E4 landed (`b6ffb1f`) gave it something to measure; the doc's own E4 paragraph says so directly ("E5 is next and unblocked"); the manifest's `exempt` backlogs are still fully drained, so the prose order remains the only active source | `network-multiplayer.md`, `## Order of work` | landed — pending |
+| F1 | Prove replay determinism with a same-process hash comparison | Phase 3 (tracks A–E, R) closed with E5; `## Order of work`'s Phase 4 opening line names four things owed — portable math and the RNG split are already satisfied by construction (no `scripts/sim/**` code calls libm math or global RNG today, so both bans hold vacuously with nothing left to build until a real consumer needs them) and the static rules are already wired into the checker — leaving "the CI test that replays one command log twice in-process and ... compares state hashes" as the one concrete, unbuilt deliverable; the manifest's `exempt` backlogs remain fully drained | `network-multiplayer.md`, `## Order of work`, Phase 4 | landed — pending |
 
 **status** is one of `queued`, `in-flight`, `landed`, `abandoned`. A landed row
 stays for one further slice with its commit hash, then moves to `slices.md` and

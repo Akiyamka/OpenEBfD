@@ -2848,6 +2848,26 @@ source cites a number you cannot place.
   command log twice in-process and then compares state hashes across native and
   web builds.
 
+  **`F1` — landed, the same-process half.** Portable math and the RNG split
+  turned out to already be satisfied: nothing under `scripts/sim/**` calls
+  libm math, a `Vector*` angle method, or global RNG today, so both bans
+  hold with nothing built, and `SimMath`/a seeded sim RNG stay unwritten
+  until a real caller needs one. `tests/sim/replay_determinism_run.gd` is
+  the "replays one command log twice in-process" half of the CI test:
+  two `MatchFixtureScene` arms, run strictly one at a time — booted,
+  loaded, driven, hashed and torn down with `frameless_parity_run.gd`'s own
+  `SIM_GROUPS`-empty teardown assertion before the next arm ever boots,
+  never two `Match` instances alive together, since
+  `Match._advance_simulation_tick()` walks `get_tree().get_nodes_in_group(...)`
+  and would cross-drive two live instances into agreement for the wrong
+  reason. One case proves the same replay file, loaded into two
+  independently-booted arms, ends with equal `SimEntityState.state_hash()`
+  values; a second, control case proves two genuinely different replays end
+  with *unequal* hashes, so the comparison is shown able to fail before it
+  is trusted to pass. The "across native and web builds" half of the CI
+  test remains open — it needs `godot-export-web` actually exercised
+  end-to-end, which this slice deliberately left for its own turn.
+
   **Carried in from phase 3, then taken back by it: simulation state that
   completes on an animation signal.** `AnimationPlayer`'s
   `animation_finished` fires on engine frame time, so anything that completes on
