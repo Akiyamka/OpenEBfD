@@ -108,10 +108,6 @@ die()   { printf '\n%s %s\n' "${RED}✗${OFF}" "$*" >&2; exit 1; }
 # Stopping for a human is a normal outcome, not a crash: archive what we have
 # and say plainly what is needed.
 handback() {
-  # Deliberately leaves the reviewer and the coder alive: their context is the
-  # most useful thing in the room when a human has to take over, and it is gone
-  # the moment they are deleted.
-  KEEP_AGENTS=1
   printf '\n%s\n' "${BOLD}${YELLOW}── передаю тебе ──${OFF}"
   printf '%s\n' "$1"
   if [[ -n "${SLICE_ID:-}" ]]; then archive_run "${SLICE_ID}" "handback"; fi
@@ -447,9 +443,27 @@ run_slice() {
 
     if [[ "$phase" == "code" ]]; then
       CODER="$(find_agent "$LABEL_NS" "role=coder" "slice=$SLICE_ID")"
-      [[ -n "$CODER" ]] || die "фаза кода, но кодера со слайсом $SLICE_ID нет — его контекст потерян, начни слайс заново"
-      ok "кодер ${DIM}${CODER:0:8}${OFF} жив"
-      await_settled "$CODER" "кодер на возобновлении"
+      if [[ -n "$CODER" ]]; then
+        ok "кодер ${DIM}${CODER:0:8}${OFF} жив"
+        await_settled "$CODER" "кодер на возобновлении"
+      else
+        warn "прежний кодер не найден — поднимаю нового поверх уже написанного диффа"
+        CODER="$(create_agent coder "$CODER_PROVIDER" "$CODER_MODE" \
+                 "$CODER_THINKING" "slice=$SLICE_ID" "run=$RUN_ID")"
+        [[ -n "$CODER" ]] || die "не удалось поднять кодера для возобновления"
+        await_settled "$CODER" "создание кодера на возобновлении"
+        send_step "$CODER" "STEP=adopt" \
+"STEP=adopt
+
+You are taking over a slice that is already implemented. The previous coder is
+gone; its work is not. Read .pipeline/slice.md for what was specified,
+.pipeline/coder-report.md for what your predecessor says it did, and `git diff`
+plus `git status` for what is actually in the tree — the diff is the evidence,
+the report is a claim.
+
+Change nothing yet. Reply with one line saying whether the diff and the report
+agree, and name any place they do not. The reviewer reviews next."
+      fi
     fi
 
     deliver_answer "$phase"
@@ -665,10 +679,16 @@ $(git -C "$REPO_ROOT" status --short)"
 
 # ------------------------------------------------------------------------ main
 
-REVIEWER=""; CODER=""; SLICE_ID=""; ARCHIVE_DIR=""; KEEP_AGENTS=0
+REVIEWER=""; CODER=""; SLICE_ID=""; ARCHIVE_DIR=""
+# Agents are cleared where the slice lands, not here. This trap only reports,
+# because every exit that reaches it is an exit we did not plan for -- a signal,
+# a lost daemon, a die() -- and those are exactly the cases where the reviewer's
+# and coder's context is worth more than the tidiness of removing them.
 cleanup() {
-  if (( KEEP_AGENTS )); then return 0; fi
-  delete_agent "${REVIEWER:-}"; delete_agent "${CODER:-}"
+  if [[ -n "${REVIEWER:-}${CODER:-}" ]]; then
+    printf '\n%s\n' "${DIM}Агенты слайса оставлены живыми: paseo ls --label pipeline=openebfd${OFF}" >&2
+    printf '%s\n' "${DIM}Продолжить: tools/pipeline/run.sh --resume${OFF}" >&2
+  fi
 }
 trap cleanup EXIT
 

@@ -11,6 +11,9 @@
     },
     "slice-resume": {
       "command": "tools/pipeline/run.sh --resume"
+    },
+    "operator": {
+      "command": "tools/pipeline/operator.sh"
     }
   }
 }

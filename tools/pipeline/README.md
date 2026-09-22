@@ -9,6 +9,21 @@ tools/pipeline/run.sh 3        # three slices in a row
 tools/pipeline/run.sh --check  # preflight only, creates nothing
 ```
 
+## Talking to it instead of running it
+
+`tools/pipeline/operator.sh` creates **pipeline-operator**, a permanent agent
+that is the one role a human is meant to converse with. Open it in Paseo and
+say what you want; it starts the scripts, follows their terminals, reads the
+verdicts, and turns your reply into `.pipeline/answer.md` — showing you the
+wording before it resumes, since it is putting words in your mouth to three
+other models.
+
+It is a control panel, not a fourth worker. The state machine stays in
+`run.sh`, which is what keeps the round limits, the fingerprint check and the
+archive out of a model's context where they could be quietly dropped. The
+operator's brief forbids it from writing code, editing a brief or verdict, or
+messaging the other three directly.
+
 ## Running it from Paseo instead of a terminal
 
 `paseo.json` registers the driver as workspace scripts, so `slice`,
