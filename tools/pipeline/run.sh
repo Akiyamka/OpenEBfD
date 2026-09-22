@@ -686,6 +686,11 @@ $(git -C "$REPO_ROOT" status --short)"
 
   # ---- 6. clear everyone but the architect --------------------------------
   archive_run "$SLICE_ID" "landed"
+  # Clear the handoffs here, not at the next slice's start. Left in place they
+  # describe a slice that is already committed, and --resume reads the same
+  # files to decide what to continue: it would have re-entered code review on
+  # finished work. The archive above is what keeps them.
+  clear_handoffs
   delete_agent "$REVIEWER"; delete_agent "$CODER"
   REVIEWER=""; CODER=""
   ok "ревьювер и кодер очищены; архитектор живёт дальше"
