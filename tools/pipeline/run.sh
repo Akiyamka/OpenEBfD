@@ -70,6 +70,13 @@ MAX_CODE_ROUNDS="${MAX_CODE_ROUNDS:-3}"
 # Per-step wall clock. `make godot-test` in the container is the slow one.
 STEP_TIMEOUT="${STEP_TIMEOUT:-5400}"
 
+# How long to keep watching for a step's output after its agent claims to be
+# idle. See wait_for_artifact: idle is a hint, the artifact is the fact. The
+# land step gets its own, larger grace because the architect re-runs the suite
+# and reads the whole diff before it commits.
+STEP_GRACE="${STEP_GRACE:-600}"
+LAND_GRACE="${LAND_GRACE:-1800}"
+
 CHECK_ONLY=0
 RESUME=0
 while [[ "${1:-}" == --* ]]; do
@@ -245,6 +252,32 @@ $(paseo permit ls 2>/dev/null)
   die "агент не завершил шаг за ${STEP_TIMEOUT}s: $description (статус $status)"
 }
 
+# An agent reporting `idle` is not proof that its step finished. On slice F1 the
+# daemon called the architect idle during STEP=land; the driver checked HEAD,
+# saw no new commit and died -- and the commit appeared eleven minutes later,
+# from an agent that had never actually stopped. Every step produces something
+# observable, so wait for that rather than trusting the status that lied.
+wait_for_artifact() {
+  local description="$1" timeout_s="$2"; shift 2
+  if "$@"; then return 0; fi
+  local deadline=$(( SECONDS + timeout_s ))
+  log "результата шага «$description» ещё нет — жду до ${timeout_s}s"
+  while (( SECONDS < deadline )); do
+    sleep 15
+    if "$@"; then
+      ok "результат появился: агент работал дольше, чем о себе сообщал"
+      return 0
+    fi
+  done
+  return 1
+}
+
+head_moved() { [[ "$(git -C "$REPO_ROOT" rev-parse HEAD)" != "$1" ]]; }
+
+coder_left_work() {
+  [[ -f "$PIPE/coder-report.md" ]] && [[ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]]
+}
+
 send_step() {
   local agent="$1" description="$2" prompt="$3"
   log "→ $description"
@@ -264,7 +297,7 @@ expect_json() {
   local agent="$1" file="$2" schema="$3" description="$4"
   local path="$PIPE/$file" errors
 
-  if [[ ! -f "$path" ]]; then
+  if ! wait_for_artifact "$file" "$STEP_GRACE" test -f "$path"; then
     send_step "$agent" "напоминание: файл $file не создан" \
 "You did not write .pipeline/$file. Write it now, matching
 tools/pipeline/schemas/$(basename "$schema"). Write nothing else."
@@ -383,7 +416,17 @@ preflight() {
 # phase it stopped in. The coder's report is the marker: it exists only once the
 # coder has run, so its presence means the stop happened at or after code review.
 resume_phase() {
-  if [[ -f "$PIPE/coder-report.md" ]]; then printf 'code'; else printf 'plan'; fi
+  # An approved code verdict means the only step left is landing -- re-running
+  # the review would spend a round re-approving work that is already approved,
+  # and risk a second opinion looping on a diff nobody is going to change.
+  if [[ -f "$PIPE/code-verdict.json" ]] \
+     && [[ "$(json_field "$PIPE/code-verdict.json" verdict)" == "approved" ]]; then
+    printf 'land'
+  elif [[ -f "$PIPE/coder-report.md" ]]; then
+    printf 'code'
+  else
+    printf 'plan'
+  fi
 }
 
 # Hand the human's answer to whichever role is about to act on it. Optional: a
@@ -405,7 +448,7 @@ Fold it into .pipeline/slice.md the way you fold in a reviewer's questions --
 by making the brief say what it failed to say, not by appending a note. Then
 bump the revision field in .pipeline/slice.json. Write no code."
     expect_json "$ARCHITECT" slice.json "$SCHEMAS/slice.json" "ответ человека"
-  else
+  elif [[ "$phase" == "code" ]]; then
     send_step "$CODER" "STEP=human-answer" \
 "STEP=human-answer
 
@@ -413,6 +456,18 @@ The run stopped and the human answered. Their answer is .pipeline/answer.md.
 
 Act on it, then update .pipeline/coder-report.md with what you changed. Do not
 commit."
+  else
+    # Land phase: the coder is gone and the code is approved, so the only role
+    # left to hear this is the architect, and the only thing left to change is
+    # how the slice is landed.
+    send_step "$ARCHITECT" "STEP=human-answer" \
+"STEP=human-answer
+
+The run stopped before the slice landed and the human answered. Their answer is
+.pipeline/answer.md. The code is already approved and is not to be changed.
+
+Take it into account in how you land the slice -- the docs you update, the
+commit message -- and say in one line what you did with it."
   fi
   mv -f "$PIPE/answer.md" "$PIPE/answer.used.md"
 }
@@ -430,6 +485,9 @@ run_slice() {
     phase="$(resume_phase)"
     step "возобновление слайса $SLICE_ID · фаза: $phase · ревизия $(json_field "$PIPE/slice.json" revision)"
 
+    if [[ "$phase" == "land" ]]; then
+      ok "код уже одобрен — остаётся только посадка, ревьювер и кодер не нужны"
+    else
     REVIEWER="$(find_agent "$LABEL_NS" "role=reviewer" "slice=$SLICE_ID")"
     if [[ -n "$REVIEWER" ]]; then
       ok "ревьювер ${DIM}${REVIEWER:0:8}${OFF} жив — его контекст по этому слайсу сохранён"
@@ -464,6 +522,7 @@ the report is a claim.
 Change nothing yet. Reply with one line saying whether the diff and the report
 agree, and name any place they do not. The reviewer reviews next."
       fi
+    fi
     fi
 
     deliver_answer "$phase"
@@ -514,7 +573,7 @@ $(json_pretty "$PIPE/slice.json")" ;;
   fi
 
   local round approved=0
-  if [[ "$phase" == "code" ]]; then approved=1; fi
+  if [[ "$phase" != "plan" ]]; then approved=1; fi
   for (( round = 1; approved == 0 && round <= MAX_PLAN_ROUNDS; round++ )); do
     step "слайс $SLICE_ID · ревью плана, раунд $round/$MAX_PLAN_ROUNDS"
 
@@ -587,15 +646,15 @@ Follow tools/pipeline/roles/coder.md. The approved slice is .pipeline/slice.md.
 Implement it, run the checks the brief requires, and write
 .pipeline/coder-report.md. Do not commit."
 
-  [[ -f "$PIPE/coder-report.md" ]] || die "кодер не написал .pipeline/coder-report.md"
-  [[ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]] \
-    || die "кодер ничего не изменил в дереве — нечего ревьюить"
+  wait_for_artifact "работа кодера" "$STEP_GRACE" coder_left_work \
+    || die "кодер не оставил ни отчёта, ни изменений в дереве — ревьюить нечего"
   ok "кодер отработал"
   fi
 
   # ---- 4. reviewer reviews the code --------------------------------------
   approved=0
-  for (( round = 1; round <= MAX_CODE_ROUNDS; round++ )); do
+  if [[ "$phase" == "land" ]]; then approved=1; fi
+  for (( round = 1; approved == 0 && round <= MAX_CODE_ROUNDS; round++ )); do
     step "слайс $SLICE_ID · ревью кода, раунд $round/$MAX_CODE_ROUNDS"
 
     local before; before="$(tree_fingerprint)"
@@ -674,8 +733,8 @@ Check the diff yourself, update the docs and docs/architecture/plan.md, add the
 slices.md row if any code cites slice $SLICE_ID, run make lint, and commit
 everything as one commit with the trailer 'Slice: $SLICE_ID'."
 
-  [[ "$(git -C "$REPO_ROOT" rev-parse HEAD)" != "$head_before" ]] \
-    || die "архитектор не создал коммит — работа осталась в дереве, ничего не потеряно"
+  wait_for_artifact "коммит слайса" "$LAND_GRACE" head_moved "$head_before" \
+    || die "архитектор не создал коммит за ${LAND_GRACE}s после шага land — работа осталась в дереве, ничего не потеряно"
   [[ -z "$(git -C "$REPO_ROOT" status --porcelain)" ]] \
     || warn "после коммита в дереве осталось незакоммиченное:
 $(git -C "$REPO_ROOT" status --short)"

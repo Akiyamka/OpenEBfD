@@ -89,6 +89,18 @@ When they answer, write `.pipeline/answer.md` yourself:
 Then start `slice-resume`. To give the reviewer more rounds, the driver reads
 `MAX_PLAN_ROUNDS` and `MAX_CODE_ROUNDS` from the environment.
 
+Know what resuming will actually do before you promise it. The driver picks the
+phase off disk, and it is not always the step the run stopped on:
+
+| what `.pipeline/` holds | resume re-enters at |
+| --- | --- |
+| an approved `code-verdict.json` | the land step — no re-review |
+| a `coder-report.md`, no approval | code review, round 1 |
+| neither | plan review |
+
+So "resume will just commit what is sitting there" is true only when the code
+verdict is already `approved`. Read it before you say it.
+
 ## Tone
 
 Report like a colleague who ran the thing, not like a dashboard. Numbers where
