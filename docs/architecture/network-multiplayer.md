@@ -2811,6 +2811,38 @@ source cites a number you cannot place.
     command beside it. Until that number exists, "faster than real time" is a
     claim rather than a result, and phase 4's cost is still unknown.
 
+    *Landed.* `make godot-headless-perf`
+    (`tests/perf/headless_match_perf_run.gd`) boots `demo_match.tscn`
+    frameless, restores the same 49-building snapshot
+    `tests/perf/demo_match_perf_run.gd` uses, then spawns — in code, not the
+    snapshot, which stays buildings-only — a 6-vs-6 `ORAPC` mirror match and
+    a 4-`GUNIABTank` navigation patrol, so the measured batch is doing real
+    combat and real pathing rather than idling. The number:
+    **30.2 ticks/s against the simulation's fixed 25**, one representative
+    `--ticks=5000 --warmup-ticks=200` run on the container host this landed
+    on. Run-to-run variance was wide (26–159 ticks/s was observed across
+    repeated runs on this same machine), which is the report-only nature the
+    tool's own `--budget-ticks-per-second` gate exists to be honest about —
+    treat the number as a floor and a baseline for comparing future runs on
+    the same hardware, not a portable constant. Headless is faster than real
+    time, but by a modest margin here, not the dramatic one "faster than real
+    time" invites assuming; that itself is the fact this slice exists to
+    pin down, and interpreting what margin phase 5's catch-up budget needs is
+    explicitly left to whichever later slice needs that decision.
+
+    Two findings surfaced building the workload, neither previously written
+    down anywhere in this document: an idle `UnitCombat` does not auto-fire —
+    `CombatTargetAcquisition` picks a target but `_scan_turret_if_idle()` only
+    tracks it until a real `SimAttackCommand` arrives — so the harness submits
+    mirrored attack orders through the same deferred command-bus path the
+    navigation patrol uses. And a static 6v6 resolves in a few hundred ticks,
+    so keeping the default 5,000-tick run's combat workload real for its
+    whole span meant replacing defeated participants between measurement
+    chunks rather than spawning the group once; every complete 100-tick
+    window is checked for its own real damage, not just the batch total, so a
+    battle that quietly went idle after an early kill would fail the run
+    instead of being averaged away.
+
 - **Phase 4 — determinism gate.** Portable math, RNG split, the static rules
   above wired into `check_architecture.py`, and the CI test that replays one
   command log twice in-process and then compares state hashes across native and

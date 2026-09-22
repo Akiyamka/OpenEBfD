@@ -5,6 +5,10 @@ PERF_FRAMES ?= 300
 PERF_WARMUP ?= 60
 PERF_BUDGET_MS ?= 0
 PERF_LABEL ?= $(shell git rev-parse --short HEAD)
+HEADLESS_PERF_TICKS ?= 5000
+HEADLESS_PERF_WARMUP_TICKS ?= 200
+HEADLESS_PERF_BUDGET_TICKS_PER_SECOND ?= 0
+HEADLESS_PERF_LABEL ?= $(shell git rev-parse --short HEAD)
 # Mirror relay_main.gd's own defaults (see that file's doc comment and
 # RelayServer's field doc comments for why these particular numbers) so
 # `make relay` with no overrides behaves exactly like running relay_main.gd
@@ -14,7 +18,7 @@ RELAY_MAX_ROOM_SIZE ?= 4
 RELAY_MAX_CONNECTIONS ?= 128
 RELAY_MAX_ROOMS ?= 16
 
-.PHONY: rules-editor rules-export voice-feedback voice-feedback-check unit-definitions unit-definitions-check lint install-hooks uninstall-hooks godot-image godot-check godot-test godot-perf godot-convert-map godot-convert-building godot-convert-all-buildings godot-convert-all-units godot-convert-projectiles godot-convert-placement godot-convert-cursors godot-convert-spice-mound godot-convert-audio godot-export-web godot-watch-export godot-shell godot-version relay measure-nagle
+.PHONY: rules-editor rules-export voice-feedback voice-feedback-check unit-definitions unit-definitions-check lint install-hooks uninstall-hooks godot-image godot-check godot-test godot-perf godot-headless-perf godot-convert-map godot-convert-building godot-convert-all-buildings godot-convert-all-units godot-convert-projectiles godot-convert-placement godot-convert-cursors godot-convert-spice-mound godot-convert-audio godot-export-web godot-watch-export godot-shell godot-version relay measure-nagle
 
 rules-editor:
 	cd $(RULES_EDITOR_DIR) && RULES_DB="$(RULES_DB)" npm start
@@ -68,6 +72,14 @@ godot-test:
 godot-perf:
 	$(GODOT_CONTAINER) godot --headless --path /workspace --script res://tests/perf/demo_match_perf_run.gd -- \
 		--frames=$(PERF_FRAMES) --warmup=$(PERF_WARMUP) --budget-ms=$(PERF_BUDGET_MS) --label="$(PERF_LABEL)"
+
+# Headless tick-throughput measurement. Deliberately outside godot-test: the
+# numbers are machine-specific, so it reports rather than asserts unless a
+# budget is set. Compare runs of the same machine, not absolute values.
+godot-headless-perf:
+	$(GODOT_CONTAINER) godot --headless --path /workspace --script res://tests/perf/headless_match_perf_run.gd -- \
+		--ticks=$(HEADLESS_PERF_TICKS) --warmup-ticks=$(HEADLESS_PERF_WARMUP_TICKS) \
+		--budget-ticks-per-second=$(HEADLESS_PERF_BUDGET_TICKS_PER_SECOND) --label="$(HEADLESS_PERF_LABEL)"
 
 godot-convert-map:
 	$(GODOT_CONTAINER) godot --headless --path /workspace --script res://converters/convert_map.gd -- --source "$(MAP)"
