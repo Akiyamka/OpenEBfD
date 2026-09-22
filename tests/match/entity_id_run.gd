@@ -453,6 +453,11 @@ func _test_removing_sim_group_membership_stops_ticking_without_touching_the_view
 	var match_instance := MatchFixtureScene.instantiate()
 	get_root().add_child(match_instance)
 	await process_frame
+	# Driven directly rather than left to the awaited frame above: an awaited
+	# frame advances the clock by however much wall time it happened to take
+	# and is not guaranteed to produce a tick at all, which would leave this
+	# case asserting the mid-tick divergence instead of the settled state.
+	match_instance.advance_ticks(1)
 
 	var scout := match_instance.get_node("Units/ScoutA")
 	_expect(
@@ -485,9 +490,14 @@ func _test_removing_sim_group_membership_stops_ticking_without_touching_the_view
 	var building := HKGunTurretScene.instantiate() as Building
 	building.owner_player_id = 1
 	match_instance.get_node("Buildings").add_child(building)
-	# One frame so _ready() runs: add_to_group("buildings")/add_to_group(
-	# "sim_buildings") and turret construction all happen there.
+	# One frame so _ready() runs: it immediately joins "buildings", requests
+	# "sim_buildings" admission, and constructs its turret.
 	await process_frame
+	# Driven directly rather than left to the awaited frame above: an awaited
+	# frame advances the clock by however much wall time it happened to take
+	# and is not guaranteed to produce a tick at all, which would leave this
+	# case asserting the mid-tick divergence instead of the settled state.
+	match_instance.advance_ticks(1)
 	_expect(building.combat_turrets.size() == 1, "HKGunTurret must create one runtime turret to observe")
 	if building.combat_turrets.is_empty():
 		match_instance.queue_free()
