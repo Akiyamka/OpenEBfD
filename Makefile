@@ -1,5 +1,6 @@
 GODOT_CONTAINER := ./tools/godot-container
 RULES_EDITOR_DIR := ./tools/rules_editor
+WEB_REPLAY_DIR := ./tools/web_replay
 RULES_DB ?= $(CURDIR)/assets/converted/rules.db
 PERF_FRAMES ?= 300
 PERF_WARMUP ?= 60
@@ -18,7 +19,7 @@ RELAY_MAX_ROOM_SIZE ?= 4
 RELAY_MAX_CONNECTIONS ?= 128
 RELAY_MAX_ROOMS ?= 16
 
-.PHONY: rules-editor rules-export voice-feedback voice-feedback-check unit-definitions unit-definitions-check lint install-hooks uninstall-hooks godot-image godot-check godot-test godot-perf godot-headless-perf godot-convert-map godot-convert-building godot-convert-all-buildings godot-convert-all-units godot-convert-projectiles godot-convert-placement godot-convert-cursors godot-convert-spice-mound godot-convert-audio godot-export-web godot-watch-export godot-shell godot-version relay measure-nagle
+.PHONY: rules-editor rules-export voice-feedback voice-feedback-check unit-definitions unit-definitions-check lint install-hooks uninstall-hooks godot-image godot-check godot-test godot-perf godot-headless-perf godot-convert-map godot-convert-building godot-convert-all-buildings godot-convert-all-units godot-convert-projectiles godot-convert-placement godot-convert-cursors godot-convert-spice-mound godot-convert-audio godot-export-web godot-web-headless-check godot-watch-export godot-shell godot-version relay measure-nagle
 
 rules-editor:
 	cd $(RULES_EDITOR_DIR) && RULES_DB="$(RULES_DB)" npm start
@@ -110,6 +111,12 @@ godot-convert-audio:
 
 godot-export-web:
 	$(GODOT_CONTAINER) export-web
+
+# Export then boot the result in Playwright's headless Chromium. The Node
+# script owns the local HTTP server and tears it down on success and failure.
+godot-web-headless-check: godot-export-web
+	cd $(WEB_REPLAY_DIR) && npm ci
+	cd $(WEB_REPLAY_DIR) && node check_headless_boot.js
 
 godot-watch-export:
 	$(GODOT_CONTAINER) watch-export

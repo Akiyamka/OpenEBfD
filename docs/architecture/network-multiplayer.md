@@ -2868,6 +2868,30 @@ source cites a number you cannot place.
   test remains open — it needs `godot-export-web` actually exercised
   end-to-end, which this slice deliberately left for its own turn.
 
+  **`F3` — landed, the first step of the web half.** Deciding how to drive
+  a Godot web export outside a browser was a real fork — new dependencies,
+  new CI footprint — so it went back to the human rather than being guessed
+  at. Their answer: Playwright driving headless Chromium (a bare WASM host
+  was ruled out; Godot's web export is an emscripten build that expects a
+  DOM and WebGL2), rescoped so this slice proves only that the mechanism
+  works at all. `tools/web_replay/` (plain Node, not containerized, tracked
+  the same way `tools/rules_editor/` already is) adds
+  `check_headless_boot.js`, which serves `exports/web` over a local HTTP
+  server with the `Cross-Origin-Opener-Policy`/`Cross-Origin-Embedder-Policy`
+  headers a threaded WASM build would need for `SharedArrayBuffer` (this
+  export reports itself single-threaded, so they are precautionary rather
+  than load-bearing today), launches headless Chromium, and waits for the
+  same `MapLoader:` console line the native boot already emits — proof that
+  real simulation-adjacent GDScript ran inside the WASM build, not merely
+  that a blank canvas rendered. `make godot-web-headless-check` chains the
+  export, the server and the check, tearing the server down on every exit
+  path including a deliberately-failing run (`WEB_HEADLESS_CHECK_EXPECTED_LINE`/`WEB_HEADLESS_CHECK_TIMEOUT_MS`
+  override the check for exactly this). No replay, no `state_hash()`, no
+  comparison against a native run yet — those are later slices in the same
+  track, on purpose. This cannot run in CI: the same `.gitignore` exclusion
+  of `assets/` that already keeps `make godot-test` local-only means a
+  fresh checkout has no game files to export from either.
+
   **Carried in from phase 3, then taken back by it: simulation state that
   completes on an animation signal.** `AnimationPlayer`'s
   `animation_finished` fires on engine frame time, so anything that completes on

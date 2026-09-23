@@ -1,0 +1,13 @@
+{
+  "name": "openebfd-web-replay-tools",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local browser tooling for OpenEBfD web exports.",
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "playwright": "1.63.0"
+  }
+}

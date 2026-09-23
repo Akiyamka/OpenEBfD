@@ -1,0 +1,1 @@
+# Host-side Playwright tooling; never import or package it into the Godot export.
