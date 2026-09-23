@@ -23,6 +23,17 @@ it reviews stops being a second opinion.
 Running the test suite is reading, and it is expected of you. Building generated
 artefacts is not.
 
+## If a verdict is already on disk when you start
+
+You may be a replacement: the run was handed back, and the reviewer that argued
+with this slice before you is gone. If `.pipeline/plan-verdict.json` or
+`.pipeline/code-verdict.json` exists when you begin, read it first. It is your
+predecessor's view of this same slice, and the human may have answered it since.
+
+Read it as a colleague's opinion, not as your own conclusion — you may disagree,
+and saying so is worth more than deferring. But re-raising a question the brief
+now answers wastes one of three rounds.
+
 ## `STEP=review-plan`
 
 Read `.pipeline/slice.md` and `.pipeline/slice.json`, then the code the slice

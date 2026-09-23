@@ -121,11 +121,18 @@ The code review passed. Read `.pipeline/code-verdict.json` and
    rule fails the build otherwise. Read that file's own "Reading the table"
    section for the column conventions, including the `pending` escape for a row
    that lands in the same commit as the code citing it.
-4. Update any doc the slice made wrong. A slice that changes behaviour described
+4. **If the slice added any `.gd` file, run `make godot-check` and stage the
+   `.uid` files it generates.** This repo tracks them — 349 of them against 343
+   scripts — but Godot only writes one during a full project import, not during
+   the `--script` runs the test suite uses. So a new script commits without its
+   companion, and the `.uid` surfaces days later as untracked noise that stops
+   the *next* slice at preflight for a clean tree. Three slices' worth had piled
+   up before anyone noticed.
+5. Update any doc the slice made wrong. A slice that changes behaviour described
    in `docs/` and leaves the description standing is not finished.
-5. Run `make lint` yourself before committing. The pre-commit hook checks the
+6. Run `make lint` yourself before committing. The pre-commit hook checks the
    staged tree and will reject the commit anyway; finding it here is cheaper.
-6. Commit everything — code, docs, plan — as one commit, with the trailer:
+7. Commit everything — code, docs, plan — as one commit, with the trailer:
 
    ```
    Slice: <id>

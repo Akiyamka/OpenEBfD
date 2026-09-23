@@ -446,8 +446,17 @@ The run stopped and the human answered. Their answer is .pipeline/answer.md.
 
 Fold it into .pipeline/slice.md the way you fold in a reviewer's questions --
 by making the brief say what it failed to say, not by appending a note. Then
-bump the revision field in .pipeline/slice.json. Write no code."
+bump the revision field in .pipeline/slice.json, and set its status back to
+\"ready\" if the answer unblocks the slice. Write no code."
     expect_json "$ARCHITECT" slice.json "$SCHEMAS/slice.json" "ответ человека"
+    # Without this the run would walk a still-blocked slice into plan review,
+    # spending a reviewer round on a brief whose own author says it cannot
+    # proceed.
+    if [[ "$(json_field "$PIPE/slice.json" status)" == "blocked" ]]; then
+      handback "Архитектор считает, что твой ответ слайс не разблокировал:
+
+$(json_pretty "$PIPE/slice.json")"
+    fi
   elif [[ "$phase" == "code" ]]; then
     send_step "$CODER" "STEP=human-answer" \
 "STEP=human-answer
