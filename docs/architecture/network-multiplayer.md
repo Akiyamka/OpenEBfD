@@ -2892,6 +2892,43 @@ source cites a number you cannot place.
   of `assets/` that already keeps `make godot-test` local-only means a
   fresh checkout has no game files to export from either.
 
+  **`F4` — landed, a replay reaches the web build.** Getting a replay into
+  the running export raised a second fork — teach `demo_match.tscn`/`Match`
+  itself to respond to a replay-loading trigger, or keep that capability in
+  a dedicated entry point the way native's `tools/run_headless_match.gd`
+  already does — decided in conversation for the dedicated entry point,
+  matching the boundary this project holds elsewhere (`ReplayPlayer`'s own
+  doc comment names live playback during real play as an unsolved hazard
+  for exactly this reason). `scenes/dev/web_replay_check.gd` extends
+  `Match` directly and overrides only `_restore_saved_startup_state()`
+  (a no-op, so no local snapshot file is ever consulted) and `_ready()`
+  (calls the real boot via `super()`, then `load_replay()` on an
+  `@export var replay_path`), printing `WEB_REPLAY_CHECK_RESULT ok=<bool>
+  message=<...>` unconditionally so success and failure are equally
+  observable — never a bare timeout standing in for either.
+  `scenes/dev/web_replay_check.tscn` boots it against a committed,
+  header-only, zero-record replay whose header names that very scene and an
+  empty digest; `scenes/dev/web_replay_check_failure.tscn` *instances* that
+  same scene (Godot scene inheritance, not a duplicate node tree) and
+  overrides only `replay_path`, pointing at a second fixture whose header
+  names the *failure* scene with a deliberately wrong `snapshot_digest` —
+  `ReplayPlayer.load()` checks `scene_path` before `snapshot_digest`, so
+  getting the header's scene name wrong would have made the failure preset
+  fail on the wrong check and never reach the one this slice exists to
+  prove. Two new export presets (`custom_features="web_replay_check"` /
+  `"web_replay_check_failure"`) each carry their own
+  `include_filter="scenes/dev/*.oebr"` — a `.oebr` is not a Godot resource
+  type and is not bundled by default — and a `project.godot`
+  `run/main_scene.<feature>` override each, confirming Godot 4's per-feature
+  project-setting overrides are exactly the mechanism this needed; the
+  default preset and `demo_match.tscn` are untouched, proven by re-running
+  `F3`'s own check unchanged. `make godot-web-replay-load-check` and
+  `make godot-web-replay-load-failure-check` reuse `check_headless_boot.js`
+  (now parameterized by `WEB_HEADLESS_CHECK_EXPORT_DIR` and
+  `WEB_HEADLESS_CHECK_EXPECTED_FAILURE`) rather than a second script. Ticks
+  still are not driven and no hash is extracted or compared — the next
+  slices in this track.
+
   **Carried in from phase 3, then taken back by it: simulation state that
   completes on an animation signal.** `AnimationPlayer`'s
   `animation_finished` fires on engine frame time, so anything that completes on

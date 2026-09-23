@@ -35,7 +35,7 @@ when the slice is actually handed out, and is not duplicated here.
 
 | id | title | why now | source | status |
 | --- | --- | --- | --- | --- |
-| F3 | Prove headless execution of the web export | The only concrete item Phase 4 still names — `F1` deliberately deferred it. Blocked on a human decision, then unblocked by one: Playwright driving headless Chromium (Node and a Chromium binary accepted as new dev dependencies; a bare WASM host was ruled out — Godot's web export expects a DOM and WebGL2), rescoped to proving headless execution and a defined end state only (no replay, no hash, no comparison — those are later slices in the same track), and confirmed local-only since `.gitignore` excludes `assets/` the same way it already keeps `make godot-test` out of CI | `.pipeline/answer.md`'s decision on the `F3` blocked questions | landed — pending |
+| F4 | Load a replay into a dedicated web entry point | `F3` deliberately deferred this. Blocked on a human decision, then unblocked by one in conversation: a dedicated scene/export target, mirroring native's `tools/run_headless_match.gd` boundary, not the shipped `demo_match.tscn`. The mechanism (a second export preset with its own `custom_features` tag, plus a `project.godot` feature-tag override for `run/main_scene`) is Godot's documented per-feature override system, unverified in this codebase specifically — the first thing this slice's implementation should confirm empirically | resolved in conversation, not `.pipeline/answer.md` | landed — pending |
 
 **status** is one of `queued`, `in-flight`, `landed`, `abandoned`. A landed row
 stays for one further slice with its commit hash, then moves to `slices.md` and

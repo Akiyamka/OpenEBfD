@@ -16,6 +16,8 @@ compatibility/default_parent_skeleton_in_mesh_instance_3d=true
 
 config/name="OpenEBfD"
 run/main_scene="res://scenes/match/demo_match.tscn"
+run/main_scene.web_replay_check="res://scenes/dev/web_replay_check.tscn"
+run/main_scene.web_replay_check_failure="res://scenes/dev/web_replay_check_failure.tscn"
 config/features=PackedStringArray("4.7", "GL Compatibility")
 run/max_fps=60
 config/icon="res://icon.svg"

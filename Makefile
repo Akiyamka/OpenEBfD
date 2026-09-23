@@ -19,7 +19,7 @@ RELAY_MAX_ROOM_SIZE ?= 4
 RELAY_MAX_CONNECTIONS ?= 128
 RELAY_MAX_ROOMS ?= 16
 
-.PHONY: rules-editor rules-export voice-feedback voice-feedback-check unit-definitions unit-definitions-check lint install-hooks uninstall-hooks godot-image godot-check godot-test godot-perf godot-headless-perf godot-convert-map godot-convert-building godot-convert-all-buildings godot-convert-all-units godot-convert-projectiles godot-convert-placement godot-convert-cursors godot-convert-spice-mound godot-convert-audio godot-export-web godot-web-headless-check godot-watch-export godot-shell godot-version relay measure-nagle
+.PHONY: rules-editor rules-export voice-feedback voice-feedback-check unit-definitions unit-definitions-check lint install-hooks uninstall-hooks godot-image godot-check godot-test godot-perf godot-headless-perf godot-convert-map godot-convert-building godot-convert-all-buildings godot-convert-all-units godot-convert-projectiles godot-convert-placement godot-convert-cursors godot-convert-spice-mound godot-convert-audio godot-export-web godot-web-headless-check godot-web-replay-load-check godot-web-replay-load-failure-check godot-watch-export godot-shell godot-version relay measure-nagle
 
 rules-editor:
 	cd $(RULES_EDITOR_DIR) && RULES_DB="$(RULES_DB)" npm start
@@ -117,6 +117,20 @@ godot-export-web:
 godot-web-headless-check: godot-export-web
 	cd $(WEB_REPLAY_DIR) && npm ci
 	cd $(WEB_REPLAY_DIR) && node check_headless_boot.js
+
+# The dedicated presets select their own main scenes through project feature
+# tags, leaving the shipped Web preset and demo_match.tscn untouched.
+godot-web-replay-load-check:
+	mkdir -p exports/web_replay_check
+	$(GODOT_CONTAINER) godot --headless --quiet --path /workspace --export-release "Web Replay Load Check" "/workspace/exports/web_replay_check/index.html"
+	cd $(WEB_REPLAY_DIR) && npm ci
+	cd $(WEB_REPLAY_DIR) && WEB_HEADLESS_CHECK_EXPORT_DIR=../../exports/web_replay_check WEB_HEADLESS_CHECK_EXPECTED_LINE="WEB_REPLAY_CHECK_RESULT ok=true" node check_headless_boot.js
+
+godot-web-replay-load-failure-check:
+	mkdir -p exports/web_replay_check_failure
+	$(GODOT_CONTAINER) godot --headless --quiet --path /workspace --export-release "Web Replay Load Failure Check" "/workspace/exports/web_replay_check_failure/index.html"
+	cd $(WEB_REPLAY_DIR) && npm ci
+	cd $(WEB_REPLAY_DIR) && WEB_HEADLESS_CHECK_EXPORT_DIR=../../exports/web_replay_check_failure WEB_HEADLESS_CHECK_EXPECTED_LINE="WEB_REPLAY_CHECK_RESULT ok=false message=Replay snapshot_digest \"deliberately-wrong\" does not match the match's current snapshot digest <empty, no snapshot>" WEB_HEADLESS_CHECK_EXPECTED_FAILURE=1 node check_headless_boot.js
 
 godot-watch-export:
 	$(GODOT_CONTAINER) watch-export

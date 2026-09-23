@@ -11,11 +11,13 @@
  *
  *     make godot-web-headless-check
  *
- * Override WEB_HEADLESS_CHECK_EXPECTED_LINE or
- * WEB_HEADLESS_CHECK_TIMEOUT_MS to exercise a different success/failure
- * condition. WEB_HEADLESS_CHECK_BOOT_TIMEOUT_MS bounds waiting for the first
- * browser diagnostic during a cold pack load. WEB_HEADLESS_CHECK_PORT defaults
- * to 4173 when a different local port is needed.
+ * Override WEB_HEADLESS_CHECK_EXPORT_DIR, WEB_HEADLESS_CHECK_EXPECTED_LINE,
+ * or WEB_HEADLESS_CHECK_TIMEOUT_MS to check another export or condition.
+ * WEB_HEADLESS_CHECK_EXPECTED_FAILURE=1 makes a matched line a deliberate
+ * non-zero result, for checks whose expected application result is failure.
+ * WEB_HEADLESS_CHECK_BOOT_TIMEOUT_MS bounds waiting for the first browser
+ * diagnostic during a cold pack load. WEB_HEADLESS_CHECK_PORT defaults to 4173
+ * when a different local port is needed.
  */
 
 import { createReadStream, promises as fs } from "node:fs";
@@ -25,7 +27,10 @@ import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 
 const TOOL_DIR = path.dirname(fileURLToPath(import.meta.url));
-const EXPORT_DIR = path.resolve(TOOL_DIR, "../../exports/web");
+const EXPORT_DIR = path.resolve(
+	TOOL_DIR,
+	process.env.WEB_HEADLESS_CHECK_EXPORT_DIR ?? "../../exports/web"
+);
 const DEFAULT_EXPECTED_LINE = "MapLoader: res://assets/converted/maps/#M25 GM Aprit Chard S 2/map_data.tres";
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_BOOT_TIMEOUT_MS = 120_000;
@@ -122,6 +127,7 @@ async function main() {
 	const timeoutMs = readPositiveInteger("WEB_HEADLESS_CHECK_TIMEOUT_MS", DEFAULT_TIMEOUT_MS);
 	const bootTimeoutMs = readPositiveInteger("WEB_HEADLESS_CHECK_BOOT_TIMEOUT_MS", DEFAULT_BOOT_TIMEOUT_MS);
 	const port = readPositiveInteger("WEB_HEADLESS_CHECK_PORT", DEFAULT_PORT);
+	const expectedFailure = process.env.WEB_HEADLESS_CHECK_EXPECTED_FAILURE === "1";
 	const observed = [];
 	let bootStartedAt = 0;
 	let server;
@@ -182,6 +188,9 @@ async function main() {
 			});
 		}
 		console.log(`Observed expected browser console line after ${Date.now() - bootStartedAt} ms: ${expectedLine}`);
+		if (expectedFailure) {
+			throw new Error(`Expected application failure observed: ${expectedLine}`);
+		}
 	} catch (error) {
 		checkError = error;
 		const captured = observed.length === 0 ? "(no browser or page output captured)" : observed.join("\n");

@@ -1,0 +1,8 @@
+[gd_scene load_steps=13 format=3]
+
+[ext_resource type="PackedScene" path="res://scenes/dev/web_replay_check.tscn" id="1_success"]
+[ext_resource type="Script" path="res://scenes/dev/web_replay_check.gd" id="2_check"]
+
+[node name="WebReplayCheckFailure" instance=ExtResource("1_success")]
+script = ExtResource("2_check")
+replay_path = "res://scenes/dev/web_replay_check_bad_digest.oebr"
