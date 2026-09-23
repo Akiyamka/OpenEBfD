@@ -1,19 +1,19 @@
 {
   "scripts": {
     "slice": {
-      "command": "tools/pipeline/run.sh 1"
+      "command": "exec tools/pipeline/run.sh 1"
     },
     "slice-x3": {
-      "command": "tools/pipeline/run.sh 3"
+      "command": "exec tools/pipeline/run.sh 3"
     },
     "slice-check": {
-      "command": "tools/pipeline/run.sh --check"
+      "command": "exec tools/pipeline/run.sh --check"
     },
     "slice-resume": {
-      "command": "tools/pipeline/run.sh --resume"
+      "command": "exec tools/pipeline/run.sh --resume"
     },
     "operator": {
-      "command": "tools/pipeline/operator.sh"
+      "command": "exec tools/pipeline/operator.sh"
     }
   }
 }

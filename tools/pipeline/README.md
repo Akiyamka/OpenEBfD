@@ -36,6 +36,13 @@ paseo script start slice        # same thing from the CLI
 paseo script stop slice
 ```
 
+Each command is prefixed with `exec` on purpose. Without it the managed
+terminal's root process is a shell that outlives the script, so Paseo never
+sees the run end: the script sits in lifecycle `running` with a terminal that
+is idle at a prompt, and the next start is refused until someone stops it by
+hand. `exec` makes the script itself the terminal's process, so its exit closes
+the terminal and settles the lifecycle with the real exit code.
+
 Do **not** drive a slice by typing at the architect in the Paseo chat. It is one
 agent with no reviewer, no coder, no tree fingerprint and no round limits, and
 its own brief forbids it from writing code — so the best case is that it plans
