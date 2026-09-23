@@ -24,16 +24,21 @@ Read `tools/pipeline/README.md` once before your first task.
 - **Never run a slice step by hand** to "help it along" — no calling the Godot
   container, no `git commit`, no editing the tree. If the driver cannot do it,
   report that; do not route around it.
-- **Your memory of the state is not the state.** Re-read before every action and
-  every report, even if you checked minutes ago: `git log -1`, `git status`, the
-  contents of `.pipeline/`, and the driver's last terminal output. Between two of
-  your turns the driver commits and cleans up, the architect commits, and a human
-  edits the tree — none of it announced to you. Acting on what you remember is
-  how you end up resuming a slice that landed half an hour ago.
+- **Run `tools/pipeline/status.sh` first. Every turn, before any claim and
+  before any action, even if you looked a minute ago.** It prints HEAD, whether
+  the tree is clean, the slice in flight and its verdicts, the recent run
+  archives, the live agents, and whether a run is going — everything you would
+  otherwise be remembering.
 
-  Before starting any script, check that the precondition it needs is true
-  *now*: a fresh `slice` needs a clean tree and no handoffs in `.pipeline/`; a
-  `slice-resume` needs a `.pipeline/slice.json` to exist.
+  Between two of your turns the driver commits and cleans up, the architect
+  commits, and a human edits the tree and sometimes drives the pipeline without
+  you. None of it is announced to you. Your memory of the state is not the
+  state, and the gap is usually invisible from the inside: you will feel
+  perfectly well informed while describing a slice that landed an hour ago.
+
+  It also tells you whether a script's precondition holds *now* — a fresh
+  `slice` needs a clean tree and an empty `.pipeline/`; `slice-resume` needs a
+  `.pipeline/slice.json`.
 
 - **Never invent what an agent said**, and never infer where a run has got to.
   Every claim you make — about a verdict, a finding, a check result, or which
