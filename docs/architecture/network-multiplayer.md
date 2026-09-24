@@ -2843,10 +2843,10 @@ source cites a number you cannot place.
     battle that quietly went idle after an early kill would fail the run
     instead of being averaged away.
 
-- **Phase 4 — determinism gate.** Portable math, RNG split, the static rules
-  above wired into `check_architecture.py`, and the CI test that replays one
-  command log twice in-process and then compares state hashes across native and
-  web builds.
+- **Phase 4 — determinism gate. Done 2026-09-24.** Portable math, RNG split,
+  the static rules above wired into `check_architecture.py`, and the CI test
+  that replays one command log twice in-process and then compares state
+  hashes across native and web builds.
 
   **`F1` — landed, the same-process half.** Portable math and the RNG split
   turned out to already be satisfied: nothing under `scripts/sim/**` calls
@@ -2959,6 +2959,44 @@ source cites a number you cannot place.
   resulting `SimEntityState.state_hash()` — reproduced identically across
   repeated runs, with no browser unresponsiveness warning. Comparing that
   hash against a native run of the same replay is the next slice.
+
+  **`F6` — landed, the comparison itself, closing Phase 4.**
+  `tools/run_native_replay_hash.gd` reuses `scenes/dev/web_replay_check_ticks.tscn`
+  unmodified — booting it directly as a native main scene hangs, since its
+  `_ready()` never calls `get_tree().quit()`, correctly, because nothing
+  about the web page it was built for needed it to. The wrapper instead
+  `add_child()`s the scene and polls for both `replay_exhausted()` **and**
+  `current_tick() > 0` before reading `entity_state().state_hash()` off the
+  public API directly: `ReplayPlayer.is_exhausted()`
+  (`scripts/match/replay_player.gd`) returns `true` vacuously before any
+  `load()`, so `exhausted()` alone would have matched the boot-settle
+  window itself and hashed the wrong state; `current_tick()` only leaves
+  `0` once `advance_ticks()` has actually run, which cannot happen before a
+  real load succeeds, since `web_replay_check.gd` disables its own
+  processing as the first statement of its own `_ready()`. Selecting a
+  scene by `--scene=<path>` — an `OS.get_cmdline_user_args()` flag,
+  matching `tools/run_headless_match.gd`'s own convention — rather than an
+  env var was itself a review finding: `tools/godot-container`'s
+  `podman_base_args()` sets no `--env`/`--env-host`, so a host-side env var
+  set before the container command never reaches Godot running inside it.
+  `tools/compare_replay_determinism.sh` runs the wrapper, then
+  `make godot-web-replay-ticks-check` (or an injected
+  `WEB_REPLAY_HASH_OVERRIDE`), extracting each side's hash with a
+  marker-specific pattern rather than a bare `hash=` grep — the native
+  process's own stdout also carries the child scene's own
+  `WEB_REPLAY_CHECK_RESULT` line, so an unqualified pattern returns two
+  values for one run — requiring exactly one match per side and
+  propagating a failed run as distinct from a hash mismatch. Both hashes:
+  `3366564294`, matching `F5`'s own reported value. Two controls prove the
+  comparison can fail for two different reasons:
+  `WEB_REPLAY_HASH_OVERRIDE=0` for an unequal-but-well-formed pair, and
+  `--scene=web_replay_check_failure.tscn` (`F4`'s own fixture) for a source
+  that never produces a marker at all. Portable math, the RNG split and the
+  static rules wired into `check_architecture.py` were already satisfied by
+  the time `F1` checked them; this slice closes the one piece of this
+  phase's opening sentence still open after it — "compares state hashes
+  across native and web builds" — so nothing this phase names is still
+  owed.
 
   **Carried in from phase 3, then taken back by it: simulation state that
   completes on an animation signal.** `AnimationPlayer`'s
