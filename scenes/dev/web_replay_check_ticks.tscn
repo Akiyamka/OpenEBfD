@@ -1,0 +1,9 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="PackedScene" path="res://scenes/dev/web_replay_check.tscn" id="1_check"]
+[ext_resource type="Script" path="res://scenes/dev/web_replay_check.gd" id="2_script"]
+
+[node name="WebReplayCheckTicks" instance=ExtResource("1_check")]
+script = ExtResource("2_script")
+replay_path = "res://scenes/dev/web_replay_check_ticks.oebr"
+drive_to_completion = true

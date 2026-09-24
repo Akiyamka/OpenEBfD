@@ -2929,6 +2929,37 @@ source cites a number you cannot place.
   still are not driven and no hash is extracted or compared — the next
   slices in this track.
 
+  **`F5` — landed, a replay runs to completion inside the web build, and a
+  hash comes back out.** `Match.advance_ticks()` has no internal yield, and
+  a browser tab cannot block on it the way a native headless process can
+  without risking Chromium treating the page as unresponsive — the one
+  genuinely new, browser-specific risk this track had left, not a
+  product/dependency fork needing a human decision the way `F3`/`F4` were.
+  `scenes/dev/web_replay_check.gd` now calls `set_process(false)` as the
+  first statement of `_ready()`, before `super()` — its only external
+  caller is the web export's own boot, so nothing else was ever going to
+  disable `Match._process()` the way every native headless harness's own
+  caller already does. `super()` fires `Match._place_on_map()` without
+  awaiting it, so the script settles two frames afterward and then
+  fail-closes on `entity_state().has_position(scout.entity_id)` before
+  trusting any position — sampling `ScoutA`'s baseline earlier risked
+  attributing boot-time placement to the replay's own move command.
+  `@export var drive_to_completion` gates a bounded loop —
+  `max_ticks_when_driving` defaults to `2000`, the same
+  hang-prevention discipline `E4`'s own `--max-ticks` already established —
+  advancing ticks in `64`-tick chunks and yielding three `process_frame`s
+  between them; each yield checks `Engine.get_process_frames()` actually
+  advanced, printing `WEB_REPLAY_CHECK_YIELD_FAILED` and stopping rather
+  than trusting the `await` silently. `scenes/dev/web_replay_check_ticks.tscn`
+  (instancing the same success scene, overriding only two exported
+  properties) drives a two-record fixture to `ticks=192` across `chunks=3`,
+  reporting `moved=true` (`ScoutA`'s position actually changed, not merely
+  that a record was visited), `clock_ticks` cross-checked against
+  `Match.current_tick()` independently of the script's own counter, and the
+  resulting `SimEntityState.state_hash()` — reproduced identically across
+  repeated runs, with no browser unresponsiveness warning. Comparing that
+  hash against a native run of the same replay is the next slice.
+
   **Carried in from phase 3, then taken back by it: simulation state that
   completes on an animation signal.** `AnimationPlayer`'s
   `animation_finished` fires on engine frame time, so anything that completes on

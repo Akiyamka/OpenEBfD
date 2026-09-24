@@ -35,7 +35,7 @@ when the slice is actually handed out, and is not duplicated here.
 
 | id | title | why now | source | status |
 | --- | --- | --- | --- | --- |
-| F4 | Load a replay into a dedicated web entry point | `F3` deliberately deferred this. Blocked on a human decision, then unblocked by one in conversation: a dedicated scene/export target, mirroring native's `tools/run_headless_match.gd` boundary, not the shipped `demo_match.tscn`. The mechanism (a second export preset with its own `custom_features` tag, plus a `project.godot` feature-tag override for `run/main_scene`) is Godot's documented per-feature override system, unverified in this codebase specifically — the first thing this slice's implementation should confirm empirically | resolved in conversation, not `.pipeline/answer.md` | landed — pending |
+| F5 | Drive a replay to completion inside the web build | `F4` deliberately deferred both driving ticks and reading a hash back out. Folded together here since reading the hash is trivial once ticks run at all; only comparing it against native is split off further, needing a native counterpart run and a diff this slice doesn't build. The real new risk is browser-specific — `Match.advance_ticks()` has no internal yield, and a native process can block on it but a browser tab cannot — fixed by chunking with a frame yield between chunks, not a product/dependency fork needing a human decision the way `F3`/`F4` were | `network-multiplayer.md`, `## Order of work`, Phase 4, continuing the `F`-track `F4` deferred | landed — pending |
 
 **status** is one of `queued`, `in-flight`, `landed`, `abandoned`. A landed row
 stays for one further slice with its commit hash, then moves to `slices.md` and
