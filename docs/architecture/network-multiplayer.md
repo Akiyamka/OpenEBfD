@@ -3031,13 +3031,21 @@ source cites a number you cannot place.
   precomputed `shot_times` both do it. Waiting on a finished signal is not.
   Expect some entries to clear without a fix, as building fire did.
 
-  One is already known to be defective rather than merely suspect:
-  `UnitLocomotion`'s mech gait. Its `STARTING` branch **races** the tick-driven
-  `advance_start_transition()`, whose own comment already admits the tension,
-  and `is_starting()` gates whether `Unit` zeroes `velocity` — so which path
-  wins decides which tick a mech starts moving on. Its `STOPPING` branch is
-  worse: the signal is the only path back to idle, with no tick-driven
-  fallback at all.
+  **Closed by phase 3's slice E3c** (`948c61f`, 2026-08-31):
+  `UnitLocomotion`'s mech gait was the known defect, but its two branches
+  needed different remedies. `STARTING` did have a real race: the pre-E3c
+  `advance_start_transition()` already counted `_start_remaining` down every
+  tick, while `on_animation_finished()` had a second, frame-paced path to the
+  same `_begin_mech_move()` call; as the old comment admitted, ordinary scene
+  playback could switch to Move first. Whichever path won therefore chose the
+  completion tick, making it depend on client frame pacing. E3c removed that
+  signal branch and left the countdown, now in `advance_transitions()`, as the
+  only completion path. `STOPPING` was the actual no-fallback liveness defect:
+  before E3c nothing counted down, so it held forever without frames. E3c
+  added `_stop_remaining_ticks`, computed from the authored clip length scaled
+  by gait cadence and decremented on ticks. The
+  `animation-completes-simulation` rule's `exempt` list has been `[]` since
+  that slice, so this backlog has nothing still owed.
 
   The trap this class sets, worth stating because phase 3 walked into it: moving
   a system onto the tick can **hide** the symptom while leaving the cause.
