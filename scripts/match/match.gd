@@ -954,6 +954,12 @@ func entity_state() -> SimEntityState:
 	return _entity_state
 
 
+## The scheduled-command queue, exposed so TurnScheduler can reach it without
+## reaching into _command_bus directly.
+func command_bus() -> SimCommandBus:
+	return _command_bus
+
+
 ## The queue every Unit/Building/CombatProjectile/CombatLingerEffect/SpiceMound
 ## asks to join a sim group through, when one exists -- exposed the same way
 ## entity_index()/entity_state() are, for the same reason: MatchLookupScript.

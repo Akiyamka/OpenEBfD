@@ -3057,6 +3057,38 @@ source cites a number you cannot place.
   ticks alone.
 - **Phase 5 — netcode.** Turn scheduler, adaptive input delay, checksums,
   stall/drop policy, snapshot-based reconnect, lobby with room codes and teams.
+
+  **`H1` — landed, a fixed-delay turn scheduler proven over a real
+  transport.** `scripts/net/turn_scheduler.gd` bridges a local
+  `SimCommandBus` to a `NetTransport`: `submit_local()` calls the bus's own
+  `submit(command, current_tick)` to get the target tick `input_delay_ticks`
+  already computes, then frames it — a big-endian `u32` tick prefix ahead
+  of `SimCommandCodec.encode(command)`'s own bytes, deliberately outside
+  that codec's envelope, whose own doc comment is explicit the target tick
+  is a scheduling fact the bus decides, not the command's to carry — and
+  sends it. `advance_tick()` polls once a tick and, for a decoded frame
+  naming a different player, calls `submit_at(command, target_tick)`,
+  preserving the sender's own tick exactly the way `ReplayPlayer.play_tick()`
+  already does for a recorded one; a frame naming the *same* player is
+  discarded, not resubmitted — `LoopbackHub.route()` fans every send back
+  to its own sender too, and the first version of this design would have
+  double-submitted on that echo before a fixed field-by-field byte check
+  and a hand-computed expected tick, run independently of the round trip,
+  is what makes each of those a class of bug this design guards against
+  rather than a hoped-for outcome. `tests/net/turn_scheduler_run.gd` proves
+  it: two `Match` instances, each with their own scheduler and one shared
+  `LoopbackHub`, run sequentially rather than concurrently — verified while
+  planning this slice, `Match._advance_simulation_tick()` reads
+  `SceneTree`-global groups, so two live at once would each iterate both
+  matches' entities — one submits a real command, the other only receives
+  it through the transport, and both finish with equal
+  `SimEntityState.state_hash()`; a differing-target control confirms the
+  two clients still agree with each other while producing a different
+  result from the baseline. `input_delay_ticks` stays a hand-set constant
+  here — RTT-derived adaptivity, live checksum exchange, the stall/drop
+  state machine, snapshot reconnect and the lobby are each their own later
+  slice, and wiring live UI input through the scheduler instead of straight
+  to the local bus remains untouched.
 - **Phase 6 — polish.** Cosmetic prediction, parameter tuning under induced
   latency and loss, save/load of a networked match.
 

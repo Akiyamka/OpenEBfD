@@ -1,0 +1,256 @@
+extends SceneTree
+
+## Exercises TurnScheduler both at its bus/transport boundary and across two
+## sequentially booted Matches. Matches cannot coexist in one SceneTree: their
+## simulation groups are tree-global, so each arm is torn down before the next.
+
+const LegacyRulesFixture := preload("res://tests/support/legacy_rules_fixture.gd")
+const LoopbackHubScript := preload("res://scripts/net/loopback_hub.gd")
+const MatchFixtureScene := preload("res://tests/fixtures/match_fixture.tscn")
+const SimCommandBusScript := preload("res://scripts/sim/command_bus.gd")
+const SimMoveCommandScript := preload("res://scripts/sim/commands/move_command.gd")
+const TurnSchedulerScript := preload("res://scripts/net/turn_scheduler.gd")
+
+const REPLAY_TICKS := 12
+const SIM_GROUPS: Array[StringName] = [
+	&"sim_units", &"sim_linger_effects", &"sim_projectiles", &"sim_buildings", &"sim_spice_mounds",
+]
+
+var _assertions := 0
+var _failures := 0
+var _current_case := ""
+var _baseline_hash_a := 0
+var _baseline_hash_b := 0
+
+
+func _initialize() -> void:
+	LegacyRulesFixture.install(root)
+	_run_case("submit_local rejects a mismatched player_id", _test_rejects_mismatched_player_id)
+	_run_case("a delivered local echo is discarded without resubmission", _test_discards_delivered_echo)
+	_run_case("malformed frames are rejected with their distinct errors", _test_rejects_malformed_frames)
+	_run_case("fixed delay and big-endian tick framing are independently pinned", _test_delay_and_wire_format)
+	await _run_async_case("sequential matches agree after a transported command", _test_matching_hashes)
+	await _run_async_case("a differing transported target stays equal per peer but changes the result", _test_differing_target_control)
+	_finish("Turn scheduler tests")
+
+
+func _run_case(case_name: String, test: Callable) -> void:
+	_current_case = case_name
+	var failures_before := _failures
+	var assertions_before := _assertions
+	test.call()
+	_check_case_completed(case_name, failures_before, assertions_before)
+
+
+func _run_async_case(case_name: String, test: Callable) -> void:
+	_current_case = case_name
+	var failures_before := _failures
+	var assertions_before := _assertions
+	await test.call()
+	_check_case_completed(case_name, failures_before, assertions_before)
+
+
+func _check_case_completed(case_name: String, failures_before: int, assertions_before: int) -> void:
+	if _assertions == assertions_before:
+		_failures += 1
+		printerr("FAIL: %s: the case ended before asserting anything" % case_name)
+		return
+	if _failures == failures_before:
+		print("PASS: %s" % case_name)
+
+
+func _expect(condition: bool, message: String) -> void:
+	_assertions += 1
+	if condition:
+		return
+	_failures += 1
+	printerr("FAIL: %s: %s" % [_current_case, message])
+
+
+func _finish(label: String) -> void:
+	if _failures > 0:
+		printerr("%s: %d failures after %d assertions" % [label, _failures, _assertions])
+		quit(1)
+		return
+	print("%s: %d assertions passed" % [label, _assertions])
+	quit(0)
+
+
+func _make_move_command(
+	player_id: int, entity_id := 1, target := Vector3(20.0, 0.0, 0.0)
+) -> SimMoveCommand:
+	var command: SimMoveCommand = SimMoveCommandScript.new()
+	command.player_id = player_id
+	command.entity_ids = PackedInt32Array([entity_id])
+	command.target = target
+	command.move_mode = 0
+	return command
+
+
+func _new_connected_endpoints() -> Dictionary:
+	var hub := LoopbackHubScript.new()
+	var endpoint_a = hub.add_endpoint(&"A")
+	var endpoint_b = hub.add_endpoint(&"B")
+	endpoint_a.open("")
+	endpoint_b.open("")
+	return {"hub": hub, "a": endpoint_a, "b": endpoint_b}
+
+
+func _test_rejects_mismatched_player_id() -> void:
+	var endpoints: Dictionary = _new_connected_endpoints()
+	var bus := SimCommandBusScript.new()
+	var scheduler = TurnSchedulerScript.new(bus, endpoints["a"], 1)
+	var target := scheduler.submit_local(_make_move_command(2), 0)
+	endpoints["hub"].step()
+	_expect(target == -1, "a mismatched command must return the fail-closed sentinel")
+	_expect(bus.pending_count() == 0, "a mismatched command must not enter the local bus")
+	_expect(endpoints["b"].poll().is_empty(), "a mismatched command must not reach the peer")
+
+
+func _test_discards_delivered_echo() -> void:
+	var endpoints: Dictionary = _new_connected_endpoints()
+	var bus := SimCommandBusScript.new()
+	var scheduler = TurnSchedulerScript.new(bus, endpoints["a"], 1)
+	scheduler.submit_local(_make_move_command(1), 0)
+	endpoints["hub"].step()
+	scheduler.advance_tick()
+	_expect(scheduler.discarded_echo_count() == 1, "the delivered local echo must be counted and discarded")
+	_expect(bus.pending_count() == 1, "discarding the echo must leave only the original local submission")
+
+
+func _test_rejects_malformed_frames() -> void:
+	var endpoints: Dictionary = _new_connected_endpoints()
+	var bus := SimCommandBusScript.new()
+	var scheduler = TurnSchedulerScript.new(bus, endpoints["a"], 1)
+
+	endpoints["a"].receive(PackedByteArray([0, 0]))
+	scheduler.advance_tick()
+	_expect(bus.pending_count() == 0, "a short frame must not enter the bus")
+	_expect(scheduler.rejected_frame_count() == 1, "a short frame must increment the rejection count once")
+
+	var invalid_command_frame := StreamPeerBuffer.new()
+	invalid_command_frame.big_endian = true
+	invalid_command_frame.put_u32(0)
+	invalid_command_frame.put_data(PackedByteArray([0, 0]))
+	endpoints["a"].receive(invalid_command_frame.data_array)
+	scheduler.advance_tick()
+	_expect(bus.pending_count() == 0, "a codec-rejected frame must not enter the bus")
+	_expect(scheduler.rejected_frame_count() == 2, "a codec-rejected frame must increment the rejection count once")
+
+
+func _test_delay_and_wire_format() -> void:
+	var endpoints: Dictionary = _new_connected_endpoints()
+	var bus_a := SimCommandBusScript.new()
+	bus_a.input_delay_ticks = 2
+	var scheduler_a = TurnSchedulerScript.new(bus_a, endpoints["a"], 1)
+	var command: SimMoveCommand = _make_move_command(1)
+	var target := scheduler_a.submit_local(command, 0)
+	_expect(target == 2, "the first target must be the independently computed 0 + 2")
+	_expect(bus_a.drain(0).is_empty(), "the local command must not drain at tick 0")
+	_expect(bus_a.drain(1).is_empty(), "the local command must not drain at tick 1")
+	var local_due := bus_a.drain(2)
+	_expect(local_due.size() == 1 and local_due[0] == command, "the local command must drain at tick 2")
+
+	endpoints["hub"].step()
+	var frames: Array = endpoints["b"].poll()
+	_expect(frames.size() == 1, "the peer must receive exactly the first submitted frame")
+	if frames.is_empty():
+		return
+	var frame: PackedByteArray = frames[0]
+	_expect(
+		frame.size() >= 4 and frame[0] == 0 and frame[1] == 0 and frame[2] == 0 and frame[3] == 2,
+		"the outer tick prefix must be big-endian u32 value 2"
+	)
+
+	var bus_b := SimCommandBusScript.new()
+	var scheduler_b = TurnSchedulerScript.new(bus_b, endpoints["b"], 2)
+	endpoints["b"].receive(frame)
+	scheduler_b.advance_tick()
+	_expect(bus_b.drain(1).is_empty(), "the remote command must not drain at tick 1")
+	_expect(bus_b.drain(2).size() == 1, "the remote command must drain at the transmitted tick 2")
+	_expect(
+		scheduler_a.submit_local(_make_move_command(1), 5) == 7,
+		"the second target must add the same delay to a different current tick"
+	)
+
+
+func _test_matching_hashes() -> void:
+	var result := await _run_pair(Vector3(20.0, 0.0, 0.0))
+	_baseline_hash_a = int(result["hash_a"])
+	_baseline_hash_b = int(result["hash_b"])
+	_expect(bool(result["moved_a"]) and bool(result["moved_b"]), "the transported move must affect both matches")
+	_expect(_baseline_hash_a == _baseline_hash_b, "the two independently booted matches must hash equally")
+
+
+func _test_differing_target_control() -> void:
+	var result := await _run_pair(Vector3(40.0, 0.0, 0.0))
+	var control_hash_a := int(result["hash_a"])
+	var control_hash_b := int(result["hash_b"])
+	_expect(control_hash_a == control_hash_b, "the differing-target clients must still agree with each other")
+	_expect(control_hash_a != _baseline_hash_a, "the differing target must produce a different final hash")
+	_expect(
+		bool(result["moved_a"]) and bool(result["moved_b"]),
+		"the differing transported move must affect both matches"
+	)
+	print(
+		"TURN_SCHEDULER_RUN_RESULT baseline_hash_a=%d baseline_hash_b=%d control_hash_a=%d control_hash_b=%d"
+		% [_baseline_hash_a, _baseline_hash_b, control_hash_a, control_hash_b]
+	)
+
+
+func _run_pair(move_offset: Vector3) -> Dictionary:
+	var hub := LoopbackHubScript.new()
+	var endpoint_a = hub.add_endpoint(&"A")
+	var endpoint_b = hub.add_endpoint(&"B")
+	endpoint_a.open("")
+	endpoint_b.open("")
+
+	var match_a = await _boot_arm()
+	var scout_a = match_a.get_node("Units/ScoutA")
+	var start_a: Vector3 = scout_a.simulation_position()
+	match_a.command_bus().input_delay_ticks = 2
+	var scheduler_a = TurnSchedulerScript.new(match_a.command_bus(), endpoint_a, 1)
+	for tick in REPLAY_TICKS:
+		if tick == 0:
+			scheduler_a.submit_local(
+				_make_move_command(scout_a.owner_player_id, scout_a.entity_id, start_a + move_offset),
+				match_a.next_orderable_tick()
+			)
+		hub.step()
+		scheduler_a.advance_tick()
+		match_a.advance_ticks(1)
+	var hash_a: int = int(match_a.entity_state().state_hash())
+	var moved_a: bool = not scout_a.simulation_position().is_equal_approx(start_a)
+	await _teardown_arm(match_a)
+
+	var match_b = await _boot_arm()
+	var scout_b = match_b.get_node("Units/ScoutA")
+	var start_b: Vector3 = scout_b.simulation_position()
+	match_b.command_bus().input_delay_ticks = 2
+	var scheduler_b = TurnSchedulerScript.new(match_b.command_bus(), endpoint_b, 2)
+	for _tick in REPLAY_TICKS:
+		scheduler_b.advance_tick()
+		match_b.advance_ticks(1)
+	var hash_b: int = int(match_b.entity_state().state_hash())
+	var moved_b: bool = not scout_b.simulation_position().is_equal_approx(start_b)
+	await _teardown_arm(match_b)
+	return {"hash_a": hash_a, "hash_b": hash_b, "moved_a": moved_a, "moved_b": moved_b}
+
+
+func _boot_arm():
+	var match_instance := MatchFixtureScene.instantiate()
+	root.add_child(match_instance)
+	match_instance.set_process(false)
+	await process_frame
+	match_instance.set_process(false)
+	await process_frame
+	match_instance.set_process(false)
+	return match_instance
+
+
+func _teardown_arm(match_instance) -> void:
+	match_instance.queue_free()
+	await process_frame
+	await process_frame
+	for group_name in SIM_GROUPS:
+		_expect(get_nodes_in_group(group_name).is_empty(), "teardown must leave %s empty before the next arm" % group_name)
