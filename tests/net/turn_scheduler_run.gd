@@ -5,6 +5,7 @@ extends SceneTree
 ## simulation groups are tree-global, so each arm is torn down before the next.
 
 const LegacyRulesFixture := preload("res://tests/support/legacy_rules_fixture.gd")
+const ChecksumExchangeScript := preload("res://scripts/net/checksum_exchange.gd")
 const LoopbackHubScript := preload("res://scripts/net/loopback_hub.gd")
 const MatchFixtureScene := preload("res://tests/fixtures/match_fixture.tscn")
 const SimCommandBusScript := preload("res://scripts/sim/command_bus.gd")
@@ -29,6 +30,11 @@ func _initialize() -> void:
 	_run_case("a delivered local echo is discarded without resubmission", _test_discards_delivered_echo)
 	_run_case("malformed frames are rejected with their distinct errors", _test_rejects_malformed_frames)
 	_run_case("fixed delay and big-endian tick framing are independently pinned", _test_delay_and_wire_format)
+	_run_case("checksum reports use their own big-endian frame layout", _test_checksum_report_wire_format)
+	_run_case("a checksum echo is discarded without reaching its exchange", _test_discards_checksum_echo)
+	_run_case("a remote checksum report reaches its wired exchange", _test_delivers_remote_checksum_report)
+	_run_case("checksum frame failures are rejected with distinct errors", _test_rejects_checksum_frames)
+	_run_case("an unwired scheduler rejects checksum reports", _test_rejects_unwired_checksum_report)
 	await _run_async_case("sequential matches agree after a transported command", _test_matching_hashes)
 	await _run_async_case("a differing transported target stays equal per peer but changes the result", _test_differing_target_control)
 	_finish("Turn scheduler tests")
@@ -123,19 +129,25 @@ func _test_rejects_malformed_frames() -> void:
 	var bus := SimCommandBusScript.new()
 	var scheduler = TurnSchedulerScript.new(bus, endpoints["a"], 1)
 
+	endpoints["a"].receive(PackedByteArray())
+	scheduler.advance_tick()
+	_expect(bus.pending_count() == 0, "a discriminator-less frame must not enter the bus")
+	_expect(scheduler.rejected_frame_count() == 1, "a discriminator-less frame must increment once")
+
 	endpoints["a"].receive(PackedByteArray([0, 0]))
 	scheduler.advance_tick()
-	_expect(bus.pending_count() == 0, "a short frame must not enter the bus")
-	_expect(scheduler.rejected_frame_count() == 1, "a short frame must increment the rejection count once")
+	_expect(bus.pending_count() == 0, "a short command frame must not enter the bus")
+	_expect(scheduler.rejected_frame_count() == 2, "a short command frame must increment once")
 
 	var invalid_command_frame := StreamPeerBuffer.new()
 	invalid_command_frame.big_endian = true
+	invalid_command_frame.put_u8(0)
 	invalid_command_frame.put_u32(0)
 	invalid_command_frame.put_data(PackedByteArray([0, 0]))
 	endpoints["a"].receive(invalid_command_frame.data_array)
 	scheduler.advance_tick()
 	_expect(bus.pending_count() == 0, "a codec-rejected frame must not enter the bus")
-	_expect(scheduler.rejected_frame_count() == 2, "a codec-rejected frame must increment the rejection count once")
+	_expect(scheduler.rejected_frame_count() == 3, "a codec-rejected frame must increment the rejection count once")
 
 
 func _test_delay_and_wire_format() -> void:
@@ -158,8 +170,13 @@ func _test_delay_and_wire_format() -> void:
 		return
 	var frame: PackedByteArray = frames[0]
 	_expect(
-		frame.size() >= 4 and frame[0] == 0 and frame[1] == 0 and frame[2] == 0 and frame[3] == 2,
-		"the outer tick prefix must be big-endian u32 value 2"
+		frame.size() >= 5
+		and frame[0] == 0
+		and frame[1] == 0
+		and frame[2] == 0
+		and frame[3] == 0
+		and frame[4] == 2,
+		"the command discriminator and outer tick prefix must have their exact big-endian layout"
 	)
 
 	var bus_b := SimCommandBusScript.new()
@@ -174,12 +191,87 @@ func _test_delay_and_wire_format() -> void:
 	)
 
 
+func _test_checksum_report_wire_format() -> void:
+	var endpoints: Dictionary = _new_connected_endpoints()
+	var scheduler = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["a"], -2)
+	scheduler.send_checksum_report(0x01020304, 0xa1b2c3d4)
+	endpoints["hub"].step()
+	var frames: Array = endpoints["b"].poll()
+	_expect(frames.size() == 1, "the peer must receive exactly one checksum report")
+	if frames.is_empty():
+		return
+	var frame: PackedByteArray = frames[0]
+	_expect(
+		frame == PackedByteArray([1, 1, 2, 3, 4, 255, 255, 255, 254, 161, 178, 195, 212]),
+		"a checksum report must be discriminator, u32 tick, s32 sender, then u32 hash in big-endian order"
+	)
+
+
+func _test_discards_checksum_echo() -> void:
+	var endpoints: Dictionary = _new_connected_endpoints()
+	var exchange = ChecksumExchangeScript.new()
+	var scheduler = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["a"], 1, exchange)
+	scheduler.send_checksum_report(4, 100)
+	endpoints["hub"].step()
+	scheduler.advance_tick()
+	_expect(scheduler.discarded_echo_count() == 1, "a local checksum echo must be counted and discarded")
+	_expect(exchange.pending_remote_count() == 0, "a local checksum echo must not reach the exchange")
+
+
+func _test_delivers_remote_checksum_report() -> void:
+	var endpoints: Dictionary = _new_connected_endpoints()
+	var exchange = ChecksumExchangeScript.new()
+	exchange.record_local_hash(7, 1234)
+	var scheduler_a = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["a"], 1, exchange)
+	var scheduler_b = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["b"], 2)
+	scheduler_b.send_checksum_report(7, 1234)
+	endpoints["hub"].step()
+	scheduler_a.advance_tick()
+	_expect(exchange.agreement_count() == 1, "a remote report must resolve against the matching local hash")
+	_expect(exchange.pending_remote_count() == 0, "a resolved remote report must not remain pending")
+
+
+func _test_rejects_checksum_frames() -> void:
+	var endpoints: Dictionary = _new_connected_endpoints()
+	var scheduler = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["a"], 1)
+
+	endpoints["a"].receive(PackedByteArray([2]))
+	scheduler.advance_tick()
+	_expect(scheduler.rejected_frame_count() == 1, "an unknown discriminator must increment once")
+
+	endpoints["a"].receive(PackedByteArray([1, 0, 0]))
+	scheduler.advance_tick()
+	_expect(scheduler.rejected_frame_count() == 2, "a short checksum report must increment once")
+
+
+func _test_rejects_unwired_checksum_report() -> void:
+	var endpoints: Dictionary = _new_connected_endpoints()
+	var scheduler_a = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["a"], 1)
+	var scheduler_b = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["b"], 2)
+	scheduler_b.send_checksum_report(8, 200)
+	endpoints["hub"].step()
+	scheduler_a.advance_tick()
+	_expect(scheduler_a.rejected_frame_count() == 1, "an unwired checksum report must be rejected")
+
+
 func _test_matching_hashes() -> void:
 	var result := await _run_pair(Vector3(20.0, 0.0, 0.0))
 	_baseline_hash_a = int(result["hash_a"])
 	_baseline_hash_b = int(result["hash_b"])
 	_expect(bool(result["moved_a"]) and bool(result["moved_b"]), "the transported move must affect both matches")
 	_expect(_baseline_hash_a == _baseline_hash_b, "the two independently booted matches must hash equally")
+	_expect(
+		int(result["agreements_a"]) == REPLAY_TICKS,
+		"client A must agree with every checksum report from client B"
+	)
+	_expect(
+		int(result["agreements_b"]) == REPLAY_TICKS,
+		"client B must agree with every checksum report from client A"
+	)
+	_expect(int(result["mismatches_a"]) == 0, "client A must not record a checksum mismatch")
+	_expect(int(result["mismatches_b"]) == 0, "client B must not record a checksum mismatch")
+	_expect(int(result["pending_a"]) == 0, "client A must resolve every received checksum report")
+	_expect(int(result["pending_b"]) == 0, "client B must resolve every received checksum report")
 
 
 func _test_differing_target_control() -> void:
@@ -209,7 +301,8 @@ func _run_pair(move_offset: Vector3) -> Dictionary:
 	var scout_a = match_a.get_node("Units/ScoutA")
 	var start_a: Vector3 = scout_a.simulation_position()
 	match_a.command_bus().input_delay_ticks = 2
-	var scheduler_a = TurnSchedulerScript.new(match_a.command_bus(), endpoint_a, 1)
+	var checksum_exchange_a = ChecksumExchangeScript.new()
+	var scheduler_a = TurnSchedulerScript.new(match_a.command_bus(), endpoint_a, 1, checksum_exchange_a)
 	for tick in REPLAY_TICKS:
 		if tick == 0:
 			scheduler_a.submit_local(
@@ -218,7 +311,12 @@ func _run_pair(move_offset: Vector3) -> Dictionary:
 			)
 		hub.step()
 		scheduler_a.advance_tick()
-		match_a.advance_ticks(1)
+		var executed_tick: int = match_a.advance_ticks(1)
+		var hash_now: int = int(match_a.entity_state().state_hash())
+		checksum_exchange_a.record_local_hash(executed_tick, hash_now)
+		scheduler_a.send_checksum_report(executed_tick, hash_now)
+	for _flush in 4:
+		hub.step()
 	var hash_a: int = int(match_a.entity_state().state_hash())
 	var moved_a: bool = not scout_a.simulation_position().is_equal_approx(start_a)
 	await _teardown_arm(match_a)
@@ -227,14 +325,33 @@ func _run_pair(move_offset: Vector3) -> Dictionary:
 	var scout_b = match_b.get_node("Units/ScoutA")
 	var start_b: Vector3 = scout_b.simulation_position()
 	match_b.command_bus().input_delay_ticks = 2
-	var scheduler_b = TurnSchedulerScript.new(match_b.command_bus(), endpoint_b, 2)
+	var checksum_exchange_b = ChecksumExchangeScript.new()
+	var scheduler_b = TurnSchedulerScript.new(match_b.command_bus(), endpoint_b, 2, checksum_exchange_b)
 	for _tick in REPLAY_TICKS:
+		hub.step()
 		scheduler_b.advance_tick()
-		match_b.advance_ticks(1)
+		var executed_tick: int = match_b.advance_ticks(1)
+		var hash_now: int = int(match_b.entity_state().state_hash())
+		checksum_exchange_b.record_local_hash(executed_tick, hash_now)
+		scheduler_b.send_checksum_report(executed_tick, hash_now)
+	for _flush in 4:
+		hub.step()
+	scheduler_a.advance_tick()
 	var hash_b: int = int(match_b.entity_state().state_hash())
 	var moved_b: bool = not scout_b.simulation_position().is_equal_approx(start_b)
 	await _teardown_arm(match_b)
-	return {"hash_a": hash_a, "hash_b": hash_b, "moved_a": moved_a, "moved_b": moved_b}
+	return {
+		"hash_a": hash_a,
+		"hash_b": hash_b,
+		"moved_a": moved_a,
+		"moved_b": moved_b,
+		"agreements_a": checksum_exchange_a.agreement_count(),
+		"agreements_b": checksum_exchange_b.agreement_count(),
+		"mismatches_a": checksum_exchange_a.mismatch_count(),
+		"mismatches_b": checksum_exchange_b.mismatch_count(),
+		"pending_a": checksum_exchange_a.pending_remote_count(),
+		"pending_b": checksum_exchange_b.pending_remote_count(),
+	}
 
 
 func _boot_arm():

@@ -3089,6 +3089,39 @@ source cites a number you cannot place.
   state machine, snapshot reconnect and the lobby are each their own later
   slice, and wiring live UI input through the scheduler instead of straight
   to the local bus remains untouched.
+
+  **`J1` — landed, live checksum exchange between two clients.**
+  `scripts/net/turn_scheduler.gd`'s wire format gained a one-byte
+  discriminator ahead of everything `H1` already encoded (`0` = command,
+  unchanged in substance, one byte later; `1` = a new checksum report) —
+  a breaking change with nothing to migrate, since nothing outside this
+  track's own tests has ever spoken the protocol. `TurnScheduler` stays
+  the only thing that ever calls `NetTransport.poll()`, dispatching a
+  checksum report to a new `scripts/net/checksum_exchange.gd` rather than
+  letting it poll the same transport independently — two pollers on one
+  transport would race each other for frames, one always starving the
+  other. `ChecksumExchange` is pure bookkeeping, no transport or player id
+  of its own: `record_local_hash(tick, hash)` and `on_report_received(tick,
+  hash)` each resolve the comparison immediately if the other side of the
+  same tick is already known, or buffer it if not — both orders had to
+  work, because the sequential two-arm proof this reuses from `H1`
+  delivers a whole run's reports in one batch, before the receiving
+  client has recorded a single tick of its own hash. `_run_pair()`'s own
+  per-tick loop keys every hash by `match.advance_ticks(1)`'s own return
+  value, not the loop's zero-based counter — both arms making the
+  identical off-by-one would still have agreed with each other, caught
+  only by checking against an independently computed tick, not a
+  round trip. The proof is genuinely bidirectional: after both arms run
+  and a final flush, a last `TurnScheduler.advance_tick()` call against
+  client A's already-torn-down `Match` (the scheduler and exchange are
+  plain `RefCounted` objects that outlive it) resolves client B's reports
+  against hashes A recorded during its own, earlier run, and both
+  `agreement_count()`s reach every tick with zero mismatches and nothing
+  left pending. Deliberately scoped to one remote peer, keyed by tick
+  alone — widening to `(sender_player_id, tick)` for more than two clients
+  is the lobby track's job. What a mismatch does beyond being observable
+  and countable, adaptive delay, stall/drop, reconnect, the lobby, and
+  wiring live UI input through the scheduler all remain untouched.
 - **Phase 6 — polish.** Cosmetic prediction, parameter tuning under induced
   latency and loss, save/load of a networked match.
 
