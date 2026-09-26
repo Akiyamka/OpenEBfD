@@ -340,8 +340,9 @@ in-game diplomacy is out of scope. 2v2 and FFA on four players.
 
 `scripts/players/player_roster.gd` already models this: it has `set_team`,
 `relation_between` and `is_ally`, and `player_data.gd` has `Relation.ALLY`. What
-2v2 still needs is lobby-side team assignment, friendly-fire rules and a
-team-aware victory condition.
+2v2 still needs is lobby-side team assignment and a team-aware victory
+condition; friendly fire is already handled team-aware through
+`CombatTarget.are_friendly()`'s `is_allied_with()` path.
 
 Shared vision is *not* work for v0.4: the project has no fog of war yet. It
 becomes relevant when fog of war lands, and teams are already the right place to
