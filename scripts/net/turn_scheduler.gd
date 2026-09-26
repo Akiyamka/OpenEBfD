@@ -175,4 +175,6 @@ func _handle_checksum_report(decoded: Dictionary) -> void:
 		_rejected_frame_count += 1
 		push_error("TurnScheduler.advance_tick(): received a checksum report with no ChecksumExchange configured")
 		return
-	_checksum_exchange.on_report_received(int(decoded["tick"]), int(decoded["state_hash"]))
+	_checksum_exchange.on_report_received(
+		int(decoded["sender_player_id"]), int(decoded["tick"]), int(decoded["state_hash"])
+	)

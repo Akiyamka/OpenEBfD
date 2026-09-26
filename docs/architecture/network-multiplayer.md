@@ -3101,10 +3101,10 @@ source cites a number you cannot place.
   checksum report to a new `scripts/net/checksum_exchange.gd` rather than
   letting it poll the same transport independently — two pollers on one
   transport would race each other for frames, one always starving the
-  other. `ChecksumExchange` is pure bookkeeping, no transport or player id
-  of its own: `record_local_hash(tick, hash)` and `on_report_received(tick,
-  hash)` each resolve the comparison immediately if the other side of the
-  same tick is already known, or buffer it if not — both orders had to
+  other. `ChecksumExchange` is pure bookkeeping with no transport of its
+  own: `record_local_hash(tick, hash)` and `on_report_received(sender_player_id,
+  tick, hash)` each resolve the comparison immediately if the other side of
+  the same tick is already known, or buffer it if not — both orders had to
   work, because the sequential two-arm proof this reuses from `H1`
   delivers a whole run's reports in one batch, before the receiving
   client has recorded a single tick of its own hash. `_run_pair()`'s own
@@ -3118,10 +3118,10 @@ source cites a number you cannot place.
   plain `RefCounted` objects that outlive it) resolves client B's reports
   against hashes A recorded during its own, earlier run, and both
   `agreement_count()`s reach every tick with zero mismatches and nothing
-  left pending. Deliberately scoped to one remote peer, keyed by tick
-  alone — widening to `(sender_player_id, tick)` for more than two clients
-  is the lobby track's job. What a mismatch does beyond being observable
-  and countable, adaptive delay, stall/drop, reconnect, the lobby, and
+  left pending. `M1` widened pending remote reports to `(sender_player_id,
+  tick)` for more than two clients with only a wider test harness, not the
+  lobby. What a mismatch does beyond being observable and countable,
+  adaptive delay, stall/drop, reconnect, the lobby, and
   wiring live UI input through the scheduler all remain untouched.
 
   **`K1` — landed, observable liveness tracking in `TurnScheduler`.**
@@ -3148,6 +3148,31 @@ source cites a number you cannot place.
   the tick passed into that call is a value captured from A's own last
   `advance_ticks()` return *before* teardown, not re-derived or assumed
   afterward.
+
+  **`M1` — landed, widened checksum exchange for more than two peers.**
+  `J1`'s own two-peer scope for `ChecksumExchange` turned out to be a
+  choice, not a limit of anything underneath it: `LoopbackHub.add_endpoint()`
+  already takes any number of registered endpoints, and `SimCommandBus`'s
+  own `drain()` already sorts by `player_id`, built for more than two
+  players from the start. Only the checksum side had stayed two-peer.
+  Pending remote reports widened from a plain `tick -> hash` map to
+  `tick -> (sender_player_id -> hash)`, so more than one peer can have a
+  report buffered for the same tick at once, each resolved independently
+  once the matching local hash is recorded — recording one no longer
+  resolves only the first pending sender found, but every one of them.
+  `last_mismatch()` now names `sender_player_id` alongside its tick and
+  both hashes, since decision 4's own desync protocol wants to "surface
+  the tick number," and surfacing *which peer* diverged is the same kind
+  of fact once more than one peer exists to tell apart.
+  `TurnScheduler._handle_checksum_report()` forwards the decoded sender id
+  it already had, after its unchanged echo check — a one-line pass-through
+  once the receiving end could use it. Proven with a three-endpoint
+  `LoopbackHub` (never a real lobby, never more than the existing two
+  sequential `Match` arms): one peer agreeing and a *different* peer
+  disagreeing on the same tick, checked against the specific disagreeing
+  sender's id — two agreeing peers would have passed identically against
+  a broken pass-through that silently replaced every sender with one
+  constant id, so the control needed a mix of verdicts to mean anything.
 - **Phase 6 — polish.** Cosmetic prediction, parameter tuning under induced
   latency and loss, save/load of a networked match.
 

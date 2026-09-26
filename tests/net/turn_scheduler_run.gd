@@ -33,6 +33,7 @@ func _initialize() -> void:
 	_run_case("checksum reports use their own big-endian frame layout", _test_checksum_report_wire_format)
 	_run_case("a checksum echo is discarded without reaching its exchange", _test_discards_checksum_echo)
 	_run_case("a remote checksum report reaches its wired exchange", _test_delivers_remote_checksum_report)
+	_run_case("two remote checksum peers reach their wired exchange independently", _test_delivers_multiple_remote_checksum_reports)
 	_run_case("checksum frame failures are rejected with distinct errors", _test_rejects_checksum_frames)
 	_run_case("an unwired scheduler rejects checksum reports", _test_rejects_unwired_checksum_report)
 	_run_case("remote activity starts unseen", _test_remote_activity_starts_unseen)
@@ -238,6 +239,31 @@ func _test_delivers_remote_checksum_report() -> void:
 	scheduler_a.advance_tick(0)
 	_expect(exchange.agreement_count() == 1, "a remote report must resolve against the matching local hash")
 	_expect(exchange.pending_remote_count() == 0, "a resolved remote report must not remain pending")
+
+
+func _test_delivers_multiple_remote_checksum_reports() -> void:
+	var hub = LoopbackHubScript.new()
+	var endpoint_a = hub.add_endpoint(&"A")
+	var endpoint_b = hub.add_endpoint(&"B")
+	var endpoint_c = hub.add_endpoint(&"C")
+	endpoint_a.open("")
+	endpoint_b.open("")
+	endpoint_c.open("")
+	var exchange = ChecksumExchangeScript.new()
+	exchange.record_local_hash(7, 100)
+	var scheduler_a = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoint_a, 1, exchange)
+	var scheduler_b = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoint_b, 2)
+	var scheduler_c = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoint_c, 3)
+	scheduler_b.send_checksum_report(7, 100)
+	scheduler_c.send_checksum_report(7, 999)
+	hub.step()
+	scheduler_a.advance_tick(0)
+	_expect(exchange.agreement_count() == 1, "the matching remote peer must reach the exchange")
+	_expect(exchange.mismatch_count() == 1, "the differing remote peer must reach the exchange")
+	_expect(
+		exchange.last_mismatch()["sender_player_id"] == 3,
+		"the wired exchange must retain the specific disagreeing sender"
+	)
 
 
 func _test_rejects_checksum_frames() -> void:
