@@ -3122,6 +3122,31 @@ source cites a number you cannot place.
   is the lobby track's job. What a mismatch does beyond being observable
   and countable, adaptive delay, stall/drop, reconnect, the lobby, and
   wiring live UI input through the scheduler all remain untouched.
+
+  **`K1` — landed, observable liveness tracking in `TurnScheduler`.**
+  `J1`'s own per-tick checksum cadence resolved the exact conflict that
+  made stall/drop look hard when `H1` first deferred it — a heartbeat
+  already exists, so decision 8's "when a player's frames stop arriving"
+  now has something to watch. `advance_tick()` took a required
+  `current_tick` parameter (breaking, safe — nothing outside this track's
+  own tests calls it), and records `_last_remote_activity_tick` on any
+  successfully-decoded, non-echo frame of either kind, including a
+  checksum report that arrives with nowhere to route (no
+  `ChecksumExchange` wired) — the sender was still real, only this
+  client's own wiring had nowhere to put it. An echo, or anything that
+  fails to decode at all, updates nothing: there is no real sender to
+  credit, and treating unreadable bytes as proof of liveness would let
+  corrupted traffic masquerade as a live peer. `last_remote_activity_tick()`
+  is the one new observable this slice adds; no threshold, no "stalled"
+  verdict, and no response (pause, freeze, drop) — decision 8 names no
+  timeout value anywhere in this document, and the response half needs
+  the same live-match wiring this whole track keeps deferring. Proving
+  this across the sequential two-arm harness needed one more thing pinned
+  precisely: client A's final, post-teardown poll happens after `match_a`
+  — the only thing that ever owned A's own clock — is already freed, so
+  the tick passed into that call is a value captured from A's own last
+  `advance_ticks()` return *before* teardown, not re-derived or assumed
+  afterward.
 - **Phase 6 — polish.** Cosmetic prediction, parameter tuning under induced
   latency and loss, save/load of a networked match.
 

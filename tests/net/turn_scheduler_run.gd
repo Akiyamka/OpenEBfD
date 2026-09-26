@@ -35,6 +35,11 @@ func _initialize() -> void:
 	_run_case("a remote checksum report reaches its wired exchange", _test_delivers_remote_checksum_report)
 	_run_case("checksum frame failures are rejected with distinct errors", _test_rejects_checksum_frames)
 	_run_case("an unwired scheduler rejects checksum reports", _test_rejects_unwired_checksum_report)
+	_run_case("remote activity starts unseen", _test_remote_activity_starts_unseen)
+	_run_case("a remote command records activity", _test_remote_command_records_activity)
+	_run_case("a remote checksum report records activity", _test_remote_checksum_report_records_activity)
+	_run_case("an echo does not record remote activity", _test_echo_does_not_record_remote_activity)
+	_run_case("remote activity retains the most recent receiving tick", _test_remote_activity_tracks_most_recent_tick)
 	await _run_async_case("sequential matches agree after a transported command", _test_matching_hashes)
 	await _run_async_case("a differing transported target stays equal per peer but changes the result", _test_differing_target_control)
 	_finish("Turn scheduler tests")
@@ -119,7 +124,7 @@ func _test_discards_delivered_echo() -> void:
 	var scheduler = TurnSchedulerScript.new(bus, endpoints["a"], 1)
 	scheduler.submit_local(_make_move_command(1), 0)
 	endpoints["hub"].step()
-	scheduler.advance_tick()
+	scheduler.advance_tick(0)
 	_expect(scheduler.discarded_echo_count() == 1, "the delivered local echo must be counted and discarded")
 	_expect(bus.pending_count() == 1, "discarding the echo must leave only the original local submission")
 
@@ -130,12 +135,12 @@ func _test_rejects_malformed_frames() -> void:
 	var scheduler = TurnSchedulerScript.new(bus, endpoints["a"], 1)
 
 	endpoints["a"].receive(PackedByteArray())
-	scheduler.advance_tick()
+	scheduler.advance_tick(0)
 	_expect(bus.pending_count() == 0, "a discriminator-less frame must not enter the bus")
 	_expect(scheduler.rejected_frame_count() == 1, "a discriminator-less frame must increment once")
 
 	endpoints["a"].receive(PackedByteArray([0, 0]))
-	scheduler.advance_tick()
+	scheduler.advance_tick(1)
 	_expect(bus.pending_count() == 0, "a short command frame must not enter the bus")
 	_expect(scheduler.rejected_frame_count() == 2, "a short command frame must increment once")
 
@@ -145,9 +150,13 @@ func _test_rejects_malformed_frames() -> void:
 	invalid_command_frame.put_u32(0)
 	invalid_command_frame.put_data(PackedByteArray([0, 0]))
 	endpoints["a"].receive(invalid_command_frame.data_array)
-	scheduler.advance_tick()
+	scheduler.advance_tick(2)
 	_expect(bus.pending_count() == 0, "a codec-rejected frame must not enter the bus")
 	_expect(scheduler.rejected_frame_count() == 3, "a codec-rejected frame must increment the rejection count once")
+	_expect(
+		scheduler.last_remote_activity_tick() == -1,
+		"discriminator-less, short, and codec-rejected frames must not establish remote activity"
+	)
 
 
 func _test_delay_and_wire_format() -> void:
@@ -182,7 +191,7 @@ func _test_delay_and_wire_format() -> void:
 	var bus_b := SimCommandBusScript.new()
 	var scheduler_b = TurnSchedulerScript.new(bus_b, endpoints["b"], 2)
 	endpoints["b"].receive(frame)
-	scheduler_b.advance_tick()
+	scheduler_b.advance_tick(0)
 	_expect(bus_b.drain(1).is_empty(), "the remote command must not drain at tick 1")
 	_expect(bus_b.drain(2).size() == 1, "the remote command must drain at the transmitted tick 2")
 	_expect(
@@ -213,7 +222,7 @@ func _test_discards_checksum_echo() -> void:
 	var scheduler = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["a"], 1, exchange)
 	scheduler.send_checksum_report(4, 100)
 	endpoints["hub"].step()
-	scheduler.advance_tick()
+	scheduler.advance_tick(0)
 	_expect(scheduler.discarded_echo_count() == 1, "a local checksum echo must be counted and discarded")
 	_expect(exchange.pending_remote_count() == 0, "a local checksum echo must not reach the exchange")
 
@@ -226,7 +235,7 @@ func _test_delivers_remote_checksum_report() -> void:
 	var scheduler_b = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["b"], 2)
 	scheduler_b.send_checksum_report(7, 1234)
 	endpoints["hub"].step()
-	scheduler_a.advance_tick()
+	scheduler_a.advance_tick(0)
 	_expect(exchange.agreement_count() == 1, "a remote report must resolve against the matching local hash")
 	_expect(exchange.pending_remote_count() == 0, "a resolved remote report must not remain pending")
 
@@ -236,11 +245,11 @@ func _test_rejects_checksum_frames() -> void:
 	var scheduler = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["a"], 1)
 
 	endpoints["a"].receive(PackedByteArray([2]))
-	scheduler.advance_tick()
+	scheduler.advance_tick(0)
 	_expect(scheduler.rejected_frame_count() == 1, "an unknown discriminator must increment once")
 
 	endpoints["a"].receive(PackedByteArray([1, 0, 0]))
-	scheduler.advance_tick()
+	scheduler.advance_tick(1)
 	_expect(scheduler.rejected_frame_count() == 2, "a short checksum report must increment once")
 
 
@@ -250,8 +259,78 @@ func _test_rejects_unwired_checksum_report() -> void:
 	var scheduler_b = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["b"], 2)
 	scheduler_b.send_checksum_report(8, 200)
 	endpoints["hub"].step()
-	scheduler_a.advance_tick()
+	scheduler_a.advance_tick(0)
 	_expect(scheduler_a.rejected_frame_count() == 1, "an unwired checksum report must be rejected")
+	_expect(
+		scheduler_a.last_remote_activity_tick() == 0,
+		"an unwired checksum report must establish remote activity before routing rejects it"
+	)
+
+
+func _test_remote_activity_starts_unseen() -> void:
+	var endpoints: Dictionary = _new_connected_endpoints()
+	var scheduler = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["a"], 1)
+	_expect(scheduler.last_remote_activity_tick() == -1, "a scheduler must start with no remote activity")
+
+
+func _test_remote_command_records_activity() -> void:
+	var endpoints: Dictionary = _new_connected_endpoints()
+	var scheduler_a = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["a"], 1)
+	var scheduler_b = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["b"], 2)
+	scheduler_b.submit_local(_make_move_command(2), 0)
+	endpoints["hub"].step()
+	scheduler_a.advance_tick(7)
+	_expect(
+		scheduler_a.last_remote_activity_tick() == 7,
+		"a successfully decoded remote command must record the receiving tick"
+	)
+
+
+func _test_remote_checksum_report_records_activity() -> void:
+	var endpoints: Dictionary = _new_connected_endpoints()
+	var exchange = ChecksumExchangeScript.new()
+	var scheduler_a = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["a"], 1, exchange)
+	var scheduler_b = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["b"], 2)
+	scheduler_b.send_checksum_report(4, 100)
+	endpoints["hub"].step()
+	scheduler_a.advance_tick(8)
+	_expect(
+		scheduler_a.last_remote_activity_tick() == 8,
+		"a successfully decoded remote checksum report must record the receiving tick"
+	)
+
+
+func _test_echo_does_not_record_remote_activity() -> void:
+	var endpoints: Dictionary = _new_connected_endpoints()
+	var scheduler_a = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["a"], 1)
+	var scheduler_b = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["b"], 2)
+	scheduler_b.submit_local(_make_move_command(2), 0)
+	endpoints["hub"].step()
+	scheduler_a.advance_tick(5)
+	scheduler_a.submit_local(_make_move_command(1), 0)
+	endpoints["hub"].step()
+	scheduler_a.advance_tick(6)
+	_expect(
+		scheduler_a.last_remote_activity_tick() == 5,
+		"a local command echo must leave the preceding remote activity tick unchanged"
+	)
+
+
+func _test_remote_activity_tracks_most_recent_tick() -> void:
+	var endpoints: Dictionary = _new_connected_endpoints()
+	var scheduler_a = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["a"], 1)
+	var scheduler_b = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["b"], 2)
+	scheduler_b.submit_local(_make_move_command(2), 0)
+	endpoints["hub"].step()
+	scheduler_a.advance_tick(2)
+	scheduler_b.submit_local(_make_move_command(2), 1)
+	endpoints["hub"].step()
+	scheduler_a.advance_tick(9)
+	scheduler_a.advance_tick(10)
+	_expect(
+		scheduler_a.last_remote_activity_tick() == 9,
+		"the latest real frame must replace the prior tick and remain after an empty poll"
+	)
 
 
 func _test_matching_hashes() -> void:
@@ -272,6 +351,14 @@ func _test_matching_hashes() -> void:
 	_expect(int(result["mismatches_b"]) == 0, "client B must not record a checksum mismatch")
 	_expect(int(result["pending_a"]) == 0, "client A must resolve every received checksum report")
 	_expect(int(result["pending_b"]) == 0, "client B must resolve every received checksum report")
+	_expect(
+		int(result["last_remote_activity_tick_b"]) == int(result["final_remote_report_poll_tick_b"]),
+		"client B must record the tick that polled client A's final checksum report"
+	)
+	_expect(
+		int(result["last_remote_activity_tick_a"]) == int(result["final_local_tick_a"]),
+		"client A must record its captured final tick when it polls client B after teardown"
+	)
 
 
 func _test_differing_target_control() -> void:
@@ -303,6 +390,7 @@ func _run_pair(move_offset: Vector3) -> Dictionary:
 	match_a.command_bus().input_delay_ticks = 2
 	var checksum_exchange_a = ChecksumExchangeScript.new()
 	var scheduler_a = TurnSchedulerScript.new(match_a.command_bus(), endpoint_a, 1, checksum_exchange_a)
+	var final_local_tick_a := 0
 	for tick in REPLAY_TICKS:
 		if tick == 0:
 			scheduler_a.submit_local(
@@ -310,8 +398,10 @@ func _run_pair(move_offset: Vector3) -> Dictionary:
 				match_a.next_orderable_tick()
 			)
 		hub.step()
-		scheduler_a.advance_tick()
+		var poll_tick_a: int = match_a.current_tick()
+		scheduler_a.advance_tick(poll_tick_a)
 		var executed_tick: int = match_a.advance_ticks(1)
+		final_local_tick_a = executed_tick
 		var hash_now: int = int(match_a.entity_state().state_hash())
 		checksum_exchange_a.record_local_hash(executed_tick, hash_now)
 		scheduler_a.send_checksum_report(executed_tick, hash_now)
@@ -327,16 +417,21 @@ func _run_pair(move_offset: Vector3) -> Dictionary:
 	match_b.command_bus().input_delay_ticks = 2
 	var checksum_exchange_b = ChecksumExchangeScript.new()
 	var scheduler_b = TurnSchedulerScript.new(match_b.command_bus(), endpoint_b, 2, checksum_exchange_b)
+	var final_remote_report_poll_tick_b := -1
 	for _tick in REPLAY_TICKS:
 		hub.step()
-		scheduler_b.advance_tick()
+		var poll_tick_b: int = match_b.current_tick()
+		var pending_before := checksum_exchange_b.pending_remote_count()
+		scheduler_b.advance_tick(poll_tick_b)
+		if checksum_exchange_b.pending_remote_count() > pending_before:
+			final_remote_report_poll_tick_b = poll_tick_b
 		var executed_tick: int = match_b.advance_ticks(1)
 		var hash_now: int = int(match_b.entity_state().state_hash())
 		checksum_exchange_b.record_local_hash(executed_tick, hash_now)
 		scheduler_b.send_checksum_report(executed_tick, hash_now)
 	for _flush in 4:
 		hub.step()
-	scheduler_a.advance_tick()
+	scheduler_a.advance_tick(final_local_tick_a)
 	var hash_b: int = int(match_b.entity_state().state_hash())
 	var moved_b: bool = not scout_b.simulation_position().is_equal_approx(start_b)
 	await _teardown_arm(match_b)
@@ -351,6 +446,10 @@ func _run_pair(move_offset: Vector3) -> Dictionary:
 		"mismatches_b": checksum_exchange_b.mismatch_count(),
 		"pending_a": checksum_exchange_a.pending_remote_count(),
 		"pending_b": checksum_exchange_b.pending_remote_count(),
+		"last_remote_activity_tick_a": scheduler_a.last_remote_activity_tick(),
+		"last_remote_activity_tick_b": scheduler_b.last_remote_activity_tick(),
+		"final_local_tick_a": final_local_tick_a,
+		"final_remote_report_poll_tick_b": final_remote_report_poll_tick_b,
 	}
 
 

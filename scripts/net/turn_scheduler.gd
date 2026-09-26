@@ -24,6 +24,7 @@ var _local_player_id: int
 var _checksum_exchange: ChecksumExchangeScript
 var _discarded_echo_count := 0
 var _rejected_frame_count := 0
+var _last_remote_activity_tick := -1
 
 
 func _init(
@@ -53,21 +54,25 @@ func submit_local(command: SimCommand, current_tick: int) -> int:
 	return target_tick
 
 
-## Polls every received frame once. A clean remote frame keeps the sender's
-## target tick; an echoed local frame is deliberately discarded because the
-## local submission already entered this client's command bus.
-func advance_tick() -> void:
+## Polls every received frame once. A clean remote frame records activity at
+## the receiving client's current tick and keeps the sender's target tick; an
+## echoed local frame is deliberately discarded because the local submission
+## already entered this client's command bus.
+func advance_tick(current_tick: int) -> void:
 	for frame in _transport.poll():
 		var decoded: Variant = _decode_frame(frame)
 		if decoded == null:
 			continue
 		if decoded["kind"] == "checksum_report":
+			if int(decoded["sender_player_id"]) != _local_player_id:
+				_last_remote_activity_tick = current_tick
 			_handle_checksum_report(decoded)
 			continue
 		var command: SimCommand = decoded["command"]
 		if command.player_id == _local_player_id:
 			_discarded_echo_count += 1
 			continue
+		_last_remote_activity_tick = current_tick
 		_command_bus.submit_at(command, int(decoded["target_tick"]))
 
 
@@ -89,6 +94,12 @@ func discarded_echo_count() -> int:
 
 func rejected_frame_count() -> int:
 	return _rejected_frame_count
+
+
+## The receiving tick of the most recent successfully decoded remote frame,
+## or -1 when no frame has yet established that the other player is active.
+func last_remote_activity_tick() -> int:
+	return _last_remote_activity_tick
 
 
 func _encode_frame(target_tick: int, command: SimCommand) -> PackedByteArray:
