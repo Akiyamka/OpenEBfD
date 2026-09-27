@@ -3210,6 +3210,29 @@ source cites a number you cannot place.
   — decision 8 names a floor (two turns) but no conversion formula, the
   same "no exact number specified" gap `K1` already found for stall/drop's
   own timeout.
+
+  **`O1` — landed, the RTT-to-delay formula itself.** `N1`'s own gap
+  needed a human decision, unlike every prior one this track found:
+  "adaptive input delay" *is* the conversion decision 8 names, with no
+  smaller observable-only piece left to build first, and a wrong number
+  has real gameplay cost once ever wired live — too small risks executing
+  a command before every client has received it, too large adds felt lag
+  for no reason. Confirmed: `maxi(2, worst_known_rtt_ticks())` — the floor
+  decision 8 already names, otherwise the full measured round-trip
+  directly, no halving, no added margin, chosen deliberately conservative
+  over a tighter one-way estimate; tuning that tradeoff against real
+  playtesting is a later pass, not a number to guess tighter now.
+  `RttTracker.recommended_input_delay_ticks()` is the one new method this
+  needed — `worst_known_rtt_ticks()`'s own `-1` "no peer yet" sentinel
+  already floors to `2` through the same `maxi()` every other input uses,
+  no special case required. Proven against the one case that would catch
+  a wrong formula directly: an above-floor measurement must come back
+  *exactly* unchanged, not halved, not padded — the smallest slice in the
+  whole track, because the formula itself was already settled before this
+  brief was written. Applying the recommendation to any live
+  `SimCommandBus` remains untouched, the same live-match bootstrap
+  question that has kept wiring live UI input through the scheduler
+  deferred throughout.
 - **Phase 6 — polish.** Cosmetic prediction, parameter tuning under induced
   latency and loss, save/load of a networked match.
 
