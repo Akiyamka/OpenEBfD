@@ -8,6 +8,7 @@ extends RefCounted
 
 const NetTransportScript := preload("res://scripts/net/net_transport.gd")
 const ChecksumExchangeScript := preload("res://scripts/net/checksum_exchange.gd")
+const RttTrackerScript := preload("res://scripts/net/rtt_tracker.gd")
 const SimCommandBusScript := preload("res://scripts/sim/command_bus.gd")
 const SimCommandCodecScript := preload("res://scripts/sim/command_codec.gd")
 const SimCommandScript := preload("res://scripts/sim/commands/sim_command.gd")
@@ -15,13 +16,18 @@ const SimCommandScript := preload("res://scripts/sim/commands/sim_command.gd")
 const _FRAME_DISCRIMINATOR_BYTES := 1
 const _TICK_PREFIX_BYTES := 4
 const _CHECKSUM_REPORT_BYTES := 12
+const _PING_BYTES := 8
+const _PONG_BYTES := 12
 const _COMMAND_DISCRIMINATOR := 0
 const _CHECKSUM_REPORT_DISCRIMINATOR := 1
+const _PING_DISCRIMINATOR := 2
+const _PONG_DISCRIMINATOR := 3
 
 var _command_bus: SimCommandBus
 var _transport: NetTransport
 var _local_player_id: int
 var _checksum_exchange: ChecksumExchangeScript
+var _rtt_tracker: RttTrackerScript
 var _discarded_echo_count := 0
 var _rejected_frame_count := 0
 var _last_remote_activity_tick := -1
@@ -31,12 +37,14 @@ func _init(
 	command_bus: SimCommandBus,
 	transport: NetTransport,
 	local_player_id: int,
-	checksum_exchange: ChecksumExchangeScript = null
+	checksum_exchange: ChecksumExchangeScript = null,
+	rtt_tracker: RttTrackerScript = null
 ) -> void:
 	_command_bus = command_bus
 	_transport = transport
 	_local_player_id = local_player_id
 	_checksum_exchange = checksum_exchange
+	_rtt_tracker = rtt_tracker
 
 
 ## Schedules a locally-originated command, then sends the bus-selected target
@@ -68,6 +76,12 @@ func advance_tick(current_tick: int) -> void:
 				_last_remote_activity_tick = current_tick
 			_handle_checksum_report(decoded)
 			continue
+		if decoded["kind"] == "ping":
+			_handle_ping(decoded, current_tick)
+			continue
+		if decoded["kind"] == "pong":
+			_handle_pong(decoded, current_tick)
+			continue
 		var command: SimCommand = decoded["command"]
 		if command.player_id == _local_player_id:
 			_discarded_echo_count += 1
@@ -86,6 +100,11 @@ func send_checksum_report(tick: int, state_hash: int) -> void:
 	buffer.put_32(_local_player_id)
 	buffer.put_u32(state_hash)
 	_transport.send(buffer.data_array)
+
+
+## Sends a ping that lets a remote peer return the sending tick unchanged.
+func send_ping(current_tick: int) -> void:
+	_transport.send(_encode_ping_pong_frame(_PING_DISCRIMINATOR, current_tick))
 
 
 func discarded_echo_count() -> int:
@@ -128,6 +147,10 @@ func _decode_frame(frame: PackedByteArray):
 			return _decode_command_frame(frame, buffer)
 		_CHECKSUM_REPORT_DISCRIMINATOR:
 			return _decode_checksum_report_frame(frame, buffer)
+		_PING_DISCRIMINATOR:
+			return _decode_ping_frame(frame, buffer)
+		_PONG_DISCRIMINATOR:
+			return _decode_pong_frame(frame, buffer)
 		_:
 			_rejected_frame_count += 1
 			push_error(
@@ -167,6 +190,35 @@ func _decode_checksum_report_frame(frame: PackedByteArray, buffer: StreamPeerBuf
 	}
 
 
+func _decode_ping_frame(frame: PackedByteArray, buffer: StreamPeerBuffer):
+	if frame.size() < _FRAME_DISCRIMINATOR_BYTES + _PING_BYTES:
+		_rejected_frame_count += 1
+		push_error(
+			"TurnScheduler.advance_tick(): frame too short for the ping (%d bytes)" % frame.size()
+		)
+		return null
+	return {
+		"kind": "ping",
+		"tick": buffer.get_u32(),
+		"sender_player_id": buffer.get_32(),
+	}
+
+
+func _decode_pong_frame(frame: PackedByteArray, buffer: StreamPeerBuffer):
+	if frame.size() < _FRAME_DISCRIMINATOR_BYTES + _PONG_BYTES:
+		_rejected_frame_count += 1
+		push_error(
+			"TurnScheduler.advance_tick(): frame too short for the pong (%d bytes)" % frame.size()
+		)
+		return null
+	return {
+		"kind": "pong",
+		"tick": buffer.get_u32(),
+		"ping_sender_player_id": buffer.get_32(),
+		"sender_player_id": buffer.get_32(),
+	}
+
+
 func _handle_checksum_report(decoded: Dictionary) -> void:
 	if int(decoded["sender_player_id"]) == _local_player_id:
 		_discarded_echo_count += 1
@@ -178,3 +230,48 @@ func _handle_checksum_report(decoded: Dictionary) -> void:
 	_checksum_exchange.on_report_received(
 		int(decoded["sender_player_id"]), int(decoded["tick"]), int(decoded["state_hash"])
 	)
+
+
+func _handle_ping(decoded: Dictionary, current_tick: int) -> void:
+	if int(decoded["sender_player_id"]) == _local_player_id:
+		_discarded_echo_count += 1
+		return
+	_last_remote_activity_tick = current_tick
+	_transport.send(
+		_encode_pong_frame(int(decoded["tick"]), int(decoded["sender_player_id"]))
+	)
+
+
+func _handle_pong(decoded: Dictionary, current_tick: int) -> void:
+	if int(decoded["sender_player_id"]) == _local_player_id:
+		_discarded_echo_count += 1
+		return
+	_last_remote_activity_tick = current_tick
+	if int(decoded["ping_sender_player_id"]) != _local_player_id:
+		return
+	if _rtt_tracker == null:
+		_rejected_frame_count += 1
+		push_error("TurnScheduler.advance_tick(): received a pong with no RttTracker configured")
+		return
+	_rtt_tracker.on_pong_received(
+		int(decoded["sender_player_id"]), current_tick - int(decoded["tick"])
+	)
+
+
+func _encode_ping_pong_frame(discriminator: int, tick: int) -> PackedByteArray:
+	var buffer := StreamPeerBuffer.new()
+	buffer.big_endian = true
+	buffer.put_u8(discriminator)
+	buffer.put_u32(tick)
+	buffer.put_32(_local_player_id)
+	return buffer.data_array
+
+
+func _encode_pong_frame(tick: int, ping_sender_player_id: int) -> PackedByteArray:
+	var buffer := StreamPeerBuffer.new()
+	buffer.big_endian = true
+	buffer.put_u8(_PONG_DISCRIMINATOR)
+	buffer.put_u32(tick)
+	buffer.put_32(ping_sender_player_id)
+	buffer.put_32(_local_player_id)
+	return buffer.data_array

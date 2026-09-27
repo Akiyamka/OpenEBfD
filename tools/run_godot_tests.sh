@@ -70,6 +70,7 @@ readonly SUITES=(
 	tests/navigation/store_reads_run.gd
 	tests/net/loopback_run.gd
 	tests/net/checksum_exchange_run.gd
+	tests/net/rtt_tracker_run.gd
 	tests/net/turn_scheduler_run.gd
 	tests/net/relay_run.gd
 	tests/net/websocket_transport_run.gd

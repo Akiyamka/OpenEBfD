@@ -3173,6 +3173,43 @@ source cites a number you cannot place.
   sender's id — two agreeing peers would have passed identically against
   a broken pass-through that silently replaced every sender with one
   constant id, so the control needed a mix of verdicts to mean anything.
+
+  **`N1` — landed, round-trip measurement to each peer, observable only.**
+  Two new discriminators — `2` (ping) and `3` (pong) — reuse `M1`'s own
+  field shapes. `send_ping()` embeds the sending tick and this client's
+  id; a genuine, non-echo ping gets an immediate, unconditional pong back
+  regardless of whether an `RttTracker` is wired, since answering is a
+  courtesy to whoever asked, not something this client's own
+  configuration should gate. `RttTracker` mirrors `ChecksumExchange`'s
+  shape exactly: the *latest* measurement per sender, not a running
+  maximum — proven with a control where a smaller second measurement
+  replaces a larger first one, since a naive "worst I've ever seen from
+  this peer" implementation would pass every other case and fail only
+  that.
+
+  Two real defects surfaced in review, not in this brief's own design,
+  and both are why a pong's wire body grew from the originally-specified
+  8 bytes to 12: `LoopbackHub.route()` fans a pong out to *every*
+  connected endpoint, not just the client whose ping it answers, so a
+  three-or-more-peer room lets a pong meant for one client arrive at
+  every other client's own inbox too. The pong now carries the original
+  ping's own sender alongside its own — `[3][tick][ping_sender][pong_sender]`
+  — so a receiver can tell "is this addressed to me" from "is this
+  someone else's exchange" before touching an `RttTracker` at all; a
+  third-party pong is measured by nobody but its intended recipient. The
+  second round fixed the same distinction cutting too far: a third-party
+  pong is still proof its *responder* is alive, even though it carries no
+  RTT this client should keep, so `last_remote_activity_tick()` updates on
+  every genuine, non-echo pong regardless of whether it was addressed
+  here — only the `RttTracker` hand-off is gated on that. Proven with a
+  three-endpoint `LoopbackHub`: the ping's own sender measures both
+  responders independently, while each responder's own tracker stays
+  empty and neither rejects the other's reply to a ping it never sent,
+  yet both still record it as activity. Setting
+  `SimCommandBus.input_delay_ticks` from any measurement remains untouched
+  — decision 8 names a floor (two turns) but no conversion formula, the
+  same "no exact number specified" gap `K1` already found for stall/drop's
+  own timeout.
 - **Phase 6 — polish.** Cosmetic prediction, parameter tuning under induced
   latency and loss, save/load of a networked match.
 

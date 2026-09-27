@@ -8,6 +8,7 @@ const LegacyRulesFixture := preload("res://tests/support/legacy_rules_fixture.gd
 const ChecksumExchangeScript := preload("res://scripts/net/checksum_exchange.gd")
 const LoopbackHubScript := preload("res://scripts/net/loopback_hub.gd")
 const MatchFixtureScene := preload("res://tests/fixtures/match_fixture.tscn")
+const RttTrackerScript := preload("res://scripts/net/rtt_tracker.gd")
 const SimCommandBusScript := preload("res://scripts/sim/command_bus.gd")
 const SimMoveCommandScript := preload("res://scripts/sim/commands/move_command.gd")
 const TurnSchedulerScript := preload("res://scripts/net/turn_scheduler.gd")
@@ -31,6 +32,14 @@ func _initialize() -> void:
 	_run_case("malformed frames are rejected with their distinct errors", _test_rejects_malformed_frames)
 	_run_case("fixed delay and big-endian tick framing are independently pinned", _test_delay_and_wire_format)
 	_run_case("checksum reports use their own big-endian frame layout", _test_checksum_report_wire_format)
+	_run_case("pings use their own big-endian frame layout", _test_ping_wire_format)
+	_run_case("a remote ping automatically receives a pong", _test_replies_to_remote_ping)
+	_run_case("only a ping sender measures multi-peer pong replies", _test_routes_pongs_to_ping_sender)
+	_run_case("a ping echo is discarded without sending a pong", _test_discards_ping_echo)
+	_run_case("a remote pong reaches its wired RTT tracker", _test_delivers_remote_pong)
+	_run_case("a pong echo is discarded without reaching its RTT tracker", _test_discards_pong_echo)
+	_run_case("an unwired scheduler rejects pongs", _test_rejects_unwired_pong)
+	_run_case("ping and pong frame failures are rejected with distinct errors", _test_rejects_ping_pong_frames)
 	_run_case("a checksum echo is discarded without reaching its exchange", _test_discards_checksum_echo)
 	_run_case("a remote checksum report reaches its wired exchange", _test_delivers_remote_checksum_report)
 	_run_case("two remote checksum peers reach their wired exchange independently", _test_delivers_multiple_remote_checksum_reports)
@@ -39,6 +48,7 @@ func _initialize() -> void:
 	_run_case("remote activity starts unseen", _test_remote_activity_starts_unseen)
 	_run_case("a remote command records activity", _test_remote_command_records_activity)
 	_run_case("a remote checksum report records activity", _test_remote_checksum_report_records_activity)
+	_run_case("remote pings and pongs record activity", _test_remote_ping_pong_records_activity)
 	_run_case("an echo does not record remote activity", _test_echo_does_not_record_remote_activity)
 	_run_case("remote activity retains the most recent receiving tick", _test_remote_activity_tracks_most_recent_tick)
 	await _run_async_case("sequential matches agree after a transported command", _test_matching_hashes)
@@ -217,6 +227,125 @@ func _test_checksum_report_wire_format() -> void:
 	)
 
 
+func _test_ping_wire_format() -> void:
+	var endpoints: Dictionary = _new_connected_endpoints()
+	var scheduler = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["a"], -2)
+	scheduler.send_ping(0x01020304)
+	endpoints["hub"].step()
+	var frames: Array = endpoints["b"].poll()
+	_expect(frames.size() == 1, "the peer must receive exactly one ping")
+	if frames.is_empty():
+		return
+	_expect(
+		frames[0] == PackedByteArray([2, 1, 2, 3, 4, 255, 255, 255, 254]),
+		"a ping must be discriminator, u32 tick, then s32 sender in big-endian order"
+	)
+
+
+func _test_replies_to_remote_ping() -> void:
+	var endpoints: Dictionary = _new_connected_endpoints()
+	var scheduler_a = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["a"], 1)
+	var scheduler_b = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["b"], 2)
+	scheduler_a.send_ping(4)
+	endpoints["hub"].step()
+	scheduler_a.advance_tick(0)
+	scheduler_b.advance_tick(0)
+	endpoints["hub"].step()
+	var frames: Array = endpoints["a"].poll()
+	_expect(frames.size() == 1, "the original sender must receive exactly one automatic pong")
+	if frames.is_empty():
+		return
+	_expect(
+		frames[0] == PackedByteArray([3, 0, 0, 0, 4, 0, 0, 0, 1, 0, 0, 0, 2]),
+		"the pong must preserve the ping tick, identify its sender, and identify the replying peer"
+	)
+
+
+func _test_routes_pongs_to_ping_sender() -> void:
+	var hub = LoopbackHubScript.new()
+	var endpoint_a = hub.add_endpoint(&"A")
+	var endpoint_b = hub.add_endpoint(&"B")
+	var endpoint_c = hub.add_endpoint(&"C")
+	endpoint_a.open("")
+	endpoint_b.open("")
+	endpoint_c.open("")
+	var tracker_a = RttTrackerScript.new()
+	var tracker_b = RttTrackerScript.new()
+	var tracker_c = RttTrackerScript.new()
+	var scheduler_a = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoint_a, 1, null, tracker_a)
+	var scheduler_b = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoint_b, 2, null, tracker_b)
+	var scheduler_c = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoint_c, 3, null, tracker_c)
+
+	scheduler_a.send_ping(4)
+	hub.step()
+	scheduler_a.advance_tick(5)
+	scheduler_b.advance_tick(5)
+	scheduler_c.advance_tick(5)
+	hub.step()
+	scheduler_a.advance_tick(10)
+	scheduler_b.advance_tick(10)
+	scheduler_c.advance_tick(10)
+
+	_expect(tracker_a.rtt_ticks_for(2) == 6, "the ping sender must measure B's reply")
+	_expect(tracker_a.rtt_ticks_for(3) == 6, "the ping sender must measure C's reply")
+	_expect(tracker_a.known_peer_count() == 2, "the ping sender must track both responders independently")
+	_expect(tracker_b.known_peer_count() == 0, "B must not measure C's pong to A")
+	_expect(tracker_c.known_peer_count() == 0, "C must not measure B's pong to A")
+	_expect(scheduler_b.rejected_frame_count() == 0, "B must ignore C's pong to A without rejecting it")
+	_expect(scheduler_c.rejected_frame_count() == 0, "C must ignore B's pong to A without rejecting it")
+	_expect(scheduler_b.last_remote_activity_tick() == 10, "B must record C's valid pong to A as activity")
+	_expect(scheduler_c.last_remote_activity_tick() == 10, "C must record B's valid pong to A as activity")
+
+
+func _test_discards_ping_echo() -> void:
+	var endpoints: Dictionary = _new_connected_endpoints()
+	var scheduler = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["a"], 1)
+	endpoints["a"].receive(PackedByteArray([2, 0, 0, 0, 4, 0, 0, 0, 1]))
+	scheduler.advance_tick(0)
+	_expect(scheduler.discarded_echo_count() == 1, "a local ping echo must be counted and discarded")
+	_expect(endpoints["a"].poll().is_empty(), "a local ping echo must not trigger a self-pong")
+
+
+func _test_delivers_remote_pong() -> void:
+	var endpoints: Dictionary = _new_connected_endpoints()
+	var tracker = RttTrackerScript.new()
+	var scheduler = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["a"], 1, null, tracker)
+	endpoints["a"].receive(PackedByteArray([3, 0, 0, 0, 3, 0, 0, 0, 1, 0, 0, 0, 2]))
+	scheduler.advance_tick(10)
+	_expect(tracker.rtt_ticks_for(2) == 7, "the tracker must receive the exact processed tick minus ping tick")
+
+
+func _test_discards_pong_echo() -> void:
+	var endpoints: Dictionary = _new_connected_endpoints()
+	var tracker = RttTrackerScript.new()
+	var scheduler = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["a"], 1, null, tracker)
+	endpoints["a"].receive(PackedByteArray([3, 0, 0, 0, 3, 0, 0, 0, 1, 0, 0, 0, 1]))
+	scheduler.advance_tick(10)
+	_expect(scheduler.discarded_echo_count() == 1, "a local pong echo must be counted and discarded")
+	_expect(tracker.known_peer_count() == 0, "a local pong echo must not reach the tracker")
+
+
+func _test_rejects_unwired_pong() -> void:
+	var endpoints: Dictionary = _new_connected_endpoints()
+	var scheduler = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["a"], 1)
+	endpoints["a"].receive(PackedByteArray([3, 0, 0, 0, 3, 0, 0, 0, 1, 0, 0, 0, 2]))
+	scheduler.advance_tick(10)
+	_expect(scheduler.rejected_frame_count() == 1, "an unwired pong must increment the rejection count")
+
+
+func _test_rejects_ping_pong_frames() -> void:
+	var endpoints: Dictionary = _new_connected_endpoints()
+	var scheduler = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["a"], 1)
+
+	endpoints["a"].receive(PackedByteArray([2, 0, 0]))
+	scheduler.advance_tick(0)
+	_expect(scheduler.rejected_frame_count() == 1, "a short ping must increment once")
+
+	endpoints["a"].receive(PackedByteArray([3, 0, 0]))
+	scheduler.advance_tick(1)
+	_expect(scheduler.rejected_frame_count() == 2, "a short pong must increment once")
+
+
 func _test_discards_checksum_echo() -> void:
 	var endpoints: Dictionary = _new_connected_endpoints()
 	var exchange = ChecksumExchangeScript.new()
@@ -270,7 +399,7 @@ func _test_rejects_checksum_frames() -> void:
 	var endpoints: Dictionary = _new_connected_endpoints()
 	var scheduler = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["a"], 1)
 
-	endpoints["a"].receive(PackedByteArray([2]))
+	endpoints["a"].receive(PackedByteArray([4]))
 	scheduler.advance_tick(0)
 	_expect(scheduler.rejected_frame_count() == 1, "an unknown discriminator must increment once")
 
@@ -324,6 +453,19 @@ func _test_remote_checksum_report_records_activity() -> void:
 		scheduler_a.last_remote_activity_tick() == 8,
 		"a successfully decoded remote checksum report must record the receiving tick"
 	)
+
+
+func _test_remote_ping_pong_records_activity() -> void:
+	var endpoints: Dictionary = _new_connected_endpoints()
+	var tracker = RttTrackerScript.new()
+	var scheduler = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["a"], 1, null, tracker)
+	endpoints["a"].receive(PackedByteArray([2, 0, 0, 0, 4, 0, 0, 0, 2]))
+	scheduler.advance_tick(6)
+	_expect(scheduler.last_remote_activity_tick() == 6, "a remote ping must record the receiving tick")
+
+	endpoints["a"].receive(PackedByteArray([3, 0, 0, 0, 4, 0, 0, 0, 1, 0, 0, 0, 2]))
+	scheduler.advance_tick(9)
+	_expect(scheduler.last_remote_activity_tick() == 9, "a remote pong must record the receiving tick")
 
 
 func _test_echo_does_not_record_remote_activity() -> void:
