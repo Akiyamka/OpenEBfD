@@ -10,6 +10,8 @@ const UnitCommandControllerScript := preload("res://scripts/match/unit_command_c
 const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 const FrameTickDriverScript := preload("res://scripts/match/frame_tick_driver.gd")
 const SimCommandBusScript := preload("res://scripts/sim/command_bus.gd")
+const NullTransportScript := preload("res://scripts/net/null_transport.gd")
+const TurnSchedulerScript := preload("res://scripts/net/turn_scheduler.gd")
 const CommandExecutorScript := preload("res://scripts/match/command_executor.gd")
 const UnitDeploymentControllerScript := preload("res://scripts/units/unit_deployment_controller.gd")
 const UnitRosterControllerScript := preload("res://scripts/units/unit_roster_controller.gd")
@@ -61,6 +63,7 @@ var _tick_driver: FrameTickDriver
 ## _setup_unit_deployment_controller() in _ready() rather than sitting next
 ## to _command_bus's.
 var _command_bus: SimCommandBus
+var _turn_scheduler: TurnScheduler
 ## Off by default (see ReplayRecorder's doc comment,
 ## scripts/match/replay_recorder.gd) -- nothing in this file calls start()
 ## on it. It is still constructed unconditionally here, alongside
@@ -179,6 +182,9 @@ func _ready() -> void:
 	_clock = MatchClockScript.new()
 	_tick_driver = FrameTickDriverScript.new()
 	_command_bus = SimCommandBusScript.new()
+	var transport := _create_net_transport()
+	transport.open("")
+	_turn_scheduler = TurnSchedulerScript.new(_command_bus, transport, LOCAL_PLAYER_ID)
 	_replay_recorder = ReplayRecorderScript.new()
 	_replay_player = ReplayPlayerScript.new()
 	_match_snapshot = MatchSnapshotScript.new(_snapshot_storage_path())
@@ -224,6 +230,13 @@ func _ready() -> void:
 	_update_selection_label()
 	_update_fps_label()
 	_place_on_map()
+
+
+## Returns the transport Match's own TurnScheduler runs over. A real
+## transport is a later slice's job; test fixtures override this to observe
+## controller frames while Match retains ownership of open().
+func _create_net_transport() -> NetTransport:
+	return NullTransportScript.new()
 
 
 func _on_panel_command(command: StringName) -> void:
@@ -280,7 +293,7 @@ func _setup_building_controller() -> void:
 		PLACEMENT_CANT_BUILD_SCENE,
 		PLACEMENT_SKIRT_SCENE,
 		PLACEMENT_WALL_SCENE,
-		_command_bus,
+		_turn_scheduler,
 		Callable(self, "next_orderable_tick")
 	)
 	_building_controller.interaction_mode_changed.connect(_on_building_interaction_mode_changed)
@@ -298,7 +311,7 @@ func _setup_building_upgrade_controller() -> void:
 	_building_upgrade_controller.status_changed.connect(_update_selection_label)
 	_building_upgrade_controller.upgrade_option_state_changed.connect(side_panel.set_upgrade_option_state)
 	_building_upgrade_controller.setup(
-		_upgrade_option_ids, _upgrade_production_system, _command_bus, Callable(self, "next_orderable_tick")
+		_upgrade_option_ids, _upgrade_production_system, _turn_scheduler, Callable(self, "next_orderable_tick")
 	)
 	# setup() filters upgrade_grid_ids down to buildings that actually have
 	# an upgrade defined (see BuildingUpgradeController.upgrade_option_ids());
@@ -314,7 +327,7 @@ func _setup_unit_roster_controller() -> void:
 	_unit_roster_controller.status_changed.connect(_update_selection_label)
 	_unit_roster_controller.unit_option_state_changed.connect(side_panel.set_building_option_state)
 	_unit_roster_controller.setup(
-		_unit_option_ids, _unit_production_system, _command_bus, Callable(self, "next_orderable_tick")
+		_unit_option_ids, _unit_production_system, _turn_scheduler, Callable(self, "next_orderable_tick")
 	)
 
 
@@ -345,7 +358,7 @@ func _setup_unit_command_controller() -> void:
 		_unit_deployment_controller,
 		ability_bar,
 		_target_ability_handlers,
-		_command_bus,
+		_turn_scheduler,
 		Callable(self, "next_orderable_tick")
 	)
 
@@ -811,6 +824,7 @@ func _advance_simulation_tick() -> void:
 	# A no-op when no replay is loaded, so this costs nothing in the common
 	# case.
 	_replay_player.play_tick(_command_bus, tick)
+	_turn_scheduler.advance_tick(tick)
 	# Captured once so record_tick() below sees exactly what the executor
 	# loop iterates -- drain() empties the bus of what it returns, so
 	# calling it a second time here would silently hand the recorder

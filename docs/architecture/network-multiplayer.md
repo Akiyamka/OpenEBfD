@@ -244,7 +244,7 @@ rewrite.
 ## 6. WebSocket behind a transport interface
 
 The netcode is written against a thin interface — roughly `connect`, `send(bytes)`,
-`poll() -> [frames]`, `disconnect`, plus connection state — with three
+`poll() -> [frames]`, `disconnect`, plus connection state — with four
 implementations:
 
 1. **WebSocket** — the only shipping transport in v0.4, one code path for both
@@ -253,6 +253,9 @@ implementations:
    for headless tests that run four clients in one process and reproduce
    desyncs deterministically.
 3. **ENet** — *not* in v0.4. Added later only if measurements justify it.
+4. **NullTransport** — the sink every single-player Match runs over. It
+   deliberately delivers nothing, so it is exempt from the shared
+   self-fanout and oversized-payload-moves-to-FAILED conformance assertions.
 
 The reasoning behind not starting with ENet: in lockstep every command frame must
 be reliable and ordered, because turn N+1 cannot execute before turn N. That

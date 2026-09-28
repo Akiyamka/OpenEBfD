@@ -630,7 +630,7 @@ func _test_sale_animation(token: int, local_player: PlayerData) -> int:
 	_setup_without_assets(controller)
 	var pump := CommandPumpScript.new()
 	pump.configure_queue_controllers(controller)
-	controller._command_bus = pump.bus()
+	controller._turn_scheduler = pump.turn_scheduler()
 	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
 	pump.install_match_lookup_stub(root)
 
@@ -673,7 +673,7 @@ func _test_sale_construct_fallback(token: int, local_player: PlayerData) -> int:
 	_setup_without_assets(controller)
 	var pump := CommandPumpScript.new()
 	pump.configure_queue_controllers(controller)
-	controller._command_bus = pump.bus()
+	controller._turn_scheduler = pump.turn_scheduler()
 	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
 	pump.install_match_lookup_stub(root)
 
@@ -735,7 +735,7 @@ func _test_sell_click_on_no_building_submits_nothing(token: int) -> int:
 	root.add_child(controller)
 	_setup_without_assets(controller)
 	var pump := CommandPumpScript.new()
-	controller._command_bus = pump.bus()
+	controller._turn_scheduler = pump.turn_scheduler()
 	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
 	controller.raycast_hit = {}
 
@@ -765,7 +765,7 @@ func _test_sell_click_defers_to_the_tick(token: int, local_player: PlayerData) -
 	_setup_without_assets(controller)
 	var pump := CommandPumpScript.new()
 	pump.configure_queue_controllers(controller)
-	controller._command_bus = pump.bus()
+	controller._turn_scheduler = pump.turn_scheduler()
 	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
 	pump.install_match_lookup_stub(root)
 
@@ -812,7 +812,7 @@ func _test_repair_click_defers_and_reads_toggle_at_execution(token: int, local_p
 	_setup_without_assets(controller)
 	var pump := CommandPumpScript.new()
 	pump.configure_queue_controllers(controller)
-	controller._command_bus = pump.bus()
+	controller._turn_scheduler = pump.turn_scheduler()
 	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
 	pump.install_match_lookup_stub(root)
 
@@ -862,7 +862,7 @@ func _test_place_click_defers_placement_to_the_tick(token: int) -> int:
 	)
 	var pump := CommandPumpScript.new()
 	pump.configure_queue_controllers(controller)
-	controller._command_bus = pump.bus()
+	controller._turn_scheduler = pump.turn_scheduler()
 	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
 
 	# cost 0, build_time_ticks 1: one advance_tick(0) call marks the order
@@ -914,7 +914,7 @@ func _test_place_click_with_no_cell_submits_nothing(token: int) -> int:
 	)
 	var pump := CommandPumpScript.new()
 	pump.configure_queue_controllers(controller)
-	controller._command_bus = pump.bus()
+	controller._turn_scheduler = pump.turn_scheduler()
 	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
 
 	controller._building_queue.start(&"ATBarracks", "Barracks", 0, 1)
@@ -958,7 +958,7 @@ func _test_place_execution_ignores_a_stale_command(token: int) -> int:
 	)
 	var pump := CommandPumpScript.new()
 	pump.configure_queue_controllers(controller)
-	controller._command_bus = pump.bus()
+	controller._turn_scheduler = pump.turn_scheduler()
 	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
 
 	controller._building_queue.start(&"ATBarracks", "Barracks", 0, 1)
@@ -1017,7 +1017,7 @@ func _test_place_click_rotation_survives_round_trip(token: int) -> int:
 	)
 	var pump := CommandPumpScript.new()
 	pump.configure_queue_controllers(controller)
-	controller._command_bus = pump.bus()
+	controller._turn_scheduler = pump.turn_scheduler()
 	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
 
 	controller._building_queue.start(&"ATBarracks", "Barracks", 0, 1)
@@ -1069,7 +1069,7 @@ func _test_place_click_on_unbuildable_cell_submits_nothing(token: int) -> int:
 	)
 	var pump := CommandPumpScript.new()
 	pump.configure_queue_controllers(controller)
-	controller._command_bus = pump.bus()
+	controller._turn_scheduler = pump.turn_scheduler()
 	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
 
 	controller._building_queue.start(&"ATWall", "Wall", 0, 1)
@@ -1119,7 +1119,7 @@ func _test_place_second_click_while_committed_submits_nothing(token: int) -> int
 	)
 	var pump := CommandPumpScript.new()
 	pump.configure_queue_controllers(controller)
-	controller._command_bus = pump.bus()
+	controller._turn_scheduler = pump.turn_scheduler()
 	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
 
 	controller._building_queue.start(&"ATBarracks", "Barracks", 0, 1)
@@ -1163,7 +1163,7 @@ func _test_place_committed_preview_pinned_at_committed_cell(token: int) -> int:
 	)
 	var pump := CommandPumpScript.new()
 	pump.configure_queue_controllers(controller)
-	controller._command_bus = pump.bus()
+	controller._turn_scheduler = pump.turn_scheduler()
 	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
 
 	controller._building_queue.start(&"ATBarracks", "Barracks", 0, 1)
@@ -1217,7 +1217,7 @@ func _test_place_committed_right_click_not_consumed(token: int) -> int:
 	)
 	var pump := CommandPumpScript.new()
 	pump.configure_queue_controllers(controller)
-	controller._command_bus = pump.bus()
+	controller._turn_scheduler = pump.turn_scheduler()
 	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
 
 	controller._building_queue.start(&"ATBarracks", "Barracks", 0, 1)
@@ -1271,7 +1271,7 @@ func _test_place_click_filter_and_execution_checks_are_independent(token: int) -
 	)
 	var pump := CommandPumpScript.new()
 	pump.configure_queue_controllers(controller)
-	controller._command_bus = pump.bus()
+	controller._turn_scheduler = pump.turn_scheduler()
 	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
 
 	controller._building_queue.start(&"ATWall", "Wall", 0, 1)
@@ -1346,7 +1346,7 @@ func _test_wall_line_first_click_submits_nothing(token: int) -> int:
 		null, FakeGrid.new(), null, null, null, null, null, Callable()
 	)
 	var pump := CommandPumpScript.new()
-	controller._command_bus = pump.bus()
+	controller._turn_scheduler = pump.turn_scheduler()
 	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
 
 	controller._set_wall_line_mode(true, &"ATWall")
@@ -1387,7 +1387,7 @@ func _test_wall_line_second_click_defers_chain_to_the_tick(token: int) -> int:
 	)
 	var pump := CommandPumpScript.new()
 	pump.configure_queue_controllers(controller)
-	controller._command_bus = pump.bus()
+	controller._turn_scheduler = pump.turn_scheduler()
 	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
 
 	controller._set_wall_line_mode(true, &"ATWall")
@@ -1443,7 +1443,7 @@ func _test_wall_line_command_recomputes_buildable_cells_at_execution(token: int)
 	)
 	var pump := CommandPumpScript.new()
 	pump.configure_queue_controllers(controller)
-	controller._command_bus = pump.bus()
+	controller._turn_scheduler = pump.turn_scheduler()
 	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
 
 	controller._set_wall_line_mode(true, &"ATWall")
@@ -1805,7 +1805,7 @@ func _test_handle_building_intent_defers_start(token: int, local_player: PlayerD
 
 	var pump := CommandPumpScript.new()
 	pump.configure_queue_controllers(controller)
-	controller._command_bus = pump.bus()
+	controller._turn_scheduler = pump.turn_scheduler()
 	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
 
 	_expect(
@@ -1842,7 +1842,7 @@ func _test_handle_building_intent_defers_pause(token: int, local_player: PlayerD
 
 	var pump := CommandPumpScript.new()
 	pump.configure_queue_controllers(controller)
-	controller._command_bus = pump.bus()
+	controller._turn_scheduler = pump.turn_scheduler()
 	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
 
 	controller.handle_building_intent(&"ATBarracks", MOUSE_BUTTON_LEFT)
@@ -1889,7 +1889,7 @@ func _test_queued_right_click_uses_player_production_not_preview(
 	)
 	var pump := CommandPumpScript.new()
 	pump.configure_queue_controllers(controller)
-	controller._command_bus = pump.bus()
+	controller._turn_scheduler = pump.turn_scheduler()
 	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
 
 	var queue := controller.building_queue_for_player(local_player.player_id)

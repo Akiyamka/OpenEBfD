@@ -1,8 +1,11 @@
 class_name TransportConformance
 extends RefCounted
 
-## Assertions that must hold for *every* NetTransport implementation --
-## contract-level, not implementation-level. Ordering, latency and loss stay
+## Assertions that must hold for every delivery-capable NetTransport
+## implementation -- contract-level, not implementation-level. NullTransport
+## is the documented exception: its single-player sink delivers nothing to
+## anyone, so its self-fanout and oversized-payload-FAILED behavior is proven
+## instead by tests/net/null_transport_run.gd. Ordering, latency and loss stay
 ## in tests/net/loopback_run.gd; connect/reject specifics stay in
 ## tests/net/websocket_transport_run.gd. This suite runs once from each of
 ## those (and would run again unchanged for a future ENet transport -- see

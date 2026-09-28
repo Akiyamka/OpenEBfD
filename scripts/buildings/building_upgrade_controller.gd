@@ -31,18 +31,18 @@ var _upgrade_production_system: UpgradeProductionSystem
 static var _building_definition_catalog := BuildingDefinitionCatalogScript.shared()
 ## Command-bus collaborators are injected together by Match. A missing system
 ## is a wiring error, not a fallback path for fixtures.
-var _command_bus: SimCommandBus
+var _turn_scheduler: TurnScheduler
 var _submit_tick_provider: Callable
 
 
 func setup(
 		building_ids: Array[StringName],
 		upgrade_production_system: UpgradeProductionSystem,
-		command_bus: SimCommandBus = null,
+		turn_scheduler: TurnScheduler = null,
 		submit_tick_provider: Callable = Callable()
 	) -> void:
 	_upgrade_production_system = upgrade_production_system
-	_command_bus = command_bus
+	_turn_scheduler = turn_scheduler
 	_submit_tick_provider = submit_tick_provider
 	_upgrade_production_system.upgrade_order_execution.connect(_on_upgrade_order_execution)
 	_upgrade_production_system.upgrade_queue_progressed.connect(_on_upgrade_queue_progressed)
@@ -83,10 +83,10 @@ func handle_upgrade_intent(building_id: StringName, button_index: int) -> bool:
 
 
 func _submit_upgrade_order_command(building_id: StringName, button_index: int) -> void:
-	if _command_bus == null or not _submit_tick_provider.is_valid():
+	if _turn_scheduler == null or not _submit_tick_provider.is_valid():
 		push_error(
 			"BuildingUpgradeController._submit_upgrade_order_command(): no command bus wired in -- " +
-			"call setup() with a SimCommandBus and a submit-tick provider before issuing orders."
+			"call setup() with a TurnScheduler and a submit-tick provider before issuing orders."
 		)
 		return
 	var command := SimUpgradeOrderCommandScript.new()
@@ -95,7 +95,7 @@ func _submit_upgrade_order_command(building_id: StringName, button_index: int) -
 		command.player_id = players.local_player_id
 	command.upgrade_id = building_id
 	command.button_index = button_index
-	_command_bus.submit(command, _submit_tick_provider.call())
+	_turn_scheduler.submit_local(command, _submit_tick_provider.call())
 
 
 ## The command executor calls this on the scheduled tick. The system, not the

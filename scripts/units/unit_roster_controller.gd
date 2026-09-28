@@ -35,11 +35,11 @@ var max_tech_level: int = TechnologyTreeScript.UNLIMITED_TECH_LEVEL
 ## target" -- injected together by setup(), in production by Match.
 ## _setup_unit_roster_controller() and in tests by
 ## tests/match/support/command_pump.gd, the same way UnitCommandController's
-## are (see that class's own _command_bus field comment). Unlike
+## are (see that class's own _turn_scheduler field comment). Unlike
 ## BuildingController, every left/right click on a unit slot needs one -- see
 ## handle_unit_intent()'s doc comment for why there is no local interaction-
 ## mode branch to peel off first.
-var _command_bus: SimCommandBus
+var _turn_scheduler: TurnScheduler
 var _submit_tick_provider: Callable
 
 ## This remains the local sidebar's unit list. Availability is cached for every
@@ -59,12 +59,12 @@ static var _unit_scene_catalog := UnitSceneCatalogScript.shared()
 func setup(
 		unit_ids: Array[StringName],
 		unit_production_system: UnitProductionSystem,
-		command_bus: SimCommandBus = null,
+		turn_scheduler: TurnScheduler = null,
 		submit_tick_provider: Callable = Callable()
 ) -> void:
 	_unit_ids = unit_ids.duplicate()
 	_unit_production_system = unit_production_system
-	_command_bus = command_bus
+	_turn_scheduler = turn_scheduler
 	_submit_tick_provider = submit_tick_provider
 	_unit_production_system.unit_order_execution.connect(_on_unit_order_execution)
 	_unit_production_system.unit_queue_progressed.connect(_on_unit_queue_progressed)
@@ -164,12 +164,12 @@ func handle_unit_intent(unit_id: StringName, button_index: int, quantity := 1) -
 ## The issue side of a unit-order click: immediate, and split from execution
 ## on purpose, exactly as every other command (see SimUnitOrderCommand's doc
 ## comment). A controller with no command bus wired in is a wiring mistake,
-## not a supported mode -- see the _command_bus field comment.
+## not a supported mode -- see the _turn_scheduler field comment.
 func _submit_unit_order_command(unit_id: StringName, button_index: int, quantity: int) -> void:
-	if _command_bus == null or not _submit_tick_provider.is_valid():
+	if _turn_scheduler == null or not _submit_tick_provider.is_valid():
 		push_error(
 			"UnitRosterController._submit_unit_order_command(): no command bus wired in -- " +
-			"call setup() with a SimCommandBus and a submit-tick provider before issuing " +
+			"call setup() with a TurnScheduler and a submit-tick provider before issuing " +
 			"orders (see Match._setup_unit_roster_controller() or, in tests, " +
 			"tests/match/support/command_pump.gd)."
 		)
@@ -181,7 +181,7 @@ func _submit_unit_order_command(unit_id: StringName, button_index: int, quantity
 	command.unit_id = unit_id
 	command.button_index = button_index
 	command.quantity = quantity
-	_command_bus.submit(command, _submit_tick_provider.call())
+	_turn_scheduler.submit_local(command, _submit_tick_provider.call())
 
 
 ## The execution side of a unit-order click: Match._advance_simulation_tick()

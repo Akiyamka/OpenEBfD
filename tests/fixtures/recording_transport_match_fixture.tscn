@@ -1,0 +1,74 @@
+[gd_scene load_steps=12 format=3]
+
+[ext_resource type="Script" path="res://tests/fixtures/recording_transport_match_fixture.gd" id="1_fixture"]
+[ext_resource type="Script" path="res://scripts/world/camera/rts_camera.gd" id="2_camera"]
+[ext_resource type="PackedScene" path="res://scenes/units/unit.tscn" id="3_unit"]
+[ext_resource type="PackedScene" path="res://assets/converted/maps/#M25 GM Aprit Chard S 2/terrain.tscn" id="4_map"]
+[ext_resource type="Resource" path="res://configs/camera/rts_camera_config.tres" id="5_camera_config"]
+[ext_resource type="PackedScene" path="res://assets/converted/buildings/ATConYard/ATConYard.scn" id="6_con_yard"]
+[ext_resource type="PackedScene" path="res://assets/converted/buildings/ATSmWindtrap/ATSmWindtrap.scn" id="7_windtrap"]
+[ext_resource type="PackedScene" path="res://scenes/units/or_apc.tscn" id="8_or_apc"]
+[ext_resource type="PackedScene" path="res://scenes/units/niab_tank.tscn" id="9_niab"]
+[ext_resource type="PackedScene" path="res://scenes/ui/side_panel.tscn" id="10_side_panel"]
+[ext_resource type="Script" path="res://scripts/ui/selection_rectangle.gd" id="11_selection_rectangle"]
+
+[node name="RecordingTransportMatchFixture" type="Node3D"]
+script = ExtResource("1_fixture")
+
+[node name="CameraRig" type="Node3D" parent="."]
+script = ExtResource("2_camera")
+config = ExtResource("5_camera_config")
+
+[node name="Camera3D" type="Camera3D" parent="CameraRig"]
+current = true
+
+[node name="Terrain" parent="." instance=ExtResource("4_map")]
+
+[node name="Buildings" type="Node3D" parent="."]
+
+[node name="ATConYard" parent="Buildings" instance=ExtResource("6_con_yard")]
+position = Vector3(12.4, 8.0, 9.5)
+owner_player_id = 1
+
+[node name="ATSmWindtrap" parent="Buildings" instance=ExtResource("7_windtrap")]
+position = Vector3(24.0, 8.0, 12.0)
+owner_player_id = 1
+
+[node name="Units" type="Node3D" parent="."]
+
+[node name="ScoutA" parent="Units" instance=ExtResource("3_unit")]
+position = Vector3(129.6, 8.0, 22.2)
+owner_player_id = 1
+
+[node name="OrdosAPC" parent="Units" instance=ExtResource("8_or_apc")]
+position = Vector3(125.6, 8.0, 25.2)
+owner_player_id = 2
+
+[node name="NIABTank" parent="Units" instance=ExtResource("9_niab")]
+position = Vector3(121.6, 8.0, 28.2)
+owner_player_id = 2
+
+[node name="HUD" type="CanvasLayer" parent="."]
+
+[node name="SelectionRectangle" type="Control" parent="HUD"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+script = ExtResource("11_selection_rectangle")
+
+[node name="Selection" type="Label" parent="HUD"]
+offset_right = 128.0
+offset_bottom = 28.0
+text = "No entity selected"
+
+[node name="FPS" type="Label" parent="HUD"]
+offset_right = 360.0
+offset_bottom = 28.0
+text = "FPS: --"
+
+[node name="SidePanel" parent="HUD" instance=ExtResource("10_side_panel")]
+layout_mode = 3

@@ -38,9 +38,13 @@ const SimCommandBusScript := preload("res://scripts/sim/command_bus.gd")
 const CommandExecutorScript := preload("res://scripts/match/command_executor.gd")
 const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 const MatchLookupScript := preload("res://scripts/match/match_lookup.gd")
+const TurnSchedulerScript := preload("res://scripts/net/turn_scheduler.gd")
+const NullTransportScript := preload("res://scripts/net/null_transport.gd")
+const MatchScript := preload("res://scripts/match/match.gd")
 
 var _entities := EntityNodeIndexScript.new()
 var _bus := SimCommandBusScript.new()
+var _turn_scheduler: TurnScheduler = null
 var _navigation = null
 var _deployment_controller = null
 var _terrain: MapLoader = null
@@ -128,6 +132,16 @@ func uninstall_match_lookup_stub() -> void:
 ## Handed to UnitCommandController.setup() as its command_bus argument.
 func bus() -> SimCommandBus:
 	return _bus
+
+
+## Supplies controllers with the same scheduler-shaped command entry point a
+## real Match owns, while pump() continues to drain this harness's bus.
+func turn_scheduler() -> TurnScheduler:
+	if _turn_scheduler == null:
+		var transport := NullTransportScript.new()
+		transport.open("")
+		_turn_scheduler = TurnSchedulerScript.new(_bus, transport, MatchScript.LOCAL_PLAYER_ID)
+	return _turn_scheduler
 
 
 ## Rebuilds this pump's CommandExecutor with every collaborator a command

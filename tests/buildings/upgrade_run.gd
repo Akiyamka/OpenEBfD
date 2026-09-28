@@ -448,7 +448,7 @@ func _test_automatic_refinery_upgrade(token: int, local_player: PlayerData) -> i
 	var pump := CommandPumpScript.new()
 	pump.configure_queue_controllers(null, null, controller)
 	var upgrade_ids: Array[StringName] = [&"ATRefineryDock"]
-	controller.setup(upgrade_ids, production, pump.bus(), Callable(pump, "next_orderable_tick"))
+	controller.setup(upgrade_ids, production, pump.turn_scheduler(), Callable(pump, "next_orderable_tick"))
 	_expect(
 		not option_states.is_empty() and option_states.back().state == BuildingOptionStateScript.State.AVAILABLE,
 		"the dock option must be visible while any compatible refinery can upgrade"

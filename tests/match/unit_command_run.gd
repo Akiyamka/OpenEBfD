@@ -394,7 +394,7 @@ func _test_selection_ownership_and_movement(token: int, local_player, enemy_play
 	var pump := CommandPumpScript.new()
 	var commands := FakeUnitCommandController.new()
 	commands.setup(
-		null, null, null, null, null, null, [], pump.bus(), Callable(pump, "next_orderable_tick")
+		null, null, null, null, null, null, [], pump.turn_scheduler(), Callable(pump, "next_orderable_tick")
 	)
 	var statuses: Array[String] = []
 	commands.status_changed.connect(func(status: String) -> void: statuses.append(status))
@@ -463,7 +463,7 @@ func _test_carried_cargo_targeting(token: int, local_player, enemy_player) -> in
 	var pump := CommandPumpScript.new()
 	var commands := FakeUnitCommandController.new()
 	commands.setup(
-		null, null, null, null, null, null, [], pump.bus(), Callable(pump, "next_orderable_tick")
+		null, null, null, null, null, null, [], pump.turn_scheduler(), Callable(pump, "next_orderable_tick")
 	)
 	root.add_child(commands)
 	var attacker := _make_unit("Attacker", local_player)
@@ -524,7 +524,7 @@ func _test_target_mode_input_priority(token: int, local_player) -> int:
 	pump.configure_move(null, deployment)
 	var commands := FakeUnitCommandController.new()
 	commands.setup(
-		null, null, null, null, deployment, null, [], pump.bus(), Callable(pump, "next_orderable_tick")
+		null, null, null, null, deployment, null, [], pump.turn_scheduler(), Callable(pump, "next_orderable_tick")
 	)
 	root.add_child(commands)
 	var unit := FakeToggleUnit.new()
@@ -569,7 +569,7 @@ func _test_target_ability_execution(token: int, local_player, enemy_player) -> i
 	pump.configure_move(null, null, null, [handler])
 	var commands := FakeUnitCommandController.new()
 	commands.setup(
-		null, null, null, null, null, null, [handler], pump.bus(), Callable(pump, "next_orderable_tick")
+		null, null, null, null, null, null, [handler], pump.turn_scheduler(), Callable(pump, "next_orderable_tick")
 	)
 	var statuses: Array[String] = []
 	commands.status_changed.connect(func(status: String) -> void: statuses.append(status))
@@ -694,7 +694,7 @@ func _test_attack_orders(token: int, local_player, enemy_player, neutral_player)
 	var pump := CommandPumpScript.new()
 	var commands := FakeUnitCommandController.new()
 	commands.setup(
-		null, null, null, null, null, null, [], pump.bus(), Callable(pump, "next_orderable_tick")
+		null, null, null, null, null, null, [], pump.turn_scheduler(), Callable(pump, "next_orderable_tick")
 	)
 	var statuses: Array[String] = []
 	commands.status_changed.connect(func(status: String) -> void: statuses.append(status))
@@ -834,7 +834,7 @@ func _test_repeated_click_deployment(token: int, local_player) -> int:
 	pump.configure_move(null, deployment)
 	var commands := FakeUnitCommandController.new()
 	commands.setup(
-		null, null, null, null, deployment, null, [], pump.bus(), Callable(pump, "next_orderable_tick")
+		null, null, null, null, deployment, null, [], pump.turn_scheduler(), Callable(pump, "next_orderable_tick")
 	)
 	var statuses: Array[String] = []
 	commands.status_changed.connect(func(status: String) -> void: statuses.append(status))
@@ -870,7 +870,7 @@ func _test_building_selection(token: int, local_player) -> int:
 	var pump := CommandPumpScript.new()
 	var commands := FakeUnitCommandController.new()
 	commands.setup(
-		null, null, null, null, null, null, [], pump.bus(), Callable(pump, "next_orderable_tick")
+		null, null, null, null, null, null, [], pump.turn_scheduler(), Callable(pump, "next_orderable_tick")
 	)
 	root.add_child(commands)
 
@@ -917,7 +917,7 @@ func _test_building_attack_order(
 	var pump := CommandPumpScript.new()
 	var commands := FakeUnitCommandController.new()
 	commands.setup(
-		null, null, null, null, null, null, [], pump.bus(), Callable(pump, "next_orderable_tick")
+		null, null, null, null, null, null, [], pump.turn_scheduler(), Callable(pump, "next_orderable_tick")
 	)
 	var statuses: Array[String] = []
 	commands.status_changed.connect(
@@ -995,7 +995,7 @@ func _test_building_move_undeployment(token: int, local_player) -> int:
 	pump.configure_move(null, deployment)
 	var commands := FakeUnitCommandController.new()
 	commands.setup(
-		null, null, null, null, deployment, null, [], pump.bus(), Callable(pump, "next_orderable_tick")
+		null, null, null, null, deployment, null, [], pump.turn_scheduler(), Callable(pump, "next_orderable_tick")
 	)
 	var statuses: Array[String] = []
 	commands.status_changed.connect(func(status: String) -> void: statuses.append(status))
@@ -1054,7 +1054,7 @@ func _test_context_cursors(token: int, local_player, enemy_player) -> int:
 	var commands := FakeUnitCommandController.new()
 	commands.setup(
 		null, terrain, navigation, null, deployment, null, [],
-		pump.bus(), Callable(pump, "next_orderable_tick")
+		pump.turn_scheduler(), Callable(pump, "next_orderable_tick")
 	)
 	root.add_child(commands)
 
@@ -1274,7 +1274,7 @@ func _test_rectangle_unit_selection(token: int, local_player, enemy_player) -> i
 	var pump := CommandPumpScript.new()
 	var commands := FakeUnitCommandController.new()
 	commands.setup(
-		null, null, null, null, null, null, [], pump.bus(), Callable(pump, "next_orderable_tick")
+		null, null, null, null, null, null, [], pump.turn_scheduler(), Callable(pump, "next_orderable_tick")
 	)
 	root.add_child(commands)
 	var scout := _make_unit("Scout", local_player)
@@ -1322,7 +1322,7 @@ func _test_formation_modifier(token: int, local_player) -> int:
 	pump.configure_move(navigation)
 	var commands := FakeUnitCommandController.new()
 	commands.setup(
-		null, null, navigation, null, null, null, [], pump.bus(), Callable(pump, "next_orderable_tick")
+		null, null, navigation, null, null, null, [], pump.turn_scheduler(), Callable(pump, "next_orderable_tick")
 	)
 	root.add_child(commands)
 	var unit := _make_unit("FormationScout", local_player)
@@ -1373,7 +1373,7 @@ func _test_uncommandable_selection_explains_itself(token: int, enemy_player) -> 
 	var pump := CommandPumpScript.new()
 	var commands := FakeUnitCommandController.new()
 	commands.setup(
-		null, null, null, null, null, null, [], pump.bus(), Callable(pump, "next_orderable_tick")
+		null, null, null, null, null, null, [], pump.turn_scheduler(), Callable(pump, "next_orderable_tick")
 	)
 	var statuses: Array[String] = []
 	commands.status_changed.connect(func(status: String) -> void: statuses.append(status))
@@ -1452,7 +1452,7 @@ func _test_stop_shortcut(token: int, local_player) -> int:
 	var pump := CommandPumpScript.new()
 	var commands := FakeUnitCommandController.new()
 	commands.setup(
-		null, null, null, null, null, null, [], pump.bus(), Callable(pump, "next_orderable_tick")
+		null, null, null, null, null, null, [], pump.turn_scheduler(), Callable(pump, "next_orderable_tick")
 	)
 	var statuses: Array[String] = []
 	commands.status_changed.connect(func(status: String) -> void: statuses.append(status))
@@ -1554,7 +1554,7 @@ func _test_harvester_order(token: int, local_player) -> int:
 	pump.configure_move(navigation, null, terrain)
 	var commands := FakeUnitCommandController.new()
 	commands.setup(
-		null, terrain, navigation, null, null, null, [], pump.bus(), Callable(pump, "next_orderable_tick")
+		null, terrain, navigation, null, null, null, [], pump.turn_scheduler(), Callable(pump, "next_orderable_tick")
 	)
 	var statuses: Array[String] = []
 	commands.status_changed.connect(func(status: String) -> void: statuses.append(status))
@@ -1610,7 +1610,7 @@ func _test_unload_order(token: int, local_player, enemy_player) -> int:
 	pump.configure_move(navigation, null, terrain)
 	var commands := FakeUnitCommandController.new()
 	commands.setup(
-		null, terrain, navigation, null, null, null, [], pump.bus(), Callable(pump, "next_orderable_tick")
+		null, terrain, navigation, null, null, null, [], pump.turn_scheduler(), Callable(pump, "next_orderable_tick")
 	)
 	var statuses: Array[String] = []
 	commands.status_changed.connect(func(status: String) -> void: statuses.append(status))
@@ -1723,7 +1723,7 @@ func _test_deploy_key_toggles(token: int, local_player) -> int:
 	pump.configure_move(null, deployment)
 	var commands := FakeUnitCommandController.new()
 	commands.setup(
-		null, null, null, null, deployment, null, [], pump.bus(), Callable(pump, "next_orderable_tick")
+		null, null, null, null, deployment, null, [], pump.turn_scheduler(), Callable(pump, "next_orderable_tick")
 	)
 	var statuses: Array[String] = []
 	commands.status_changed.connect(func(status: String) -> void: statuses.append(status))
@@ -1775,7 +1775,7 @@ func _test_repeated_click_undeploy(token: int, local_player) -> int:
 	pump.configure_move(null, deployment)
 	var commands := FakeUnitCommandController.new()
 	commands.setup(
-		null, null, null, null, deployment, null, [], pump.bus(), Callable(pump, "next_orderable_tick")
+		null, null, null, null, deployment, null, [], pump.turn_scheduler(), Callable(pump, "next_orderable_tick")
 	)
 	var statuses: Array[String] = []
 	commands.status_changed.connect(func(status: String) -> void: statuses.append(status))
@@ -1818,7 +1818,7 @@ func _test_deployed_unit_move_rejected(token: int, local_player) -> int:
 	pump.configure_move(navigation)
 	var commands := FakeUnitCommandController.new()
 	commands.setup(
-		null, null, navigation, null, null, null, [], pump.bus(), Callable(pump, "next_orderable_tick")
+		null, null, navigation, null, null, null, [], pump.turn_scheduler(), Callable(pump, "next_orderable_tick")
 	)
 	var statuses: Array[String] = []
 	commands.status_changed.connect(func(status: String) -> void: statuses.append(status))

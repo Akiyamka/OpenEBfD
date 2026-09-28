@@ -36,7 +36,7 @@ var _deployment_controller
 ## selection/hover/cursor cases -- most of tests/match/unit_command_run.gd
 ## never issues a command -- but asking it to issue one is a wiring mistake,
 ## not a supported mode; see _stop_selected_entities()'s guard.
-var _command_bus: SimCommandBus
+var _turn_scheduler: TurnScheduler
 var _submit_tick_provider: Callable
 # Units and buildings are protocol-compatible group members in runtime and
 # tests, not one concrete class. Both expose ownership and selection methods.
@@ -77,7 +77,7 @@ func setup(
 		deployment_controller = null,
 		ability_bar = null,
 		target_ability_handlers: Array = [],
-		command_bus: SimCommandBus = null,
+		turn_scheduler: TurnScheduler = null,
 		submit_tick_provider: Callable = Callable()
 	) -> void:
 	_camera = command_camera
@@ -85,7 +85,7 @@ func setup(
 	_navigation = navigation
 	_selection_rectangle = selection_rectangle
 	_deployment_controller = deployment_controller
-	_command_bus = command_bus
+	_turn_scheduler = turn_scheduler
 	_submit_tick_provider = submit_tick_provider
 	_target_abilities.configure(ability_bar, target_ability_handlers)
 	if not _target_abilities.status_changed.is_connected(_on_target_ability_status_changed):
@@ -276,10 +276,10 @@ func _is_repeated_single_selection(entity: Node) -> bool:
 func _try_deploy(entity: Node) -> bool:
 	if not _classifier().can_deploy(entity):
 		return false
-	if _command_bus == null or not _submit_tick_provider.is_valid():
+	if _turn_scheduler == null or not _submit_tick_provider.is_valid():
 		push_error(
 			"UnitCommandController._try_deploy(): no command bus wired in -- " +
-			"call setup() with a SimCommandBus and a submit-tick provider before issuing " +
+			"call setup() with a TurnScheduler and a submit-tick provider before issuing " +
 			"orders (see Match._setup_unit_command_controller() or, in tests, " +
 			"tests/match/support/command_pump.gd)."
 		)
@@ -292,7 +292,7 @@ func _try_deploy(entity: Node) -> bool:
 	if players != null:
 		command.player_id = players.local_player_id
 	command.entity_ids = entity_ids
-	_command_bus.submit(command, _submit_tick_provider.call())
+	_turn_scheduler.submit_local(command, _submit_tick_provider.call())
 	return true
 
 
@@ -314,16 +314,16 @@ func _is_stop_key(event: InputEventKey) -> bool:
 ## back to status_changed).
 ##
 ## A controller with no command bus wired in is a wiring mistake, not a
-## supported mode -- see the _command_bus field comment. Every suite that
+## supported mode -- see the _turn_scheduler field comment. Every suite that
 ## exercises this method wires one in via tests/match/support/command_pump.gd;
 ## the loud failure below is what would have caught the alternative (silently
 ## dropping the order, or silently reviving the pre-command-bus immediate
 ## cancel this method used to fall back to).
 func _stop_selected_entities() -> void:
-	if _command_bus == null or not _submit_tick_provider.is_valid():
+	if _turn_scheduler == null or not _submit_tick_provider.is_valid():
 		push_error(
 			"UnitCommandController._stop_selected_entities(): no command bus wired in -- " +
-			"call setup() with a SimCommandBus and a submit-tick provider before issuing " +
+			"call setup() with a TurnScheduler and a submit-tick provider before issuing " +
 			"orders (see Match._setup_unit_command_controller() or, in tests, " +
 			"tests/match/support/command_pump.gd)."
 		)
@@ -336,7 +336,7 @@ func _stop_selected_entities() -> void:
 	if players != null:
 		command.player_id = players.local_player_id
 	command.entity_ids = entity_ids
-	_command_bus.submit(command, _submit_tick_provider.call())
+	_turn_scheduler.submit_local(command, _submit_tick_provider.call())
 
 
 func _emit_stop_status(stopped: int) -> void:
@@ -353,7 +353,7 @@ func _emit_stop_status(stopped: int) -> void:
 ## still be emitted -- just no longer on the same frame as the click.
 ##
 ## With input_delay_ticks == 0 (phase 2's single-player default, see
-## SimCommandBus) that lag is at most one tick, effectively invisible. Once
+## TurnScheduler) that lag is at most one tick, effectively invisible. Once
 ## phase 5 raises the delay for real network play, this necessarily arrives
 ## noticeably late relative to the click that caused it, and hiding that gap
 ## behind an optimistic guess of the outcome is phase 6's job, not this
@@ -544,10 +544,10 @@ func _emit_target_ability_status(result: Dictionary) -> void:
 ## reason it is not decided at click time for any other order: see this
 ## file's module doc comment on the seam.
 func _deploy_selected_entities() -> void:
-	if _command_bus == null or not _submit_tick_provider.is_valid():
+	if _turn_scheduler == null or not _submit_tick_provider.is_valid():
 		push_error(
 			"UnitCommandController._deploy_selected_entities(): no command bus wired in -- " +
-			"call setup() with a SimCommandBus and a submit-tick provider before issuing " +
+			"call setup() with a TurnScheduler and a submit-tick provider before issuing " +
 			"orders (see Match._setup_unit_command_controller() or, in tests, " +
 			"tests/match/support/command_pump.gd)."
 		)
@@ -560,7 +560,7 @@ func _deploy_selected_entities() -> void:
 	if players != null:
 		command.player_id = players.local_player_id
 	command.entity_ids = entity_ids
-	_command_bus.submit(command, _submit_tick_provider.call())
+	_turn_scheduler.submit_local(command, _submit_tick_provider.call())
 
 
 func _select_units_in_rectangle(rectangle: Rect2) -> void:
@@ -618,10 +618,10 @@ func _command_at(screen_position: Vector2, force_attack: bool) -> void:
 ## client on the tick the order actually executes, not at the click that
 ## merely scheduled it.
 func _issue_attack_order(target_entity, position: Vector3) -> void:
-	if _command_bus == null or not _submit_tick_provider.is_valid():
+	if _turn_scheduler == null or not _submit_tick_provider.is_valid():
 		push_error(
 			"UnitCommandController._issue_attack_order(): no command bus wired in -- " +
-			"call setup() with a SimCommandBus and a submit-tick provider before issuing " +
+			"call setup() with a TurnScheduler and a submit-tick provider before issuing " +
 			"orders (see Match._setup_unit_command_controller() or, in tests, " +
 			"tests/match/support/command_pump.gd)."
 		)
@@ -637,7 +637,7 @@ func _issue_attack_order(target_entity, position: Vector3) -> void:
 	command.target = position
 	if target_entity != null and &"entity_id" in target_entity:
 		command.target_entity_id = int(target_entity.get(&"entity_id"))
-	_command_bus.submit(command, _submit_tick_provider.call())
+	_turn_scheduler.submit_local(command, _submit_tick_provider.call())
 
 
 func _command_target_name(target_or_position: Variant) -> String:
@@ -681,10 +681,10 @@ func _command_target_name(target_or_position: Variant) -> String:
 func _command_move(screen_position: Vector2, target_entity = null) -> void:
 	if _selected_entities.is_empty():
 		return
-	if _command_bus == null or not _submit_tick_provider.is_valid():
+	if _turn_scheduler == null or not _submit_tick_provider.is_valid():
 		push_error(
 			"UnitCommandController._command_move(): no command bus wired in -- " +
-			"call setup() with a SimCommandBus and a submit-tick provider before issuing " +
+			"call setup() with a TurnScheduler and a submit-tick provider before issuing " +
 			"orders (see Match._setup_unit_command_controller() or, in tests, " +
 			"tests/match/support/command_pump.gd)."
 		)
@@ -711,7 +711,7 @@ func _command_move(screen_position: Vector2, target_entity = null) -> void:
 	if target_entity != null and &"entity_id" in target_entity:
 		command.target_entity_id = int(target_entity.get(&"entity_id"))
 	command.move_mode = move_mode
-	_command_bus.submit(command, _submit_tick_provider.call())
+	_turn_scheduler.submit_local(command, _submit_tick_provider.call())
 
 
 ## What the order turned out to be. One click can split the selection three
@@ -936,10 +936,10 @@ func _execute_target_ability(screen_position: Vector2) -> void:
 	var ability_id := _target_abilities.active_ability()
 	if ability_id.is_empty():
 		return
-	if _command_bus == null or not _submit_tick_provider.is_valid():
+	if _turn_scheduler == null or not _submit_tick_provider.is_valid():
 		push_error(
 			"UnitCommandController._execute_target_ability(): no command bus wired in -- " +
-			"call setup() with a SimCommandBus and a submit-tick provider before issuing " +
+			"call setup() with a TurnScheduler and a submit-tick provider before issuing " +
 			"orders (see Match._setup_unit_command_controller() or, in tests, " +
 			"tests/match/support/command_pump.gd)."
 		)
@@ -959,7 +959,7 @@ func _execute_target_ability(screen_position: Vector2) -> void:
 		if target != null and &"entity_id" in target:
 			command.target_entity_id = int(target.get(&"entity_id"))
 		command.target_position = position
-		_command_bus.submit(command, _submit_tick_provider.call())
+		_turn_scheduler.submit_local(command, _submit_tick_provider.call())
 	_target_abilities.cancel()
 
 

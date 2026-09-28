@@ -89,13 +89,13 @@ var max_tech_level: int = TechnologyTreeScript.UNLIMITED_TECH_LEVEL
 ## target" -- injected together by setup(), production by Match.
 ## _setup_building_controller() and in tests by
 ## tests/match/support/command_pump.gd, the same way UnitCommandController's
-## are (see that class's own _command_bus field comment). A controller built
+## are (see that class's own _turn_scheduler field comment). A controller built
 ## with neither wired in still handles Sell/Repair and the two interaction-
 ## mode branches handle_building_intent() peels off before ever needing a
 ## command bus (see that method's doc comment); only a click that would
 ## mutate the production queue needs one, and _submit_build_order_command()
 ## fails loudly rather than silently if it is missing.
-var _command_bus: SimCommandBus
+var _turn_scheduler: TurnScheduler
 var _submit_tick_provider: Callable
 
 var _catalog_view = BuildingCatalogViewScript.new()
@@ -193,11 +193,11 @@ func setup(
 		cant_build_preview_scene: PackedScene,
 		skirt_preview_scene: PackedScene,
 		wall_marker_scene: PackedScene,
-		command_bus: SimCommandBus,
+		turn_scheduler: TurnScheduler,
 		submit_tick_provider: Callable
 ) -> void:
 	camera = placement_camera
-	_command_bus = command_bus
+	_turn_scheduler = turn_scheduler
 	_submit_tick_provider = submit_tick_provider
 	_production_system = production_system
 	_catalog_view.configure(building_ids)
@@ -625,12 +625,12 @@ func _right_building_intent_is_mode_action(building_id: StringName) -> bool:
 ## split from execution on purpose, exactly as every other command (see
 ## SimBuildOrderCommand's doc comment). A controller with no command bus
 ## wired in is a wiring mistake, not a supported mode -- see the
-## _command_bus field comment.
+## _turn_scheduler field comment.
 func _submit_build_order_command(building_id: StringName, button_index: int) -> void:
-	if _command_bus == null or not _submit_tick_provider.is_valid():
+	if _turn_scheduler == null or not _submit_tick_provider.is_valid():
 		push_error(
 			"BuildingController._submit_build_order_command(): no command bus wired in -- " +
-			"call setup() with a SimCommandBus and a submit-tick provider before issuing " +
+			"call setup() with a TurnScheduler and a submit-tick provider before issuing " +
 			"orders (see Match._setup_building_controller() or, in tests, " +
 			"tests/match/support/command_pump.gd)."
 		)
@@ -641,7 +641,7 @@ func _submit_build_order_command(building_id: StringName, button_index: int) -> 
 		command.player_id = players.local_player_id
 	command.building_id = building_id
 	command.button_index = button_index
-	_command_bus.submit(command, _submit_tick_provider.call())
+	_turn_scheduler.submit_local(command, _submit_tick_provider.call())
 
 
 ## The execution side of a build-order click: Match._advance_simulation_tick()
@@ -862,13 +862,13 @@ func _try_toggle_building_repair(screen_position: Vector2) -> void:
 
 ## Mirrors _submit_build_order_command()'s shape exactly, including its
 ## push_error when no command bus is wired in -- see that method's doc
-## comment and the _command_bus field comment for why a missing bus is a
+## comment and the _turn_scheduler field comment for why a missing bus is a
 ## wiring mistake, not a supported mode.
 func _submit_repair_building_command(building: Node3D) -> void:
-	if _command_bus == null or not _submit_tick_provider.is_valid():
+	if _turn_scheduler == null or not _submit_tick_provider.is_valid():
 		push_error(
 			"BuildingController._submit_repair_building_command(): no command bus wired in -- " +
-			"call setup() with a SimCommandBus and a submit-tick provider before issuing " +
+			"call setup() with a TurnScheduler and a submit-tick provider before issuing " +
 			"orders (see Match._setup_building_controller() or, in tests, " +
 			"tests/match/support/command_pump.gd)."
 		)
@@ -878,7 +878,7 @@ func _submit_repair_building_command(building: Node3D) -> void:
 	if players != null:
 		command.player_id = players.local_player_id
 	command.entity_id = int(building.get(&"entity_id")) if &"entity_id" in building else 0
-	_command_bus.submit(command, _submit_tick_provider.call())
+	_turn_scheduler.submit_local(command, _submit_tick_provider.call())
 
 
 ## The execution side of a repair click: CommandExecutor.execute()
@@ -1005,13 +1005,13 @@ func _try_sell_building(screen_position: Vector2) -> void:
 
 ## Mirrors _submit_build_order_command()'s shape exactly, including its
 ## push_error when no command bus is wired in -- see that method's doc
-## comment and the _command_bus field comment for why a missing bus is a
+## comment and the _turn_scheduler field comment for why a missing bus is a
 ## wiring mistake, not a supported mode.
 func _submit_sell_building_command(building: Node3D) -> void:
-	if _command_bus == null or not _submit_tick_provider.is_valid():
+	if _turn_scheduler == null or not _submit_tick_provider.is_valid():
 		push_error(
 			"BuildingController._submit_sell_building_command(): no command bus wired in -- " +
-			"call setup() with a SimCommandBus and a submit-tick provider before issuing " +
+			"call setup() with a TurnScheduler and a submit-tick provider before issuing " +
 			"orders (see Match._setup_building_controller() or, in tests, " +
 			"tests/match/support/command_pump.gd)."
 		)
@@ -1021,7 +1021,7 @@ func _submit_sell_building_command(building: Node3D) -> void:
 	if players != null:
 		command.player_id = players.local_player_id
 	command.entity_id = int(building.get(&"entity_id")) if &"entity_id" in building else 0
-	_command_bus.submit(command, _submit_tick_provider.call())
+	_turn_scheduler.submit_local(command, _submit_tick_provider.call())
 
 
 ## The execution side of a sell click: CommandExecutor.execute()
@@ -1352,15 +1352,15 @@ func _try_place_ready_building(screen_position: Vector2) -> void:
 
 ## Mirrors _submit_sell_building_command()'s shape exactly, including its
 ## push_error when no command bus is wired in -- see that method's doc
-## comment and the _command_bus field comment for why a missing bus is a
+## comment and the _turn_scheduler field comment for why a missing bus is a
 ## wiring mistake, not a supported mode.
 func _submit_place_building_command(
 		building_id: StringName, nav_cell: Vector2i, rotation_quarter_turns: int
 	) -> void:
-	if _command_bus == null or not _submit_tick_provider.is_valid():
+	if _turn_scheduler == null or not _submit_tick_provider.is_valid():
 		push_error(
 			"BuildingController._submit_place_building_command(): no command bus wired in -- " +
-			"call setup() with a SimCommandBus and a submit-tick provider before issuing " +
+			"call setup() with a TurnScheduler and a submit-tick provider before issuing " +
 			"orders (see Match._setup_building_controller() or, in tests, " +
 			"tests/match/support/command_pump.gd)."
 		)
@@ -1372,7 +1372,7 @@ func _submit_place_building_command(
 	command.building_id = building_id
 	command.nav_cell = nav_cell
 	command.rotation_quarter_turns = rotation_quarter_turns
-	_command_bus.submit(command, _submit_tick_provider.call())
+	_turn_scheduler.submit_local(command, _submit_tick_provider.call())
 
 
 ## The execution side of a place click: CommandExecutor.execute()
@@ -1472,15 +1472,15 @@ func execute_place_building_command(command: SimPlaceBuildingCommand) -> void:
 
 ## Mirrors _submit_place_building_command()'s shape exactly, including its
 ## push_error when no command bus is wired in -- see that method's doc comment
-## and the _command_bus field comment for why a missing bus is a wiring
+## and the _turn_scheduler field comment for why a missing bus is a wiring
 ## mistake, not a supported mode.
 func _submit_wall_line_command(
 		start_cell: Vector2i, end_cell: Vector2i, building_id: StringName
 	) -> void:
-	if _command_bus == null or not _submit_tick_provider.is_valid():
+	if _turn_scheduler == null or not _submit_tick_provider.is_valid():
 		push_error(
 			"BuildingController._submit_wall_line_command(): no command bus wired in -- " +
-			"call setup() with a SimCommandBus and a submit-tick provider before issuing " +
+			"call setup() with a TurnScheduler and a submit-tick provider before issuing " +
 			"orders (see Match._setup_building_controller() or, in tests, " +
 			"tests/match/support/command_pump.gd)."
 		)
@@ -1492,7 +1492,7 @@ func _submit_wall_line_command(
 	command.building_id = building_id
 	command.start_cell = start_cell
 	command.end_cell = end_cell
-	_command_bus.submit(command, _submit_tick_provider.call())
+	_turn_scheduler.submit_local(command, _submit_tick_provider.call())
 
 
 ## The execution side of the wall line's second click: CommandExecutor.execute()
