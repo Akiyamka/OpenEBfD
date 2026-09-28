@@ -20,6 +20,7 @@ can_be_primary = true
 ai_exit = true
 is_construction_yard = false
 upgraded_primary_required = false
+exclude_from_skirmish_lose = false
 primary_building_ids = []
 secondary_building_ids = []
 roles = [&"Factory"]

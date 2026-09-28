@@ -56,6 +56,7 @@ extends Resource
 @export var terrain_ids: Array[StringName] = []
 
 @export_group("Behavior")
+@export var exclude_from_skirmish_lose: bool
 @export var can_be_deviated: bool
 @export var can_self_repair: bool
 @export var can_be_repaired: bool

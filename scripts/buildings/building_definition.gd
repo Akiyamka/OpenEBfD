@@ -18,6 +18,7 @@ extends Resource
 @export var ai_manufacturing: bool
 @export var is_construction_yard: bool
 @export var upgraded_primary_required: bool
+@export var exclude_from_skirmish_lose: bool
 @export var primary_building_ids: Array[StringName] = []
 @export var secondary_building_ids: Array[StringName] = []
 @export var roles: Array[StringName] = []

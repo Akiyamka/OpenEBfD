@@ -21,6 +21,7 @@ ai_exit = true
 ai_manufacturing = true
 is_construction_yard = false
 upgraded_primary_required = false
+exclude_from_skirmish_lose = false
 primary_building_ids = [&"ATConYard"]
 secondary_building_ids = [&"ATSmWindtrap", &"ORSmWindtrap", &"HKSmWindtrap"]
 roles = [&"Barracks"]

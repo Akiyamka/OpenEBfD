@@ -19,6 +19,7 @@ power_generated = 100
 can_be_primary = false
 is_construction_yard = false
 upgraded_primary_required = false
+exclude_from_skirmish_lose = true
 primary_building_ids = [&"ATConYard", &"ORConYard", &"HKConYard"]
 secondary_building_ids = []
 roles = []

@@ -38,6 +38,7 @@ carryall = false
 advanced_carryall = true
 can_move_any_direction = false
 terrain_ids = [&"Sand", &"Rock", &"NBRock", &"Ramp"]
+exclude_from_skirmish_lose = true
 can_be_deviated = false
 can_self_repair = false
 can_be_repaired = false

@@ -342,10 +342,16 @@ Teams are fixed in the lobby before the match starts and never change in-game;
 in-game diplomacy is out of scope. 2v2 and FFA on four players.
 
 `scripts/players/player_roster.gd` already models this: it has `set_team`,
-`relation_between` and `is_ally`, and `player_data.gd` has `Relation.ALLY`. What
-2v2 still needs is lobby-side team assignment and a team-aware victory
-condition; friendly fire is already handled team-aware through
+`relation_between` and `is_ally`, and `player_data.gd` has `Relation.ALLY`.
+Friendly fire is already handled team-aware through
 `CombatTarget.are_friendly()`'s `is_allied_with()` path.
+`PlayerEliminationTracker` (`scripts/match/player_elimination_tracker.gd`,
+slice `Q1`) now tracks, per tick, whether a player has any building or unit
+left that counts toward not losing, per the rules-authored
+`exclude_from_skirmish_lose` flag — the ground floor a victory condition
+needs, but not the condition itself: nothing yet folds it through team
+topology into a verdict, or does anything UI-visible with it. What 2v2
+still needs is lobby-side team assignment and that team-fold.
 
 Shared vision is *not* work for v0.4: the project has no fog of war yet. It
 becomes relevant when fog of war lands, and teams are already the right place to
@@ -3236,6 +3242,38 @@ source cites a number you cannot place.
   `SimCommandBus` remains untouched, the same live-match bootstrap
   question that has kept wiring live UI input through the scheduler
   deferred throughout.
+
+  **`P1` — landed, `Match` owns a real `TurnScheduler` over a null
+  transport.** Phase 2's own prose ("Single-player runs with input delay
+  0 over a null transport") had never become a landed class; this closes
+  that gap and, with it, the single most-repeated "remains untouched"
+  line in every one of `H1`, `J1`, `N1` and `O1`'s own paragraphs above —
+  "wiring live UI input through the scheduler." All 13 direct
+  `SimCommandBus.submit()` call sites across the four command-issuing
+  controllers (`BuildingController`, `BuildingUpgradeController`,
+  `UnitCommandController`, `UnitRosterController`) now go through
+  `TurnScheduler.submit_local()` instead, a behaviour-preserving
+  substitution verified by reading every site: each already set
+  `command.player_id = players.local_player_id` before submitting, so
+  `submit_local()`'s own player-id check never trips. `NullTransport`
+  (`scripts/net/null_transport.gd`) implements the real `NetTransport`
+  lifecycle — `DISCONNECTED`/`CONNECTED`, explicit `open()`/`close()` —
+  rather than faking a permanent connection, with two deliberate,
+  documented exceptions to `tests/net/transport_conformance.gd`'s shared
+  suite: a connected send is always discarded, never fanned back to the
+  sender, and never fails on size, because losing every frame is this
+  transport's whole contract rather than a size-triggered edge case of
+  one. Proven with a real-`Match` wiring suite that captures a controller-
+  issued Stop order's actual wire bytes through an injected recording
+  transport, parses the discriminator and the big-endian target tick
+  before decoding the command payload, and would fail if the
+  `submit_local()` substitution were reverted at even one call site while
+  every behavioural suite stayed green — the same "test the wiring, not
+  just the part" proof this whole track has repeated since `H1`. Does
+  *not* by itself unblock applying `O1`'s recommendation or `K1`'s
+  liveness tracking to live play: both still need a real transport
+  carrying real peer traffic, which needs the relay/lobby connection, a
+  larger and more product-shaped question left for its own slice.
 - **Phase 6 — polish.** Cosmetic prediction, parameter tuning under induced
   latency and loss, save/load of a networked match.
 

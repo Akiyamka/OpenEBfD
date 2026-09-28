@@ -22,6 +22,7 @@ const NavigationGridDebugScript := preload("res://scripts/units/navigation/navig
 const MatchSnapshotScript := preload("res://scripts/match/match_snapshot.gd")
 const ReplayRecorderScript := preload("res://scripts/match/replay_recorder.gd")
 const ReplayPlayerScript := preload("res://scripts/match/replay_player.gd")
+const PlayerEliminationTrackerScript := preload("res://scripts/match/player_elimination_tracker.gd")
 const AutoloadLookupScript := preload("res://scripts/players/autoload_lookup.gd")
 const TerrainProbeScript := preload("res://scripts/world/terrain_probe.gd")
 const EntityQueryScript := preload("res://scripts/world/entity_query.gd")
@@ -80,6 +81,7 @@ var _replay_recorder: ReplayRecorder
 ## live player's input is not suppressed while this is active -- there is no
 ## UI yet that could make both happen at once.
 var _replay_player: ReplayPlayer
+var _player_elimination_tracker: PlayerEliminationTracker
 var _command_executor: CommandExecutor
 var _building_controller: BuildingController
 var _production_system: ProductionSystem
@@ -187,6 +189,7 @@ func _ready() -> void:
 	_turn_scheduler = TurnSchedulerScript.new(_command_bus, transport, LOCAL_PLAYER_ID)
 	_replay_recorder = ReplayRecorderScript.new()
 	_replay_player = ReplayPlayerScript.new()
+	_player_elimination_tracker = PlayerEliminationTrackerScript.new()
 	_match_snapshot = MatchSnapshotScript.new(_snapshot_storage_path())
 	_restore_saved_startup_state()
 	_building_option_ids = _local_player_building_option_ids()
@@ -876,6 +879,7 @@ func _advance_simulation_tick() -> void:
 	for spice_mound in get_tree().get_nodes_in_group("sim_spice_mounds"):
 		if is_instance_valid(spice_mound):
 			spice_mound.sim_tick()
+	_player_elimination_tracker.refresh(get_tree(), _players(), _entity_index.registry())
 	_entity_index.apply_pending_releases()
 
 
@@ -972,6 +976,10 @@ func entity_state() -> SimEntityState:
 ## reaching into _command_bus directly.
 func command_bus() -> SimCommandBus:
 	return _command_bus
+
+
+func player_elimination_tracker() -> PlayerEliminationTracker:
+	return _player_elimination_tracker
 
 
 ## The queue every Unit/Building/CombatProjectile/CombatLingerEffect/SpiceMound
