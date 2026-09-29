@@ -68,6 +68,8 @@ readonly SUITES=(
 	tests/match/building_command_ownership_run.gd
 	tests/match/player_elimination_tracker_run.gd
 	tests/match/player_elimination_wiring_run.gd
+	tests/match/match_victory_tracker_run.gd
+	tests/match/match_victory_wiring_run.gd
 	tests/navigation/run.gd
 	tests/navigation/store_reads_run.gd
 	tests/net/loopback_run.gd

@@ -346,12 +346,18 @@ in-game diplomacy is out of scope. 2v2 and FFA on four players.
 Friendly fire is already handled team-aware through
 `CombatTarget.are_friendly()`'s `is_allied_with()` path.
 `PlayerEliminationTracker` (`scripts/match/player_elimination_tracker.gd`,
-slice `Q1`) now tracks, per tick, whether a player has any building or unit
+slice `Q1`) tracks, per tick, whether a player has any building or unit
 left that counts toward not losing, per the rules-authored
-`exclude_from_skirmish_lose` flag — the ground floor a victory condition
-needs, but not the condition itself: nothing yet folds it through team
-topology into a verdict, or does anything UI-visible with it. What 2v2
-still needs is lobby-side team assignment and that team-fold.
+`exclude_from_skirmish_lose` flag. `MatchVictoryTracker`
+(`scripts/match/match_victory_tracker.gd`, slice `S1`) folds that through
+team topology: `remaining_player_ids()` and `is_match_decided()`, checking
+every distinct pair of survivors against `PlayerRoster.are_allied()`
+rather than bucketing by `team_id` directly, so an explicit relation
+override (`Match._configure_demo_players()` already sets one) cannot
+silently disagree with the authoritative answer. Both remain purely
+observable — nothing declares a winner in any UI sense, pauses the match,
+or responds to a decided verdict at all. What 2v2 still needs is
+lobby-side team assignment and that eventual response.
 
 Shared vision is *not* work for v0.4: the project has no fog of war yet. It
 becomes relevant when fog of war lands, and teams are already the right place to

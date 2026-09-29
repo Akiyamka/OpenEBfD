@@ -23,6 +23,7 @@ const MatchSnapshotScript := preload("res://scripts/match/match_snapshot.gd")
 const ReplayRecorderScript := preload("res://scripts/match/replay_recorder.gd")
 const ReplayPlayerScript := preload("res://scripts/match/replay_player.gd")
 const PlayerEliminationTrackerScript := preload("res://scripts/match/player_elimination_tracker.gd")
+const MatchVictoryTrackerScript := preload("res://scripts/match/match_victory_tracker.gd")
 const AutoloadLookupScript := preload("res://scripts/players/autoload_lookup.gd")
 const TerrainProbeScript := preload("res://scripts/world/terrain_probe.gd")
 const EntityQueryScript := preload("res://scripts/world/entity_query.gd")
@@ -82,6 +83,7 @@ var _replay_recorder: ReplayRecorder
 ## UI yet that could make both happen at once.
 var _replay_player: ReplayPlayer
 var _player_elimination_tracker: PlayerEliminationTracker
+var _match_victory_tracker: MatchVictoryTracker
 var _command_executor: CommandExecutor
 var _building_controller: BuildingController
 var _production_system: ProductionSystem
@@ -190,6 +192,7 @@ func _ready() -> void:
 	_replay_recorder = ReplayRecorderScript.new()
 	_replay_player = ReplayPlayerScript.new()
 	_player_elimination_tracker = PlayerEliminationTrackerScript.new()
+	_match_victory_tracker = MatchVictoryTrackerScript.new()
 	_match_snapshot = MatchSnapshotScript.new(_snapshot_storage_path())
 	_restore_saved_startup_state()
 	_building_option_ids = _local_player_building_option_ids()
@@ -880,6 +883,7 @@ func _advance_simulation_tick() -> void:
 		if is_instance_valid(spice_mound):
 			spice_mound.sim_tick()
 	_player_elimination_tracker.refresh(get_tree(), _players(), _entity_index.registry())
+	_match_victory_tracker.refresh(_players(), _player_elimination_tracker)
 	_entity_index.apply_pending_releases()
 
 
@@ -980,6 +984,10 @@ func command_bus() -> SimCommandBus:
 
 func player_elimination_tracker() -> PlayerEliminationTracker:
 	return _player_elimination_tracker
+
+
+func match_victory_tracker() -> MatchVictoryTracker:
+	return _match_victory_tracker
 
 
 ## The queue every Unit/Building/CombatProjectile/CombatLingerEffect/SpiceMound
