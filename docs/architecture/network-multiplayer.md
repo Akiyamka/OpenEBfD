@@ -3280,6 +3280,67 @@ source cites a number you cannot place.
   liveness tracking to live play: both still need a real transport
   carrying real peer traffic, which needs the relay/lobby connection, a
   larger and more product-shaped question left for its own slice.
+
+  **`T1` — landed, a real `WebSocketTransport` in a live `Match`,
+  dev-only.** The slice `P1`'s own last sentence asks for, and the one
+  every "remains untouched" line from `H1` onward had been waiting on.
+  Which half to build first — the transport or the lobby — was the fork
+  this track could not settle on its own, and it needed a human decision
+  (2026-09-30): transport first, finish the technical foundation and prove
+  the whole `H1`–`P1` stack over a real socket before investing in
+  player-facing UI. So there is still no lobby: the room address and which
+  player a process is arrive as two command-line arguments,
+  `--net-room=ws://host:port/<room-code>` and `--local-player-id=<1|2>`,
+  each parsed by a `static` function taking an explicit
+  `PackedStringArray` and wrapped by a one-line resolver reading
+  `OS.get_cmdline_user_args()`. That split is the whole reason the argument
+  syntax is directly testable — `tests/match/match_net_args_run.gd` calls
+  the parsers with hand-built arrays, covering both flags together, each
+  skipping the other's, and every malformed id falling back to player 1.
+  Validation goes through `is_valid_int()` before `int()`, because Godot's
+  `int()` parses a leading numeric prefix rather than proving the whole
+  string is a number, so `int("1oops")` returns `1` and would otherwise
+  pass a `{1, 2}` range check. Both values resolve exactly once, in
+  `_enter_tree()`, before `_configure_demo_players()` can read them.
+  `_create_net_transport()` then returns a real `WebSocketTransport` when a
+  room URL is present and `P1`'s `NullTransport` when it is not, so a boot
+  with no arguments is byte-for-byte the single-player behaviour that
+  shipped with `P1`. Exactly four `LOCAL_PLAYER_ID` reads became the
+  resolved `_local_player_id` — the `TurnScheduler`'s own construction,
+  `players.local_player_id`, `_local_player()` and the sidebar's
+  ownership filter. The two `create_player()` calls and the
+  `set_relation()` call deliberately did **not**: both processes must
+  create the same two players with the same relation between them, and
+  only *whose perspective is local* may differ, or the two ends would
+  disagree about who player 1 even is — a far stranger failure than not
+  connecting at all. Proven end to end against a real in-process
+  `RelayServer` on a real loopback port with two real `WebSocketTransport`
+  instances: two live `Match` instances still cannot coexist (the
+  SceneTree-global sim groups collide), so the arms run sequentially the
+  way `H1`'s own pair does, but two raw transports can, which is what
+  makes the proof possible. Order is forced by the relay itself —
+  `_broadcast()` fans a frame to every endpoint *currently* seated and
+  keeps no history, unlike the `LoopbackHub` every prior suite in this
+  track used, so player 2's transport is connected and seated *before*
+  player 1 sends anything or the frame is gone for good. Delivery is
+  confirmed by a concrete signal rather than a guessed tick count: because
+  that same `_broadcast()` echoes to the sender, the sender's own
+  `discarded_echo_count()` rising proves the relay already read and
+  re-forwarded the frame, and therefore that it reached the other seat
+  too. Both arms install the same pending-order precondition at the same
+  simulation tick, reached through the public `advance_ticks()` path, and
+  the receiver asserts `dropped_late_count() == 0` — `submit_at()` drops a
+  late command silently, so without that check a delivery failure and a
+  timing failure look identical. Reverting the transport switch to always
+  return `NullTransport` fails the delivery assertions while the state
+  hash alone still matches, which is exactly why the Stop order's concrete
+  effect is asserted next to the hash: `state_hash()` folds in no
+  pending-order state, so hash equality cannot by itself catch a delivery
+  that never happened. Still untouched, and still each its own slice: any
+  lobby UI, applying `O1`'s recommendation or `K1`'s liveness tracking to
+  this now-real connection (`ChecksumExchange` and `RttTracker` are still
+  constructed `null`, as `P1` left them), stall/drop's response, and
+  snapshot reconnect.
 - **Phase 6 — polish.** Cosmetic prediction, parameter tuning under induced
   latency and loss, save/load of a networked match.
 

@@ -11,6 +11,8 @@ const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 const FrameTickDriverScript := preload("res://scripts/match/frame_tick_driver.gd")
 const SimCommandBusScript := preload("res://scripts/sim/command_bus.gd")
 const NullTransportScript := preload("res://scripts/net/null_transport.gd")
+const WebSocketTransportScript := preload("res://scripts/net/websocket_transport.gd")
+const NetTransportScript := preload("res://scripts/net/net_transport.gd")
 const TurnSchedulerScript := preload("res://scripts/net/turn_scheduler.gd")
 const CommandExecutorScript := preload("res://scripts/match/command_executor.gd")
 const UnitDeploymentControllerScript := preload("res://scripts/units/unit_deployment_controller.gd")
@@ -41,6 +43,38 @@ const PLACEMENT_WALL_SCENE := preload("res://assets/converted/placement/build_wa
 const LOCAL_PLAYER_ID := 1
 const ENEMY_PLAYER_ID := 2
 
+
+## Parses the local perspective independently from the process argument source
+## so tests can exercise validation without changing the running process.
+static func _parse_local_player_id(args: PackedStringArray) -> int:
+	for arg in args:
+		if arg.begins_with("--net-room="):
+			continue
+		if not arg.begins_with("--local-player-id="):
+			continue
+		var value := arg.trim_prefix("--local-player-id=")
+		if value.is_valid_int():
+			var player_id := int(value)
+			if player_id == LOCAL_PLAYER_ID or player_id == ENEMY_PLAYER_ID:
+				return player_id
+		push_error("Invalid --local-player-id value '%s'; falling back to player %d" % [value, LOCAL_PLAYER_ID])
+		return LOCAL_PLAYER_ID
+	return LOCAL_PLAYER_ID
+
+
+## Parses the relay URL and owns diagnostics for arguments neither net parser
+## recognizes, so a command line prints each unknown flag only once.
+static func _parse_net_room_url(args: PackedStringArray) -> String:
+	var room_url := ""
+	for arg in args:
+		if arg.begins_with("--net-room="):
+			room_url = arg.trim_prefix("--net-room=")
+			continue
+		if arg.begins_with("--local-player-id="):
+			continue
+		push_warning("Unknown match network argument: %s" % arg)
+	return room_url
+
 @onready var camera: Camera3D = $CameraRig/Camera3D
 @onready var camera_rig: Node3D = $CameraRig
 @onready var terrain: MapLoader = $Terrain
@@ -51,6 +85,8 @@ const ENEMY_PLAYER_ID := 2
 @onready var ability_bar: AbilityBar = get_node_or_null("HUD/AbilityBar") as AbilityBar
 
 var _fps_update_time := 0.0
+var _local_player_id := LOCAL_PLAYER_ID
+var _net_room_url := ""
 var _clock: MatchClock
 var _tick_driver: FrameTickDriver
 ## Owned alongside _entity_index (see that field's comment) for the same
@@ -173,6 +209,8 @@ func _enter_tree() -> void:
 	_entity_index = EntityNodeIndexScript.new()
 	_entity_state = SimEntityStateScript.new(_entity_index.registry())
 	_admission_queue = SimAdmissionQueueScript.new()
+	_local_player_id = _resolve_local_player_id()
+	_net_room_url = _resolve_net_room_url()
 	# Children initialize their owner visuals in _ready(), so the player
 	# roster must exist before buildings and units enter the scene tree.
 	# The Rules autoload's catalog, in contrast, only loads in its own
@@ -187,8 +225,9 @@ func _ready() -> void:
 	_tick_driver = FrameTickDriverScript.new()
 	_command_bus = SimCommandBusScript.new()
 	var transport := _create_net_transport()
-	transport.open("")
-	_turn_scheduler = TurnSchedulerScript.new(_command_bus, transport, LOCAL_PLAYER_ID)
+	if transport.state() == NetTransportScript.State.DISCONNECTED:
+		transport.open(_net_room_url)
+	_turn_scheduler = TurnSchedulerScript.new(_command_bus, transport, _local_player_id)
 	_replay_recorder = ReplayRecorderScript.new()
 	_replay_player = ReplayPlayerScript.new()
 	_player_elimination_tracker = PlayerEliminationTrackerScript.new()
@@ -238,11 +277,20 @@ func _ready() -> void:
 	_place_on_map()
 
 
-## Returns the transport Match's own TurnScheduler runs over. A real
-## transport is a later slice's job; test fixtures override this to observe
-## controller frames while Match retains ownership of open().
+## Returns the transport Match's own TurnScheduler runs over. A room URL
+## chooses the real relay transport; the no-argument default remains local.
 func _create_net_transport() -> NetTransport:
+	if not _net_room_url.is_empty():
+		return WebSocketTransportScript.new()
 	return NullTransportScript.new()
+
+
+func _resolve_local_player_id() -> int:
+	return _parse_local_player_id(OS.get_cmdline_user_args())
+
+
+func _resolve_net_room_url() -> String:
+	return _parse_net_room_url(OS.get_cmdline_user_args())
 
 
 func _on_panel_command(command: StringName) -> void:
@@ -982,6 +1030,10 @@ func command_bus() -> SimCommandBus:
 	return _command_bus
 
 
+func turn_scheduler() -> TurnScheduler:
+	return _turn_scheduler
+
+
 func player_elimination_tracker() -> PlayerEliminationTracker:
 	return _player_elimination_tracker
 
@@ -1116,7 +1168,7 @@ func _configure_demo_players() -> void:
 		5000,
 		0
 	)
-	players.local_player_id = LOCAL_PLAYER_ID
+	players.local_player_id = _local_player_id
 	players.set_relation(LOCAL_PLAYER_ID, ENEMY_PLAYER_ID, PlayerDataScript.Relation.ENEMY)
 
 
@@ -1127,7 +1179,7 @@ func _configure_demo_players() -> void:
 ## it cannot construct.
 func _local_player():
 	var players = _players()
-	return players.player(LOCAL_PLAYER_ID) if players != null else null
+	return players.player(_local_player_id) if players != null else null
 
 
 func _local_player_building_option_ids() -> Array[StringName]:
@@ -1165,7 +1217,7 @@ func _refresh_sidebar_house_pages() -> void:
 		# config_id/house_id and must not be mistaken for a live building here.
 		if not building.is_in_group("buildings"):
 			continue
-		if not EntityQueryScript.is_owned_by(building, LOCAL_PLAYER_ID):
+		if not EntityQueryScript.is_owned_by(building, _local_player_id):
 			continue
 		if not EntityQueryScript.is_operational(building):
 			continue
