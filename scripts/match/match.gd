@@ -14,6 +14,7 @@ const NullTransportScript := preload("res://scripts/net/null_transport.gd")
 const WebSocketTransportScript := preload("res://scripts/net/websocket_transport.gd")
 const NetTransportScript := preload("res://scripts/net/net_transport.gd")
 const TurnSchedulerScript := preload("res://scripts/net/turn_scheduler.gd")
+const ChecksumExchangeScript := preload("res://scripts/net/checksum_exchange.gd")
 const CommandExecutorScript := preload("res://scripts/match/command_executor.gd")
 const UnitDeploymentControllerScript := preload("res://scripts/units/unit_deployment_controller.gd")
 const UnitRosterControllerScript := preload("res://scripts/units/unit_roster_controller.gd")
@@ -42,6 +43,9 @@ const PLACEMENT_SKIRT_SCENE := preload("res://assets/converted/placement/build_s
 const PLACEMENT_WALL_SCENE := preload("res://assets/converted/placement/build_wall.scn")
 const LOCAL_PLAYER_ID := 1
 const ENEMY_PLAYER_ID := 2
+## Decision 7's starting parameters specify this cadence; tune checksum
+## frequency here without changing MatchClock's single simulation tick rate.
+const CHECKSUM_INTERVAL_TICKS := 8
 
 
 ## Parses the local perspective independently from the process argument source
@@ -102,6 +106,7 @@ var _tick_driver: FrameTickDriver
 ## to _command_bus's.
 var _command_bus: SimCommandBus
 var _turn_scheduler: TurnScheduler
+var _checksum_exchange: ChecksumExchange
 ## Off by default (see ReplayRecorder's doc comment,
 ## scripts/match/replay_recorder.gd) -- nothing in this file calls start()
 ## on it. It is still constructed unconditionally here, alongside
@@ -224,10 +229,11 @@ func _ready() -> void:
 	_clock = MatchClockScript.new()
 	_tick_driver = FrameTickDriverScript.new()
 	_command_bus = SimCommandBusScript.new()
+	_checksum_exchange = ChecksumExchangeScript.new()
 	var transport := _create_net_transport()
 	if transport.state() == NetTransportScript.State.DISCONNECTED:
 		transport.open(_net_room_url)
-	_turn_scheduler = TurnSchedulerScript.new(_command_bus, transport, _local_player_id)
+	_turn_scheduler = TurnSchedulerScript.new(_command_bus, transport, _local_player_id, _checksum_exchange)
 	_replay_recorder = ReplayRecorderScript.new()
 	_replay_player = ReplayPlayerScript.new()
 	_player_elimination_tracker = PlayerEliminationTrackerScript.new()
@@ -933,6 +939,10 @@ func _advance_simulation_tick() -> void:
 	_player_elimination_tracker.refresh(get_tree(), _players(), _entity_index.registry())
 	_match_victory_tracker.refresh(_players(), _player_elimination_tracker)
 	_entity_index.apply_pending_releases()
+	if tick % CHECKSUM_INTERVAL_TICKS == 0:
+		var state_hash := _entity_state.state_hash()
+		_checksum_exchange.record_local_hash(tick, state_hash)
+		_turn_scheduler.send_checksum_report(tick, state_hash)
 
 
 ## The simulation's current tick, for later slices and tests that need a way
@@ -1032,6 +1042,10 @@ func command_bus() -> SimCommandBus:
 
 func turn_scheduler() -> TurnScheduler:
 	return _turn_scheduler
+
+
+func checksum_exchange() -> ChecksumExchange:
+	return _checksum_exchange
 
 
 func player_elimination_tracker() -> PlayerEliminationTracker:

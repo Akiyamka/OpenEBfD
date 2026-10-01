@@ -29,6 +29,7 @@ var _local_player_id: int
 var _checksum_exchange: ChecksumExchangeScript
 var _rtt_tracker: RttTrackerScript
 var _discarded_echo_count := 0
+var _discarded_command_echo_count := 0
 var _rejected_frame_count := 0
 var _last_remote_activity_tick := -1
 
@@ -85,6 +86,7 @@ func advance_tick(current_tick: int) -> void:
 		var command: SimCommand = decoded["command"]
 		if command.player_id == _local_player_id:
 			_discarded_echo_count += 1
+			_discarded_command_echo_count += 1
 			continue
 		_last_remote_activity_tick = current_tick
 		_command_bus.submit_at(command, int(decoded["target_tick"]))
@@ -109,6 +111,10 @@ func send_ping(current_tick: int) -> void:
 
 func discarded_echo_count() -> int:
 	return _discarded_echo_count
+
+
+func discarded_command_echo_count() -> int:
+	return _discarded_command_echo_count
 
 
 func rejected_frame_count() -> int:

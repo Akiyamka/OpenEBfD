@@ -396,8 +396,15 @@ latency and loss:
 - **turn** = 2 sim ticks (80 ms), which keeps the frame rate on the wire at
   12.5 per client per second;
 - **input delay** = 3 turns (240 ms) by default, adaptive in the range 2–8;
-- **state checksum** every 8 ticks (320 ms), covering positions, health, order
-  queues and the RNG cursor.
+- **state checksum** every 8 ticks (320 ms), intended to cover positions,
+  health, order queues and the RNG cursor. Live since `U1` as
+  `Match.CHECKSUM_INTERVAL_TICKS`, which is the only declaration of the
+  cadence. What the digest actually folds today is narrower than this line
+  promises: `SimEntityState.state_hash()` covers entity id, position,
+  health, shields, owner and invulnerability — **not** order queues and
+  **not** the RNG cursor. Both ends hash the identical fields, so a
+  divergence in anything covered is caught; a divergence in an order queue
+  or the RNG cursor is not yet. Widening the digest is its own slice.
 
 Latency is hidden the way the genre always hides it: the acknowledgement is
 cosmetic and immediate — click feedback, order marker, unit voice line — while
@@ -3341,6 +3348,60 @@ source cites a number you cannot place.
   this now-real connection (`ChecksumExchange` and `RttTracker` are still
   constructed `null`, as `P1` left them), stall/drop's response, and
   snapshot reconnect.
+
+  **`U1` — landed, state checksums exchanged over the live connection.**
+  `T1` left every remaining Phase 5 item unblocked at once, and this one
+  went first for a reason that had nothing to do with size: **its number
+  was the only one already written down.** The "Starting parameters" above
+  fix the checksum cadence at every 8 ticks, whereas `K1`'s paragraph
+  records that decision 8 names no stall timeout anywhere in this document,
+  and no ping cadence for `N1`'s `RttTracker` appears either — so either of
+  those would have opened with a human decision this did not need.
+  `ChecksumExchange` had been built (`J1`) and widened past two peers
+  (`M1`) but never had a live sender: `Match` passed `null` for it, so a
+  real match compared nothing. Now `Match` owns one, injects it as
+  `TurnScheduler`'s long-optional fourth argument, and at every eighth tick
+  computes `state_hash()` **once** and hands the same value to both
+  `record_local_hash()` and `send_checksum_report()`. Two placement
+  decisions carry the weight. It runs as the last statement of
+  `_advance_simulation_tick()`, after `apply_pending_releases()` — not
+  because that point is uniquely right, since any consistent point would
+  detect divergence, but because it is the only one that yields the same
+  number every existing reader of `entity_state().state_hash()` already
+  sees after `advance_ticks()` returns, and two definitions of "the tick's
+  hash" is the thing worth refusing. And `tick % CHECKSUM_INTERVAL_TICKS`
+  is computed from the shared tick number, so every client reports on
+  exactly the same ticks with no negotiation — a report for a tick the
+  receiver will never record locally would wait in
+  `_pending_remote_hash_by_tick` forever and never become an agreement,
+  which is why `pending_remote_count() == 0` is asserted rather than just
+  counting agreements. It records and sends unconditionally, including over
+  `NullTransport` in single-player where the frame is discarded, following
+  decision 11 and `P1` directly: the path is validated by the mode we can
+  already play. The slice's sharpest problem was not the wiring but what a
+  *second frame kind* does to tests that had counted frames. Two places
+  assumed the only thing a scheduler ever sent was the command under test:
+  `turn_scheduler_live_wiring_run.gd`'s raw `sent_frames` assertions, and
+  `T1`'s own echo-based delivery wait, which would have accepted a checksum
+  echo as proof that a Stop had been relayed. Both broke only *when frame
+  timing crossed tick 8*, so a green run proved nothing — the precise trap
+  phase 4's B3d note describes. The first now filters by the command
+  discriminator it already asserted on; the second reads a new
+  `discarded_command_echo_count()`, added beside the existing total rather
+  than narrowing it, so no other assertion changed meaning. Proven by two
+  sequential `Match` arms over a real relay reaching exactly two agreements
+  at exactly the two cadence boundaries in a sixteen-tick window, with zero
+  mismatches and nothing pending; the sender additionally asserts **zero**
+  agreements against its own echoed reports, which is what would catch
+  `_handle_checksum_report()` ever routing an echo instead of discarding it
+  and manufacturing agreement out of one client. Observable only: no halt,
+  no dump, no player-facing report. `last_mismatch()` already carries what
+  that response will need. Still owed, and each its own slice: decision 7's
+  halt-and-dump response, bounding `ChecksumExchange`'s per-tick
+  dictionaries (they grow at about 3.1 entries per second and are never
+  pruned), widening the digest past the fields listed above, `RttTracker`
+  and `O1`'s recommendation, a stall threshold — which must now exceed 8
+  ticks, since that is how far apart the heartbeats are — and the lobby.
 - **Phase 6 — polish.** Cosmetic prediction, parameter tuning under induced
   latency and loss, save/load of a networked match.
 

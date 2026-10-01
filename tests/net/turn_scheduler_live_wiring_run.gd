@@ -26,7 +26,11 @@ func _test_stop_reaches_the_scheduler_transport() -> void:
 	for _warmup in 5:
 		await process_frame
 	var transport = match_instance.recording_transport
-	_expect(transport.sent_frames.is_empty(), "no frame is sent before a controller command")
+	var command_frames: Array[PackedByteArray] = []
+	for sent_frame in transport.sent_frames:
+		if not sent_frame.is_empty() and sent_frame[0] == 0:
+			command_frames.append(sent_frame)
+	_expect(command_frames.is_empty(), "no command frame is sent before a controller command")
 	var scout := match_instance.get_node("Units/ScoutA")
 	scout._has_pending_navigation_order = true
 	var controller = match_instance._unit_command_controller
@@ -39,9 +43,13 @@ func _test_stop_reaches_the_scheduler_transport() -> void:
 	_expect(controller.handle_unhandled_input(event), "a real Stop input is consumed")
 	while match_instance.current_tick() <= tick_before_issue:
 		await process_frame
-	_expect(transport.sent_frames.size() == 1, "the scheduler sends exactly one controller frame")
-	if transport.sent_frames.size() == 1:
-		var frame: PackedByteArray = transport.sent_frames[0]
+	command_frames.clear()
+	for sent_frame in transport.sent_frames:
+		if not sent_frame.is_empty() and sent_frame[0] == 0:
+			command_frames.append(sent_frame)
+	_expect(command_frames.size() == 1, "the scheduler sends exactly one controller frame")
+	if command_frames.size() == 1:
+		var frame: PackedByteArray = command_frames[0]
 		_expect(frame.size() >= 5 and frame[0] == 0, "the frame starts with the command discriminator")
 		var buffer := StreamPeerBuffer.new()
 		buffer.big_endian = true
