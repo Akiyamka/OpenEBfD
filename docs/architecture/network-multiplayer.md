@@ -420,6 +420,17 @@ On desync: halt the match, dump both states, write out the replay up to the
 diverging tick, and surface the tick number. A silently continuing desync is
 worse than a stopped match.
 
+Two of those four are live since `V1`, and two are not. `Match` halts on the
+first checksum mismatch — terminally, since lockstep has nothing to
+reconcile to — and surfaces the diverging tick through `halt_diagnostic()`
+and a `push_error()`. Note *diverging*, not *halting*: a report can arrive a
+tick or two after the tick it describes, so the number worth reporting is
+`ChecksumExchange.last_mismatch()["tick"]`, not the tick the halt was
+noticed on. Still owed: dumping state, which has no second state to dump
+(only the peer's hash crosses the wire) and no path decided, and writing the
+replay, which cannot work while nothing calls `ReplayRecorder.start()`.
+Surfacing the tick to a *player* is also still owed; there is no UI for it.
+
 ## Rules for sim code
 
 These are the invariants that replace the structure a full ECS would have
@@ -3402,6 +3413,52 @@ source cites a number you cannot place.
   pruned), widening the digest past the fields listed above, `RttTracker`
   and `O1`'s recommendation, a stall threshold — which must now exceed 8
   ticks, since that is how far apart the heartbeats are — and the lobby.
+
+  **`V1` — landed, a desync stops the match instead of compounding.** `U1`
+  made divergence countable in a live match and nothing acted on it, which
+  left the tree in the one state decision 7 names outright as the worst
+  available: *"a silently continuing desync is worse than a stopped
+  match."* It went next for the same reason `U1` did — its policy was
+  already written down, while `K1`'s stall timeout and `N1`/`O1`'s ping
+  cadence are named nowhere in this document and so each open with a human
+  decision. `Match` now keeps one `_halted_at_tick` sentinel (`-1` for
+  "running", the shape `TurnScheduler._last_remote_activity_tick` already
+  uses, so no boolean can disagree with it), sets it on the first tick where
+  `mismatch_count()` is nonzero, and `advance_ticks()` — the sole caller of
+  the private tick method, and the entry point
+  `hand-driven-simulation-tick`'s own `instead` already directs tests to —
+  stops advancing. The guard lives there rather than inside
+  `_advance_simulation_tick()` because `var tick := _clock.advance()` is that
+  function's first statement: an early return inside it would leave a halted
+  match still counting ticks it never simulated. Three decisions in the halt
+  block each have a test that fails without them. It sits **outside** `U1`'s
+  cadence block, because a mismatch can first exist on any tick at all —
+  `advance_tick()` routes arriving reports near the top of every tick — so
+  nesting it would let a diverged match run up to seven more ticks; the suite
+  pins this by halting at tick 9, deliberately not a multiple of eight. It
+  sits **after** the cadence block, so a mismatch resolved at the bottom of a
+  tick by `record_local_hash()` is caught in that tick rather than the next.
+  And it reports `last_mismatch()["tick"]`, never the halt tick — the
+  substitution that would have passed every structural assertion while
+  sending whoever reads the diagnostic to the wrong tick of a replay, which
+  is why the message is frozen into `halt_diagnostic()` and asserted by exact
+  equality against a string the test builds from values it already knows.
+  Both ends halt independently with no new frame on the wire: each compares
+  the other's hash against its own, so a divergence at tick `T` is a mismatch
+  on both sides, and a "you-should-halt-too" message would only re-derive a
+  fact both already have. They may notice on different ticks and both report
+  the same diverging one. Proven by four isolated `Match` arms — halt timing
+  and diagnostic, a halted clock that ignores `advance_ticks(50)`, an
+  *agreeing* report that must not halt, and an untouched match ticking
+  through three cadence boundaries — and held in place by three mutations,
+  each failing a different case: dropping the clock guard fails only the
+  permanence case, firing on `agreement_count()` instead of
+  `mismatch_count()` fails the healthy-traffic case, and interpolating the
+  halt tick fails only the diagnostic assertion. The halt is terminal on
+  purpose: decision 1's lockstep offers nothing to resume to, and snapshot
+  reconnect is the eventual answer. Still owed from decision 7's own
+  sentence: dumping state and writing the replay, neither of which has the
+  machinery yet (see "On desync" above), plus a player-facing surface.
 - **Phase 6 — polish.** Cosmetic prediction, parameter tuning under induced
   latency and loss, save/load of a networked match.
 

@@ -71,6 +71,7 @@ readonly SUITES=(
 	tests/match/match_victory_tracker_run.gd
 	tests/match/match_victory_wiring_run.gd
 	tests/match/match_net_args_run.gd
+	tests/match/match_desync_halt_run.gd
 	tests/navigation/run.gd
 	tests/navigation/store_reads_run.gd
 	tests/net/loopback_run.gd

@@ -107,6 +107,8 @@ var _tick_driver: FrameTickDriver
 var _command_bus: SimCommandBus
 var _turn_scheduler: TurnScheduler
 var _checksum_exchange: ChecksumExchange
+var _halted_at_tick := -1
+var _halt_diagnostic := ""
 ## Off by default (see ReplayRecorder's doc comment,
 ## scripts/match/replay_recorder.gd) -- nothing in this file calls start()
 ## on it. It is still constructed unconditionally here, alongside
@@ -943,6 +945,17 @@ func _advance_simulation_tick() -> void:
 		var state_hash := _entity_state.state_hash()
 		_checksum_exchange.record_local_hash(tick, state_hash)
 		_turn_scheduler.send_checksum_report(tick, state_hash)
+	if _halted_at_tick < 0 and _checksum_exchange.mismatch_count() > 0:
+		_halted_at_tick = tick
+		var mismatch := _checksum_exchange.last_mismatch()
+		_halt_diagnostic = (
+			"Match halted: simulation checksum diverged from player %d at tick %d (local %d, remote %d)"
+			% [
+				mismatch["sender_player_id"], mismatch["tick"],
+				mismatch["local_hash"], mismatch["remote_hash"],
+			]
+		)
+		push_error(_halt_diagnostic)
 
 
 ## The simulation's current tick, for later slices and tests that need a way
@@ -967,16 +980,18 @@ func replay_exhausted() -> bool:
 	return _replay_player.is_exhausted()
 
 
-## Advances the simulation by exactly count whole ticks without making callers
-## reach into the private tick method. This replaces 68 hand-rolled test loops,
+## Advances the simulation by up to count whole ticks without making callers
+## reach into the private tick method; a halted match advances no further. This replaces 68 hand-rolled test loops,
 ## including 36 call()-by-string reaches whose rename failure would otherwise
 ## wait until runtime. A non-positive count is a no-op, matching
 ## FrameTickDriver.pending_ticks() for a non-positive delta; no clamp belongs
 ## here, because MAX_TICKS_PER_FRAME is frame-pacing policy and _process()
-## already receives the driver's clamped result. Returns the new clock boundary
-## so callers need not make a second accessor call to record it.
+## already receives the driver's clamped result. Returns the authoritative new
+## clock boundary, which may be less than the old boundary plus count when halted.
 func advance_ticks(count: int) -> int:
 	for _i in count:
+		if _halted_at_tick >= 0:
+			break
 		_advance_simulation_tick()
 	return _clock.current_tick()
 
@@ -1046,6 +1061,18 @@ func turn_scheduler() -> TurnScheduler:
 
 func checksum_exchange() -> ChecksumExchange:
 	return _checksum_exchange
+
+
+func is_halted() -> bool:
+	return _halted_at_tick >= 0
+
+
+func halted_at_tick() -> int:
+	return _halted_at_tick
+
+
+func halt_diagnostic() -> String:
+	return _halt_diagnostic
 
 
 func player_elimination_tracker() -> PlayerEliminationTracker:
