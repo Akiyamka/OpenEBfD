@@ -152,3 +152,30 @@ with no record of their own borrow the timeline of a sibling sharing the same
 sequence; only models with no type-6 records at all fall back to a fixed step,
 which is 2 source frames — the interval used by 1071 of the 1494 authored steps
 in the original content.
+
+## Snapshot format: netcode reconnect versus singleplayer save/load
+
+`V1` made a checksum mismatch halt the match terminally, and names
+snapshot-based reconnect as the eventual answer — a halted or dropped client
+needs some way back in, and lockstep offers nothing to reconcile to. That
+makes a snapshot format the next thing reconnect would need, and it is not
+obvious it should be a netcode-only one.
+
+Phase 6 of [`network-multiplayer.md`](architecture/network-multiplayer.md)
+lists "save/load of a networked match" as its own separate item, and
+singleplayer save/load wants the same thing: the whole simulation's state,
+restorable into a fresh process, keyed to a scene and a tick. A format built
+only to get a dropped peer back into a live room would likely be the wrong
+shape for that and have to be redone — so the question to answer before any
+reconnect slice is written is whether one format serves both, and what each
+needs that the other does not.
+
+What already exists to build on: `MatchSnapshot`
+(`scripts/match/match_snapshot.gd`), `SimEntityState`'s flat arrays and their
+`state_hash()`, and `ReplayFile`'s header, which already reserves a
+`rng_seed` and a `start_state` payload. What is missing is the decision about
+whether reconnect and save/load share a format, plus — per the same header —
+a seeded simulation RNG at all, which `sim-no-global-rng`'s own `instead`
+already names but `scripts/sim/` does not yet contain.
+
+Deliberately not queued as a slice until that is settled.

@@ -395,7 +395,11 @@ latency and loss:
 
 - **turn** = 2 sim ticks (80 ms), which keeps the frame rate on the wire at
   12.5 per client per second;
-- **input delay** = 3 turns (240 ms) by default, adaptive in the range 2–8;
+- **input delay** = 3 turns (240 ms) by default, adaptive in the range 2–8.
+  Note this range has a dependent since `W1`: `ChecksumExchange.RETAINED_TICKS`
+  is derived from it (4 × the widest delay this range admits, 16 ticks), so
+  widening the range here without revisiting that constant would silently
+  shrink the retention window relative to the skew it has to cover;
 - **state checksum** every 8 ticks (320 ms), intended to cover positions,
   health, order queues and the RNG cursor. Live since `U1` as
   `Match.CHECKSUM_INTERVAL_TICKS`, which is the only declaration of the
@@ -405,6 +409,9 @@ latency and loss:
   **not** the RNG cursor. Both ends hash the identical fields, so a
   divergence in anything covered is caught; a divergence in an order queue
   or the RNG cursor is not yet. Widening the digest is its own slice.
+  Bounded since `W1`: the per-tick bookkeeping behind the comparison retains a
+  64-tick window rather than the whole match, and counts the peer reports it
+  discards as too late to compare (`dropped_stale_report_count()`).
 
 Latency is hidden the way the genre always hides it: the acknowledgement is
 cosmetic and immediate — click feedback, order marker, unit voice line — while
@@ -3459,6 +3466,47 @@ source cites a number you cannot place.
   reconnect is the eventual answer. Still owed from decision 7's own
   sentence: dumping state and writing the replay, neither of which has the
   machinery yet (see "On desync" above), plus a player-facing surface.
+
+  **`W1` — landed, the checksum bookkeeping is bounded.** `U1` gave
+  `ChecksumExchange` a live sender and recorded the debt in the same breath:
+  neither of its per-tick dictionaries was ever cleared, so a match grew them
+  at about 3.1 entries per second for as long as it ran, and `V1`'s halt only
+  stopped that in the desync case — a *healthy* match grew forever, which is
+  the common case rather than the exceptional one. It went before the two
+  other items `V1` left owed for one reason: its number was derivable and
+  theirs are not. `RETAINED_TICKS` is 64 because the "Starting parameters"
+  above admit a widest input delay of 8 turns × 2 ticks = 16, and four times
+  that spans eight cadence intervals — arithmetic rather than judgement,
+  whereas widening the digest needs a seeded simulation RNG that
+  `scripts/sim/` does not contain plus a seed both clients agree on, and
+  decision 7's dump-and-replay response needs a path for
+  `ReplayRecorder.start()` that nothing has chosen. Entirely inside one
+  `RefCounted`: no change to `Match`, `TurnScheduler`, or the cadence, since
+  the exchange is already handed the current tick on every record. One
+  `_is_stale()` predicate defines the retention edge for both the eviction and
+  the arrival guard, so the two cannot drift. Three things here were only
+  settled because review caught them. The edge is **strictly** older-than, so
+  a tick exactly 64 ticks back is retained and the capacity at an eight-tick
+  cadence is `64 / 8 + 1` = **nine** entries, not eight — eight *intervals*,
+  nine *boundaries*, and the first draft of the brief asserted the wrong one.
+  Eviction counts the *reports* it discards, not the ticks: the pending
+  dictionary nests one entry per sender inside each tick, so a three-player
+  room would otherwise undercount by two every time. And proving the primary
+  leak was closed needed a `retained_local_hash_count()` observable, because
+  the arrival guard answers from the newest recorded tick alone and therefore
+  masks every behavioural probe of whether the local dictionary was actually
+  trimmed — without it, deleting local-hash eviction left a green suite, which
+  the mutation that removes it now demonstrates. It is the same accessor shape
+  `pending_remote_count()` has always been for the other dictionary. A
+  discarded report is counted, never silently dropped: a nonzero
+  `dropped_stale_report_count()` means a comparison was received too late to
+  make, which is a peer on a different cadence or a connection far outside the
+  delay window — and deliberately **not** a desync, since the hashes were
+  never compared, so `V1`'s halt condition stays exactly
+  `mismatch_count() > 0`. Held in place by five mutations, each failing a
+  different case, including one that targets a test written long before this
+  slice: a zero-width high-water mark instead of a window breaks
+  `_test_independent_ticks`, which records ticks out of order on purpose.
 - **Phase 6 — polish.** Cosmetic prediction, parameter tuning under induced
   latency and loss, save/load of a networked match.
 

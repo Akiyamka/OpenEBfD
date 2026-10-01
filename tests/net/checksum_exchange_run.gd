@@ -11,6 +11,12 @@ func _initialize() -> void:
 	_run_case("two peers agree against an already-recorded local hash", _test_multiple_immediate_agreements)
 	_run_case("a mixed peer result attributes the mismatch to its sender", _test_mixed_peer_results)
 	_run_case("two early peer reports resolve independently", _test_multiple_buffered_reports)
+	_run_case("retained local hashes have an exact bounded capacity", _test_retained_local_hash_count)
+	_run_case("the retention window includes its lower endpoint", _test_retention_window_edges)
+	_run_case("a report for an evicted local hash is counted stale", _test_evicted_local_hash_report)
+	_run_case("an evicted pending report is counted stale", _test_evicted_pending_report)
+	_run_case("evicting pending reports counts each peer", _test_evicted_multiple_pending_reports)
+	_run_case("eviction preserves checksum comparison history", _test_eviction_preserves_history)
 	_finish("Checksum exchange tests")
 
 
@@ -94,3 +100,79 @@ func _test_multiple_buffered_reports() -> void:
 	_expect(exchange.pending_remote_count() == 0, "recording the local hash must resolve every buffered peer")
 	_expect(exchange.agreement_count() == 1, "the matching buffered peer must count as one agreement")
 	_expect(exchange.mismatch_count() == 1, "the differing buffered peer must count as one mismatch")
+
+
+func _test_retained_local_hash_count() -> void:
+	var exchange = ChecksumExchangeScript.new()
+	var checksum_intervals_to_record := ChecksumExchangeScript.RETAINED_TICKS / 8 + 20
+	for interval in range(1, checksum_intervals_to_record + 1):
+		exchange.record_local_hash(interval * 8, interval)
+	_expect(
+		exchange.retained_local_hash_count() == ChecksumExchangeScript.RETAINED_TICKS / 8 + 1,
+		"the retained range must include both the newest tick and its lower endpoint"
+	)
+
+
+func _test_retention_window_edges() -> void:
+	var exchange = ChecksumExchangeScript.new()
+	var newest_tick := ChecksumExchangeScript.RETAINED_TICKS + 10
+	var retained_lower_endpoint := newest_tick - ChecksumExchangeScript.RETAINED_TICKS
+	exchange.record_local_hash(newest_tick, 100)
+	exchange.on_report_received(2, retained_lower_endpoint, 200)
+	_expect(exchange.pending_remote_count() == 1, "a report at the lower endpoint must be retained")
+	exchange.record_local_hash(retained_lower_endpoint, 200)
+	_expect(exchange.agreement_count() == 1, "a local hash at the lower endpoint must resolve its report")
+	_expect(exchange.pending_remote_count() == 0, "the retained lower-endpoint report must resolve")
+	exchange.on_report_received(2, retained_lower_endpoint - 1, 300)
+	_expect(exchange.pending_remote_count() == 0, "a report below the lower endpoint must not be queued")
+	_expect(exchange.dropped_stale_report_count() == 1, "a report below the lower endpoint must count stale")
+
+
+func _test_evicted_local_hash_report() -> void:
+	var exchange = ChecksumExchangeScript.new()
+	var first_tick := 8
+	exchange.record_local_hash(first_tick, 100)
+	exchange.record_local_hash(first_tick + ChecksumExchangeScript.RETAINED_TICKS + 1, 200)
+	exchange.on_report_received(2, first_tick, 100)
+	_expect(exchange.agreement_count() == 0, "a matching report for an evicted hash must not agree")
+	_expect(exchange.pending_remote_count() == 0, "a report for an evicted hash must not be queued")
+	_expect(exchange.dropped_stale_report_count() == 1, "a report for an evicted hash must count stale")
+
+
+func _test_evicted_pending_report() -> void:
+	var exchange = ChecksumExchangeScript.new()
+	var pending_tick := 8
+	exchange.on_report_received(2, pending_tick, 100)
+	_expect(exchange.pending_remote_count() == 1, "an early report must be pending before eviction")
+	exchange.record_local_hash(pending_tick + ChecksumExchangeScript.RETAINED_TICKS + 1, 200)
+	_expect(exchange.pending_remote_count() == 0, "a pending report outside the window must be evicted")
+	_expect(exchange.dropped_stale_report_count() == 1, "an evicted pending report must count stale")
+
+
+func _test_evicted_multiple_pending_reports() -> void:
+	var exchange = ChecksumExchangeScript.new()
+	var pending_tick := 8
+	exchange.on_report_received(2, pending_tick, 100)
+	exchange.on_report_received(3, pending_tick, 200)
+	_expect(exchange.pending_remote_count() == 2, "two peers' reports must both be pending before eviction")
+	exchange.record_local_hash(pending_tick + ChecksumExchangeScript.RETAINED_TICKS + 1, 300)
+	_expect(exchange.pending_remote_count() == 0, "every pending peer report outside the window must be evicted")
+	_expect(exchange.dropped_stale_report_count() == 2, "eviction must count stale reports rather than stale ticks")
+
+
+func _test_eviction_preserves_history() -> void:
+	var exchange = ChecksumExchangeScript.new()
+	var agreement_tick := 8
+	var mismatch_tick := 9
+	exchange.record_local_hash(agreement_tick, 100)
+	exchange.on_report_received(2, agreement_tick, 100)
+	exchange.record_local_hash(mismatch_tick, 200)
+	exchange.on_report_received(3, mismatch_tick, 999)
+	exchange.record_local_hash(agreement_tick + ChecksumExchangeScript.RETAINED_TICKS + 2, 300)
+	_expect(exchange.agreement_count() == 1, "eviction must not reset agreement history")
+	_expect(exchange.mismatch_count() == 1, "eviction must not reset mismatch history")
+	_expect(
+		exchange.last_mismatch()
+		== {"sender_player_id": 3, "tick": mismatch_tick, "local_hash": 200, "remote_hash": 999},
+		"eviction must retain the original mismatch details"
+	)
