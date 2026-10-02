@@ -74,6 +74,7 @@ readonly SUITES=(
 	tests/match/match_desync_halt_run.gd
 	tests/match/match_stall_detection_run.gd
 	tests/match/match_rtt_wiring_run.gd
+	tests/match/match_input_delay_run.gd
 	tests/navigation/run.gd
 	tests/navigation/store_reads_run.gd
 	tests/net/loopback_run.gd

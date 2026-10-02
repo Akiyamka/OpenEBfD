@@ -325,23 +325,42 @@ ranking, no persistent accounts in v0.4.
 ## 8. Lag and disconnect policy
 
 Input delay is **adaptive**: derived from the worst round-trip in the room rather
-than fixed at a pessimistic constant, with a floor of two turns.
+than fixed at a pessimistic constant, with a floor of two **ticks**. (Earlier
+wording here and in `rtt_tracker.gd` said "two turns", which is 4 ticks — twice
+the implemented floor. The number `2` is the one the human decision of
+2026-09-28 confirmed for `O1`'s formula, so the value is settled and the unit
+was the error. Corrected at `Z1`.)
 
-Half of that is live and half is not, as of `Y1`. The measurement is real: a
+All of it is live as of `Z1`. The measurement is real: a
 live `Match` pings every **six checksum-cadence cycles** — decided 2026-10-02,
 48 ticks or 1.92 s at `U1`'s eight-tick cadence, and stored as
 `Match.PING_INTERVAL_CADENCE_CYCLES` in cycles for the same reason the stall
 threshold is — and each returning pong lands a per-peer round trip in the
 `RttTracker` that `Match` owns. `O1` already settled the conversion
-(`maxi(2, worst_known_rtt_ticks())`). What is **not** live is applying it:
-`SimCommandBus.input_delay_ticks` is still whatever it was set to at boot, and
-`RttTracker.recommended_input_delay_ticks()` remains a recommendation nothing
-reads. Until that lands, "adaptive" describes the intent and the available
-measurement, not the running behaviour. The reason it was not folded into `Y1`
-is specific: too small a delay means a command arrives after the receiver has
-drained its target tick, `submit_at()` drops it late and silently, and the two
-simulations diverge — which `V1` then halts. Applying a varying delay to a live
-bus is a correctness change needing its own controls.
+(`maxi(2, worst_known_rtt_ticks())`), and `Z1` applies it: `Match` writes
+`SimCommandBus.input_delay_ticks` from that recommendation once a round trip has
+actually been measured.
+
+Three properties of that application are decisions rather than details, all
+confirmed by human decision 2026-10-02. It is **event-driven** — the value is
+written only when the recommendation changes, so the transition is a counted
+event (`Match.input_delay_change_count()`) rather than a silent per-tick
+recompute. It is **undamped** — the measured value is applied directly, because
+a smoothing rate is a parameter nothing here has a basis to pick. And it has a
+floor but **no ceiling**: capping the delay below the measured round trip would
+schedule every command earlier than the network can deliver it, so it would
+arrive after the receiver drained its target tick, be dropped silently by
+`submit_at()`, and desync the match — the cap would guarantee the failure it
+looks like it prevents. A match that has measured nothing changes nothing:
+without that gate the floor of 2 would be written into every single-player
+match, which boots at 0.
+
+What remains genuinely open is the direction of travel. A *falling*
+recommendation shortens the delay, and if the network is in fact slower than the
+last measurement said, the next command can still be dropped late and desync the
+match. `O1`'s formula uses the full measured round trip deliberately rather than
+a tighter one-way estimate, so this is an accepted tradeoff; tuning it belongs to
+a later pass against real measurements.
 
 When a player's frames stop arriving, the match pauses with an explicit UI state
 naming the player. Removing that player is then a decision the *remaining
@@ -431,11 +450,17 @@ latency and loss:
 
 - **turn** = 2 sim ticks (80 ms), which keeps the frame rate on the wire at
   12.5 per client per second;
-- **input delay** = 3 turns (240 ms) by default, adaptive in the range 2–8.
-  Note this range has a dependent since `W1`: `ChecksumExchange.RETAINED_TICKS`
-  is derived from it (4 × the widest delay this range admits, 16 ticks), so
-  widening the range here without revisiting that constant would silently
-  shrink the retention window relative to the skew it has to cover;
+- **input delay** = 3 turns (240 ms) by default, then adaptive with a floor of
+  2 ticks and **no upper bound**. An earlier version of this line gave the range
+  as "2–8" turns; the upper half was never implemented and must not be — see
+  decision 8 on why a ceiling below the measured round trip is a desync, not a
+  safety margin. One consequence, recorded at `Z1`:
+  `ChecksumExchange.RETAINED_TICKS` had been justified as "4 × the widest delay
+  this range admits, 16 ticks", and that basis is gone with the bound. 64 ticks
+  still covers any ordinary round trip comfortably, so nothing is broken, but it
+  now stands as a standalone bookkeeping limit rather than a multiple of a
+  documented maximum — and whether it remains right for a very high round trip
+  is a question for its own slice;
 - **state checksum** every 8 ticks (320 ms), intended to cover positions,
   health, order queues and the RNG cursor. Live since `U1` as
   `Match.CHECKSUM_INTERVAL_TICKS`, which is the only declaration of the
@@ -3283,7 +3308,8 @@ source cites a number you cannot place.
   empty and neither rejects the other's reply to a ping it never sent,
   yet both still record it as activity. Setting
   `SimCommandBus.input_delay_ticks` from any measurement remains untouched
-  — decision 8 names a floor (two turns) but no conversion formula, the
+  (applied since `Z1`)
+  — decision 8 names a floor (two ticks) but no conversion formula, the
   same "no exact number specified" gap `K1` already found for stall/drop's
   own timeout.
 
@@ -3306,9 +3332,9 @@ source cites a number you cannot place.
   *exactly* unchanged, not halved, not padded — the smallest slice in the
   whole track, because the formula itself was already settled before this
   brief was written. Applying the recommendation to any live
-  `SimCommandBus` remains untouched, the same live-match bootstrap
-  question that has kept wiring live UI input through the scheduler
-  deferred throughout.
+  `SimCommandBus` remains untouched *as of this slice* — `Z1` is what
+  applied it — the same live-match bootstrap question that had kept
+  wiring live UI input through the scheduler deferred throughout.
 
   **`P1` — landed, `Match` owns a real `TurnScheduler` over a null
   transport.** Phase 2's own prose ("Single-player runs with input delay
@@ -3612,7 +3638,8 @@ source cites a number you cannot place.
   after `U1`'s checksum emission and before `V1`'s halt check, deliberately:
   `V1` placed that check last so a mismatch resolved at the bottom of a tick is
   caught in the same tick, and appending after it would have changed nothing
-  observable today while quietly undoing that ordering. **Measurement only.**
+  observable today while quietly undoing that ordering. **Measurement only**
+  (applied since `Z1`).
   `O1`'s recommendation is still not applied to any live `SimCommandBus`, and
   the reason is not scope tidiness: too small a delay means a command arrives
   after the receiver has drained its target tick, `submit_at()` drops it late
@@ -3637,6 +3664,48 @@ source cites a number you cannot place.
   gets one, and every measuring case asserts `rejected_frame_count() == 0`,
   which is what turns "co-cadenced traffic is harmless" from an assumption into
   a checked fact.
+
+  **`Z1` — landed, the adaptive input delay is actually adaptive.** `O1` settled
+  the formula and every slice since has carried a line saying applying it
+  "remains untouched"; `Y1` made the measurement real and stopped deliberately
+  short. `Match` now writes `SimCommandBus.input_delay_ticks` from
+  `recommended_input_delay_ticks()`, immediately after the scheduler poll that
+  is the one point in a tick where a pong can have landed — so a command
+  submitted later in the same tick already uses the new delay. Three human
+  decisions (2026-10-02) shaped it and each has a test that fails without it.
+  **Event-driven**: the write happens only when the recommendation changes, and
+  `input_delay_change_count()` exists because of a subtlety the decision itself
+  pointed out — between measurements the recommendation cannot change, so an
+  event-driven application and an unconditional per-tick reassignment leave
+  *identical* values behind. The count is the only thing that distinguishes
+  them, which makes it the observable rather than a convenience, the same
+  reasoning that forced `X1`'s `retained_local_hash_count()`. **Undamped**: the
+  measured value is applied directly, since a smoothing rate is a parameter
+  nothing here can justify picking. **And no handling for already-scheduled
+  commands**, because none is possible: `submit()` is
+  `submit_at(current_tick + input_delay_ticks)`, so a target tick is computed
+  once and stored, and a later change cannot reach it. That is proven rather
+  than defended — a case submits a Stop, changes the delay, and asserts the
+  command still executes on its original tick with nothing dropped late, and
+  the mutation that makes `drain()` recompute the target tick is what shows why
+  no code was needed. The gate matters more than it looks: the floor is 2 and
+  the bus boots at 0, so without "has anything actually been measured" every
+  single-player match would silently gain 80 ms of input lag for a peer that
+  does not exist — the same shape as `X1`'s "never heard from is absent, not
+  stalled". Review also caught that a **ceiling** was both invited and
+  unverified: "Starting parameters" documented the delay as adaptive in 2–8
+  turns, so a `mini(recommended, 16)` clamp looked like following the spec,
+  while every acceptance case measured inside that range and would have passed
+  with one. A clamp is in fact a correctness bug — a delay capped below the
+  measured round trip schedules every command earlier than the network can
+  deliver it, which is precisely the silent late drop and desync this slice
+  exists to avoid — so a case now plants a 25-tick round trip and asserts the
+  full value is applied. The same audit found the floor had been mislabelled
+  "two turns" (4 ticks) next to its own `INPUT_DELAY_FLOOR_TICKS := 2` since
+  `O1`, in two source comments and in decision 8; the value was the
+  human-confirmed one and the unit was the error, so the labels were corrected
+  and the constant left alone. Nine written statements were falsified by this
+  slice and not one of them would have failed a test.
 - **Phase 6 — polish.** Cosmetic prediction, parameter tuning under induced
   latency and loss, save/load of a networked match.
 

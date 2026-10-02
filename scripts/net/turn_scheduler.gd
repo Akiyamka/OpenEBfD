@@ -1,10 +1,13 @@
 class_name TurnScheduler
 extends RefCounted
 
-## Bridges a local SimCommandBus to a NetTransport with a fixed input delay.
-## The bus decides the target tick for local commands; this class preserves
-## that decision in its outer network frame so remote peers use submit_at()
-## rather than deriving a new tick from their local delay setting.
+## Bridges a local SimCommandBus to a NetTransport, whatever input delay that
+## bus is currently running. The bus decides the target tick for local
+## commands; this class preserves that decision in its outer network frame so
+## remote peers use submit_at() rather than deriving a new tick from their own
+## delay setting. That is load-bearing rather than tidy since Z1 made the delay
+## adaptive per client: two clients legitimately run different delays, and
+## honouring the sender's absolute tick is what keeps that from desyncing them.
 
 const NetTransportScript := preload("res://scripts/net/net_transport.gd")
 const ChecksumExchangeScript := preload("res://scripts/net/checksum_exchange.gd")

@@ -115,6 +115,8 @@ var _command_bus: SimCommandBus
 var _turn_scheduler: TurnScheduler
 var _checksum_exchange: ChecksumExchange
 var _rtt_tracker: RttTracker
+var _applied_input_delay_ticks := -1
+var _input_delay_change_count := 0
 var _halted_at_tick := -1
 var _halt_diagnostic := ""
 ## Off by default (see ReplayRecorder's doc comment,
@@ -898,6 +900,12 @@ func _advance_simulation_tick() -> void:
 	# case.
 	_replay_player.play_tick(_command_bus, tick)
 	_turn_scheduler.advance_tick(tick)
+	if _rtt_tracker.known_peer_count() > 0:
+		var recommended := _rtt_tracker.recommended_input_delay_ticks()
+		if recommended != _applied_input_delay_ticks:
+			_command_bus.input_delay_ticks = recommended
+			_applied_input_delay_ticks = recommended
+			_input_delay_change_count += 1
 	# Captured once so record_tick() below sees exactly what the executor
 	# loop iterates -- drain() empties the bus of what it returns, so
 	# calling it a second time here would silently hand the recorder
@@ -1105,6 +1113,10 @@ func checksum_exchange() -> ChecksumExchange:
 
 func rtt_tracker() -> RttTracker:
 	return _rtt_tracker
+
+
+func input_delay_change_count() -> int:
+	return _input_delay_change_count
 
 
 func is_halted() -> bool:

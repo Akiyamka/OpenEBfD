@@ -2,8 +2,9 @@ class_name ChecksumExchange
 extends RefCounted
 
 ## Bounded per-tick checksum bookkeeping for comparisons with remote peers.
-## The 64-tick retention window is four times the widest 16-tick input delay
-## from network-multiplayer.md; a tick exactly 64 ticks old is retained.
+## The 64-tick retention window is a standalone bookkeeping limit; adaptive
+## input delay has no ceiling, so a separate slice must revisit it for high RTT.
+## A tick exactly 64 ticks old is retained.
 ## TurnScheduler owns transport polling and feeds remote reports here after it
 ## filters echoes.
 

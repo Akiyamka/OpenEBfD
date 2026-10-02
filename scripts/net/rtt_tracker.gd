@@ -3,7 +3,7 @@ extends RefCounted
 
 ## Keeps the newest observed round-trip measurement for each remote peer.
 
-## Decision 8 specifies a floor of two turns for adaptive input delay.
+## Decision 8 specifies a floor of two ticks for adaptive input delay.
 const INPUT_DELAY_FLOOR_TICKS := 2
 
 var _rtt_ticks_by_sender: Dictionary = {}
@@ -24,8 +24,8 @@ func worst_known_rtt_ticks() -> int:
 	return worst_rtt_ticks
 
 
-## Recommends a floor of two turns, otherwise the full RTT: no halving or margin.
-## This is a recommendation only and does not change any live input delay.
+## Recommends a floor of two ticks, otherwise the full RTT: no halving or margin.
+## Match applies this recommendation to its live command bus after a measurement.
 func recommended_input_delay_ticks() -> int:
 	return maxi(INPUT_DELAY_FLOOR_TICKS, worst_known_rtt_ticks())
 

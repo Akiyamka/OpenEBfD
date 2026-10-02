@@ -21,7 +21,7 @@ func _initialize() -> void:
 	await _run_async_case("a sent ping is not an RTT measurement", _test_ping_without_pong_is_not_measurement)
 	await _run_async_case("a match does not measure its own ping echo", _test_local_ping_echo_is_ignored)
 	await _run_async_case("two peers retain independent RTT measurements", _test_two_peers_are_measured_independently)
-	await _run_async_case("a measured RTT does not change live input delay", _test_measurement_does_not_apply_input_delay)
+	await _run_async_case("a measured RTT applies the live input delay", _test_measurement_applies_input_delay)
 	_finish("Match RTT wiring tests")
 
 
@@ -121,12 +121,11 @@ func _test_two_peers_are_measured_independently() -> void:
 	await _teardown_arm(match_instance)
 
 
-func _test_measurement_does_not_apply_input_delay() -> void:
+func _test_measurement_applies_input_delay() -> void:
 	var arm := await _boot_hub_arm()
 	var match_instance = arm["match"]
 	var hub = arm["hub"]
 	var peer = _new_answering_peer(hub, &"peer2", MatchScript.ENEMY_PLAYER_ID)
-	var boot_input_delay: int = match_instance.command_bus().input_delay_ticks
 	match_instance.advance_ticks(_ping_interval())
 	hub.step()
 	peer.advance_tick(match_instance.current_tick())
@@ -134,12 +133,12 @@ func _test_measurement_does_not_apply_input_delay() -> void:
 	match_instance.advance_ticks(1)
 	_expect(match_instance.rtt_tracker().known_peer_count() == 1, "the case must establish a real RTT measurement")
 	_expect(
-		match_instance.command_bus().input_delay_ticks == boot_input_delay,
-		"measuring RTT must not apply the tracker recommendation to the live command bus"
+		match_instance.command_bus().input_delay_ticks == match_instance.rtt_tracker().recommended_input_delay_ticks(),
+		"measuring RTT must apply the tracker recommendation to the live command bus"
 	)
 	_expect(
-		match_instance.rtt_tracker().recommended_input_delay_ticks() >= boot_input_delay,
-		"the tracker recommendation remains readable without changing live input delay"
+		match_instance.input_delay_change_count() == 1,
+		"the first measured recommendation must produce one input-delay change event"
 	)
 	_expect(peer.rejected_frame_count() == 0, "the peer must accept the shared checksum and ping tick")
 	await _teardown_arm(match_instance)
