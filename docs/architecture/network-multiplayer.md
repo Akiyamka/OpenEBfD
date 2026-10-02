@@ -331,6 +331,21 @@ When a player's frames stop arriving, the match pauses with an explicit UI state
 naming the player. After a timeout the player is dropped from the turn schedule
 so the remaining players continue.
 
+**The silence threshold is ten checksum-cadence cycles**, decided 2026-10-02
+after `K1`'s paragraph recorded that this document named no timeout anywhere.
+At `U1`'s eight-tick cadence that is 80 ticks, 3.2 s at 25 Hz. It is stored as
+a *cycle count* — `Match.STALL_THRESHOLD_CADENCE_CYCLES`, multiplied by
+`CHECKSUM_INTERVAL_TICKS` where it is compared — so it stays ten heartbeats if
+the cadence is ever retuned instead of silently drifting out of sync with the
+heartbeat it is counting.
+
+Note that the paragraph above contains **two** timeouts and only the first has
+a number. The ten cycles measure silence since a player's last frame, and are
+what `X1` implemented as a detection verdict. The interval between the pause
+and the drop is a separate quantity, measured from the pause rather than from
+the last frame, and is **still undecided** — it must not reuse the silence
+threshold.
+
 A dropped player's units and buildings **freeze**: they stay in the world,
 receive no new orders, and their turrets and defensive structures keep working.
 This is the behaviour that makes reconnect (decision 10) meaningful — the player
@@ -3507,6 +3522,59 @@ source cites a number you cannot place.
   different case, including one that targets a test written long before this
   slice: a zero-width high-water mark instead of a window breaks
   `_test_independent_ticks`, which records ticks out of order on purpose.
+
+  **`X1` — landed, per-peer liveness and a stall verdict naming the player.**
+  `K1` built `last_remote_activity_tick()` and recorded the blocker in plain
+  terms: "decision 8 names no timeout value anywhere in this document". A human
+  decision on 2026-10-02 supplied it — ten checksum-cadence cycles, stored as a
+  cycle count so it stays ten heartbeats if the cadence is retuned (see
+  decision 8). What landed is **detection only**, and stopping there was the
+  judgement this slice turned on rather than a scope trim: decision 8's response
+  is "the match pauses with an explicit UI state naming the player", and this
+  track has no UI layer and is never getting the lobby one, so building the
+  pause here would mean either inventing a player-facing surface nobody asked
+  for or freezing a live match with nothing on screen to explain it — a hang,
+  from the player's side. Detection is the half that is unambiguously ours and
+  is what both the pause and the drop will read. Decision 8's prose also turns
+  out to hold *two* timeouts: the silence threshold now decided, and a separate
+  pause-to-drop interval measured from the pause, still unspecified and
+  explicitly not allowed to borrow this number. The verdict needed `K1`'s
+  observable widened first, because `_last_remote_activity_tick` was a single
+  `int` overwritten by whichever sender's frame arrived last, so a verdict built
+  on it could only have worked in a two-player room — exactly the scope choice
+  `M1`'s paragraph records having had to undo in `ChecksumExchange`, and
+  repeating it one slice after the number arrived would have been the same
+  mistake with the precedent already written down. The widening is
+  semantics-preserving rather than breaking: a single value overwritten by the
+  newest frame *is* the maximum over senders of their last activity, so
+  `last_remote_activity_tick()` keeps its signature and meaning as that maximum
+  and all 13 of its existing assertions stand unedited — which is what makes the
+  refactor provable rather than merely plausible. The verdict itself is computed
+  on demand from `current_tick()`, so it holds no state, needs no place in the
+  tick order, and clears by itself when a peer is heard from again — correct for
+  a condition decision 8 describes as recoverable, unlike `V1`'s terminal desync
+  halt. Two exclusions carry real weight. The local player is never stalled,
+  because our own frames never arrive over the transport. And a player never
+  heard from is *absent*, not stalled: `-1` is not silence, and treating it as
+  silence would have reported the demo enemy of **every single-player match this
+  project can currently play** as stalled from tick 81 onward, since nothing
+  ever arrives for it over `NullTransport` — the defect most likely to have
+  shipped, and the one the first mutation control targets. Proven over a real
+  `LoopbackHub` with two send-only peer schedulers, carrying liveness by *ping*
+  specifically: a checksum report would have entered `ChecksumExchange`, and a
+  hash that did not match would have tripped `V1`'s halt and frozen the clock
+  mid-case, a failure that would have read as a stall-detection bug. Held by
+  five mutations, including one that answers for every player at once and must
+  fail only the two-peer case while every single-peer case and all 13 existing
+  no-argument assertions still pass. One acceptance demand of the brief proved
+  unmeetable and was withdrawn at land rather than faked: GDScript returns the
+  same empty `Array[int]` whether or not `stalled_player_ids()` guards a null
+  roster, logging a `Nil` error instead of returning anything different, so no
+  behavioural test can distinguish that guard. It is kept for consistency with
+  every other `_players()` call site, and the suite says in a comment why it
+  cannot be pinned — in place of an assertion on `match.gd`'s source text, which
+  would couple a test to production formatting and report a reformat as a
+  missing guard.
 - **Phase 6 — polish.** Cosmetic prediction, parameter tuning under induced
   latency and loss, save/load of a networked match.
 

@@ -51,6 +51,9 @@ func _initialize() -> void:
 	_run_case("remote pings and pongs record activity", _test_remote_ping_pong_records_activity)
 	_run_case("an echo does not record remote activity", _test_echo_does_not_record_remote_activity)
 	_run_case("remote activity retains the most recent receiving tick", _test_remote_activity_tracks_most_recent_tick)
+	_run_case("remote activity is tracked independently by sender", _test_remote_activity_tracks_senders_independently)
+	_run_case("an unheard sender has no activity tick", _test_unheard_sender_has_no_activity_tick)
+	_run_case("every remote frame kind credits its sender", _test_all_remote_frame_kinds_credit_sender)
 	await _run_async_case("sequential matches agree after a transported command", _test_matching_hashes)
 	await _run_async_case("a differing transported target stays equal per peer but changes the result", _test_differing_target_control)
 	_finish("Turn scheduler tests")
@@ -499,6 +502,61 @@ func _test_remote_activity_tracks_most_recent_tick() -> void:
 		scheduler_a.last_remote_activity_tick() == 9,
 		"the latest real frame must replace the prior tick and remain after an empty poll"
 	)
+
+
+func _test_remote_activity_tracks_senders_independently() -> void:
+	var hub := LoopbackHubScript.new()
+	var endpoint_a = hub.add_endpoint(&"A")
+	var endpoint_b = hub.add_endpoint(&"B")
+	var endpoint_c = hub.add_endpoint(&"C")
+	endpoint_a.open("")
+	endpoint_b.open("")
+	endpoint_c.open("")
+	var scheduler_a = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoint_a, 1)
+	var scheduler_b = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoint_b, 2)
+	var scheduler_c = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoint_c, 3)
+	scheduler_b.send_ping(0)
+	hub.step()
+	scheduler_a.advance_tick(4)
+	scheduler_c.send_ping(1)
+	hub.step()
+	scheduler_a.advance_tick(9)
+	_expect(scheduler_a.last_remote_activity_tick_for(2) == 4, "B must retain its own receiving tick")
+	_expect(scheduler_a.last_remote_activity_tick_for(3) == 9, "C must retain its own receiving tick")
+	_expect(scheduler_a.last_remote_activity_tick() == 9, "the no-argument accessor must return the newest sender tick")
+
+
+func _test_unheard_sender_has_no_activity_tick() -> void:
+	var endpoints: Dictionary = _new_connected_endpoints()
+	var scheduler_a = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["a"], 1)
+	var scheduler_b = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["b"], 2)
+	scheduler_b.send_ping(0)
+	endpoints["hub"].step()
+	scheduler_a.advance_tick(6)
+	_expect(scheduler_a.last_remote_activity_tick_for(3) == -1, "an unheard sender must remain unseen")
+	_expect(scheduler_a.last_remote_activity_tick_for(2) == 6, "looking up an unheard sender must not disturb a known sender")
+
+
+func _test_all_remote_frame_kinds_credit_sender() -> void:
+	var endpoints: Dictionary = _new_connected_endpoints()
+	var exchange := ChecksumExchangeScript.new()
+	var scheduler = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["a"], 1, exchange, RttTrackerScript.new())
+	var remote = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["b"], 2)
+	remote.send_checksum_report(1, 100)
+	endpoints["hub"].step()
+	scheduler.advance_tick(2)
+	_expect(scheduler.last_remote_activity_tick_for(2) == 2, "a checksum report must credit its sender")
+	remote.submit_local(_make_move_command(2), 0)
+	endpoints["hub"].step()
+	scheduler.advance_tick(3)
+	_expect(scheduler.last_remote_activity_tick_for(2) == 3, "a command must credit its sender")
+	remote.send_ping(4)
+	endpoints["hub"].step()
+	scheduler.advance_tick(4)
+	_expect(scheduler.last_remote_activity_tick_for(2) == 4, "a ping must credit its sender")
+	endpoints["a"].receive(PackedByteArray([3, 0, 0, 0, 4, 0, 0, 0, 1, 0, 0, 0, 2]))
+	scheduler.advance_tick(5)
+	_expect(scheduler.last_remote_activity_tick_for(2) == 5, "a pong must credit its sender")
 
 
 func _test_matching_hashes() -> void:

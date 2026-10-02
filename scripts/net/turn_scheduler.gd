@@ -31,7 +31,7 @@ var _rtt_tracker: RttTrackerScript
 var _discarded_echo_count := 0
 var _discarded_command_echo_count := 0
 var _rejected_frame_count := 0
-var _last_remote_activity_tick := -1
+var _last_remote_activity_tick_by_sender: Dictionary = {}
 
 
 func _init(
@@ -74,7 +74,7 @@ func advance_tick(current_tick: int) -> void:
 			continue
 		if decoded["kind"] == "checksum_report":
 			if int(decoded["sender_player_id"]) != _local_player_id:
-				_last_remote_activity_tick = current_tick
+				_last_remote_activity_tick_by_sender[int(decoded["sender_player_id"])] = current_tick
 			_handle_checksum_report(decoded)
 			continue
 		if decoded["kind"] == "ping":
@@ -88,7 +88,7 @@ func advance_tick(current_tick: int) -> void:
 			_discarded_echo_count += 1
 			_discarded_command_echo_count += 1
 			continue
-		_last_remote_activity_tick = current_tick
+		_last_remote_activity_tick_by_sender[command.player_id] = current_tick
 		_command_bus.submit_at(command, int(decoded["target_tick"]))
 
 
@@ -121,10 +121,20 @@ func rejected_frame_count() -> int:
 	return _rejected_frame_count
 
 
-## The receiving tick of the most recent successfully decoded remote frame,
-## or -1 when no frame has yet established that the other player is active.
+## The receiving tick of the newest successfully decoded remote frame across
+## all senders, or -1 when no remote player has established activity. Use
+## last_remote_activity_tick_for() when attribution to one sender matters.
 func last_remote_activity_tick() -> int:
-	return _last_remote_activity_tick
+	var newest_tick := -1
+	for activity_tick in _last_remote_activity_tick_by_sender.values():
+		newest_tick = max(newest_tick, int(activity_tick))
+	return newest_tick
+
+
+## The receiving tick of sender_player_id's most recent successfully decoded
+## remote frame, or -1 when that sender has never established activity.
+func last_remote_activity_tick_for(sender_player_id: int) -> int:
+	return int(_last_remote_activity_tick_by_sender.get(sender_player_id, -1))
 
 
 func _encode_frame(target_tick: int, command: SimCommand) -> PackedByteArray:
@@ -242,7 +252,7 @@ func _handle_ping(decoded: Dictionary, current_tick: int) -> void:
 	if int(decoded["sender_player_id"]) == _local_player_id:
 		_discarded_echo_count += 1
 		return
-	_last_remote_activity_tick = current_tick
+	_last_remote_activity_tick_by_sender[int(decoded["sender_player_id"])] = current_tick
 	_transport.send(
 		_encode_pong_frame(int(decoded["tick"]), int(decoded["sender_player_id"]))
 	)
@@ -252,7 +262,7 @@ func _handle_pong(decoded: Dictionary, current_tick: int) -> void:
 	if int(decoded["sender_player_id"]) == _local_player_id:
 		_discarded_echo_count += 1
 		return
-	_last_remote_activity_tick = current_tick
+	_last_remote_activity_tick_by_sender[int(decoded["sender_player_id"])] = current_tick
 	if int(decoded["ping_sender_player_id"]) != _local_player_id:
 		return
 	if _rtt_tracker == null:

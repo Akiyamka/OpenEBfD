@@ -46,6 +46,9 @@ const ENEMY_PLAYER_ID := 2
 ## Decision 7's starting parameters specify this cadence; tune checksum
 ## frequency here without changing MatchClock's single simulation tick rate.
 const CHECKSUM_INTERVAL_TICKS := 8
+## Human decision 2026-10-02 sets liveness at ten heartbeats; retaining this
+## as cycles means the threshold remains ten heartbeats when checksum cadence changes.
+const STALL_THRESHOLD_CADENCE_CYCLES := 10
 
 
 ## Parses the local perspective independently from the process argument source
@@ -962,6 +965,33 @@ func _advance_simulation_tick() -> void:
 ## to observe it without reaching into _clock directly.
 func current_tick() -> int:
 	return _clock.current_tick()
+
+
+## Whether one remote player was heard from and has then been silent for more
+## than the decision 8 liveness threshold. A player never heard from is absent,
+## not stalled; the local player never arrives over the transport.
+func is_player_stalled(player_id: int) -> bool:
+	if player_id == _local_player_id:
+		return false
+	var last_activity_tick := _turn_scheduler.last_remote_activity_tick_for(player_id)
+	if last_activity_tick == -1:
+		return false
+	return current_tick() - last_activity_tick > (
+		STALL_THRESHOLD_CADENCE_CYCLES * CHECKSUM_INTERVAL_TICKS
+	)
+
+
+## The current remote roster members whose incoming frames have stopped beyond
+## the decision 8 liveness threshold. Returns a new array on every call.
+func stalled_player_ids() -> Array[int]:
+	var players = _players()
+	if players == null:
+		return []
+	var result: Array[int] = []
+	for player_id in players.player_ids(false):
+		if is_player_stalled(int(player_id)):
+			result.append(int(player_id))
+	return result
 
 
 ## Loads a replay only after comparing its recorded starting-state digest and
