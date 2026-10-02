@@ -15,6 +15,7 @@ const WebSocketTransportScript := preload("res://scripts/net/websocket_transport
 const NetTransportScript := preload("res://scripts/net/net_transport.gd")
 const TurnSchedulerScript := preload("res://scripts/net/turn_scheduler.gd")
 const ChecksumExchangeScript := preload("res://scripts/net/checksum_exchange.gd")
+const RttTrackerScript := preload("res://scripts/net/rtt_tracker.gd")
 const CommandExecutorScript := preload("res://scripts/match/command_executor.gd")
 const UnitDeploymentControllerScript := preload("res://scripts/units/unit_deployment_controller.gd")
 const UnitRosterControllerScript := preload("res://scripts/units/unit_roster_controller.gd")
@@ -49,6 +50,9 @@ const CHECKSUM_INTERVAL_TICKS := 8
 ## Human decision 2026-10-02 sets liveness at ten heartbeats; retaining this
 ## as cycles means the threshold remains ten heartbeats when checksum cadence changes.
 const STALL_THRESHOLD_CADENCE_CYCLES := 10
+## Human decision 2026-10-02 sets pinging at six heartbeats; retaining this
+## as cycles keeps the ping cadence aligned when checksum cadence changes.
+const PING_INTERVAL_CADENCE_CYCLES := 6
 
 
 ## Parses the local perspective independently from the process argument source
@@ -110,6 +114,7 @@ var _tick_driver: FrameTickDriver
 var _command_bus: SimCommandBus
 var _turn_scheduler: TurnScheduler
 var _checksum_exchange: ChecksumExchange
+var _rtt_tracker: RttTracker
 var _halted_at_tick := -1
 var _halt_diagnostic := ""
 ## Off by default (see ReplayRecorder's doc comment,
@@ -235,10 +240,13 @@ func _ready() -> void:
 	_tick_driver = FrameTickDriverScript.new()
 	_command_bus = SimCommandBusScript.new()
 	_checksum_exchange = ChecksumExchangeScript.new()
+	_rtt_tracker = RttTrackerScript.new()
 	var transport := _create_net_transport()
 	if transport.state() == NetTransportScript.State.DISCONNECTED:
 		transport.open(_net_room_url)
-	_turn_scheduler = TurnSchedulerScript.new(_command_bus, transport, _local_player_id, _checksum_exchange)
+	_turn_scheduler = TurnSchedulerScript.new(
+		_command_bus, transport, _local_player_id, _checksum_exchange, _rtt_tracker
+	)
 	_replay_recorder = ReplayRecorderScript.new()
 	_replay_player = ReplayPlayerScript.new()
 	_player_elimination_tracker = PlayerEliminationTrackerScript.new()
@@ -948,6 +956,8 @@ func _advance_simulation_tick() -> void:
 		var state_hash := _entity_state.state_hash()
 		_checksum_exchange.record_local_hash(tick, state_hash)
 		_turn_scheduler.send_checksum_report(tick, state_hash)
+	if tick % (PING_INTERVAL_CADENCE_CYCLES * CHECKSUM_INTERVAL_TICKS) == 0:
+		_turn_scheduler.send_ping(tick)
 	if _halted_at_tick < 0 and _checksum_exchange.mismatch_count() > 0:
 		_halted_at_tick = tick
 		var mismatch := _checksum_exchange.last_mismatch()
@@ -1091,6 +1101,10 @@ func turn_scheduler() -> TurnScheduler:
 
 func checksum_exchange() -> ChecksumExchange:
 	return _checksum_exchange
+
+
+func rtt_tracker() -> RttTracker:
+	return _rtt_tracker
 
 
 func is_halted() -> bool:

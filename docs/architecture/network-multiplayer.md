@@ -327,9 +327,28 @@ ranking, no persistent accounts in v0.4.
 Input delay is **adaptive**: derived from the worst round-trip in the room rather
 than fixed at a pessimistic constant, with a floor of two turns.
 
+Half of that is live and half is not, as of `Y1`. The measurement is real: a
+live `Match` pings every **six checksum-cadence cycles** — decided 2026-10-02,
+48 ticks or 1.92 s at `U1`'s eight-tick cadence, and stored as
+`Match.PING_INTERVAL_CADENCE_CYCLES` in cycles for the same reason the stall
+threshold is — and each returning pong lands a per-peer round trip in the
+`RttTracker` that `Match` owns. `O1` already settled the conversion
+(`maxi(2, worst_known_rtt_ticks())`). What is **not** live is applying it:
+`SimCommandBus.input_delay_ticks` is still whatever it was set to at boot, and
+`RttTracker.recommended_input_delay_ticks()` remains a recommendation nothing
+reads. Until that lands, "adaptive" describes the intent and the available
+measurement, not the running behaviour. The reason it was not folded into `Y1`
+is specific: too small a delay means a command arrives after the receiver has
+drained its target tick, `submit_at()` drops it late and silently, and the two
+simulations diverge — which `V1` then halts. Applying a varying delay to a live
+bus is a correctness change needing its own controls.
+
 When a player's frames stop arriving, the match pauses with an explicit UI state
-naming the player. After a timeout the player is dropped from the turn schedule
-so the remaining players continue.
+naming the player. Removing that player is then a decision the *remaining
+players* make, not a timeout this layer runs out: the model is Warcraft III's —
+the match waits a few minutes, and then a vote-kick button appears for the
+others. Once they do remove a player, that player leaves the turn schedule and
+the rest continue.
 
 **The silence threshold is ten checksum-cadence cycles**, decided 2026-10-02
 after `K1`'s paragraph recorded that this document named no timeout anywhere.
@@ -339,12 +358,14 @@ a *cycle count* — `Match.STALL_THRESHOLD_CADENCE_CYCLES`, multiplied by
 the cadence is ever retuned instead of silently drifting out of sync with the
 heartbeat it is counting.
 
-Note that the paragraph above contains **two** timeouts and only the first has
-a number. The ten cycles measure silence since a player's last frame, and are
-what `X1` implemented as a detection verdict. The interval between the pause
-and the drop is a separate quantity, measured from the pause rather than from
-the last frame, and is **still undecided** — it must not reuse the silence
-threshold.
+The ten cycles measure silence since a player's last frame, and are what `X1`
+implemented as a detection verdict. **That is the only timeout in this
+section**, and no slice owes a second one: confirmed 2026-10-02, the removal
+above is a player action and player-facing game logic rather than a threshold
+this track picks, so it is deferred alongside the lobby UI this track has never
+built and will not build. `X1`'s `Match.is_player_stalled()` /
+`stalled_player_ids()` is what such a mechanism would read from, and nothing
+about the detection needs to change for it.
 
 A dropped player's units and buildings **freeze**: they stay in the world,
 receive no new orders, and their turrets and defensive structures keep working.
@@ -3575,6 +3596,47 @@ source cites a number you cannot place.
   cannot be pinned — in place of an assertion on `match.gd`'s source text, which
   would couple a test to production formatting and report a reformat as a
   missing guard.
+
+  **`Y1` — landed, a live match measures the round trip to each peer.** The
+  last piece of the `H1`–`O1` stack never wired into a real `Match`. `N1` built
+  `RttTracker`, `O1` settled the formula, and `TurnScheduler` has had
+  `send_ping()` and an optional tracker argument since `H1` — but `Match` passed
+  `null` for it from `P1` onward and nothing ever sent a ping, so no round trip
+  had ever been measured in a game. A human decision on 2026-10-02 supplied the
+  cadence: six checksum-cadence cycles, stored in cycles like `X1`'s threshold
+  so it stays six heartbeats if the cadence is retuned. `Match` now owns one
+  `RttTracker`, hands it to the scheduler as the fifth collaborator, and sends
+  `send_ping(tick)` on that cadence — the *tick* being the measurement, since
+  `_handle_pong()` subtracts it from the arrival tick, which is only comparable
+  across clients because both ends count the same integers. The ping block sits
+  after `U1`'s checksum emission and before `V1`'s halt check, deliberately:
+  `V1` placed that check last so a mismatch resolved at the bottom of a tick is
+  caught in the same tick, and appending after it would have changed nothing
+  observable today while quietly undoing that ordering. **Measurement only.**
+  `O1`'s recommendation is still not applied to any live `SimCommandBus`, and
+  the reason is not scope tidiness: too small a delay means a command arrives
+  after the receiver has drained its target tick, `submit_at()` drops it late
+  and silently, and the two simulations diverge — which `V1` then halts. A
+  dedicated case asserts `input_delay_ticks` is untouched after a real
+  measurement, so a later slice applying the recommendation has to change that
+  assertion deliberately rather than find the boundary already gone. Two
+  findings came out of review rather than implementation, and both are the kind
+  that pass silently. First, self-measurement is blocked by **two** independent
+  guards — `_handle_ping()` refuses to answer a ping from the local id, and
+  `_handle_pong()` refuses to route a pong from it — so either alone suffices
+  and no single-guard mutation can demonstrate the invariant; the suite's
+  self-echo case therefore asserts two separate facts, and the control that
+  actually produces a self-RTT has to remove both. That case also has to run
+  **two** hub delivery cycles, because the hub moves one hop per `step()` and a
+  self-addressed pong is only *queued* when the echoed ping is handled — stopping
+  a cycle early leaves the mutation unobservable rather than failing, which is
+  how an earlier revision of the brief would have shipped. Second, because six
+  cycles is a multiple of eight ticks, every ping tick is also a checksum tick,
+  and a test peer built without its own `ChecksumExchange` rejects the report
+  and logs an error before it ever answers the ping — so each answering peer
+  gets one, and every measuring case asserts `rejected_frame_count() == 0`,
+  which is what turns "co-cadenced traffic is harmless" from an assumption into
+  a checked fact.
 - **Phase 6 — polish.** Cosmetic prediction, parameter tuning under induced
   latency and loss, save/load of a networked match.
 
