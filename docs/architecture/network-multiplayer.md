@@ -22,6 +22,7 @@ and — more importantly — what it forbids elsewhere in the project.
 | 9 | Teams | Fixed teams chosen in the lobby (2v2 / FFA) |
 | 10 | v0.4 scope | Replays, reconnect, save/load of a networked match. No spectators |
 | 11 | Migration | Incremental, on `main`, with single-player as the test bed |
+| 12 | Placement timing | Pending placement: a five-second deadline, a no-stop reservation, and no refusal that is not provable |
 
 ## 1. Deterministic lockstep over a dumb relay
 
@@ -434,6 +435,80 @@ server-side authority or anti-cheat.
 Bots are v0.5, but they carry one constraint that must be respected now: a bot is
 a **command producer inside the simulation**, deterministic and identical on
 every client — never a separate network client.
+
+## 12. Pending placement, with a deadline and a no-stop reservation
+
+Decided 2026-10-04 and 2026-10-05, replacing the "one rule for the class"
+question under "Open questions" that asked what local view state should do when
+it races a submitted command. The answer turned out not to be a rule about view
+state at all: **placement becomes a state of the simulation with its own
+outcome**, and the input-delay window stops being a special case because it is
+only the first few ticks of a state that lasts five seconds.
+
+This is a netcode decision and not merely a gameplay one. Before the command bus
+a place click took effect immediately and the question could not arise; `Z1`
+then made the input delay adaptive with a floor of two ticks and **no ceiling**,
+so the window between a click and its execution is now the full measured round
+trip and grows with the network. Every piece of the mechanic is nonetheless
+provable in single-player at delay 0, which is decision 11's own discipline.
+
+The mechanic:
+
+1. A confirmed placement enters a **pending** state lasting at most five
+   seconds, held as `5 * MatchClock.TICKS_PER_SECOND` at the comparison site
+   rather than as a bare `125` — the way `X1`'s stall threshold and `Y1`'s ping
+   cadence are held as cycle counts, because decision 4 promises that
+   re-testing another rate is a one-constant change.
+2. Confirmation is evaluated **every tick**; the deadline is only where the
+   attempt is given up. A unit crossing the site therefore costs a tick or two
+   rather than the placement.
+3. The reserved footprint becomes **no-stop for every player** — the `_no_stop`
+   set `UnitNavigationMap.replace_blocked_cells()` already takes, not a new
+   per-player capability, which the map could not express anyway: there is one
+   blocked overlay per match, shared by every player. Any unit may cross a
+   reservation; none may be ordered to park on it, because
+   `UnitNavigationPlanner._nearest_stoppable()` already snaps a destination out
+   of a no-stop cell. That is what prices out the denial the original game
+   permits, where one parked scout stops a build site for as long as it stands
+   there.
+4. Units standing in the footprint **walk out** instead of being teleported,
+   replacing `UnitPushAside`'s `set_simulation_position()` write.
+   `NavBlockerTracker.process_reroute_queue()` already relocates a *commanded*
+   agent whose destination stops being stoppable, with a reroute budget; the
+   missing piece is the idle unit, since that function skips an agent whose
+   `command_id` is not positive — and an idle unit is exactly the parked scout.
+5. The ready-building icon gains a **third, non-interactive state**: it reads
+   as building rather than placeable, cannot cancel the order and cannot order
+   another. The rest of the construction tab is already `BLOCKED` while any
+   order is in flight, so only that one icon changes.
+6. A wall segment that cannot be placed is still **skipped** rather than
+   cancelling the chain — `ProductionSystem.WallChainOutcome.SKIPPED` already
+   exists with its own status strings — except that the skip now waits for the
+   deadline instead of being decided instantly. Only the next segment is
+   reserved, so a long wall's worst case is linear in its segments, while a
+   unit crossing just before a segment is built now costs a pause instead of
+   the segment.
+
+What this forbids elsewhere: **refusing a click on anything that is not
+provably hopeless.** The local filter may suppress only what the clicking
+player can see cannot change — an immobile unit of their own — because an enemy
+unit may leave before the deadline, and a refusal keyed on enemy positions
+would make the verdict depend on what one client happens to know. Everything
+else goes to the wire and is judged by the deadline. That is the command bus's
+own "a local check may refuse to send; it may not authorize", applied to a
+verdict that now has a duration.
+
+What it costs, recorded because it was weighed rather than overlooked: a
+building placed onto an enemy army makes those units walk a few cells instead of
+scattering them, and a *deployed* enemy unit can still hold a site for five
+seconds at a time — immobile, and inside the placing player's build radius,
+which is a far worse trade for its owner than a scout was. The abuse is priced,
+not removed.
+
+**Landed so far: `AA1` only** — an immobile unit inside the footprint refuses
+the placement, friend-filtered at the click and owner-blind at execution. The
+pending state, the deadline, the reservation, the walk-out and the icon state
+are each still owed.
 
 ## Layering
 
@@ -3727,27 +3802,45 @@ already play before it is trusted by the mode we cannot yet test.
   `own-tick-rate` in the checker keeps it that way.
 - Snapshot size for reconnect, which cannot be estimated before the hot-state
   layout exists (decision 3).
-- What happens to local view state that races a command already submitted.
-  The concrete case is building placement. The confirming click submits a
-  command and deliberately leaves the preview up, because whether the cell was
-  buildable is not known until the command executes — and if it was not, the
-  preview has to still be there for the player to click somewhere else, which
-  is how it behaved before the command bus. That leaves a window between the
-  click and its execution in which the placement is still active, so a right
-  click lands in `BuildingController`'s placement branch (it is offered input
-  before the unit controller) and cancels a placement that is already
-  committed. The player sees the preview vanish; on the execution tick the
-  building is placed at the clicked cell anyway and `take_ready()` consumes the
-  order.
+- ~~What happens to local view state that races a command already submitted.~~
+  **Reframed 2026-10-05: the worked example this entry argued from is falsified
+  by the code, both options it offered are impossible, and the class was
+  replaced by a mechanic — decision 12. A narrower question survives and is
+  stated at the end of this entry.**
 
-  At input delay 0 that window is one tick and no human reaches it. It widens
-  with the delay, and the same shape covers every mode a player can leave
-  between their own click and its execution. Phase 5 needs one rule for the
-  class — treat the local dismissal as prediction and reconcile, or make the
-  dismissal itself a command and accept the latency — not a patch per action.
-  Cancelling the *order* is already safe by a different route: the queue is
-  empty by execution time, so the placement command finds no matching ready
-  order and does nothing.
+  The example was: the player right-clicks inside the window, the preview
+  vanishes, and on the execution tick the building is placed at the clicked cell
+  anyway. That cannot happen. `BuildingController._committed_placement_cell`
+  locks the placement from the instant the command is submitted until it
+  executes — `process()` pins the preview to the clicked cell instead of
+  following the pointer, `handle_unhandled_input()`'s placement branch consumes
+  nothing, and `_on_building_slot_right_pressed()` will not cancel. Three of the
+  four input paths carried that guard; `AA1` closed the fourth, which could
+  re-arm its own committed preview and report a false "placement ready".
+
+  Neither option this entry proposed for the class survives either, and the
+  reason is the same for both: **they both still place the building.** "Treat
+  the local dismissal as prediction and reconcile" has nothing to reconcile to,
+  because decision 1 is lockstep with no rollback — the building is really
+  built, so reconciling can only mean showing the player a building that appears
+  unbidden. "Make the dismissal itself a command" cannot retract a command
+  already ahead of it in the bus, and `SimCommandBus` has no un-submit. The two
+  differ only in whether the view lies early or freezes, which is not the
+  difference the entry was asking about.
+
+  What survives is the *other* half of the original observation, which decision
+  12 deliberately does not cover: **sell and repair give the player no local
+  echo at all.** `_try_sell_building()` and `_try_toggle_building_repair()`
+  emit a status only when the click resolves to no building; a click that lands
+  submits in silence, and at a real input delay the natural response to silence
+  is to click again. The second sell click is then swallowed by
+  `_sale_service.is_active()` while the first building sells — so the player
+  sells the building they thought they had missed, and hears nothing about the
+  second. The second repair click toggles repair back off, because
+  `execute_repair_building_command()` reads the direction at execution and is
+  right to. Both want the same cheap fix, an echo that claims nothing — the
+  click was *ordered*, not *done*, the way a placement preview claims nothing
+  about buildability — and neither needs a reservation or a deadline.
 - Production is still single-player-shaped. Under lockstep every client
   simulates every player, so a `SimBuildOrderCommand` carrying `player_id: 2`
   has to open an order in *that* player's queue, tick it against *that*

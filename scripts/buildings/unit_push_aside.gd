@@ -6,6 +6,26 @@ extends RefCounted
 ## placement or getting crushed.
 
 
+## Deployed combat units cannot leave a building footprint. The normal
+## building-command path refuses them before spawning; wall placement still
+## reaches this shove path and deliberately leaves them in place for now.
+static func is_immobile(unit: Node) -> bool:
+	return (
+		(unit.has_method("is_deployed") and bool(unit.call("is_deployed")))
+		or (unit.has_method("is_deploying") and bool(unit.call("is_deploying")))
+	)
+
+
+static func is_inside_footprint(
+		position: Vector3, footprint_world_start: Vector3, footprint_world_end: Vector3
+	) -> bool:
+	var min_x := minf(footprint_world_start.x, footprint_world_end.x)
+	var max_x := maxf(footprint_world_start.x, footprint_world_end.x)
+	var min_z := minf(footprint_world_start.z, footprint_world_end.z)
+	var max_z := maxf(footprint_world_start.z, footprint_world_end.z)
+	return position.x >= min_x and position.x <= max_x and position.z >= min_z and position.z <= max_z
+
+
 static func push_units_out_of_footprint(
 		units: Array,
 		footprint_world_start: Vector3,
@@ -23,19 +43,10 @@ static func push_units_out_of_footprint(
 	for unit in units:
 		if not (unit is Node3D):
 			continue
-		# A deployed (or deploying/undeploying) combat unit is immobile and
-		# must not be shoved by a new building's footprint. It will then
-		# visually overlap the building, since BuildingPlacement validates
-		# against the nav grid, not against units; making a deployed unit
-		# block placement outright is a separate change to placement
-		# validation and out of scope here.
-		if (
-			(unit.has_method("is_deployed") and bool(unit.call("is_deployed")))
-			or (unit.has_method("is_deploying") and bool(unit.call("is_deploying")))
-		):
+		if is_immobile(unit):
 			continue
 		var position: Vector3 = unit.simulation_position()
-		if position.x < min_x or position.x > max_x or position.z < min_z or position.z > max_z:
+		if not is_inside_footprint(position, footprint_world_start, footprint_world_end):
 			continue
 
 		var pushed := _push_destination(position, min_x, max_x, min_z, max_z, margin)

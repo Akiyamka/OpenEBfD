@@ -121,13 +121,22 @@ The code review passed. Read `.pipeline/code-verdict.json` and
    rule fails the build otherwise. Read that file's own "Reading the table"
    section for the column conventions, including the `pending` escape for a row
    that lands in the same commit as the code citing it.
-4. **If the slice added any `.gd` file, run `make godot-check` and stage the
-   `.uid` files it generates.** This repo tracks them — 349 of them against 343
-   scripts — but Godot only writes one during a full project import, not during
-   the `--script` runs the test suite uses. So a new script commits without its
-   companion, and the `.uid` surfaces days later as untracked noise that stops
-   the *next* slice at preflight for a clean tree. Three slices' worth had piled
-   up before anyone noticed.
+4. **If the slice added any `.gd` file, run
+   `./tools/godot-container godot --headless --path /workspace --import` and
+   stage the `.uid` files it writes.** This repo tracks them — 349 of them
+   against 343 scripts — but Godot only writes one during a full project
+   import, not during the `--script` runs the test suite uses. So a new script
+   commits without its companion, and the `.uid` surfaces days later as
+   untracked noise that stops the *next* slice at preflight for a clean tree.
+   Three slices' worth had piled up before anyone noticed.
+
+   **`make godot-check` does not do it**, despite what this step said until
+   `AA1`. That target runs `godot --headless --path /workspace --quit`
+   (`check_project()` in `tools/godot-container`), which boots the project and
+   exits without a filesystem scan: it returned 0 for `AA1` and wrote no
+   sidecar for the new suite. `--import` starts the editor, imports, and quits,
+   which is what writes them. Both are container commands, so run them
+   sequentially with anything else using the container.
 5. Update any doc the slice made wrong. A slice that changes behaviour described
    in `docs/` and leaves the description standing is not finished.
 6. Run `make lint` yourself before committing. The pre-commit hook checks the

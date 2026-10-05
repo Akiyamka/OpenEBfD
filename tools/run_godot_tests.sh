@@ -30,7 +30,7 @@ readonly SUITES=(
 	tests/ui/side_panel_pagination_run.gd tests/audio/voice_feedback_run.gd
 	tests/audio/movement_sounds_run.gd
 	tests/buildings/run.gd tests/buildings/building_scene_catalog_run.gd tests/buildings/construction_sound_run.gd
-	tests/buildings/placement_run.gd tests/buildings/wall_connectivity_run.gd
+	tests/buildings/placement_run.gd tests/buildings/placement_immobile_unit_run.gd tests/buildings/wall_connectivity_run.gd
 	tests/buildings/controller_run.gd tests/buildings/repair_run.gd tests/buildings/techtree_multiple_conyards_run.gd
 	tests/buildings/primary_building_run.gd tests/buildings/upgrade_run.gd tests/buildings/building_death_run.gd tests/rules/run.gd
 	tests/production/unit_production_run.gd

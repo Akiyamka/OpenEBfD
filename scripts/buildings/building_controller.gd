@@ -1302,6 +1302,9 @@ func _wall_nav_cells_between(
 ##     right now. It may only suppress a click; it never authorizes one.
 ##   - execute_place_building_command()'s call is the AUTHORITY, over the
 ##     world as it stands on the tick the command actually executes.
+## The immobile-unit filter is intentionally friend-only: an enemy unit may
+## leave before a later pending-placement deadline, while the authority must
+## judge every owner alike on its execution tick.
 ## The two tell different stories whenever the world moves between the click
 ## and that tick -- input delay is no longer zero, so another player can take
 ## the cell, a unit can park on it, or the order itself can change, all
@@ -1343,7 +1346,13 @@ func _try_place_ready_building(screen_position: Vector2) -> void:
 			# point whenever BuildingPlacement is inactive. No new status string
 			# for a verdict that can never actually be reached from here.
 			return
-
+	var config := _building_config(order.building_id)
+	var occupy_rows := _building_occupy_rows(config)
+	if _building_placement.has_immobile_unit_in_footprint(
+		occupy_rows, _building_placement.rotation_quarter_turns(), hover_cell, _local_player_id()
+	):
+		status_changed.emit("%s cannot be placed there" % order.display_name)
+		return
 	_committed_placement_cell = hover_cell
 	_submit_place_building_command(
 		order.building_id, hover_cell, _building_placement.rotation_quarter_turns()
@@ -1410,6 +1419,12 @@ func execute_place_building_command(command: SimPlaceBuildingCommand) -> void:
 	if occupy_rows.is_empty():
 		if is_local_command:
 			status_changed.emit("%s has no occupy_rows" % order.display_name)
+		return
+	if _building_placement.has_immobile_unit_in_footprint(
+		occupy_rows, command.rotation_quarter_turns, command.nav_cell, null
+	):
+		if is_local_command:
+			status_changed.emit("%s cannot be placed there" % order.display_name)
 		return
 	var is_wall := _is_wall_building_id(order.building_id)
 	match _building_placement.place_without_preview(

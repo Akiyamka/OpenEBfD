@@ -11,6 +11,7 @@ const PlacementWallScene := preload("res://assets/converted/placement/build_wall
 const PlacementContextScript := preload("res://scripts/buildings/placement_context.gd")
 const ProductionSystemScript := preload("res://scripts/production/production_system.gd")
 const SimBuildOrderCommandScript := preload("res://scripts/sim/commands/build_order_command.gd")
+const SimPlaceBuildingCommandScript := preload("res://scripts/sim/commands/place_building_command.gd")
 const CommandPumpScript := preload("res://tests/match/support/command_pump.gd")
 const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 
@@ -141,6 +142,16 @@ class MutableGrid extends FakeGrid:
 		return {"valid": true, "buildable": not blocked_cells.has(cell)}
 
 
+class ImmobilePlacementUnit extends Node3D:
+	var owner_player_id := 1
+
+	func simulation_position() -> Vector3:
+		return position
+
+	func is_deployed() -> bool:
+		return true
+
+
 func _initialize() -> void:
 	await process_frame
 	var players = root.get_node("Players")
@@ -208,6 +219,10 @@ func _initialize() -> void:
 	_run_case(
 		"the click-time filter and the execution-time check are independent",
 		_test_place_click_filter_and_execution_checks_are_independent
+	)
+	_run_case(
+		"terrain verdict wins over an immobile-unit refusal when placement cannot inspect terrain",
+		_test_place_immobile_unit_does_not_override_terrain_verdict
 	)
 	_run_case(
 		"a wall line's first click submits nothing and still emits its existing status",
@@ -1327,6 +1342,31 @@ func _test_place_click_filter_and_execution_checks_are_independent(token: int) -
 
 	controller.free()
 	buildings_root.free()
+	return token
+
+
+## The immobile-unit query must answer false when its grid is unavailable so
+## place_without_preview() keeps its established terrain verdict priority.
+func _test_place_immobile_unit_does_not_override_terrain_verdict(token: int) -> int:
+	var controller := _new_controller()
+	var building_ids: Array[StringName] = [&"ATWall"]
+	controller.setup(null, null, null, building_ids, _production_for(controller), null, null, null, null, null, null, Callable())
+	controller._building_queue.start(&"ATWall", "Wall", 0, 1)
+	controller._building_queue.advance_tick(0)
+	var unit := ImmobilePlacementUnit.new()
+	unit.add_to_group("sim_units")
+	root.add_child(unit)
+	var statuses: Array[String] = []
+	controller.status_changed.connect(func(status: String) -> void: statuses.append(status))
+	var command := SimPlaceBuildingCommandScript.new()
+	command.player_id = 1
+	command.building_id = &"ATWall"
+	command.nav_cell = Vector2i(6, 4)
+	controller.execute_place_building_command(command)
+	_expect(statuses.has("Wall placement needs terrain"), "missing terrain must keep its existing status")
+	_expect(not statuses.has("Wall cannot be placed there"), "the immobile-unit query must not override terrain")
+	unit.free()
+	controller.free()
 	return token
 
 

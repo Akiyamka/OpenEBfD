@@ -23,6 +23,35 @@ Construction Yard upgrades therefore use the MCV's 864 ticks. A 60-tick
 fallback is reserved for malformed configs with neither a direct time nor a
 usable resource link.
 
+### A deployed unit on a building site was engulfed rather than blocking
+
+**Observed data:** `docs/mechanics/production.md` section 2 records, verified,
+that units at a construction site do not block placement and are pushed aside.
+`Rules.txt` authors no unit-related placement condition at all — the footprint
+conditions it carries are terrain type, buildability, and freedom from other
+buildings. That verified behaviour covers units which *can* be displaced;
+whether the original also displaced a unit that cannot move is not recorded.
+
+**OpenEBfD implementation gap this closed:** `BuildingPlacement` validates a
+footprint against the navigation grid, not against units, while
+`UnitPushAside.push_units_out_of_footprint()` deliberately skips a deployed,
+deploying or undeploying unit — such a unit is immobile and must not be shoved.
+The two together meant an immobile unit was neither moved nor an obstacle: the
+building spawned around it, and that function's own comment said as much,
+naming the fix as a separate change to placement validation.
+
+**OpenEBfD compatibility decision (slice `AA1`, 2026-10-05):** An immobile unit
+inside the footprint refuses the placement. The refusal is split the way every
+other placement verdict in this project is: at click time the local filter
+suppresses only the clicking player's *own* immobile units, which are provably
+stuck, while the execution-time authority judges every owner's alike — an enemy
+unit is not a provable obstruction at click time, and a refusal keyed on enemy
+positions would make the verdict depend on what one client happens to know. A
+mobile unit is still pushed aside exactly as before, so the divergence is
+confined to units that cannot move. Wall segments still reach the shove path
+and still engulf, pending the wall half of decision 12 in
+[`network-multiplayer.md`](architecture/network-multiplayer.md).
+
 ## Animation timing
 
 ### Infantry base movement animation is too slow

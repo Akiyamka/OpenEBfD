@@ -157,6 +157,35 @@ func evaluate_without_preview(
 	return PlaceResult.AVAILABLE if bool(evaluation["can_build"]) else PlaceResult.CANNOT_BUILD
 
 
+## Answers whether an immobile unit occupies the command's rotated footprint
+## without reading or altering the local preview. This walks `sim_units`, not
+## `units`: only units admitted to the simulation may affect a verdict every
+## client must reach identically. An MCV deployment flow must supply its own
+## exclusion when it eventually uses this query.
+func has_immobile_unit_in_footprint(
+		occupy_rows: Array[String], rotation_turns: int, hover_cell: Vector2i, owner_player_id = null
+	) -> bool:
+	if not is_inside_tree() or _navigation_grid == null or not _navigation_grid.is_loaded():
+		return false
+	var rotated_rows := _rotated_occupy_rows(occupy_rows, rotation_turns)
+	var anchor_cell := _anchor_for_hover_cell_for(hover_cell, rotated_rows)
+	var footprint_box := _footprint_world_box(anchor_cell, rotated_rows)
+	for unit in get_tree().get_nodes_in_group("sim_units"):
+		if (
+			not EntityQueryScript.is_live(unit)
+			or not (unit is Node3D)
+			or not unit.has_method("simulation_position")
+		):
+			continue
+		if owner_player_id != null and unit.get("owner_player_id") != owner_player_id:
+			continue
+		if UnitPushAsideScript.is_immobile(unit) and UnitPushAsideScript.is_inside_footprint(
+			unit.simulation_position(), footprint_box[0], footprint_box[1]
+		):
+			return true
+	return false
+
+
 func _exit_tree() -> void:
 	if not _occupied_cells_tracking_started:
 		return
@@ -449,15 +478,23 @@ func _push_units_out_of_footprint(
 	if units.is_empty():
 		return
 
-	var footprint_size := _nav_size_for(occupy_rows)
-	var start: Vector3 = _navigation_grid.grid_to_world(anchor_cell, false)
-	var end: Vector3 = _navigation_grid.grid_to_world(anchor_cell + footprint_size, false)
+	var footprint_box := _footprint_world_box(anchor_cell, occupy_rows)
+	var start: Vector3 = footprint_box[0]
+	var end: Vector3 = footprint_box[1]
 	var cell_step: Vector3 = (
 		_navigation_grid.grid_to_world(Vector2i(1, 0), false)
 		- _navigation_grid.grid_to_world(Vector2i.ZERO, false)
 	)
 	var margin := maxf(cell_step.length(), 0.1)
 	UnitPushAsideScript.push_units_out_of_footprint(units, start, end, margin)
+
+
+func _footprint_world_box(anchor_cell: Vector2i, occupy_rows: Array[String]) -> Array[Vector3]:
+	var footprint_size := _nav_size_for(occupy_rows)
+	return [
+		_navigation_grid.grid_to_world(anchor_cell, false),
+		_navigation_grid.grid_to_world(anchor_cell + footprint_size, false),
+	]
 
 
 func _update_for_hover_cell(hover_cell: Vector2i) -> void:

@@ -74,7 +74,13 @@ Rules for placing a ready building on the map:
   must lie on buildable cells and be free of buildings;
 - **units at the construction site do not block placement — they are pushed
   aside** (verified): when a building is placed, units are displaced from its
-  footprint;
+  footprint. **OpenEBfD diverges for units that cannot move**: an immobile
+  (deployed/deploying) unit refuses the placement instead of being engulfed by
+  it, because this project cannot shove one — see
+  [`quirks.md`](../quirks.md), "A deployed unit on a building site was engulfed
+  rather than blocking", and decision 12 in
+  [`network-multiplayer.md`](../architecture/network-multiplayer.md). Mobile
+  units are displaced exactly as recorded here;
 - **build radius** (verified): a new building can be placed only near the
   player's existing buildings `[Rules: radius]`. **All buildings except walls**
   provide this radius; walls extend the radius **only for constructing other
