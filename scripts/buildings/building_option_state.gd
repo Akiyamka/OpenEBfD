@@ -1,7 +1,10 @@
 class_name BuildingOptionState
 extends RefCounted
 
-enum State { AVAILABLE, DISABLED, BLOCKED, PROGRESS, READY }
+enum State {
+	AVAILABLE, DISABLED, BLOCKED, PROGRESS, READY,
+	PLACING, # A placement command is in flight; the panel caption is BUILDING.
+}
 
 var building_id: StringName
 var state: State

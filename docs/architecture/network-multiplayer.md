@@ -480,7 +480,20 @@ The mechanic:
 5. The ready-building icon gains a **third, non-interactive state**: it reads
    as building rather than placeable, cannot cancel the order and cannot order
    another. The rest of the construction tab is already `BLOCKED` while any
-   order is in flight, so only that one icon changes.
+   order is in flight, so only that one icon changes. **Landed in `AB1`** as
+   `BuildingOptionState.State.PLACING` with the caption `BUILDING`, against the
+   window that already exists — the one `input_delay_ticks` long. Two things
+   that slice settled are worth keeping here, because both are invisible from
+   the outside. `QueueSlot` does not use `BaseButton.pressed` for slot intent;
+   it overrides `_gui_input()` and emits its own `intent_pressed`, so
+   `disabled` does not make the widget refuse clicks — the guard tests the
+   state, and it has to, because `BLOCKED` is already `disabled` and its clicks
+   must still reach the controller to produce the "busy"/"waiting for credits"
+   feedback. And the refusal lives at **both** layers on purpose: the widget
+   stops a click becoming an intent, while the controller refuses an intent
+   that arrives anyway, since the panel is refreshed by a signal and `Match`
+   wires `building_intent_pressed` straight through without consulting the
+   slot.
 6. A wall segment that cannot be placed is still **skipped** rather than
    cancelling the chain — `ProductionSystem.WallChainOutcome.SKIPPED` already
    exists with its own status strings — except that the skip now waits for the
@@ -505,10 +518,16 @@ seconds at a time — immobile, and inside the placing player's build radius,
 which is a far worse trade for its owner than a scout was. The abuse is priced,
 not removed.
 
-**Landed so far: `AA1` only** — an immobile unit inside the footprint refuses
-the placement, friend-filtered at the click and owner-blind at execution. The
-pending state, the deadline, the reservation, the walk-out and the icon state
-are each still owed.
+**Landed so far: `AA1` and `AB1`** — an immobile unit inside the footprint
+refuses the placement, friend-filtered at the click and owner-blind at
+execution (`AA1`), and the ready icon shows a third, non-interactive state
+while its placement command is in flight (`AB1`). The pending state, the
+deadline, the reservation, the walk-out and the wall deferral are each still
+owed. Of those, only the wall deferral could in principle go next on its own;
+items 1 through 4 are mutually dependent, because a reservation needs
+something to reserve, the walk-out needs the reservation, and a deadline with
+nothing to make a footprint clear itself would either regress placement or
+never fire.
 
 ## Layering
 
@@ -3814,9 +3833,17 @@ already play before it is trusted by the mode we cannot yet test.
   locks the placement from the instant the command is submitted until it
   executes — `process()` pins the preview to the clicked cell instead of
   following the pointer, `handle_unhandled_input()`'s placement branch consumes
-  nothing, and `_on_building_slot_right_pressed()` will not cancel. Three of the
-  four input paths carried that guard; `AA1` closed the fourth, which could
-  re-arm its own committed preview and report a false "placement ready".
+  nothing, and `_on_building_slot_right_pressed()` will not cancel.
+
+  **Correction, 2026-10-05:** `AA1`'s land step wrote here that three of the
+  four input paths carried that guard and that `AA1` closed the fourth. The
+  first half is true; the second is not — `AA1` added an immobile-unit filter
+  and never touched `_begin_ready_building_placement()`, which still has no
+  `_committed_placement_cell` guard. Clicking the ready icon during the window
+  therefore re-begins the preview, emits a false "placement ready", and resets
+  the rotation to zero while the committed command carries the old one, so the
+  pinned preview shows the wrong orientation until execution. `AB1` closed it,
+  together with item 5's icon state, since both lived in that same window.
 
   Neither option this entry proposed for the class survives either, and the
   reason is the same for both: **they both still place the building.** "Treat

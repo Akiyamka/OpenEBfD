@@ -4,9 +4,13 @@ extends Button
 ## DISABLED hides unavailable technology options, BLOCKED shows a grey icon
 ## for an occupied queue, AVAILABLE the colored icon, PROGRESS blends both
 ## with a clockwise radial mask (see queue_slot.gdshader), READY shows the
-## colored icon with a READY caption.
+## colored icon with a READY caption, and PLACING keeps the colored icon while
+## showing the building-in-flight caption.
 
-enum State { DISABLED, AVAILABLE, PROGRESS, READY, BLOCKED }
+enum State {
+	DISABLED, AVAILABLE, PROGRESS, READY, BLOCKED,
+	PLACING, # A placement command is in flight; the controller caption is BUILDING.
+}
 
 const SLOT_SHADER := preload("res://scripts/ui/queue_slot.gdshader")
 const ICON_MARGIN := 3
@@ -94,6 +98,8 @@ func _get_tooltip(_at_position: Vector2) -> String:
 func _gui_input(event: InputEvent) -> void:
 	if not (event is InputEventMouseButton and event.pressed):
 		return
+	if state == State.PLACING:
+		return
 	if event.button_index == MOUSE_BUTTON_LEFT:
 		intent_pressed.emit(MOUSE_BUTTON_LEFT, 10 if event.shift_pressed else 1)
 		accept_event()
@@ -129,3 +135,6 @@ func _apply() -> void:
 		State.READY:
 			_icon_material.set_shader_parameter("progress", 1.0)
 			_status.text = status_text if not status_text.is_empty() else "READY"
+		State.PLACING:
+			_icon_material.set_shader_parameter("progress", 1.0)
+			_status.text = status_text

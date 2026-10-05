@@ -1252,6 +1252,8 @@ func _on_building_queue_ready(order: BuildingOrder) -> void:
 
 
 func _begin_ready_building_placement() -> void:
+	if _committed_placement_cell != null:
+		return
 	var order := _building_queue.current_order()
 	if order == null or not order.ready:
 		return
@@ -1357,6 +1359,7 @@ func _try_place_ready_building(screen_position: Vector2) -> void:
 	_submit_place_building_command(
 		order.building_id, hover_cell, _building_placement.rotation_quarter_turns()
 	)
+	_refresh_building_option_states()
 
 
 ## Mirrors _submit_sell_building_command()'s shape exactly, including its
@@ -1407,6 +1410,9 @@ func execute_place_building_command(command: SimPlaceBuildingCommand) -> void:
 	var is_local_command := command.player_id == _local_player_id()
 	if is_local_command:
 		_committed_placement_cell = null
+		# Keep the close beside the sole clear so every return below ends the
+		# local committed-placement window in the panel as well.
+		_refresh_building_option_states()
 	var queue = building_queue_for_player(command.player_id)
 	var order := queue.current_order()
 	if order == null or not order.ready:
@@ -1628,6 +1634,11 @@ func _refresh_building_option_states() -> void:
 			continue
 
 		if order.ready:
+			if _committed_placement_cell != null:
+				building_option_state_changed.emit(BuildingOptionStateScript.new(
+					building_id, BuildingOptionStateScript.State.PLACING, 100.0, "BUILDING", tooltip
+				))
+				continue
 			var ready_status_text := "PLACE" if _building_placement.is_active() else "READY"
 			building_option_state_changed.emit(BuildingOptionStateScript.new(
 				building_id, BuildingOptionStateScript.State.READY, 100.0, ready_status_text, tooltip

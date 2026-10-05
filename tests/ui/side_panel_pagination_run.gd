@@ -71,6 +71,34 @@ func _initialize() -> void:
 		and building_slot.tooltip_text == "Needs power",
 		"a disabled building slot still shows why it is unavailable"
 	)
+	panel.set_building_option_state(
+		BuildingOptionStateScript.new(
+			&"ATBarracks", BuildingOptionStateScript.State.PLACING, 100.0, "BUILDING", "Placing"
+		)
+	)
+	_expect(
+		building_slot.state == QueueSlot.State.PLACING and building_slot.status_text == "BUILDING",
+		"a placing building slot translates its state and caption without the disabled fallback"
+	)
+	var placing_intents: Array = []
+	building_slot.intent_pressed.connect(
+		func(button_index: int, quantity: int) -> void: placing_intents.append([button_index, quantity])
+	)
+	# Set the widget state directly so this click guard remains independently
+	# covered when the state-translation case above is deliberately mutated.
+	building_slot.state = QueueSlot.State.PLACING
+	building_slot._gui_input(_pressed_mouse_button(MOUSE_BUTTON_LEFT))
+	building_slot._gui_input(_pressed_mouse_button(MOUSE_BUTTON_RIGHT))
+	_expect(placing_intents.is_empty(), "a placing slot emits no left or right intent")
+	placing_intents.clear()
+	building_slot.state = QueueSlot.State.BLOCKED
+	building_slot._gui_input(_pressed_mouse_button(MOUSE_BUTTON_LEFT))
+	building_slot._gui_input(_pressed_mouse_button(MOUSE_BUTTON_RIGHT))
+	_expect(
+		placing_intents.map(func(intent: Array) -> int: return intent[0])
+		== [MOUSE_BUTTON_LEFT, MOUSE_BUTTON_RIGHT],
+		"a blocked slot still emits both intents for busy feedback"
+	)
 
 	var upgrade_ids: Array[StringName] = []
 	for index in SidePanel.QUEUE_PAGE_SIZE + 1:
@@ -153,3 +181,10 @@ func _expect(condition: bool, message: String) -> void:
 		return
 	_failures += 1
 	printerr("FAIL: %s" % message)
+
+
+func _pressed_mouse_button(button_index: int) -> InputEventMouseButton:
+	var event := InputEventMouseButton.new()
+	event.button_index = button_index
+	event.pressed = true
+	return event

@@ -264,6 +264,8 @@ func _queue_slot_state(state: BuildingOptionState.State) -> QueueSlot.State:
 			return QueueSlot.State.PROGRESS
 		BuildingOptionStateScript.State.READY:
 			return QueueSlot.State.READY
+		BuildingOptionStateScript.State.PLACING:
+			return QueueSlot.State.PLACING
 	return QueueSlot.State.DISABLED
 
 
