@@ -3856,18 +3856,38 @@ already play before it is trusted by the mode we cannot yet test.
   difference the entry was asking about.
 
   What survives is the *other* half of the original observation, which decision
-  12 deliberately does not cover: **sell and repair give the player no local
-  echo at all.** `_try_sell_building()` and `_try_toggle_building_repair()`
-  emit a status only when the click resolves to no building; a click that lands
-  submits in silence, and at a real input delay the natural response to silence
-  is to click again. The second sell click is then swallowed by
-  `_sale_service.is_active()` while the first building sells — so the player
-  sells the building they thought they had missed, and hears nothing about the
-  second. The second repair click toggles repair back off, because
-  `execute_repair_building_command()` reads the direction at execution and is
-  right to. Both want the same cheap fix, an echo that claims nothing — the
-  click was *ordered*, not *done*, the way a placement preview claims nothing
-  about buildability — and neither needs a reservation or a deadline.
+  12 deliberately does not cover: sell and repair gave the player no local echo
+  at all. `_try_sell_building()` and `_try_toggle_building_repair()` emitted a
+  status only when the click resolved to no building, so a click that landed
+  submitted in silence — and on the sell side the silence ran all the way
+  through, since execution emits nothing on success either.
+
+  **`AC1` closed the echo half, 2026-10-06.** Both handlers now emit
+  `"%s sale ordered"` / `"%s repair ordered"` the moment the command is
+  submitted. Each claims only that an order was sent, which for repair is
+  forced rather than chosen: `execute_repair_building_command()` reads the
+  toggle direction at execution and is right to, so no click-time message can
+  honestly say "started" or "canceled". A case asserts the echo is present and
+  that **neither** execution string is, because an implementation that read
+  `is_repairing` at click time would emit whichever matched and would pass a
+  one-sided assertion.
+
+  **What is still owed is the harm, not the silence.** At a real input delay the
+  response to silence was to click again, and the echo makes that less likely
+  without preventing it. A second sell click inside the window is still
+  swallowed by `_sale_service.is_active()` while the first building sells — so
+  the player can still sell the building they thought they had missed. A second
+  repair click still toggles repair back off. Preventing either means refusing
+  to send a duplicate while one is in flight, which the command bus's own
+  *"a local check may refuse to send; it may not authorize"* already sanctions
+  and which `_committed_placement_cell` already demonstrates for placement.
+
+  That is deliberately not queued, because it carries a fork nobody has
+  settled: **suppressing a second repair click also removes the player's
+  ability to cancel a repair they just ordered, until it executes.** At a
+  two-tick delay that costs nothing; at a second it is a real loss of control.
+  Whoever picks this up has to choose between a duplicate-proof click and a
+  cancellable one, and that is a product call rather than a netcode one.
 - Production is still single-player-shaped. Under lockstep every client
   simulates every player, so a `SimBuildOrderCommand` carrying `player_id: 2`
   has to open an order in *that* player's queue, tick it against *that*

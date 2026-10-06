@@ -181,8 +181,28 @@ func _initialize() -> void:
 		_test_sell_click_defers_to_the_tick.bind(local_player)
 	)
 	_run_case(
+		"a sell click on a building echoes that the sale was ordered immediately",
+		_test_sell_click_echoes_immediately.bind(local_player)
+	)
+	_run_case(
+		"a sell echo claims nothing about the sale before its command executes",
+		_test_sell_echo_claims_nothing_before_execution.bind(local_player)
+	)
+	_run_case(
 		"a repair click defers the toggle to the tick the command executes on, reading the direction then",
 		_test_repair_click_defers_and_reads_toggle_at_execution.bind(local_player)
+	)
+	_run_case(
+		"a repair click on a building echoes that the repair was ordered immediately",
+		_test_repair_click_echoes_immediately.bind(local_player)
+	)
+	_run_case(
+		"a repair echo does not predict whether repair will start or cancel",
+		_test_repair_echo_does_not_predict_direction.bind(local_player)
+	)
+	_run_case(
+		"a repair click on no building submits nothing and still emits only its status",
+		_test_repair_click_on_no_building_submits_nothing
 	)
 	_run_case(
 		"a place click submits a command and defers instantiating the building to the tick it executes on",
@@ -812,6 +832,74 @@ func _test_sell_click_defers_to_the_tick(token: int, local_player: PlayerData) -
 	return token
 
 
+func _test_sell_click_echoes_immediately(token: int, local_player: PlayerData) -> int:
+	var controller := SaleController.new()
+	root.add_child(controller)
+	_setup_without_assets(controller)
+	var pump := CommandPumpScript.new()
+	pump.configure_queue_controllers(controller)
+	controller._turn_scheduler = pump.turn_scheduler()
+	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
+	pump.install_match_lookup_stub(root)
+
+	var building := ATConYardScene.instantiate() as Building
+	building.owner_player_id = local_player.player_id
+	root.add_child(building)
+	var collider := Node.new()
+	building.add_child(collider)
+	controller.raycast_hit = {"collider": collider}
+	var statuses: Array[String] = []
+	controller.status_changed.connect(func(status: String) -> void: statuses.append(status))
+
+	controller._try_sell_building(Vector2.ZERO)
+	_expect(statuses.has("ATConYard sale ordered"), "a sell click on a building must echo the ordered sale before the pump")
+
+	pump.uninstall_match_lookup_stub()
+	controller.free()
+	building.free()
+	return token
+
+
+func _test_sell_echo_claims_nothing_before_execution(token: int, local_player: PlayerData) -> int:
+	var controller := SaleController.new()
+	root.add_child(controller)
+	_setup_without_assets(controller)
+	var pump := CommandPumpScript.new()
+	pump.configure_queue_controllers(controller)
+	controller._turn_scheduler = pump.turn_scheduler()
+	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
+	pump.install_match_lookup_stub(root)
+
+	var building := ATConYardScene.instantiate() as Building
+	building.owner_player_id = local_player.player_id
+	root.add_child(building)
+	var collider := Node.new()
+	building.add_child(collider)
+	controller.raycast_hit = {"collider": collider}
+	var statuses: Array[String] = []
+	controller.status_changed.connect(func(status: String) -> void: statuses.append(status))
+
+	controller._try_sell_building(Vector2.ZERO)
+	_expect(
+		not controller._sale_service.is_active(local_player.player_id),
+		"a sell echo must not mean the sale has started before its command executes"
+	)
+	_expect(
+		not statuses.has("You can only sell your own buildings"),
+		"a sell echo must not claim the execution-time ownership verdict before the pump"
+	)
+	pump.pump()
+	_expect(
+		controller._sale_service.is_active(local_player.player_id),
+		"the sale must still start once the echoed command executes"
+	)
+
+	pump.uninstall_match_lookup_stub()
+	controller.free()
+	building.free()
+	return token
+
+
 ## Repair's command-bus counterpart: the click must not toggle repair until
 ## the command executes, and -- per SimRepairBuildingCommand's doc comment --
 ## the toggle direction is read off the building at execution time, not
@@ -854,6 +942,88 @@ func _test_repair_click_defers_and_reads_toggle_at_execution(token: int, local_p
 	pump.uninstall_match_lookup_stub()
 	controller.free()
 	building.free()
+	return token
+
+
+func _test_repair_click_echoes_immediately(token: int, local_player: PlayerData) -> int:
+	var controller := SaleController.new()
+	root.add_child(controller)
+	_setup_without_assets(controller)
+	var pump := CommandPumpScript.new()
+	pump.configure_queue_controllers(controller)
+	controller._turn_scheduler = pump.turn_scheduler()
+	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
+	pump.install_match_lookup_stub(root)
+
+	var building := ATConYardScene.instantiate() as Building
+	building.owner_player_id = local_player.player_id
+	building.health = building.max_health - 10.0
+	root.add_child(building)
+	var collider := Node.new()
+	building.add_child(collider)
+	controller.raycast_hit = {"collider": collider}
+	var statuses: Array[String] = []
+	controller.status_changed.connect(func(status: String) -> void: statuses.append(status))
+
+	controller._try_toggle_building_repair(Vector2.ZERO)
+	_expect(statuses.has("ATConYard repair ordered"), "a repair click on a building must echo the ordered repair before the pump")
+
+	pump.uninstall_match_lookup_stub()
+	controller.free()
+	building.free()
+	return token
+
+
+func _test_repair_echo_does_not_predict_direction(token: int, local_player: PlayerData) -> int:
+	var controller := SaleController.new()
+	root.add_child(controller)
+	_setup_without_assets(controller)
+	var pump := CommandPumpScript.new()
+	pump.configure_queue_controllers(controller)
+	controller._turn_scheduler = pump.turn_scheduler()
+	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
+	pump.install_match_lookup_stub(root)
+
+	var building := ATConYardScene.instantiate() as Building
+	building.owner_player_id = local_player.player_id
+	building.health = building.max_health - 10.0
+	root.add_child(building)
+	var collider := Node.new()
+	building.add_child(collider)
+	controller.raycast_hit = {"collider": collider}
+	var statuses: Array[String] = []
+	controller.status_changed.connect(func(status: String) -> void: statuses.append(status))
+
+	controller._try_toggle_building_repair(Vector2.ZERO)
+	_expect(statuses.has("ATConYard repair ordered"), "a repair echo must say only that repair was ordered")
+	_expect(not statuses.has("ATConYard repair started"), "a repair echo must not predict that repair started")
+	_expect(not statuses.has("ATConYard repair canceled"), "a repair echo must not predict that repair canceled")
+
+	pump.uninstall_match_lookup_stub()
+	controller.free()
+	building.free()
+	return token
+
+
+func _test_repair_click_on_no_building_submits_nothing(token: int) -> int:
+	var controller := SaleController.new()
+	root.add_child(controller)
+	_setup_without_assets(controller)
+	var pump := CommandPumpScript.new()
+	controller._turn_scheduler = pump.turn_scheduler()
+	controller._submit_tick_provider = Callable(pump, "next_orderable_tick")
+	controller.raycast_hit = {}
+	var statuses: Array[String] = []
+	controller.status_changed.connect(func(status: String) -> void: statuses.append(status))
+
+	controller._try_toggle_building_repair(Vector2.ZERO)
+	_expect(
+		statuses == ["Select one of your damaged buildings to repair"],
+		"a repair miss click must still emit the existing status, and nothing else"
+	)
+	_expect(pump.bus().pending_count() == 0, "a repair miss click must put nothing on the command bus")
+
+	controller.free()
 	return token
 
 

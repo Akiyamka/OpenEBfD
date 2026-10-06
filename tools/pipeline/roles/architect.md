@@ -77,6 +77,24 @@ The driver sends you exactly one of these. Do the step, write the files, stop.
      name the command and what its output must say.
    - **Risks** — the determinism, module-boundary or tick-rate rules this slice
      comes closest to breaking, from `AGENTS.md`.
+   - **Mutation controls** — for each acceptance case that matters, the edit
+     that must make it fail. `AGENTS.md` is explicit that most of this
+     project's real defects were found by a control that fails, not by a
+     passing test, so a case with no mutation beside it is a case nobody has
+     shown can bite.
+
+     **Trace the mutated code, do not describe the edit.** Four mutations
+     across `AA1`-`AC1` predicted an outcome the edit could not produce, each
+     costing a review round: one removed a guard that a *direct* call in the
+     same case then dereferenced, so the case it was supposed to leave green
+     had to crash; one was invalidated by a later revision changing the
+     condition it keyed on, and the stale prediction was never propagated; one
+     moved a formatted string above a null check, so it died inside the
+     formatter before reaching any assertion. Before writing "case N must
+     fail", walk the mutated path: does it still reach the assertion, which
+     *other* cases now also fail, and is the failure the one named? State
+     every case the mutation breaks — a mutation that breaks two is normal and
+     reporting only one makes the extra failure look like a defect.
 5. Write **`.pipeline/slice.json`** matching `tools/pipeline/schemas/slice.json`.
    Set `revision` to 1 for a fresh slice. Set `needs_godot_tests` true whenever
    the slice touches runtime code — the container suite is slow, so it is opt-in

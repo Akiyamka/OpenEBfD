@@ -858,6 +858,7 @@ func _try_toggle_building_repair(screen_position: Vector2) -> void:
 		status_changed.emit("Select one of your damaged buildings to repair")
 		return
 	_submit_repair_building_command(building)
+	status_changed.emit("%s repair ordered" % _building_name(building))
 
 
 ## Mirrors _submit_build_order_command()'s shape exactly, including its
@@ -1001,6 +1002,7 @@ func _try_sell_building(screen_position: Vector2) -> void:
 		status_changed.emit("Select one of your buildings to sell")
 		return
 	_submit_sell_building_command(building)
+	status_changed.emit("%s sale ordered" % _building_name(building))
 
 
 ## Mirrors _submit_build_order_command()'s shape exactly, including its
