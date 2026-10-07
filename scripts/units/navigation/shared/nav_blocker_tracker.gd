@@ -4,9 +4,10 @@ extends RefCounted
 const OccupyGridScript := preload("res://scripts/buildings/occupy_grid.gd")
 ## Building-blocker bookkeeping: scans placed buildings into the navigation
 ## grid's blocked/no-stop cell sets, diffs the resulting cell changes against
-## each commanded agent's stored route, and drains the resulting dirty-agent
-## queue through a budgeted per-tick reroute so a single building change never
-## bursts every commanded agent's A* in one frame.
+## each commanded agent's stored route, asks idle ground agents stranded on a
+## no-stop cell to yield, and drains the resulting dirty-agent queue through a
+## budgeted per-tick reroute so a single building change never bursts every
+## commanded agent's A* in one frame.
 
 const NavAgentRegistryScript := preload("res://scripts/units/navigation/shared/nav_agent_registry.gd")
 const NavConstantsScript := preload("res://scripts/units/navigation/shared/nav_constants.gd")
@@ -80,6 +81,49 @@ func refresh_building_blockers() -> void:
 			target[cell] = true
 	if _runtime_map.replace_blocked_cells(blocked, no_stop):
 		replan_after_map_change()
+
+
+## Requests a short internal yield for never-commanded ground agents parked on
+## a no-stop apron. Yield expiry supplies their legal parking destination; this
+## method deliberately does not create an order or route of its own.
+func sweep_idle_no_stop_agents() -> void:
+	for agent in _registry.ordered_agents(_agents):
+		if int(agent["command_id"]) != 0:
+			continue
+		if _registry.domain_for(agent) != NavAgentRegistryScript.Domain.GROUND:
+			continue
+		var unit: Node3D = agent["unit"]
+		var unit_position: Vector3 = unit.simulation_position()
+		var origin: Vector2i = _runtime_map.grid.world_to_grid(unit_position)
+		if not _runtime_map.is_no_stop(origin):
+			continue
+		var candidate := _nearest_stoppable_for_idle_agent(origin, agent)
+		if candidate.x < 0:
+			continue
+		var direction: Vector3 = _runtime_map.grid.grid_to_world(candidate, true) - unit_position
+		direction.y = 0.0
+		_ground_navigation.request_yield(unit, direction.normalized())
+
+
+## Matches UnitNavigationPlanner._nearest_stoppable()'s outward ring order so
+## equal-distance parking choices remain deterministic across clients.
+func _nearest_stoppable_for_idle_agent(origin: Vector2i, agent: Dictionary) -> Vector2i:
+	for radius in range(1, NavConstantsScript.NO_STOP_SWEEP_RADIUS_CELLS + 1):
+		for x in range(-radius, radius + 1):
+			for y in [-radius, radius]:
+				var candidate := origin + Vector2i(x, y)
+				if _runtime_map.is_stoppable(
+					candidate, int(agent["pass_mask"]), int(agent["clearance"]), int(agent["terrain_mask"])
+				):
+					return candidate
+		for y in range(-radius + 1, radius):
+			for x in [-radius, radius]:
+				var candidate := origin + Vector2i(x, y)
+				if _runtime_map.is_stoppable(
+					candidate, int(agent["pass_mask"]), int(agent["clearance"]), int(agent["terrain_mask"])
+				):
+					return candidate
+	return Vector2i(-1, -1)
 
 
 ## Blocker refreshes run independently of navigation ticks, so an agent's unit

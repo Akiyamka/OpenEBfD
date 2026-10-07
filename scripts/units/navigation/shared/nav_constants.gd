@@ -10,6 +10,10 @@ const FRIENDLY_YIELD_TRIGGER_SECONDS := 0.2
 const CELL_BUCKET_SIZE := 4.0
 const OCCUPY_CELL_SPAN := 2
 const SLOT_SEARCH_RADIUS := 32
+## The idle no-stop sweep only chooses a direction; yield expiry parks through
+## GroundSlotAllocator, which searches to this same radius. The deepest
+## authored apron measures eight nav cells, but adjacent aprons merge.
+const NO_STOP_SWEEP_RADIUS_CELLS := SLOT_SEARCH_RADIUS
 ## 0.52 s of wall-clock, rounded up from 0.5 s (10 ticks at the old 20 Hz
 ## navigation tick) so the anti flip-flop damping is never weakened by the
 ## move to 25 Hz -- see docs/architecture/network-multiplayer.md, phase 3,

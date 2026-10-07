@@ -477,6 +477,38 @@ The mechanic:
    agent whose destination stops being stoppable, with a reroute budget; the
    missing piece is the idle unit, since that function skips an agent whose
    `command_id` is not positive — and an idle unit is exactly the parked scout.
+   **The idle half landed in `AD1`:** `sweep_idle_no_stop_agents()` runs on the
+   same blocker-refresh cadence, immediately after the refresh that may have
+   just created the apron, and asks every never-commanded ground agent standing
+   on a no-stop cell to yield toward the nearest stoppable one. It needed none
+   of items 1 through 3, which is what corrected the sequencing claim at the end
+   of this decision: aprons and skirts already exist without any reservation, so
+   there was already a population of stranded idle units to clear. Three things
+   it deliberately is not. It creates no order and no route — `request_yield()`
+   is internal steering by its own doc comment, and the yield's *expiry* is what
+   supplies the legal parking destination, through the `command_id == 0` branch
+   that was already there. It is bounded to exactly that zero, not to `<= 0`,
+   because `stop()` does not clear `command_id`: the expiry branch walks a
+   positive-id agent back to `agent["destination"]`, which `stop()` left on the
+   stranded cell, so a wider boundary would oscillate rather than relocate. And
+   it does not touch `UnitPushAside`, whose teleport is still what clears a
+   footprint at placement. The other half — walking units out of a *reserved*
+   footprint — still waits on item 2, because there is no reservation to walk
+   out of yet. How far the sweep has to reach is a measurement, recorded here
+   because the plan brief that got it wrong is not kept: across the 152 building
+   definitions in `assets/converted/rules/buildings/`, 54 author at least one
+   `s`/`d`/`p` marker, and expanding each footprint at `OCCUPY_CELL_SPAN` puts
+   the deepest no-stop nav cell **8 nav cells** from the nearest cell that is
+   neither no-stop nor solid body — `ATStarport`, `HKStarport` and
+   `SMStarport`, whose rows 5 to 10 are entirely `d`/`s` under two rows of solid
+   `b` — with four of the five refineries at 7, `ORStarport` at 6, and **21 of
+   the 54 deeper than 4**. The sweep's bound is therefore not
+   derived from apron geometry at all but from
+   `GroundSlotAllocator.claim_anchor()`'s `SLOT_SEARCH_RADIUS`, since that is
+   what assigns the destination when the yield expires: a shorter reach would
+   decline to move a unit for which parking would have found a slot, and because
+   there is one `_blocked`/`_no_stop` overlay per match, two adjacent production
+   buildings' aprons merge into a field deeper than either alone.
 5. The ready-building icon gains a **third, non-interactive state**: it reads
    as building rather than placeable, cannot cancel the order and cannot order
    another. The rest of the construction tab is already `BLOCKED` while any
@@ -518,16 +550,25 @@ seconds at a time — immobile, and inside the placing player's build radius,
 which is a far worse trade for its owner than a scout was. The abuse is priced,
 not removed.
 
-**Landed so far: `AA1` and `AB1`** — an immobile unit inside the footprint
-refuses the placement, friend-filtered at the click and owner-blind at
-execution (`AA1`), and the ready icon shows a third, non-interactive state
-while its placement command is in flight (`AB1`). The pending state, the
-deadline, the reservation, the walk-out and the wall deferral are each still
-owed. Of those, only the wall deferral could in principle go next on its own;
-items 1 through 4 are mutually dependent, because a reservation needs
-something to reserve, the walk-out needs the reservation, and a deadline with
-nothing to make a footprint clear itself would either regress placement or
-never fire.
+**Landed so far: `AA1`, `AB1` and `AD1`** — an immobile unit inside the
+footprint refuses the placement, friend-filtered at the click and owner-blind at
+execution (`AA1`); the ready icon shows a third, non-interactive state while its
+placement command is in flight (`AB1`); and an idle unit parked on a no-stop
+cell is asked to step off it (`AD1`, the idle half of item 4). The pending
+state, the deadline, the reservation, the walk-out from a reserved footprint and
+the wall deferral are each still owed.
+
+**Correction, 2026-10-07:** this paragraph used to say that items 1 through 4
+are mutually dependent and that only the wall deferral could go next on its own.
+`AD1` is the counter-example, and a human decision of 2026-10-06 is what took
+it — not an argument found here, which had the sequencing wrong. Item 4's idle
+half needed no reservation, because the `_no_stop` set is already populated
+today by every building apron and skirt `refresh_building_blockers()` writes
+from an `s`, `d` or `p` marker. What survives of the claim is narrower: items 1,
+2 and 3 are mutually dependent, because a reservation needs something to reserve
+and a deadline with nothing to make a footprint clear itself would either
+regress placement or never fire; item 6 needs item 1; and only item 4's
+*reserved-footprint* half needs item 2.
 
 ## Layering
 
@@ -3888,6 +3929,21 @@ already play before it is trusted by the mode we cannot yet test.
   two-tick delay that costs nothing; at a second it is a real loss of control.
   Whoever picks this up has to choose between a duplicate-proof click and a
   cancellable one, and that is a product call rather than a netcode one.
+
+  **Deferred to phase 6 by human decision, 2026-10-06, and the fork is not to
+  be picked before then.** This is the same class of problem as the one
+  `UnitCommandController.on_command_executed()` already names in its own doc
+  comment — that once phase 5 raises the delay for real play an
+  acknowledgement *"necessarily arrives noticeably late relative to the click
+  that caused it, and hiding that gap behind an optimistic guess of the outcome
+  is phase 6's job, not this method's"*. A move order has the identical hole
+  and is not getting an early answer either. Phase 6 owns **cosmetic
+  prediction**, and once that exists the window this fork argues about may
+  shrink or disappear for the same reason it would for movement: a predicted
+  acknowledgement makes the second click unnecessary rather than harmless, so
+  neither suppression nor cancellability has to be chosen in the abstract
+  first. Resolving it now would be picking between two answers to a question
+  phase 6 may dissolve. The behaviour stays exactly as `AC1` left it.
 - Production is still single-player-shaped. Under lockstep every client
   simulates every player, so a `SimBuildOrderCommand` carrying `player_id: 2`
   has to open an order in *that* player's queue, tick it against *that*

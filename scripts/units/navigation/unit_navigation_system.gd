@@ -874,6 +874,7 @@ func sim_tick() -> void:
 	if _blocker_refresh_remaining <= 0.0:
 		_blocker_refresh_remaining = BLOCKER_REFRESH_SECONDS
 		_refresh_building_blockers()
+		blocker_tracker.sweep_idle_no_stop_agents()
 
 
 func _navigation_tick() -> void:
