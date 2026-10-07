@@ -25,6 +25,7 @@ var _slot_allocator
 var _path_follower
 var _ground_navigation
 var _owns_node: Callable
+var _reserved_cells_provider: Callable
 
 
 func setup(
@@ -47,11 +48,16 @@ func setup(
 	_owns_node = owns_node
 
 
+func set_reserved_cells_provider(provider: Callable) -> void:
+	_reserved_cells_provider = provider
+
+
 func refresh_building_blockers() -> void:
 	if not _facade.is_inside_tree() or _runtime_map.grid == null:
 		return
 	var blocked := {}
 	var no_stop := {}
+	var reserved_no_stop := {}
 	# "sim_buildings", not "buildings": this rebuilds the blocked-cell grid
 	# from UnitNavigationSystem.sim_tick() (periodically) and setup() (once),
 	# both simulation-side call sites. A building "buildings" lists but
@@ -79,7 +85,11 @@ func refresh_building_blockers() -> void:
 			var marker := String(footprint[cell]).to_lower()
 			var target := no_stop if marker in ["s", "d", "p"] else blocked
 			target[cell] = true
-	if _runtime_map.replace_blocked_cells(blocked, no_stop):
+	if _reserved_cells_provider.is_valid():
+		for cell in _reserved_cells_provider.call():
+			no_stop[cell] = true
+			reserved_no_stop[cell] = true
+	if _runtime_map.replace_blocked_cells(blocked, no_stop, reserved_no_stop):
 		replan_after_map_change()
 
 
@@ -218,7 +228,8 @@ func process_reroute_queue() -> void:
 		var span := int(agent["footprint"])
 		var destination_anchor: Vector2i = _slot_allocator.parking_anchor(destination, span)
 		var destination_stoppable: bool = _slot_allocator.block_stoppable(destination_anchor, span, agent)
-		if bool(agent.get("no_stop_destination", false)) and destination_stoppable:
+		var destination_reserved: bool = _slot_allocator.block_has_reserved_no_stop(destination_anchor, span)
+		if bool(agent.get("no_stop_destination", false)) and (destination_stoppable or destination_reserved):
 			agent["no_stop_destination"] = false
 		if not destination_stoppable \
 		and not (bool(agent.get("no_stop_destination", false)) and _slot_allocator.block_passable(destination_anchor, span, agent)):

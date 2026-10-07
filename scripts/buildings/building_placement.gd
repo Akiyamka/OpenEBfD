@@ -186,6 +186,19 @@ func has_immobile_unit_in_footprint(
 	return false
 
 
+## The pending-placement reservation is transit space that no unit may be
+## ordered to park on. It uses the complete rotated footprint, unlike a placed
+## building's body/skirt classification, because no building exists yet.
+func reserved_nav_cells(
+		occupy_rows: Array[String], rotation_turns: int, hover_cell: Vector2i
+	) -> Array[Vector2i]:
+	if not is_inside_tree() or _navigation_grid == null or not _navigation_grid.is_loaded():
+		return []
+	var rotated_rows := _rotated_occupy_rows(occupy_rows, rotation_turns)
+	var anchor_cell := _anchor_for_hover_cell_for(hover_cell, rotated_rows)
+	return OccupyGridScript.nav_cells(anchor_cell, rotated_rows, NAV_CELLS_PER_OCCUPY_CELL)
+
+
 func _exit_tree() -> void:
 	if not _occupied_cells_tracking_started:
 		return

@@ -371,6 +371,9 @@ func _setup_building_controller() -> void:
 		_turn_scheduler,
 		Callable(self, "next_orderable_tick")
 	)
+	_unit_navigation_system.set_reserved_cells_provider(
+		Callable(_building_controller, "pending_placement_reserved_nav_cells")
+	)
 	_building_controller.interaction_mode_changed.connect(_on_building_interaction_mode_changed)
 
 

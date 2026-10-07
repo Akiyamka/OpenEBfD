@@ -174,6 +174,12 @@ func setup(source_grid: MapNavigationGrid) -> bool:
 	return true
 
 
+## Facade seam for match-wide no-stop contributors. Navigation owns rebuilding
+## the map, so callers provide cells rather than writing into it directly.
+func set_reserved_cells_provider(provider: Callable) -> void:
+	blocker_tracker.set_reserved_cells_provider(provider)
+
+
 func register_unit(unit: Node3D) -> int:
 	return registry.register_unit(_agents, unit, _debug_enabled)
 
@@ -310,7 +316,6 @@ func can_move_to(units: Array, world_target: Vector3) -> bool:
 	if runtime_map.grid == null:
 		return false
 	var target_cell: Vector2i = runtime_map.grid.world_to_grid(world_target)
-	var allow_no_stop: bool = runtime_map.is_no_stop(target_cell)
 	for value in units:
 		var unit := value as Node3D
 		if unit == null:
@@ -321,6 +326,9 @@ func can_move_to(units: Array, world_target: Vector3) -> bool:
 			if air_navigation.in_bounds(world_target):
 				return true
 			continue
+		var target_anchor := slot_allocator.parking_anchor(world_target, int(agent["footprint"]))
+		var allow_no_stop: bool = runtime_map.is_no_stop(target_cell) \
+			and not slot_allocator.block_has_reserved_no_stop(target_anchor, int(agent["footprint"]))
 		if _ground_target_is_legal(agent, world_target, allow_no_stop) \
 		and _ground_target_is_reachable(unit, agent, world_target, allow_no_stop):
 			return true
@@ -362,15 +370,14 @@ func command_move(units: Array, world_target: Vector3, mode := NavConstantsScrip
 	# action. Blocked clicks are retained: slot allocation deliberately turns
 	# those into a reachable approach point on the unit's side of the obstacle.
 	remaining = []
-	var clicked_no_stop: bool = runtime_map.grid != null \
-		and runtime_map.is_no_stop(runtime_map.grid.world_to_grid(world_target))
+	var target_cell: Vector2i = runtime_map.grid.world_to_grid(world_target) if runtime_map.grid != null else Vector2i(-1, -1)
 	for unit in ordered:
 		var agent: Dictionary = registry.movement_probe_for(_agents, unit)
 		var is_air := int(agent["pass_mask"]) == MapNavigationGridScript.PASS_AIR \
 			and registry.domain_for({"pass_mask": agent["pass_mask"], "unit": unit}) == NavAgentRegistryScript.Domain.AIR
 		if not is_air \
-		and _ground_target_is_legal(agent, world_target, clicked_no_stop) \
-		and not _ground_target_is_reachable(unit, agent, world_target, clicked_no_stop):
+		and _ground_target_is_legal(agent, world_target, _allows_explicit_no_stop_target(agent, target_cell, world_target)) \
+		and not _ground_target_is_reachable(unit, agent, world_target, _allows_explicit_no_stop_target(agent, target_cell, world_target)):
 			continue
 		remaining.append(unit)
 	ordered = remaining
@@ -1041,6 +1048,15 @@ func _ground_target_is_legal(agent: Dictionary, world_target: Vector3, allow_no_
 	var anchor: Vector2i = slot_allocator.parking_anchor(world_target, span)
 	return slot_allocator.block_passable(anchor, span, agent) if allow_no_stop \
 		else slot_allocator.block_stoppable(anchor, span, agent)
+
+
+func _allows_explicit_no_stop_target(agent: Dictionary, target_cell: Vector2i, world_target: Vector3) -> bool:
+	if not runtime_map.is_no_stop(target_cell):
+		return false
+	var span := int(agent["footprint"])
+	return not slot_allocator.block_has_reserved_no_stop(
+		slot_allocator.parking_anchor(world_target, span), span
+	)
 
 
 func _ground_target_is_reachable(

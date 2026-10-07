@@ -139,7 +139,9 @@ func assign_slots(agents: Dictionary, units: Array[Node3D], world_target: Vector
 	var result: Array[Dictionary] = []
 	var occupied: Array[Dictionary] = []
 	var spacing := largest_footprint(agents, units) + NavConstantsScript.PARKING_GAP_CELLS
-	var allow_no_stop: bool = _runtime_map.is_no_stop(_runtime_map.grid.world_to_grid(world_target))
+	var target_cell: Vector2i = _runtime_map.grid.world_to_grid(world_target)
+	var allow_no_stop: bool = _runtime_map.is_no_stop(target_cell) \
+		and not _runtime_map.is_reserved_no_stop(target_cell)
 	for index in units.size():
 		var unit := units[index]
 		var unit_position: Vector3 = unit.simulation_position()
@@ -193,7 +195,9 @@ func shared_target_assignments(agents: Dictionary, units: Array[Node3D], world_t
 	# point. A group scattered wider than its resting size is being GATHERED:
 	# claims run center-out from the target so the pack fills up tight.
 	var gather := spread > pack_radius * 1.5
-	var allow_no_stop: bool = _runtime_map.is_no_stop(_runtime_map.grid.world_to_grid(world_target))
+	var target_cell: Vector2i = _runtime_map.grid.world_to_grid(world_target)
+	var allow_no_stop: bool = _runtime_map.is_no_stop(target_cell) \
+		and not _runtime_map.is_reserved_no_stop(target_cell)
 	for index in units.size():
 		var unit := units[index]
 		var unit_position: Vector3 = unit.simulation_position()
@@ -449,6 +453,8 @@ func claim_passable_anchor(
 			var anchor := preferred + offset
 			if not block_passable(anchor, span, agent):
 				continue
+			if block_has_reserved_no_stop(anchor, span):
+				continue
 			if not anchor_reachable(anchor, agent, from, true):
 				continue
 			var occupied_block := false
@@ -493,6 +499,16 @@ func block_passable(anchor: Vector2i, span: int, agent: Dictionary) -> bool:
 			):
 				return false
 	return body_fits(anchor, span, agent)
+
+
+## A pending placement remains traversable, but it cannot be a parking block --
+## even when a neighbouring authored apron makes this an explicit no-stop move.
+func block_has_reserved_no_stop(anchor: Vector2i, span: int) -> bool:
+	for y in span:
+		for x in span:
+			if _runtime_map.is_reserved_no_stop(anchor + Vector2i(x, y)):
+				return true
+	return false
 
 
 func block_stoppable(anchor: Vector2i, span: int, agent: Dictionary) -> bool:

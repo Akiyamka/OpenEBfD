@@ -34,6 +34,8 @@ const DoubleClickTrackerScript := preload("res://scripts/buildings/double_click_
 const CursorManagerScript := preload("res://scripts/ui/cursor_manager.gd")
 const GameSettingsCatalogScript := preload("res://scripts/rules/game_settings_catalog.gd")
 const BuildingRepairServiceScript := preload("res://scripts/production/building_repair_service.gd")
+const PendingPlacementScript := preload("res://scripts/buildings/pending_placement.gd")
+const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 const PlacementPointerGestureScript := preload("res://scripts/buildings/placement_pointer_gesture.gd")
 const BuildingSaleServiceScript := preload("res://scripts/production/building_sale_service.gd")
 const BuildingCatalogViewScript := preload("res://scripts/buildings/building_catalog_view.gd")
@@ -110,9 +112,9 @@ var _building_queue: BuildingQueue:
 var _building_placement: BuildingPlacement = BuildingPlacementScript.new()
 ## Null when no placement command is in flight; set to the clicked nav cell by
 ## _try_place_ready_building() the instant it submits a SimPlaceBuildingCommand,
-## and cleared by execute_place_building_command() the instant that command
-## executes -- every branch, including the stale-command early return, so no
-## outcome can leave this set (see that method's doc comment). Between those
+## and cleared when that command resolves -- every terminal branch, including
+## a stale-command early return or pending-placement deadline, so no outcome
+## can leave this set (see that method's doc comment). Between those
 ## two points a committed placement counts as already placed for input
 ## purposes, matching what the player saw before the command bus, when the
 ## click placed the building synchronously: process() pins the preview here
@@ -146,6 +148,7 @@ var _repair_mode: bool:
 ## down only if the player cancels before the next whole credit is due).
 var _repair_service = BuildingRepairServiceScript.new()
 var _sale_service = BuildingSaleServiceScript.new()
+var _pending_placement = PendingPlacementScript.new()
 var _wall_line_mode: bool:
 	get:
 		return _mode == Mode.WALL_LINE
@@ -283,6 +286,16 @@ func process(_delta: float) -> void:
 ## snapshot in their fixed order.
 func advance_tick() -> void:
 	_process_repairs()
+	_pending_placement.advance_tick(
+		Callable(self, "_retry_pending_placement"), Callable(self, "_expire_pending_placement")
+	)
+
+
+## Navigation reads this through a callable provider, rather than retaining a
+## BuildingController reference. The pending module itself has only command
+## input, so this controller supplies the rule lookup and footprint seam.
+func pending_placement_reserved_nav_cells() -> Array[Vector2i]:
+	return _pending_placement.reserved_nav_cells(Callable(self, "_reserved_cells_for_pending_entry"))
 
 
 ## ProductionSystem owns queues in both shipping matches and controller tests.
@@ -1409,88 +1422,152 @@ func _submit_place_building_command(
 ## first evaluate terrain and occupancy, then report a missing scene only when
 ## that verdict is valid. Every local failure keeps its prior status string.
 func execute_place_building_command(command: SimPlaceBuildingCommand) -> void:
-	var is_local_command := command.player_id == _local_player_id()
-	if is_local_command:
-		_committed_placement_cell = null
-		# Keep the close beside the sole clear so every return below ends the
-		# local committed-placement window in the panel as well.
-		_refresh_building_option_states()
 	var queue = building_queue_for_player(command.player_id)
 	var order := queue.current_order()
 	if order == null or not order.ready:
+		_resolve_committed_placement(command.player_id)
 		return
 	if order.building_id != command.building_id:
+		_resolve_committed_placement(command.player_id)
 		return
+	if _attempt_pending_placement(
+		command.player_id, command.building_id, command.nav_cell, command.rotation_quarter_turns
+	):
+		return
+	_pending_placement.begin(
+		command.player_id,
+		command.building_id,
+		command.nav_cell,
+		command.rotation_quarter_turns,
+		5 * MatchClockScript.TICKS_PER_SECOND
+	)
+
+
+## Re-evaluates the exact placement verdict ladder the command took. `false`
+## has one meaning: an immobile unit still occupies the footprint. Every other
+## branch is terminal, because terrain, scenes and buildings cannot become a
+## valid target by waiting.
+func _attempt_pending_placement(
+		player_id: int, building_id: StringName, nav_cell: Vector2i, rotation_quarter_turns: int
+	) -> bool:
+	var is_local_command := player_id == _local_player_id()
+	var queue = building_queue_for_player(player_id)
+	var order := queue.current_order()
+	if order == null or not order.ready or order.building_id != building_id:
+		_resolve_committed_placement(player_id)
+		return true
 
 	var config := _building_config(order.building_id)
 	var occupy_rows := _building_occupy_rows(config)
 	if occupy_rows.is_empty():
 		if is_local_command:
 			status_changed.emit("%s has no occupy_rows" % order.display_name)
-		return
+		_resolve_committed_placement(player_id)
+		return true
 	if _building_placement.has_immobile_unit_in_footprint(
-		occupy_rows, command.rotation_quarter_turns, command.nav_cell, null
+		occupy_rows, rotation_quarter_turns, nav_cell, null
 	):
-		if is_local_command:
-			status_changed.emit("%s cannot be placed there" % order.display_name)
-		return
+		return false
 	var is_wall := _is_wall_building_id(order.building_id)
 	match _building_placement.place_without_preview(
 		order.building_id, order.display_name, occupy_rows, is_wall,
-		command.rotation_quarter_turns, command.nav_cell, null, command.player_id
+		rotation_quarter_turns, nav_cell, null, player_id
 	):
 		BuildingPlacementScript.PlaceResult.NEEDS_TERRAIN:
 			if is_local_command:
 				status_changed.emit("%s placement needs terrain" % order.display_name)
-			return
+			_resolve_committed_placement(player_id)
+			return true
 		BuildingPlacementScript.PlaceResult.CANNOT_BUILD:
 			if is_local_command:
 				status_changed.emit("%s cannot be placed there" % order.display_name)
-			return
+			_resolve_committed_placement(player_id)
+			return true
 		BuildingPlacementScript.PlaceResult.INACTIVE:
 			if is_local_command:
 				status_changed.emit("%s has no occupy_rows" % order.display_name)
-			return
+			_resolve_committed_placement(player_id)
+			return true
 	var scene_path := _building_scene_path(order.building_id)
 	if not ResourceLoader.exists(scene_path):
 		if is_local_command:
 			status_changed.emit(
 				"%s placement valid; missing scene %s" % [order.display_name, scene_path]
 			)
-		return
+		_resolve_committed_placement(player_id)
+		return true
 	var scene := load(scene_path) as PackedScene
 	match _building_placement.place_without_preview(
 		order.building_id,
 		order.display_name,
 		occupy_rows,
 		_is_wall_building_id(order.building_id),
-		command.rotation_quarter_turns,
-		command.nav_cell,
+		rotation_quarter_turns,
+		nav_cell,
 		scene,
-		command.player_id
+		player_id
 	):
 		BuildingPlacementScript.PlaceResult.NEEDS_TERRAIN:
 			if is_local_command:
 				status_changed.emit("%s placement needs terrain" % order.display_name)
-			return
+			_resolve_committed_placement(player_id)
+			return true
 		BuildingPlacementScript.PlaceResult.CANNOT_BUILD:
 			if is_local_command:
 				status_changed.emit("%s cannot be placed there" % order.display_name)
-			return
+			_resolve_committed_placement(player_id)
+			return true
 		BuildingPlacementScript.PlaceResult.INACTIVE:
-			return
+			_resolve_committed_placement(player_id)
+			return true
 		BuildingPlacementScript.PlaceResult.PLACED:
 			queue.take_ready()
 			if is_local_command:
 				_building_placement.cancel()
 				status_changed.emit("%s placed" % order.display_name)
-				_refresh_building_option_states()
+			_resolve_committed_placement(player_id)
+			return true
 		BuildingPlacementScript.PlaceResult.INVALID_SCENE:
 			if is_local_command:
 				status_changed.emit("%s scene is not a Node3D" % order.display_name)
+			_resolve_committed_placement(player_id)
+			return true
 		BuildingPlacementScript.PlaceResult.MISSING_BUILDINGS_ROOT:
 			if is_local_command:
 				status_changed.emit("Buildings root is missing")
+			_resolve_committed_placement(player_id)
+			return true
+	return true
+
+
+func _retry_pending_placement(player_id: int, entry) -> bool:
+	return _attempt_pending_placement(
+		player_id, entry.building_id, entry.nav_cell, entry.rotation_quarter_turns
+	)
+
+
+func _expire_pending_placement(player_id: int, entry) -> void:
+	if player_id == _local_player_id():
+		var order := building_queue_for_player(player_id).current_order()
+		if order != null and order.ready and order.building_id == entry.building_id:
+			status_changed.emit("%s cannot be placed there" % order.display_name)
+	_resolve_committed_placement(player_id)
+
+
+func _reserved_cells_for_pending_entry(_player_id: int, entry) -> Array[Vector2i]:
+	var occupy_rows := _building_occupy_rows(_building_config(entry.building_id))
+	return _building_placement.reserved_nav_cells(
+		occupy_rows, entry.rotation_quarter_turns, entry.nav_cell
+	)
+
+
+## The one exit from the local committed-placement window. Keeping the refresh
+## beside the clear prevents pending, refused and placed outcomes drifting.
+func _resolve_committed_placement(player_id: int) -> void:
+	if player_id != _local_player_id():
+		return
+	_committed_placement_cell = null
+	_refresh_building_option_states()
 
 
 ## Mirrors _submit_place_building_command()'s shape exactly, including its

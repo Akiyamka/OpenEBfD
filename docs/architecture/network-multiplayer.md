@@ -462,15 +462,55 @@ The mechanic:
 2. Confirmation is evaluated **every tick**; the deadline is only where the
    attempt is given up. A unit crossing the site therefore costs a tick or two
    rather than the placement.
-3. The reserved footprint becomes **no-stop for every player** — the `_no_stop`
-   set `UnitNavigationMap.replace_blocked_cells()` already takes, not a new
+
+   **Items 1 and 2 landed together in `AE1`**, because they are one mechanism
+   seen from two ends. `PendingPlacement` holds one entry per player and
+   `BuildingController.advance_tick()` re-runs the entire placement verdict
+   ladder against it every tick. Exactly one verdict defers: an immobile unit
+   in the footprint. Terrain, build radius, a cell another building has taken,
+   a missing scene and a stale order all stay immediate, because none of them
+   becomes valid by waiting and a pending state that waits for terrain to move
+   would be a bug dressed as a feature. The retry shares **one** copy of that
+   ladder with the command path, which the command bus's "one dispatch" rule
+   exists to force — the ladder is nine branches long, and a second copy is a
+   verdict the next slice updates in only one of them. The per-player entries
+   are iterated in insertion order on purpose, and that order is the priority
+   rule: two overlapping reservations that clear on the same tick are retried
+   in the order the bus executed their commands, so the loser's retry finds a
+   building rather than a unit and takes the immediate `CANNOT_BUILD` exit on
+   that same tick. Sorting by `player_id` instead would hand priority to the
+   lower-numbered player, which is arbitrary where "whose command ran first"
+   is not.
+3. The reserved footprint becomes **no-stop for every player** — not a new
    per-player capability, which the map could not express anyway: there is one
    blocked overlay per match, shared by every player. Any unit may cross a
-   reservation; none may be ordered to park on it, because
-   `UnitNavigationPlanner._nearest_stoppable()` already snaps a destination out
-   of a no-stop cell. That is what prices out the denial the original game
-   permits, where one parked scout stops a build site for as long as it stands
-   there.
+   reservation; none may be ordered to park on it. That is what prices out the
+   denial the original game permits, where one parked scout stops a build site
+   for as long as it stands there.
+
+   **Landed in `AE1`, and it needed a third cell set rather than the `_no_stop`
+   one this paragraph used to name.** The claim here was that
+   `UnitNavigationPlanner._nearest_stoppable()` "already snaps a destination out
+   of a no-stop cell", so a reservation needed no navigation behaviour of its
+   own. That is false for precisely the case the mechanic exists to stop. A
+   no-stop cell the player *explicitly aims at* is a legal parking destination
+   **on purpose**: `UnitNavigationSystem` derives `allow_no_stop` from
+   `runtime_map.is_no_stop(target_cell)`, and `GroundNavigation` then adds that
+   destination to `_nearest_stoppable()`'s `stoppable_no_stop_cells` exception
+   set — which is how a harvester is sent onto a refinery apron at all. Folding
+   reservations into `_no_stop` alone would have left the scout denial fully
+   available to anybody who clicked *on* the build site, which is the only way
+   anyone would do it.
+
+   So `UnitNavigationMap` now carries `_reserved_no_stop` beside `_blocked` and
+   `_no_stop`: no-stop like an apron, but never eligible as a stop even when
+   explicitly named. Five places ask it, and the list is the interesting part
+   because it is what "an apron you may be sent to, a reservation you may not"
+   costs — the order path (`command_move()`), the read-only legality answer
+   (`can_move_to()`, which feeds the cursor), both slot-assignment entry points,
+   the passable-anchor claim, and the reroute of an agent whose existing
+   no-stop destination *becomes* reserved under it. The reservation stays
+   traversable throughout; only stopping is refused.
 4. Units standing in the footprint **walk out** instead of being teleported,
    replacing `UnitPushAside`'s `set_simulation_position()` write.
    `NavBlockerTracker.process_reroute_queue()` already relocates a *commanded*
@@ -494,7 +534,9 @@ The mechanic:
    it does not touch `UnitPushAside`, whose teleport is still what clears a
    footprint at placement. The other half — walking units out of a *reserved*
    footprint — still waits on item 2, because there is no reservation to walk
-   out of yet. How far the sweep has to reach is a measurement, recorded here
+   out of yet — item **3**, the reservation, not item 2 as this sentence said
+   until `AE1` landed it. How far the sweep has to reach is a measurement,
+   recorded here
    because the plan brief that got it wrong is not kept: across the 152 building
    definitions in `assets/converted/rules/buildings/`, 54 author at least one
    `s`/`d`/`p` marker, and expanding each footprint at `OCCUPY_CELL_SPAN` puts
@@ -514,7 +556,12 @@ The mechanic:
    another. The rest of the construction tab is already `BLOCKED` while any
    order is in flight, so only that one icon changes. **Landed in `AB1`** as
    `BuildingOptionState.State.PLACING` with the caption `BUILDING`, against the
-   window that already exists — the one `input_delay_ticks` long. Two things
+   window that existed then — the one `input_delay_ticks` long. **`AE1` made
+   that window the pending state's**, exactly as `AB1` anticipated: the icon now
+   holds `PLACING` until the placement *resolves*, up to five seconds plus the
+   input delay, and `AB1`'s own case asserting that an authority refusal
+   restores the ready icon was inverted to assert it does not — the refusal is
+   no longer an outcome, it is the start of the wait. Two things
    that slice settled are worth keeping here, because both are invisible from
    the outside. `QueueSlot` does not use `BaseButton.pressed` for slot intent;
    it overrides `_gui_input()` and emits its own `intent_pressed`, so
@@ -550,13 +597,20 @@ seconds at a time — immobile, and inside the placing player's build radius,
 which is a far worse trade for its owner than a scout was. The abuse is priced,
 not removed.
 
-**Landed so far: `AA1`, `AB1` and `AD1`** — an immobile unit inside the
+**Landed so far: `AA1`, `AB1`, `AD1` and `AE1`** — an immobile unit inside the
 footprint refuses the placement, friend-filtered at the click and owner-blind at
 execution (`AA1`); the ready icon shows a third, non-interactive state while its
-placement command is in flight (`AB1`); and an idle unit parked on a no-stop
-cell is asked to step off it (`AD1`, the idle half of item 4). The pending
-state, the deadline, the reservation, the walk-out from a reserved footprint and
-the wall deferral are each still owed.
+placement command is in flight (`AB1`); an idle unit parked on a no-stop cell is
+asked to step off it (`AD1`, the idle half of item 4); and a blocked placement
+now waits up to five seconds for its site to clear, reserving the footprint
+against being parked on while it waits (`AE1`, items 1, 2 and 3).
+
+**Still owed: item 4's reserved-footprint half and item 6's wall deferral.**
+Item 4 now has the reservation it was waiting for, and what it removes is
+`UnitPushAside`'s `set_simulation_position()` teleport — which is also what
+makes `AE1`'s wait productive for a *mobile* unit, since today one is shoved
+aside before any verdict can defer. Item 6 has item 1, so the wall skip can
+start waiting for the deadline instead of being decided instantly.
 
 **Correction, 2026-10-07:** this paragraph used to say that items 1 through 4
 are mutually dependent and that only the wall deferral could go next on its own.
@@ -3944,35 +3998,30 @@ already play before it is trusted by the mode we cannot yet test.
   neither suppression nor cancellability has to be chosen in the abstract
   first. Resolving it now would be picking between two answers to a question
   phase 6 may dissolve. The behaviour stays exactly as `AC1` left it.
-- Production is still single-player-shaped. Under lockstep every client
-  simulates every player, so a `SimBuildOrderCommand` carrying `player_id: 2`
-  has to open an order in *that* player's queue, tick it against *that*
-  player's credits, and hand the finished building to *that* player. Today it
-  would take the one queue there is, spend the local player's money, write into
-  the local player's sidebar, and place a building owned by
-  `local_player_id`.
+- ~~Production is still single-player-shaped.~~ **Resolved by track `D`;
+  re-checked 2026-10-07 while landing `AE1`.** The entry stood in the present
+  tense long after the work it described had landed, which is the failure mode
+  a resolved question left in an open-questions list always has: it said "today
+  it would take the one queue there is, spend the local player's money, write
+  into the local player's sidebar, and place a building owned by
+  `local_player_id`", and all four clauses are now false.
 
-  The roster is already ready for this: `PlayerRoster` holds a `PlayerData` per
-  player, each with its own credits, energy and purchased upgrades. The queues
-  are not. `BuildingController` owns a single `_building_queue`, and
-  `UnitRosterController` keys its queues by production-building id rather than
-  by player; both read costs through `_local_player()`. Every player needs its
-  own queues, its own resources — those exist — and its own option/availability
-  state, which today is computed once, for whoever is local.
+  It was sliced as `D1` through `D6`, every one of which has a row in
+  [`slices.md`](slices.md), and the separation it called for is the separation
+  that exists: the queue and its economics are per player
+  (`ProductionSystem.build_queue_for_player()`, with
+  `queue.advance_tick(player.money, Callable(player, &"spend_money"))` charging
+  *that* player), availability is asked per player
+  (`_is_building_available_for_player(player_id, building_id)`), and the sidebar
+  is the one thing rendered for the local player only — which was the intended
+  end state, not a gap. `SimPlaceBuildingCommand` carries `player_id` and every
+  branch of `execute_place_building_command()` keys off it, including `AE1`'s
+  per-player pending entries.
 
-  So the fix is not to look the queue up by `player_id`. It is to separate the
-  three roles `BuildingController` currently shares: the queue and its
-  economics (simulation, per player), the sidebar's option state (per player as
-  data, rendered only for the local one), and input handling (local only). That
-  separation is phase 3's work — the same move that takes state out of the view
-  objects — and `player_id` selecting a queue falls out of it afterwards.
-  **Sliced 2026-08-28 as track `D`** (`D1` through `D6`, in the tracks D and E
-  entry under phase 3): the three roles separate in that order, `D1` first
-  because the availability verdict this argument depends on turned out to be
-  refreshed on frame time and read on the tick, which is a second defect living
-  in the same code.
-  `SimBuildOrderCommand` already carries and orders `player_id` for that day, so
-  neither the wire format nor replays recorded before it have to change.
+  What the entry predicted about the wire held: `SimBuildOrderCommand` already
+  carried and ordered `player_id`, so neither the format nor replays recorded
+  before the change had to migrate.
+
 - Suppressing local input while a replay plays back. Nothing can start playback
   from the UI today, so live controllers cannot collide with it. The day that
   changes, they submit to the same bus and would merge into the replay's stream

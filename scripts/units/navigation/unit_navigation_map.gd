@@ -10,6 +10,9 @@ var revision := 0
 
 var _blocked := PackedByteArray()
 var _no_stop := PackedByteArray()
+## Pending-placement reservations are no-stop like a building apron, but unlike
+## an authored apron an ordinary move order may not explicitly stop there.
+var _reserved_no_stop := PackedByteArray()
 ## Cell indices touched by the most recent `replace_blocked_cells` call that
 ## actually changed something. Lets callers reroute only the agents whose
 ## route passes through the change instead of every commanded agent.
@@ -24,26 +27,33 @@ func setup(source_grid: MapNavigationGrid) -> bool:
 	_blocked.fill(0)
 	_no_stop.resize(MapNavigationGridScript.NAV_SIZE * MapNavigationGridScript.NAV_SIZE)
 	_no_stop.fill(0)
+	_reserved_no_stop.resize(MapNavigationGridScript.NAV_SIZE * MapNavigationGridScript.NAV_SIZE)
+	_reserved_no_stop.fill(0)
 	revision = 1
 	return true
 
 
 ## `no_stop_cells` are traversable building aprons that may be crossed by any
 ## route, but may never be selected as an ordinary stopping destination.
-func replace_blocked_cells(cells: Dictionary, new_no_stop_cells: Dictionary = {}) -> bool:
+func replace_blocked_cells(
+		cells: Dictionary, new_no_stop_cells: Dictionary = {}, reserved_no_stop_cells: Dictionary = {}
+	) -> bool:
 	if grid == null:
 		return false
 	var next := _bytes_from_cells(cells)
 	var next_no_stop := _bytes_from_cells(new_no_stop_cells)
-	if next == _blocked and next_no_stop == _no_stop:
+	var next_reserved_no_stop := _bytes_from_cells(reserved_no_stop_cells)
+	if next == _blocked and next_no_stop == _no_stop and next_reserved_no_stop == _reserved_no_stop:
 		_changed_cells = PackedInt32Array()
 		return false
 	var changed := PackedInt32Array()
 	for index in _blocked.size():
-		if next[index] != _blocked[index] or next_no_stop[index] != _no_stop[index]:
+		if next[index] != _blocked[index] or next_no_stop[index] != _no_stop[index] \
+		or next_reserved_no_stop[index] != _reserved_no_stop[index]:
 			changed.append(index)
 	_blocked = next
 	_no_stop = next_no_stop
+	_reserved_no_stop = next_reserved_no_stop
 	_changed_cells = changed
 	revision += 1
 	return true
@@ -74,6 +84,11 @@ func is_blocked(cell: Vector2i) -> bool:
 func is_no_stop(cell: Vector2i) -> bool:
 	var index := grid.cell_index(cell) if grid != null else -1
 	return index < 0 or _no_stop[index] != 0
+
+
+func is_reserved_no_stop(cell: Vector2i) -> bool:
+	var index := grid.cell_index(cell) if grid != null else -1
+	return index >= 0 and _reserved_no_stop[index] != 0
 
 
 func blocked_cells() -> PackedByteArray:

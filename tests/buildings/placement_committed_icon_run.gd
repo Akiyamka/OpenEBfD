@@ -51,7 +51,7 @@ func _initialize() -> void:
 	players.local_player_id = 1
 
 	_run_case("a submitted placement changes the ready icon to placing", _test_window_opens_visibly)
-	_run_case("an immobile-unit refusal restores the ready icon", _test_refusal_closes_window)
+	_run_case("an immobile-unit block keeps the placing icon", _test_block_keeps_window_open)
 	_run_case("starting placement again while committed changes nothing", _test_begin_while_committed)
 	_run_case("a right intent while committed reaches neither bus nor order", _test_right_intent_while_committed)
 	_run_case("a left intent while committed reaches neither bus nor order", _test_left_intent_while_committed)
@@ -153,7 +153,7 @@ func _test_window_opens_visibly(token: int) -> int:
 	return token
 
 
-func _test_refusal_closes_window(token: int) -> int:
+func _test_block_keeps_window_open(token: int) -> int:
 	var fixture := _new_ready_controller(Vector2i(6, 4))
 	var states: Array = []
 	fixture[0].building_option_state_changed.connect(func(state) -> void: states.append(state))
@@ -163,13 +163,13 @@ func _test_refusal_closes_window(token: int) -> int:
 	var state = _latest_state(states, &"ATWall")
 	_expect(
 		state != null
-		and state.state == BuildingOptionStateScript.State.READY
-		and state.status_text == "PLACE",
-		"an authority refusal must refresh the icon back to the active ready placement"
+		and state.state == BuildingOptionStateScript.State.PLACING
+		and state.status_text == "BUILDING",
+		"an authority block must retain the placing icon while the site is pending"
 	)
 	_expect(
-		state == null or state.state != BuildingOptionStateScript.State.PLACING,
-		"an authority refusal must not leave the icon in placing state"
+		fixture[0]._committed_placement_cell == Vector2i(6, 4),
+		"the committed cell must stay pinned until the pending placement resolves"
 	)
 	unit.free()
 	_free_controller_fixture(fixture)
