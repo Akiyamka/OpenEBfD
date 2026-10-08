@@ -74,13 +74,19 @@ Rules for placing a ready building on the map:
   must lie on buildable cells and be free of buildings;
 - **units at the construction site do not block placement — they are pushed
   aside** (verified): when a building is placed, units are displaced from its
-  footprint. **OpenEBfD diverges for units that cannot move**: an immobile
-  (deployed/deploying) unit refuses the placement instead of being engulfed by
-  it, because this project cannot shove one — see
-  [`quirks.md`](../quirks.md), "A deployed unit on a building site was engulfed
-  rather than blocking", and decision 12 in
-  [`network-multiplayer.md`](../architecture/network-multiplayer.md). Mobile
-  units are displaced exactly as recorded here;
+  footprint. That is the original's behaviour and this entry does not change.
+  **OpenEBfD diverges, and as of slice `AF1` the divergence covers every unit
+  rather than only immobile ones** — on the path the player places buildings
+  through, a unit standing in the footprint makes the placement *wait* for up
+  to five seconds while the site clears, and the order is abandoned if it has
+  not. An immobile (deployed/deploying) unit therefore usually outlasts the
+  deadline, since nothing can move it. See [`quirks.md`](../quirks.md), "A
+  deployed unit on a building site was engulfed rather than blocking", and
+  decision 12 in
+  [`network-multiplayer.md`](../architecture/network-multiplayer.md).
+  **Two paths still displace mobile units exactly as recorded here**: wall
+  segments and MCV deployment, which reach the spawn without passing the
+  execution-time check that defers;
 - **build radius** (verified): a new building can be placed only near the
   player's existing buildings `[Rules: radius]`. **All buildings except walls**
   provide this radius; walls extend the radius **only for constructing other

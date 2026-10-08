@@ -11,6 +11,7 @@ const MatchFixtureScene := preload("res://tests/fixtures/match_fixture.tscn")
 const SimPlaceBuildingCommandScript := preload("res://scripts/sim/commands/place_building_command.gd")
 const SimMoveCommandScript := preload("res://scripts/sim/commands/move_command.gd")
 const MapNavigationGridScript := preload("res://scripts/world/map/map_navigation_grid.gd")
+const UnitPushAsideScript := preload("res://scripts/buildings/unit_push_aside.gd")
 
 var _assertions := 0
 var _failures := 0
@@ -74,7 +75,11 @@ func _initialize() -> void:
 	_run_case("reservations exist only while an entry is pending", _test_reservation_lifetime)
 	_run_case("the local placement icon stays committed while pending", _test_pending_icon)
 	_run_case("pending retries preserve insertion order", _test_insertion_order)
+	_run_case("a mobile unit defers placement without being shoved", _test_mobile_unit_defers)
+	_run_case("the local mobile unit does not suppress a placement click", _test_mobile_filter_submits)
 	await _test_match_tick_and_reservation()
+	await _test_idle_unit_clears_pending_site()
+	await _test_commanded_unit_clears_pending_site()
 
 	players.reset_for_match()
 	if _failures > 0:
@@ -163,6 +168,51 @@ func _contains_all(cells: Array[Vector2i], expected: Array[Vector2i]) -> bool:
 		if not cells.has(cell):
 			return false
 	return true
+
+
+func _first_empty_barracks_cell(match_instance, controller) -> Vector2i:
+	var grid = match_instance.get_node("Terrain").navigation_grid
+	var center: Vector2i = grid.world_to_grid(match_instance.get_node("Buildings/ATConYard").global_position)
+	for radius in range(2, 16):
+		for x in range(-radius, radius + 1):
+			for y in [-radius, radius]:
+				var candidate := center + Vector2i(x, y)
+				if controller._building_placement.evaluate_without_preview(&"ATBarracks", BARRACKS_OCCUPY_ROWS, false, 0, candidate, 1) != BuildingPlacementScript.PlaceResult.AVAILABLE:
+					continue
+				if not controller._building_placement.has_any_unit_in_footprint(BARRACKS_OCCUPY_ROWS, 0, candidate, null):
+					return candidate
+	return Vector2i(-1, -1)
+
+
+func _footprint_edge_cell(cells: Array[Vector2i]) -> Vector2i:
+	var edge := cells[0]
+	for cell in cells:
+		if cell.x < edge.x or (cell.x == edge.x and cell.y < edge.y):
+			edge = cell
+	return edge
+
+
+func _opposite_footprint_edge_cell(cells: Array[Vector2i]) -> Vector2i:
+	var edge := cells[0]
+	for cell in cells:
+		if cell.x > edge.x or (cell.x == edge.x and cell.y > edge.y):
+			edge = cell
+	return edge
+
+
+func _unit_is_inside_footprint(placement, rows: Array[String], cell: Vector2i, unit: Node3D) -> bool:
+	var rotated_rows: Array[String] = placement._rotated_occupy_rows(rows, 0)
+	var anchor: Vector2i = placement._anchor_for_hover_cell_for(cell, rotated_rows)
+	var footprint_box: Array[Vector3] = placement._footprint_world_box(anchor, rotated_rows)
+	return UnitPushAsideScript.is_inside_footprint(unit.simulation_position(), footprint_box[0], footprint_box[1])
+
+
+func _new_match_blocker(match_instance, position: Vector3) -> UnitStub:
+	var unit := UnitStub.new()
+	unit.position = position
+	unit.add_to_group("sim_units")
+	match_instance.get_node("Units").add_child(unit)
+	return unit
 
 
 func _submit_blocked(fixture: Array, _unit: UnitStub) -> Array[String]:
@@ -316,6 +366,40 @@ func _test_insertion_order() -> void:
 	_free_fixture(fixture)
 
 
+func _test_mobile_unit_defers() -> void:
+	var fixture := _new_fixture(Vector2i(6, 4))
+	var unit := _new_blocker(fixture[3])
+	unit.deployed = false
+	# D1 alone also enters `units`: UnitPushAside intentionally walks that
+	# production group, while the shared blocker fixture must remain sim-only
+	# for the other pending-placement cases.
+	unit.add_to_group("units")
+	var starting_position := unit.simulation_position()
+	var statuses := _submit_blocked(fixture, unit)
+	var order = fixture[0]._building_queue.current_order()
+	var position_after_execution := unit.simulation_position()
+	# Clean up before checking the mutation-sensitive assertions so a broken
+	# authority cannot leave this Group-A stub in Group B's real Match.
+	unit.free()
+	_expect(fixture[1].get_child_count() == 0, "the execution tick must not spawn over a mobile blocker")
+	_expect(order != null and order.ready, "a mobile blocker must leave the order ready while pending")
+	_expect(not statuses.has("Wall cannot be placed there"), "a mobile blocker must not refuse on its execution tick")
+	_expect(position_after_execution == starting_position, "a mobile blocker must not be shoved before placement defers")
+	_free_fixture(fixture)
+
+
+func _test_mobile_filter_submits() -> void:
+	var fixture := _new_fixture(Vector2i(6, 4))
+	var unit := _new_blocker(fixture[3])
+	unit.owner_player_id = 1
+	unit.deployed = false
+	fixture[0]._begin_ready_building_placement()
+	fixture[0]._try_place_ready_building(Vector2.ZERO)
+	_expect(fixture[2].bus().pending_count() == 1, "a local mobile unit must not suppress its placement command")
+	unit.free()
+	_free_fixture(fixture)
+
+
 func _test_match_tick_and_reservation() -> void:
 	var match_instance = MatchFixtureScene.instantiate()
 	root.add_child(match_instance)
@@ -379,3 +463,84 @@ func _test_match_tick_and_reservation() -> void:
 	)
 	_expect_case("case 11: reservation rejects then releases move parking", released_destination == cell, "a move order after tick 127 must resolve to the requested cell")
 	match_instance.queue_free()
+	await process_frame
+
+
+func _test_idle_unit_clears_pending_site() -> void:
+	var match_instance = MatchFixtureScene.instantiate()
+	root.add_child(match_instance)
+	await process_frame
+	await process_frame
+	var controller = match_instance.get_node("BuildingController")
+	var queue = controller.building_queue_for_player(1)
+	queue.start(&"ATBarracks", "Barracks", 0, 1)
+	queue.advance_tick(0)
+	var cell := _first_empty_barracks_cell(match_instance, controller)
+	var terrain = match_instance.get_node("Terrain")
+	var reserved_cells := _reserved_cells_for(cell, BARRACKS_OCCUPY_ROWS)
+	var blocker_cell := _footprint_edge_cell(reserved_cells)
+	var other_blocker_cell := _opposite_footprint_edge_cell(reserved_cells)
+	var idle = match_instance.get_node("Units/NIABTank")
+	idle.set_simulation_position(terrain.navigation_grid.grid_to_world(blocker_cell, true))
+	var held_blocker := _new_match_blocker(match_instance, terrain.navigation_grid.grid_to_world(other_blocker_cell, true))
+	var buildings_before := match_instance.get_node("Buildings").get_child_count()
+	var command := SimPlaceBuildingCommandScript.new()
+	command.player_id = 1
+	command.building_id = &"ATBarracks"
+	command.nav_cell = cell
+	match_instance.command_bus().submit(command, match_instance.next_orderable_tick())
+	var left_while_pending := false
+	for _tick in 40:
+		match_instance.advance_ticks(1)
+		if not _unit_is_inside_footprint(controller._building_placement, BARRACKS_OCCUPY_ROWS, cell, idle):
+			left_while_pending = controller._pending_placement.has_entry(1) and match_instance.get_node("Buildings").get_child_count() == buildings_before
+			break
+	_expect(left_while_pending, "an idle unit must leave the reserved site while placement remains pending")
+	held_blocker.free()
+	match_instance.advance_ticks(40)
+	_expect(match_instance.get_node("Buildings").get_child_count() > buildings_before and not controller._pending_placement.has_entry(1), "placement must succeed after the idle unit clears the site")
+	match_instance.queue_free()
+	await process_frame
+
+
+func _test_commanded_unit_clears_pending_site() -> void:
+	var match_instance = MatchFixtureScene.instantiate()
+	root.add_child(match_instance)
+	await process_frame
+	await process_frame
+	var controller = match_instance.get_node("BuildingController")
+	var queue = controller.building_queue_for_player(1)
+	queue.start(&"ATBarracks", "Barracks", 0, 1)
+	queue.advance_tick(0)
+	var cell := _first_empty_barracks_cell(match_instance, controller)
+	var terrain = match_instance.get_node("Terrain")
+	var reserved_cells := _reserved_cells_for(cell, BARRACKS_OCCUPY_ROWS)
+	var blocker_cell := _footprint_edge_cell(reserved_cells)
+	var other_blocker_cell := _opposite_footprint_edge_cell(reserved_cells)
+	var mover = match_instance.get_node("Units/ScoutA")
+	mover.set_simulation_position(terrain.navigation_grid.grid_to_world(blocker_cell, true))
+	var held_blocker := _new_match_blocker(match_instance, terrain.navigation_grid.grid_to_world(other_blocker_cell, true))
+	var move := SimMoveCommandScript.new()
+	move.player_id = 1
+	move.entity_ids = PackedInt32Array([int(mover.get("entity_id"))])
+	move.target = terrain.navigation_grid.grid_to_world(blocker_cell, true)
+	match_instance.command_bus().submit(move, match_instance.next_orderable_tick())
+	match_instance.advance_ticks(1)
+	var buildings_before := match_instance.get_node("Buildings").get_child_count()
+	var command := SimPlaceBuildingCommandScript.new()
+	command.player_id = 1
+	command.building_id = &"ATBarracks"
+	command.nav_cell = cell
+	match_instance.command_bus().submit(command, match_instance.next_orderable_tick())
+	var left_while_pending := false
+	for _tick in 40:
+		match_instance.advance_ticks(1)
+		if not _unit_is_inside_footprint(controller._building_placement, BARRACKS_OCCUPY_ROWS, cell, mover):
+			left_while_pending = controller._pending_placement.has_entry(1) and match_instance.get_node("Buildings").get_child_count() == buildings_before
+			break
+	_expect(left_while_pending, "a commanded stopped unit must reroute off the site while placement remains pending")
+	held_blocker.free()
+	match_instance.advance_ticks(40)
+	_expect(match_instance.get_node("Buildings").get_child_count() > buildings_before and not controller._pending_placement.has_entry(1), "placement must succeed after the commanded unit clears the site")
+	match_instance.queue_free()
+	await process_frame

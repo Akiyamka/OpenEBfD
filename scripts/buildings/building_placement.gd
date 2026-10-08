@@ -165,6 +165,32 @@ func evaluate_without_preview(
 func has_immobile_unit_in_footprint(
 		occupy_rows: Array[String], rotation_turns: int, hover_cell: Vector2i, owner_player_id = null
 	) -> bool:
+	return _has_unit_in_footprint(
+		occupy_rows, rotation_turns, hover_cell, owner_player_id, true
+	)
+
+
+## Answers whether any live simulated unit occupies the command's rotated
+## footprint without reading or altering the local preview. Like the immobile
+## variant, this fails closed when its navigation context is unavailable.
+func has_any_unit_in_footprint(
+		occupy_rows: Array[String], rotation_turns: int, hover_cell: Vector2i, owner_player_id = null
+	) -> bool:
+	return _has_unit_in_footprint(
+		occupy_rows, rotation_turns, hover_cell, owner_player_id, false
+	)
+
+
+## Keeps the footprint derivation and simulation-unit traversal identical for
+## the two public placement queries. `immobile_only` is private because callers
+## must choose the question they are asking by name.
+func _has_unit_in_footprint(
+		occupy_rows: Array[String],
+		rotation_turns: int,
+		hover_cell: Vector2i,
+		owner_player_id,
+		immobile_only: bool
+	) -> bool:
 	if not is_inside_tree() or _navigation_grid == null or not _navigation_grid.is_loaded():
 		return false
 	var rotated_rows := _rotated_occupy_rows(occupy_rows, rotation_turns)
@@ -179,7 +205,9 @@ func has_immobile_unit_in_footprint(
 			continue
 		if owner_player_id != null and unit.get("owner_player_id") != owner_player_id:
 			continue
-		if UnitPushAsideScript.is_immobile(unit) and UnitPushAsideScript.is_inside_footprint(
+		if immobile_only and not UnitPushAsideScript.is_immobile(unit):
+			continue
+		if UnitPushAsideScript.is_inside_footprint(
 			unit.simulation_position(), footprint_box[0], footprint_box[1]
 		):
 			return true

@@ -53,6 +53,9 @@ class UnitStub extends Node3D:
 	func sim_tick_combat() -> void:
 		pass
 
+	func stop_at_current_position() -> void:
+		pass
+
 
 func _initialize() -> void:
 	await process_frame
@@ -65,9 +68,12 @@ func _initialize() -> void:
 	_run_case("a friendly immobile unit suppresses the place click before the wire", _test_friendly_filter)
 	_run_case("authority refuses another player's immobile unit", _test_authority_other_owner)
 	_run_case("enemy immobile units pass the filter but fail at authority", _test_owner_asymmetry)
-	_run_case("a mobile unit is shoved aside and does not block placement", _test_mobile_unit_still_places)
+	_run_case("a bypassing caller still shoves a mobile unit aside", _test_mobile_unit_still_places)
 	_run_case("the query uses the rotated footprint", _test_rotation)
 	_run_case("a refusal leaves the order ready and placement uncommitted", _test_refusal_preserves_order)
+	_run_case("the two footprint questions differ on a mobile unit", _test_mobile_unit_questions_differ)
+	_run_case("neither footprint question fires outside the footprint", _test_unit_outside_footprint)
+	_run_case("the any-unit footprint question respects its owner filter", _test_any_unit_owner_filter)
 	_run_case("the query fails closed when no navigation grid is available", _test_missing_grid)
 	_run_case("a queued-for-deletion unit does not block the authoritative query", _test_queued_unit_is_not_live)
 	await _test_authority_other_owner_through_real_match()
@@ -187,10 +193,16 @@ func _test_owner_asymmetry(token: int) -> int:
 func _test_mobile_unit_still_places(token: int) -> int:
 	var fixture := _new_ready_controller(Vector2i(6, 4))
 	var unit := _new_unit(1, false, Vector3(6.5, 0.0, 4.5))
-	fixture[0]._try_place_ready_building(Vector2.ZERO)
-	fixture[2].pump()
-	_expect(fixture[1].get_child_count() > 0, "a mobile unit must not block placement")
-	_expect(unit.simulation_position().x < 6.0 or unit.simulation_position().z < 4.0, "a mobile unit inside the footprint must still be shoved out")
+	var template := Node3D.new()
+	var scene := PackedScene.new()
+	var rows: Array[String] = ["b"]
+	scene.pack(template)
+	template.free()
+	var result = fixture[0]._building_placement.place_without_preview(
+		&"ATWall", "Wall", rows, true, 0, Vector2i(6, 4), scene, 1
+	)
+	_expect(result == BuildingPlacementScript.PlaceResult.PLACED and fixture[1].get_child_count() > 0, "a bypassing caller must still place the building")
+	_expect(unit.simulation_position().x < 6.0 or unit.simulation_position().z < 4.0, "a bypassing caller must still shove a mobile unit out")
 	unit.free()
 	_free_controller_fixture(fixture)
 	return token
@@ -222,11 +234,53 @@ func _test_refusal_preserves_order(token: int) -> int:
 	return token
 
 
+func _test_mobile_unit_questions_differ(token: int) -> int:
+	var placement = BuildingPlacementScript.new()
+	root.add_child(placement)
+	var context := PlacementContextScript.new()
+	context.navigation_grid = FakeGrid.new()
+	placement.setup(context)
+	var unit := _new_unit(1, false, Vector3(6.5, 0.0, 4.5))
+	_expect(placement.has_any_unit_in_footprint(["X"], 0, Vector2i(6, 4)), "any-unit query must see a mobile unit")
+	_expect(not placement.has_immobile_unit_in_footprint(["X"], 0, Vector2i(6, 4)), "immobile-only query must skip a mobile unit")
+	unit.free()
+	placement.free()
+	return token
+
+
+func _test_unit_outside_footprint(token: int) -> int:
+	var placement = BuildingPlacementScript.new()
+	root.add_child(placement)
+	var context := PlacementContextScript.new()
+	context.navigation_grid = FakeGrid.new()
+	placement.setup(context)
+	var unit := _new_unit(1, false, Vector3(-200.0, 0.0, -200.0))
+	_expect(not placement.has_any_unit_in_footprint(["X"], 0, Vector2i(6, 4)) and not placement.has_immobile_unit_in_footprint(["X"], 0, Vector2i(6, 4)), "neither footprint query must fire for a unit outside the footprint")
+	unit.free()
+	placement.free()
+	return token
+
+
+func _test_any_unit_owner_filter(token: int) -> int:
+	var placement = BuildingPlacementScript.new()
+	root.add_child(placement)
+	var context := PlacementContextScript.new()
+	context.navigation_grid = FakeGrid.new()
+	placement.setup(context)
+	var unit := _new_unit(2, false, Vector3(6.5, 0.0, 4.5))
+	_expect(placement.has_any_unit_in_footprint(["X"], 0, Vector2i(6, 4), null), "an unfiltered any-unit query must see another owner's mobile unit")
+	_expect(not placement.has_any_unit_in_footprint(["X"], 0, Vector2i(6, 4), 1), "an owner-filtered any-unit query must skip another owner's mobile unit")
+	unit.free()
+	placement.free()
+	return token
+
+
 func _test_missing_grid(token: int) -> int:
 	var placement = BuildingPlacementScript.new()
 	root.add_child(placement)
 	var unit := _new_unit(1, true, Vector3.ZERO)
 	_expect(not placement.has_immobile_unit_in_footprint(["X"], 0, Vector2i.ZERO), "a query without a usable grid must answer false")
+	_expect(not placement.has_any_unit_in_footprint(["X"], 0, Vector2i.ZERO), "the any-unit query without a usable grid must answer false")
 	unit.free()
 	placement.free()
 	return token
@@ -241,6 +295,7 @@ func _test_queued_unit_is_not_live(token: int) -> int:
 	var unit := _new_unit(1, true, Vector3(6.5, 0.0, 4.5))
 	unit.queue_free()
 	_expect(not placement.has_immobile_unit_in_footprint(["X"], 0, Vector2i(6, 4)), "a queued-for-deletion unit must not block placement")
+	_expect(not placement.has_any_unit_in_footprint(["X"], 0, Vector2i(6, 4)), "a queued-for-deletion unit must not block the any-unit query")
 	placement.free()
 	return token
 

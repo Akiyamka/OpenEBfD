@@ -533,9 +533,39 @@ The mechanic:
    stranded cell, so a wider boundary would oscillate rather than relocate. And
    it does not touch `UnitPushAside`, whose teleport is still what clears a
    footprint at placement. The other half — walking units out of a *reserved*
-   footprint — still waits on item 2, because there is no reservation to walk
-   out of yet — item **3**, the reservation, not item 2 as this sentence said
-   until `AE1` landed it. How far the sweep has to reach is a measurement,
+   footprint — waited on item **3**, the reservation. (This sentence named item
+   2 until `AE1` landed; the reservation is item 3, and the cross-reference was
+   simply wrong.)
+
+   **The walk-out half then landed in two steps, and only the first is done.**
+   `AF1` widened the execution-time authority from "an immobile unit" to **any**
+   unit, which is what turned `AE1`'s wait into something that clears: a mobile
+   unit in the footprint now defers the placement instead of being teleported
+   out from under the building, and the site is cleared by the two relocation
+   paths that already existed — `AD1`'s sweep for a never-commanded agent, and
+   `replan_after_map_change()` plus `process_reroute_queue()` for one with a
+   positive `command_id`, which is the half the sweep deliberately skips.
+   Between them they cover every agent *standing* on the site; one merely
+   crossing it leaves on its own, which is item 2's "a unit crossing the site
+   costs a tick or two rather than the placement".
+
+   **What is still owed is the teleport's deletion, and it is gated on two
+   callers rather than on taste.** `_spawn_placed_building()` is reached by
+   `ProductionSystem._place_ready_wall_segment()` and by the MCV deployment
+   flow through `try_place_at_hover_cell()`, neither of which passes the
+   execution-time authority — so deleting the shove today would make both
+   *engulf* units where they currently displace them, which is worse than
+   either. Two facts measured while landing `AF1` are worth keeping for whoever
+   does it. The behaviour is **wholly untested** on those two paths: deleting
+   the call fails exactly one assertion in the whole suite, the deliberately
+   retargeted bypass case in `placement_immobile_unit_run.gd`, and nothing else
+   anywhere — so that slice must add wall and MCV-deployment coverage before it
+   can trust a green run. And the call cannot be deleted on its own: it is the
+   only consumer of `_spawn_placed_building()`'s `excluded_unit` parameter,
+   which GDScript then reports as an unused-parameter parse error, so the
+   parameter goes with it — and that parameter is the MCV's exclusion, which is
+   precisely the thing the deploy path needs re-expressed as a unit check rather
+   than removed. How far the sweep has to reach is a measurement,
    recorded here
    because the plan brief that got it wrong is not kept: across the 152 building
    definitions in `assets/converted/rules/buildings/`, 54 author at least one
@@ -597,20 +627,25 @@ seconds at a time — immobile, and inside the placing player's build radius,
 which is a far worse trade for its owner than a scout was. The abuse is priced,
 not removed.
 
-**Landed so far: `AA1`, `AB1`, `AD1` and `AE1`** — an immobile unit inside the
+**Landed so far: `AA1`, `AB1`, `AD1`, `AE1` and `AF1`** — an immobile unit inside the
 footprint refuses the placement, friend-filtered at the click and owner-blind at
 execution (`AA1`); the ready icon shows a third, non-interactive state while its
 placement command is in flight (`AB1`); an idle unit parked on a no-stop cell is
 asked to step off it (`AD1`, the idle half of item 4); and a blocked placement
 now waits up to five seconds for its site to clear, reserving the footprint
-against being parked on while it waits (`AE1`, items 1, 2 and 3).
+against being parked on while it waits (`AE1`, items 1, 2 and 3); and that wait
+now applies to **any** unit rather than only one that cannot move, so the site
+actually clears (`AF1`, the first half of item 4).
 
-**Still owed: item 4's reserved-footprint half and item 6's wall deferral.**
-Item 4 now has the reservation it was waiting for, and what it removes is
-`UnitPushAside`'s `set_simulation_position()` teleport — which is also what
-makes `AE1`'s wait productive for a *mobile* unit, since today one is shoved
-aside before any verdict can defer. Item 6 has item 1, so the wall skip can
-start waiting for the deadline instead of being decided instantly.
+**Still owed: the teleport's deletion, and item 6's wall deferral.** `AF1` took
+the first half of item 4 — the authority now defers on any unit, so `AE1`'s
+wait clears sites instead of only outlasting units that will never move. What
+remains of item 4 is removing `UnitPushAside`'s `set_simulation_position()`
+write, which is gated on giving the wall chain and the MCV deployment flow a
+unit check of their own, because both reach the spawn without passing the
+authority. Item 6 has item 1, so the wall skip can start waiting for the
+deadline instead of being decided instantly — and it shares that gate, since
+giving walls a unit check is the prerequisite for both.
 
 **Correction, 2026-10-07:** this paragraph used to say that items 1 through 4
 are mutually dependent and that only the wall deferral could go next on its own.

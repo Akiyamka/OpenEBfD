@@ -52,6 +52,20 @@ confined to units that cannot move. Wall segments still reach the shove path
 and still engulf, pending the wall half of decision 12 in
 [`network-multiplayer.md`](architecture/network-multiplayer.md).
 
+**OpenEBfD compatibility decision (slice `AF1`, 2026-10-08):** the divergence is
+no longer confined to units that cannot move. The execution-time authority now
+defers on **any** unit in the footprint, so a mobile one makes the placement
+wait rather than being displaced by it — decision 12's items 1 through 3 having
+landed the wait, the five-second deadline and the no-stop reservation that gets
+the site cleared. The sentence above about a mobile unit being "pushed aside
+exactly as before" is therefore true only of the two paths that never reach that
+authority: a **wall segment**, which `ProductionSystem` places directly, and
+**MCV deployment**, which goes through `try_place_at_hover_cell()`. Those two
+keep the original behaviour, and the shove is kept alive for them deliberately —
+removing it would make them *engulf* rather than displace, which is further from
+the original than either. Closing that gap needs a unit check on each, and it is
+owed rather than done.
+
 ## Animation timing
 
 ### Infantry base movement animation is too slow

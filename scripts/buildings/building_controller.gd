@@ -1464,7 +1464,7 @@ func _attempt_pending_placement(
 			status_changed.emit("%s has no occupy_rows" % order.display_name)
 		_resolve_committed_placement(player_id)
 		return true
-	if _building_placement.has_immobile_unit_in_footprint(
+	if _building_placement.has_any_unit_in_footprint(
 		occupy_rows, rotation_quarter_turns, nav_cell, null
 	):
 		return false
