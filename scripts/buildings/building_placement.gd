@@ -163,10 +163,11 @@ func evaluate_without_preview(
 ## client must reach identically. An MCV deployment flow must supply its own
 ## exclusion when it eventually uses this query.
 func has_immobile_unit_in_footprint(
-		occupy_rows: Array[String], rotation_turns: int, hover_cell: Vector2i, owner_player_id = null
+		occupy_rows: Array[String], rotation_turns: int, hover_cell: Vector2i, owner_player_id = null,
+		excluded_unit: Node3D = null
 	) -> bool:
 	return _has_unit_in_footprint(
-		occupy_rows, rotation_turns, hover_cell, owner_player_id, true
+		occupy_rows, rotation_turns, hover_cell, owner_player_id, true, excluded_unit
 	)
 
 
@@ -174,10 +175,11 @@ func has_immobile_unit_in_footprint(
 ## footprint without reading or altering the local preview. Like the immobile
 ## variant, this fails closed when its navigation context is unavailable.
 func has_any_unit_in_footprint(
-		occupy_rows: Array[String], rotation_turns: int, hover_cell: Vector2i, owner_player_id = null
+		occupy_rows: Array[String], rotation_turns: int, hover_cell: Vector2i, owner_player_id = null,
+		excluded_unit: Node3D = null
 	) -> bool:
 	return _has_unit_in_footprint(
-		occupy_rows, rotation_turns, hover_cell, owner_player_id, false
+		occupy_rows, rotation_turns, hover_cell, owner_player_id, false, excluded_unit
 	)
 
 
@@ -189,7 +191,8 @@ func _has_unit_in_footprint(
 		rotation_turns: int,
 		hover_cell: Vector2i,
 		owner_player_id,
-		immobile_only: bool
+		immobile_only: bool,
+		excluded_unit: Node3D
 	) -> bool:
 	if not is_inside_tree() or _navigation_grid == null or not _navigation_grid.is_loaded():
 		return false
@@ -202,6 +205,8 @@ func _has_unit_in_footprint(
 			or not (unit is Node3D)
 			or not unit.has_method("simulation_position")
 		):
+			continue
+		if unit == excluded_unit:
 			continue
 		if owner_player_id != null and unit.get("owner_player_id") != owner_player_id:
 			continue

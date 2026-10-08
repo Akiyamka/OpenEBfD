@@ -100,7 +100,13 @@ Rules for placing a ready building on the map:
     each cell is a separate order in the construction queue, automatically
     placed after the preceding buildable cell completes successfully;
   - cells where construction is not allowed are shown as blocked during line
-    selection and **skipped without stopping the remaining wall chain**;
+    selection and **skipped without stopping the remaining wall chain**. Since
+    slice `AG1` an OpenEBfD wall segment also skips a cell held by an immobile
+    (deployed/deploying) unit, through that same skip rather than by engulfing
+    it; the blocked-cell *preview* is still terrain-only, deliberately, because
+    segments are ordered one at a time over many seconds and a unit's position
+    during line selection says nothing about where it will be when its segment
+    is built;
   - after the line is confirmed, its buildable cells retain `build_wall`
     markers until the corresponding segment is built or the order is canceled;
   - **cancelling one cell's order also cancels all later ones** (the next cell is

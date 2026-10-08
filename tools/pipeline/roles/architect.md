@@ -95,6 +95,28 @@ The driver sends you exactly one of these. Do the step, write the files, stop.
      *other* cases now also fail, and is the failure the one named? State
      every case the mutation breaks — a mutation that breaks two is normal and
      reporting only one makes the extra failure look like a defect.
+
+     **Count the callers of the line you are editing.** Under-tracing kept
+     happening after the rule above was written — `AE1`, `AF1` and `AG1` each
+     shipped a plan revision whose failure set was too small — and all of them
+     had one cause: the mutated line is reached by more than one caller, and
+     the prediction covered only the caller the slice was about. A mutation's
+     failure set is the **union over every route into the mutated code**, not
+     the set for the route you have in mind. `AF1` dropped a check inside a
+     walker shared by two public queries and predicted only the new query's
+     case; `AG1` edited a wall branch reached by both a unit block and a
+     pre-existing became-unbuildable case, and named only the first. So before
+     writing the prediction, grep for callers of the function or branch being
+     mutated and enumerate the cases per caller. If the answer is "one caller",
+     say so — that is worth knowing too.
+
+     **Falsifiability is per mutation, not a property of an assertion.** An
+     assertion can bind under one control and be *unreachable* under another:
+     `AF1`'s unit-position assertion fails when the authority is reverted,
+     because that permits the spawn the shove hangs off, and cannot fail when
+     the shove call itself is deleted, because the correct authority returns
+     before the spawn. Check reachability separately for each control rather
+     than once for the assertion.
 5. Write **`.pipeline/slice.json`** matching `tools/pipeline/schemas/slice.json`.
    Set `revision` to 1 for a fresh slice. Set `needs_godot_tests` true whenever
    the slice touches runtime code — the container suite is slow, so it is opt-in

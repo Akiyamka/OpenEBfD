@@ -66,6 +66,9 @@ class FakeMCV extends Node3D:
 	var deployment_facing := Vector3.ZERO
 	var finished_consumed = null
 
+	func _ready() -> void:
+		add_to_group("sim_units")
+
 	func deploy(facing_direction: Vector3 = Vector3.ZERO) -> bool:
 		if deploying:
 			return false
@@ -93,6 +96,22 @@ class FakeMCV extends Node3D:
 	## mirrors directly rather than duck-typing the whole method.
 	func request_despawn() -> void:
 		queue_free()
+
+
+class FootprintUnit extends Node3D:
+	var deployed := false
+
+	func simulation_position() -> Vector3:
+		return global_position
+
+	func set_simulation_position(value: Vector3) -> void:
+		global_position = value
+
+	func is_deployed() -> bool:
+		return deployed
+
+	func stop_at_current_position() -> void:
+		pass
 
 
 ## Unit.deploy()/undeploy()/finish_deployment() call set_hold_position on the
@@ -137,6 +156,9 @@ func _initialize() -> void:
 	await _run_case("an incomplete Construction Yard rejects packing", _test_incomplete_construction_yard_undeployment)
 	await _run_case("captured factory produces its own concrete MCV", _test_captured_factory_mcv)
 	await _run_case("invalid terrain rejects deployment before locking the MCV", _test_invalid_site)
+	await _run_case("MCV deployment aborts for another immobile unit", _test_deployment_immobile_blocker)
+	await _run_case("MCV deployment excludes the MCV from its footprint check", _test_deployment_excludes_mcv)
+	await _run_case("MCV deployment still shoves a mobile unit", _test_deployment_shoves_mobile_unit)
 	await _run_case("Kindjal toggles into stationary combat mode and back", _test_combat_deploy_toggle)
 	await _run_case("a combat-deployable unit is data-driven, excluding IMADVSardaukar", _test_combat_deploy_eligibility)
 	if _failures > 0:
@@ -554,6 +576,80 @@ func _test_invalid_site() -> void:
 	_expect(buildings.get_child_count() == 0, "a rejected deployment must not spawn a building")
 	world.queue_free()
 	await process_frame
+
+
+func _test_deployment_immobile_blocker() -> void:
+	var fixture := _new_deployment_footprint_fixture()
+	var world: Node3D = fixture[0]
+	var buildings: Node3D = fixture[1]
+	var controller: UnitDeploymentController = fixture[2]
+	var mcv: FakeMCV = fixture[3]
+	var blocker := FootprintUnit.new()
+	blocker.deployed = true
+	blocker.position = mcv.position
+	blocker.add_to_group("sim_units")
+	world.add_child(blocker)
+	var result: Dictionary = controller.try_deploy(mcv)
+	mcv.deployment_animation_finished.emit()
+	_expect(bool(result.get("started", false)) and buildings.get_child_count() == 0, "an immobile unit in the deployment footprint must prevent spawning")
+	_expect(mcv.finished_consumed == false and not mcv.deploying, "an immobile-unit refusal must take the existing deployment abort path")
+	world.queue_free()
+	await process_frame
+
+
+func _test_deployment_excludes_mcv() -> void:
+	var fixture := _new_deployment_footprint_fixture()
+	var world: Node3D = fixture[0]
+	var buildings: Node3D = fixture[1]
+	var controller: UnitDeploymentController = fixture[2]
+	var mcv: FakeMCV = fixture[3]
+	var result: Dictionary = controller.try_deploy(mcv)
+	mcv.deployment_animation_finished.emit()
+	_expect(bool(result.get("started", false)) and buildings.get_child_count() == 1, "the deploying MCV must not block its own footprint")
+	_expect(mcv.finished_consumed == true, "a self-excluded MCV must finish its existing deployment handoff")
+	world.queue_free()
+	await process_frame
+
+
+func _test_deployment_shoves_mobile_unit() -> void:
+	var fixture := _new_deployment_footprint_fixture()
+	var world: Node3D = fixture[0]
+	var buildings: Node3D = fixture[1]
+	var controller: UnitDeploymentController = fixture[2]
+	var mcv: FakeMCV = fixture[3]
+	var mobile := FootprintUnit.new()
+	mobile.position = mcv.position
+	mobile.add_to_group("sim_units")
+	mobile.add_to_group("units")
+	world.add_child(mobile)
+	var original_position := mobile.global_position
+	var result: Dictionary = controller.try_deploy(mcv)
+	mcv.deployment_animation_finished.emit()
+	_expect(bool(result.get("started", false)) and buildings.get_child_count() == 1, "a mobile unit must not prevent MCV deployment")
+	_expect(mobile.simulation_position() != original_position, "a successful MCV deployment must still shove a mobile unit aside")
+	world.queue_free()
+	await process_frame
+
+
+func _new_deployment_footprint_fixture() -> Array:
+	var players = root.get_node("Players")
+	players.reset_for_match()
+	players.create_player(1, "Atreides", Color.BLUE, &"Atreides")
+	var world := Node3D.new()
+	root.add_child(world)
+	var buildings := Node3D.new()
+	world.add_child(buildings)
+	var controller := UnitDeploymentControllerScript.new()
+	world.add_child(controller)
+	controller.setup(FakeGrid.new(), buildings)
+	var mcv := FakeMCV.new()
+	mcv.config_id = &"ATMCV"
+	mcv.owner_player_id = 1
+	mcv.unit_config = root.get_node("Rules").unit(&"ATMCV")
+	mcv.position = Vector3(20.0, 0.0, 20.0)
+	mcv.add_to_group("units")
+	world.add_child(mcv)
+	return [world, buildings, controller, mcv]
 
 
 func _test_combat_deploy_toggle() -> void:

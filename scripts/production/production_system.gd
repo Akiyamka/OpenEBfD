@@ -208,10 +208,12 @@ func _place_ready_wall_segment(player_id: int) -> void:
 	# WallChain predates player-keyed storage and permits a null owner. Once the
 	# chain is in PlayerProduction, the dictionary key is its sole authority.
 	var owner_player_id: int = player_id
-	var placed: int = _wall_placement.place_without_preview(
-		chain.building_id, chain.display_name, rows, true, 0, chain.current_cell(), scene,
-		owner_player_id
-	)
+	var placed: int = BuildingPlacementScript.PlaceResult.CANNOT_BUILD
+	if not _wall_placement.has_immobile_unit_in_footprint(rows, 0, chain.current_cell(), null):
+		placed = _wall_placement.place_without_preview(
+			chain.building_id, chain.display_name, rows, true, 0, chain.current_cell(), scene,
+			owner_player_id
+		)
 	if placed == BuildingPlacementScript.PlaceResult.CANNOT_BUILD:
 		_refund_wall_order(player_id, completed_order)
 		var skipped_index: int = chain.segment_index()

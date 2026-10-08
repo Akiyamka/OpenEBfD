@@ -73,6 +73,8 @@ func try_deploy(unit: Node3D) -> Dictionary:
 	var building_id: StringName = candidate.get("building_id", &"")
 	var building_scene := candidate.get("building_scene") as PackedScene
 	var hover_cell: Vector2i = candidate.get("hover_cell", Vector2i.ZERO)
+	var occupy_rows: Array[String] = []
+	occupy_rows.assign(candidate.get("occupy_rows", []))
 
 	var deployment_id := unit.get_instance_id()
 	_deployments[deployment_id] = {
@@ -81,6 +83,7 @@ func try_deploy(unit: Node3D) -> Dictionary:
 		"hover_cell": hover_cell,
 		"building_id": building_id,
 		"building_scene": building_scene,
+		"occupy_rows": occupy_rows,
 		"owner_player_id": EntityQueryScript.owner_id_of(unit),
 	}
 	placement.building_placed.connect(_on_building_placed.bind(deployment_id))
@@ -176,6 +179,7 @@ func _deployment_candidate(unit: Node3D) -> Dictionary:
 		"hover_cell": hover_cell,
 		"building_id": building_id,
 		"building_scene": building_scene,
+		"occupy_rows": occupy_rows,
 	}
 
 
@@ -311,6 +315,13 @@ func _on_deployment_animation_finished(deployment_id: int) -> void:
 	var placement: BuildingPlacement = deployment["placement"]
 	if unit == null or not is_instance_valid(unit) or placement == null:
 		_abort_deployment(deployment_id, unit != null and is_instance_valid(unit))
+		return
+	var occupy_rows: Array[String] = []
+	occupy_rows.assign(deployment.get("occupy_rows", []))
+	if placement.has_immobile_unit_in_footprint(
+		occupy_rows, placement.rotation_quarter_turns(), deployment["hover_cell"], null, unit
+	):
+		_abort_deployment(deployment_id, true)
 		return
 
 	var result: int = placement.try_place_at_hover_cell(

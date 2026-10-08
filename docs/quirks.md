@@ -66,6 +66,19 @@ removing it would make them *engulf* rather than displace, which is further from
 the original than either. Closing that gap needs a unit check on each, and it is
 owed rather than done.
 
+**OpenEBfD compatibility decision (slice `AG1`, 2026-10-08):** both of those
+callers now ask the check, so neither engulfs an **immobile** unit any more — a
+wall segment skips the cell through the chain's existing refund-and-skip
+outcome, and an MCV deployment aborts, excluding the deploying MCV from its own
+footprint. The sentence above therefore narrows once more: what still matches
+the original on those two paths is the treatment of a **mobile** unit, which is
+displaced exactly as recorded. That is the last thing keeping
+`UnitPushAside.push_units_out_of_footprint()` alive, and it is deliberately
+asymmetric for a reason rather than an oversight — neither caller has a wait, so
+a wall chain would lose a segment and a deploy would fail outright if they
+deferred on a unit merely walking past. Walls get their wait from decision 12's
+item 6; the MCV case is an open fork, recorded there.
+
 ## Animation timing
 
 ### Infantry base movement animation is too slow

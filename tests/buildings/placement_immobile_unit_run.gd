@@ -74,6 +74,7 @@ func _initialize() -> void:
 	_run_case("the two footprint questions differ on a mobile unit", _test_mobile_unit_questions_differ)
 	_run_case("neither footprint question fires outside the footprint", _test_unit_outside_footprint)
 	_run_case("the any-unit footprint question respects its owner filter", _test_any_unit_owner_filter)
+	_run_case("the footprint queries exclude exactly the supplied unit", _test_excluded_unit)
 	_run_case("the query fails closed when no navigation grid is available", _test_missing_grid)
 	_run_case("a queued-for-deletion unit does not block the authoritative query", _test_queued_unit_is_not_live)
 	await _test_authority_other_owner_through_real_match()
@@ -271,6 +272,34 @@ func _test_any_unit_owner_filter(token: int) -> int:
 	_expect(placement.has_any_unit_in_footprint(["X"], 0, Vector2i(6, 4), null), "an unfiltered any-unit query must see another owner's mobile unit")
 	_expect(not placement.has_any_unit_in_footprint(["X"], 0, Vector2i(6, 4), 1), "an owner-filtered any-unit query must skip another owner's mobile unit")
 	unit.free()
+	placement.free()
+	return token
+
+
+func _test_excluded_unit(token: int) -> int:
+	var placement = BuildingPlacementScript.new()
+	root.add_child(placement)
+	var context := PlacementContextScript.new()
+	context.navigation_grid = FakeGrid.new()
+	placement.setup(context)
+	var first := _new_unit(1, true, Vector3(6.5, 0.0, 4.5))
+	var second := _new_unit(1, true, Vector3(6.5, 0.0, 4.5))
+	_expect(
+		placement.has_immobile_unit_in_footprint(["X"], 0, Vector2i(6, 4), null, first),
+		"excluding one of two footprint units must leave the other blocking"
+	)
+	second.free()
+	_expect(
+		not placement.has_immobile_unit_in_footprint(["X"], 0, Vector2i(6, 4), null, first),
+		"excluding the sole footprint unit must clear the query"
+	)
+	var outside := _new_unit(1, true, Vector3(-200.0, 0.0, -200.0))
+	_expect(
+		placement.has_immobile_unit_in_footprint(["X"], 0, Vector2i(6, 4), null, outside),
+		"an exclusion outside the footprint must not suppress its occupant"
+	)
+	first.free()
+	outside.free()
 	placement.free()
 	return token
 

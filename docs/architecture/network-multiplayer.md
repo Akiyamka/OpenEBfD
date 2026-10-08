@@ -549,13 +549,37 @@ The mechanic:
    crossing it leaves on its own, which is item 2's "a unit crossing the site
    costs a tick or two rather than the placement".
 
-   **What is still owed is the teleport's deletion, and it is gated on two
-   callers rather than on taste.** `_spawn_placed_building()` is reached by
-   `ProductionSystem._place_ready_wall_segment()` and by the MCV deployment
-   flow through `try_place_at_hover_cell()`, neither of which passes the
-   execution-time authority — so deleting the shove today would make both
-   *engulf* units where they currently displace them, which is worse than
-   either. Two facts measured while landing `AF1` are worth keeping for whoever
+   **`AG1` then gave both bypass callers the check**, by human decision
+   2026-10-08, which is what turns the teleport from permanently load-bearing
+   into something with a deletion path. `ProductionSystem._place_ready_wall_segment()`
+   asks the immobile question before spawning and converges on its own existing
+   `CANNOT_BUILD` outcome — refund, skip, advance — so a wall segment skips a
+   cell held by an immobile unit instead of engulfing it, which is what `AA1`
+   deferred and has said it deferred since 2026-10-05. MCV deployment asks the
+   same question at animation completion, excluding the deploying unit, and
+   takes its existing abort path. Both ask **immobile-only**, deliberately:
+   neither has a wait, a wall chain skips a blocked segment permanently and a
+   deploy aborts outright, so deferring on a unit merely passing through would
+   cost a segment or a deploy where today it costs nothing. Widening walls to
+   the any-unit question belongs to item 6, once the skip waits.
+
+   The exclusion needed no redesign, which the `AF1` land note had claimed:
+   `has_immobile_unit_in_footprint()`'s own doc comment had anticipated it since
+   `AA1` — *"an MCV deployment flow must supply its own exclusion when it
+   eventually uses this query"* — and the shape was already in the file, since
+   `try_place_at_hover_cell()` threads an identical `excluded_unit` into
+   `_push_units_out_of_footprint()`. It is one optional parameter on both
+   queries, skipped by identity in the walker they share. The footprint the
+   query checks is provably the one the spawn will use: the rows are the array
+   `begin()` was given, threaded through the deployment record, and the rotation
+   is read from the public `rotation_quarter_turns()` rather than stored, so
+   there is no second copy to drift.
+
+   **What is still owed is the teleport's deletion**, and after `AG1` it is
+   gated on *mobile* units rather than on the bypasses existing at all. A mobile
+   unit still reaches `_spawn_placed_building()` on both paths and still needs
+   shoving, so deleting the write today would make both engulf where they
+   currently displace. Two facts measured while landing `AF1` are worth keeping for whoever
    does it. The behaviour is **wholly untested** on those two paths: deleting
    the call fails exactly one assertion in the whole suite, the deliberately
    retargeted bypass case in `placement_immobile_unit_run.gd`, and nothing else
@@ -611,6 +635,17 @@ The mechanic:
    unit crossing just before a segment is built now costs a pause instead of
    the segment.
 
+   **`AG1` supplied the check, so this item is now the _wait_ rather than the
+   check.** A wall segment already refuses an immobile unit and skips, through
+   the chain's own `CANNOT_BUILD` outcome. What item 6 adds is the deadline, and
+   widening the wall question from immobile-only to **any** unit belongs to it
+   rather than to `AG1`: without a wait, deferring on a unit walking past the
+   line would cost that segment permanently, because the chain skips and moves
+   on. With the wait, the same unit costs a pause — which is exactly what the
+   paragraph above promises. Landing item 6 is also what frees
+   `UnitPushAside`'s teleport on the wall path, since nothing mobile would reach
+   the spawn any more.
+
 What this forbids elsewhere: **refusing a click on anything that is not
 provably hopeless.** The local filter may suppress only what the clicking
 player can see cannot change — an immobile unit of their own — because an enemy
@@ -627,7 +662,7 @@ seconds at a time — immobile, and inside the placing player's build radius,
 which is a far worse trade for its owner than a scout was. The abuse is priced,
 not removed.
 
-**Landed so far: `AA1`, `AB1`, `AD1`, `AE1` and `AF1`** — an immobile unit inside the
+**Landed so far: `AA1`, `AB1`, `AD1`, `AE1`, `AF1` and `AG1`** — an immobile unit inside the
 footprint refuses the placement, friend-filtered at the click and owner-blind at
 execution (`AA1`); the ready icon shows a third, non-interactive state while its
 placement command is in flight (`AB1`); an idle unit parked on a no-stop cell is
@@ -635,17 +670,25 @@ asked to step off it (`AD1`, the idle half of item 4); and a blocked placement
 now waits up to five seconds for its site to clear, reserving the footprint
 against being parked on while it waits (`AE1`, items 1, 2 and 3); and that wait
 now applies to **any** unit rather than only one that cannot move, so the site
-actually clears (`AF1`, the first half of item 4).
+actually clears (`AF1`, the first half of item 4); and the two callers that
+reached the spawn without ever asking — a wall segment and an MCV deployment —
+now ask it too, so neither engulfs an immobile unit (`AG1`).
 
 **Still owed: the teleport's deletion, and item 6's wall deferral.** `AF1` took
-the first half of item 4 — the authority now defers on any unit, so `AE1`'s
-wait clears sites instead of only outlasting units that will never move. What
-remains of item 4 is removing `UnitPushAside`'s `set_simulation_position()`
-write, which is gated on giving the wall chain and the MCV deployment flow a
-unit check of their own, because both reach the spawn without passing the
-authority. Item 6 has item 1, so the wall skip can start waiting for the
-deadline instead of being decided instantly — and it shares that gate, since
-giving walls a unit check is the prerequisite for both.
+the first half of item 4 — the authority defers on any unit, so `AE1`'s wait
+clears sites instead of only outlasting units that will never move — and `AG1`
+gave the two bypass callers the same check, so neither engulfs an immobile unit
+any more.
+
+What remains of item 4 is removing `UnitPushAside`'s
+`set_simulation_position()` write, and the gate is now **mobile** units on the
+two paths that have no wait. Walls get there through item 6: once a blocked
+segment waits for the deadline instead of being skipped instantly, the any-unit
+question becomes safe there, and the shove has nothing left to do. **MCV
+deployment is a fork nobody has picked**, and it is the last thing holding the
+write alive: a deploy has no pending state and no deadline, so the choices are
+to abort on any unit, to give the deploy a wait of its own, or to keep the shove
+for that one caller. `AG1` deliberately did not pick it.
 
 **Correction, 2026-10-07:** this paragraph used to say that items 1 through 4
 are mutually dependent and that only the wall deferral could go next on its own.

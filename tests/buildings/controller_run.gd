@@ -152,6 +152,17 @@ class ImmobilePlacementUnit extends Node3D:
 		return true
 
 
+class MobilePlacementUnit extends ImmobilePlacementUnit:
+	func is_deployed() -> bool:
+		return false
+
+	func set_simulation_position(value: Vector3) -> void:
+		position = value
+
+	func stop_at_current_position() -> void:
+		pass
+
+
 func _initialize() -> void:
 	await process_frame
 	var players = root.get_node("Players")
@@ -168,6 +179,9 @@ func _initialize() -> void:
 	_run_case("wall line preview spans selection and stops before ordering", _test_wall_line_preview_only_during_selection)
 	_run_case("wall chain skips initially blocked segments", _test_wall_chain_skips_blocked_segment)
 	_run_case("wall chain continues when an ordered segment becomes blocked", _test_wall_chain_continues_after_late_block)
+	_run_case("wall chain refunds and skips an immobile unit", _test_wall_chain_skips_immobile_unit.bind(local_player))
+	_run_case("wall chain still places a later clear segment", _test_wall_chain_places_after_immobile_skip)
+	_run_case("wall chain still shoves a mobile unit", _test_wall_chain_shoves_mobile_unit)
 	_run_case("world right click does not cancel a fixed wall line", _test_fixed_wall_line_ignores_world_right_click)
 	_run_case("fixed wall markers remain until built or canceled", _test_fixed_wall_marker_lifecycle)
 	_run_case("building sale plays the authored sell transition", _test_sale_animation.bind(local_player))
@@ -534,6 +548,92 @@ func _test_wall_chain_continues_after_late_block(token: int) -> int:
 	)
 	controller.free()
 	return token
+
+
+func _test_wall_chain_skips_immobile_unit(token: int, local_player: PlayerData) -> int:
+	var fixture := _new_wall_placement_fixture()
+	var controller: BuildingController = fixture[0]
+	var buildings: Node3D = fixture[1]
+	var unit := ImmobilePlacementUnit.new()
+	unit.position = Vector3(2.5, 0.0, 4.5)
+	unit.add_to_group("sim_units")
+	root.add_child(unit)
+	var money_before := local_player.money
+	_production_for(controller).set_wall_chain_for_player(1, WallChainScript.new(
+		&"ATWall", "Wall", 10, 1, [Vector2i(2, 4), Vector2i(4, 4)]
+	))
+	_production_for(controller).advance_wall_chain(1)
+	controller._building_queue.advance_tick(local_player.money, Callable(local_player, &"spend_money"))
+	_expect(buildings.get_child_count() == 0, "an immobile unit must prevent the blocked wall segment from spawning")
+	_expect(
+		controller._wall_chain != null and controller._wall_chain.current_cell() == Vector2i(4, 4),
+		"an immobile-unit refusal must advance the wall chain"
+	)
+	_expect(local_player.money == money_before, "the skipped segment must refund its paid credits")
+	unit.free()
+	controller.free()
+	buildings.free()
+	return token
+
+
+func _test_wall_chain_places_after_immobile_skip(token: int) -> int:
+	var fixture := _new_wall_placement_fixture()
+	var controller: BuildingController = fixture[0]
+	var buildings: Node3D = fixture[1]
+	var unit := ImmobilePlacementUnit.new()
+	unit.position = Vector3(2.5, 0.0, 4.5)
+	unit.add_to_group("sim_units")
+	root.add_child(unit)
+	_production_for(controller).set_wall_chain_for_player(1, WallChainScript.new(
+		&"ATWall", "Wall", 10, 1, [Vector2i(2, 4), Vector2i(4, 4)]
+	))
+	_production_for(controller).advance_wall_chain(1)
+	var local_player = root.get_node("Players").player(1)
+	controller._building_queue.advance_tick(local_player.money, Callable(local_player, &"spend_money"))
+	unit.free()
+	controller._building_queue.advance_tick(local_player.money, Callable(local_player, &"spend_money"))
+	_expect(buildings.get_child_count() == 1, "a clear segment after an immobile-unit skip must still place")
+	controller.free()
+	buildings.free()
+	return token
+
+
+func _test_wall_chain_shoves_mobile_unit(token: int) -> int:
+	var fixture := _new_wall_placement_fixture()
+	var controller: BuildingController = fixture[0]
+	var buildings: Node3D = fixture[1]
+	var unit := MobilePlacementUnit.new()
+	unit.position = Vector3(2.5, 0.0, 4.5)
+	unit.add_to_group("sim_units")
+	unit.add_to_group("units")
+	root.add_child(unit)
+	_production_for(controller).set_wall_chain_for_player(1, WallChainScript.new(
+		&"ATWall", "Wall", 10, 1, [Vector2i(2, 4)]
+	))
+	_production_for(controller).advance_wall_chain(1)
+	var local_player = root.get_node("Players").player(1)
+	controller._building_queue.advance_tick(local_player.money, Callable(local_player, &"spend_money"))
+	_expect(buildings.get_child_count() == 1, "a mobile unit must not prevent wall placement")
+	_expect(unit.simulation_position() != Vector3(2.5, 0.0, 4.5), "wall placement must still shove a mobile unit aside")
+	unit.free()
+	controller.free()
+	buildings.free()
+	return token
+
+
+func _new_wall_placement_fixture() -> Array:
+	var controller := _new_controller()
+	var wall_ids: Array[StringName] = [&"ATWall"]
+	controller.setup(
+		null, null, null, wall_ids, _production_for(controller),
+		null, null, null, null, null, null, Callable()
+	)
+	var buildings := Node3D.new()
+	root.add_child(buildings)
+	_setup_controller_placement(controller, null, FakeGrid.new(), buildings, null, null, null, null, Callable())
+	_production_for(controller)._wall_scene_provider = func(_building_id: StringName) -> String:
+		return "res://scenes/effects/death_corpse.tscn"
+	return [controller, buildings]
 
 
 func _test_fixed_wall_line_ignores_world_right_click(token: int) -> int:
