@@ -575,13 +575,28 @@ The mechanic:
    is read from the public `rotation_quarter_turns()` rather than stored, so
    there is no second copy to drift.
 
-   **What is still owed is the teleport's deletion**, and after `AG1` it is
-   gated on *mobile* units rather than on the bypasses existing at all — and
-   after `AH1`, on **one** caller rather than two. A mobile unit still reaches
-   `_spawn_placed_building()` through MCV deployment and still needs shoving
-   there, so deleting the write today would make a deploy engulf a unit where it
-   currently displaces it; the wall path no longer reaches the shove at all,
-   because a mobile unit on a segment's cell now defers that segment instead.
+   **`AI1` then gave the deploy the same wait**, which is what finally empties
+   the teleport's caller list. An MCV whose footprint holds a unit that can
+   leave reserves the footprint and waits up to five seconds, built the moment
+   the site clears and given up at the deadline through the abort the flow
+   already had; an immobile unit still aborts at once, for the same reason
+   item 6 gives for a wall segment. Three things that slice settled are worth
+   keeping. The wait lives in the `_deployments` record that already existed, so
+   unlike `AH1`'s it needs **no clear at all** — a deployment record is erased on
+   every terminal outcome, so a stale wait has nowhere to survive. The
+   reservation made navigation's single provider a **union**, held by `Match`
+   rather than by either controller, because the two sources now live in sibling
+   nodes; navigation still sees one callable, and its consumer writes every cell
+   into a Dictionary, so order and duplicates stay immaterial. And the controller
+   had to **join the tick** — it was driven by an animation signal and nothing
+   else — which is why `Match._advance_simulation_tick()` now calls it, directly
+   after the building controller so that a deploy whose cell a placement takes
+   this tick sees the building on its own retry.
+
+   **What is still owed is the teleport's deletion**, and after `AI1`
+   **no caller reaches the shove** with a unit it would have to move: both
+   bypass paths defer on any unit, so `_spawn_placed_building()` is only ever
+   entered with a footprint the authority has already found clear.
    Two facts measured while landing `AF1` are worth keeping for whoever
    does it, with one of them now half-settled. The behaviour was **wholly
    untested** on both paths: deleting
@@ -735,7 +750,7 @@ seconds at a time — immobile, and inside the placing player's build radius,
 which is a far worse trade for its owner than a scout was. The abuse is priced,
 not removed.
 
-**Landed so far: `AA1`, `AB1`, `AD1`, `AE1`, `AF1`, `AG1` and `AH1`** — an immobile unit inside the
+**Landed so far: `AA1`, `AB1`, `AD1`, `AE1`, `AF1`, `AG1`, `AH1` and `AI1`** — an immobile unit inside the
 footprint refuses the placement, friend-filtered at the click and owner-blind at
 execution (`AA1`); the ready icon shows a third, non-interactive state while its
 placement command is in flight (`AB1`); an idle unit parked on a no-stop cell is
@@ -747,32 +762,43 @@ actually clears (`AF1`, the first half of item 4); and the two callers that
 reached the spawn without ever asking — a wall segment and an MCV deployment —
 now ask it too, so neither engulfs an immobile unit (`AG1`); and a wall segment
 blocked by a unit that *can* leave now waits five seconds for its cell with that
-cell reserved, instead of skipping it, which completes item 6 (`AH1`).
+cell reserved, instead of skipping it, which completes item 6 (`AH1`); and an
+MCV deploy does the same for the Construction Yard footprint it is about to
+become, which was the last caller that still displaced anything (`AI1`).
 
-**Still owed: the teleport's deletion, now gated on MCV deployment alone.**
-`AF1` took the first half of item 4 — the authority defers on any unit, so
-`AE1`'s wait clears sites instead of only outlasting units that will never move
-— `AG1` gave the two bypass callers the same check, so neither engulfs an
-immobile unit any more, and `AH1` gave the wall path the wait that item 6 owed,
-after which nothing mobile reaches the spawn through a wall segment.
+**Still owed: the teleport's deletion, and nothing gates it any more.** `AF1`
+took the first half of item 4 — the authority defers on any unit, so `AE1`'s
+wait clears sites instead of only outlasting units that will never move — `AG1`
+gave the two bypass callers the same check, `AH1` gave the wall path the wait
+item 6 owed, and `AI1` gave the deploy its own. All that remains is removing
+`UnitPushAside`'s `set_simulation_position()` write, and the one constraint on
+doing so is mechanical rather than behavioural: the call is the only consumer of
+`_spawn_placed_building()`'s `excluded_unit` parameter, which GDScript then
+reports as an unused parameter, so the parameter goes with it.
 
-What remains of item 4 is removing `UnitPushAside`'s
-`set_simulation_position()` write, and after `AH1` exactly one caller still
-needs it: **MCV deployment**, where a mobile unit in the footprint is still
-displaced. The fork `AG1` left open there was settled by the human decision of
-2026-10-08, which is the next slice rather than an open question — the deploy
-takes the same two-branch split the wall path now has, `AG1`'s immediate abort
-for an immobile unit and a pending state with a no-stop reservation for any
-other, plus one piece of MCV-specific logic: the MCV is itself mobile, so the
-player may give it a new order while its deploy is pending, and at resolution a
-deploy whose unit is no longer ordered to deploy is abandoned silently — the
-reservation is cleared and nothing else happens. Two things make that slice
-bigger than `AH1` was: `UnitDeploymentController` is driven by an animation
-signal and joins no tick, so its wait needs a place in
-`Match._advance_simulation_tick()`'s fixed order, and its reservation needs a
-second source behind the single provider `NavBlockerTracker` holds — `AH1`
-unioned its own at `BuildingController.pending_placement_reserved_nav_cells()`
-rather than teaching navigation about a list, and the deploy can do the same.
+**One piece of the 2026-10-08 decision was deliberately not built, and the
+reason belongs here so nobody re-derives it.** That decision asked for a check,
+at the deploy's resolution, that the unit is still ordered to deploy — on the
+premise that a player can give a pending deploy a superseding order. **No input
+can interrupt a deploy**, measured while planning `AI1`:
+`CommandExecutor._execute_move()` drops every entity for which
+`SelectionClassifier.is_immobilized_by_deployment()` is true, which it is for
+the whole `DEPLOYING` span, and `UnitCommandController` applies the same filter
+at click time, so `command_move()` — whose `agent["hold"] = false` would have
+released the deploy's navigation hold — is never reached; `_execute_stop()` has
+no deployment filter but `Unit.cancel_all_orders()` never touches
+`UnitDeployState`, and a deploying MCV has no attack or navigation order left to
+cancel, so it is a no-op; an attack order is refused by the same `is_deploying()`
+primitive; and a second deploy command is refused by `_deployment_candidate()`.
+A check for "is the order still deploy" could therefore never answer no, so
+building it would have been the contradictory-fixture trap `AD1` already paid
+for. A pending deploy is uninterruptible exactly as the animation before it
+already was, and as item 5's 2026-10-09 decision made a waiting wall segment.
+**Making one interruptible is a slice of its own** if it is ever wanted: both
+move filters would need a verdict that separates "animating" from "waiting for
+its site", accepting such an order would have to unwind the deploy through
+`finish_deployment(false)` and clear the reservation, and none of it is needed
+by the teleport's deletion.
 
 **Correction, 2026-10-07:** this paragraph used to say that items 1 through 4
 are mutually dependent and that only the wall deferral could go next on its own.

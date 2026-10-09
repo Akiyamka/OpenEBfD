@@ -87,9 +87,11 @@ Rules for placing a ready building on the map:
   deployed unit on a building site was engulfed rather than blocking", and
   decision 12 in
   [`network-multiplayer.md`](../architecture/network-multiplayer.md).
-  **MCV deployment is the only remaining path that displaces a mobile unit**:
-  it reaches the spawn without passing the execution-time check that defers,
-  and it is what keeps `UnitPushAside`'s shove alive;
+  Since slice `AI1` the same is true of MCV deployment, which waits for the
+  footprint of the Construction Yard it is about to become, so **no path
+  displaces a mobile unit** any more: every route to a building spawn asks the
+  execution-time check first, and `UnitPushAside`'s shove is left with no
+  caller that can reach it with a unit in the way;
 - **build radius** (verified): a new building can be placed only near the
   player's existing buildings `[Rules: radius]`. **All buildings except walls**
   provide this radius; walls extend the radius **only for constructing other

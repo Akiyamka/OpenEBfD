@@ -104,6 +104,29 @@ deployment alone. Its shape was settled by the human decision of 2026-10-08 —
 the same two-branch split, plus a check that the MCV is still ordered to deploy
 when its wait resolves — so it is the next slice rather than an open fork.
 
+**OpenEBfD compatibility decision (slice `AI1`, 2026-10-10):** that last caller
+has landed its wait, and the paragraph above narrows to nothing: **no caller
+displaces a mobile unit**. An MCV whose Construction Yard footprint holds a unit
+that can walk away now reserves the footprint and waits up to five seconds for
+it, and **the deploy waits instead of displacing** — where the original shoved
+the unit aside and built, OpenEBfD holds the folded MCV in place, builds the
+moment the site clears, and gives the deploy up at the deadline through the
+abort the flow already had. An immobile unit in the footprint still aborts the
+deploy at once rather than waiting, for the reason decision 12's item 6 records
+for wall segments: nothing in five seconds moves a deployed unit.
+
+One MCV-specific piece of the 2026-10-08 decision was deliberately **not**
+built, and the reason is worth keeping because it is a fact about the code
+rather than a preference. That decision asked for a check that the unit is still
+ordered to deploy when its wait resolves, on the premise that a player can give
+a pending deploy a new order. They cannot: **no input can interrupt a deploy**.
+A move order is dropped at both the click filter and the authority for anything
+`is_deploying()` answers true for, a stop order reaches the unit and leaves the
+deploy state untouched, and an attack order and a second deploy are both
+refused. A check for "is the order still deploy" could therefore never answer
+no, so `AI1` left it out and a pending deploy is uninterruptible exactly as the
+animation before it already was. Decision 12 carries the four routes in full.
+
 ## Animation timing
 
 ### Infantry base movement animation is too slow

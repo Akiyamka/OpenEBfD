@@ -22,6 +22,7 @@ signal mcv_undeployed(unit: Node3D)
 
 const BuildingPlacementScript := preload("res://scripts/buildings/building_placement.gd")
 const PlacementContextScript := preload("res://scripts/buildings/placement_context.gd")
+const PendingPlacementScript := preload("res://scripts/buildings/pending_placement.gd")
 const SpatialOrientationScript := preload("res://scripts/world/spatial_orientation.gd")
 const UnitScene := preload("res://scenes/units/unit.tscn")
 const UnitSceneCatalogScript := preload("res://scripts/units/unit_scene_catalog.gd")
@@ -33,6 +34,13 @@ const QUARTER_TURN_RADIANS := PI * 0.5
 const DEFAULT_BUILDING_FORWARD_OFFSET_CELLS := 1
 const DEFAULT_UNIT_FORWARD_OFFSET_WORLD := -0.8
 const BUILDING_SCENE_ROOT := "res://assets/converted/buildings"
+
+
+## A deploy whose footprint holds a unit that can leave. `null` is the whole
+## "not waiting" state: the final tick must not look like no wait and start a
+## fresh deadline when resolution re-enters.
+class DeploymentWait extends RefCounted:
+	var ticks_left: int
 
 var _navigation_grid
 var _buildings_root: Node3D
@@ -85,6 +93,7 @@ func try_deploy(unit: Node3D) -> Dictionary:
 		"building_scene": building_scene,
 		"occupy_rows": occupy_rows,
 		"owner_player_id": EntityQueryScript.owner_id_of(unit),
+		"wait": null,
 	}
 	placement.building_placed.connect(_on_building_placed.bind(deployment_id))
 	unit.deployment_animation_finished.connect(
@@ -308,19 +317,32 @@ func _deployment_hover_cell(unit: Node3D) -> Vector2i:
 
 
 func _on_deployment_animation_finished(deployment_id: int) -> void:
+	_resolve_deployment(deployment_id)
+
+
+## Resolves both the animation completion and every later wait retry through
+## one verdict ladder, so a site that changes while waiting keeps every
+## existing immediate failure outcome.
+func _resolve_deployment(deployment_id: int) -> void:
 	var deployment: Dictionary = _deployments.get(deployment_id, {})
 	if deployment.is_empty():
 		return
-	var unit := deployment["unit"] as Node3D
-	var placement: BuildingPlacement = deployment["placement"]
-	if unit == null or not is_instance_valid(unit) or placement == null:
-		_abort_deployment(deployment_id, unit != null and is_instance_valid(unit))
+	var unit = deployment.get("unit")
+	if unit == null or not is_instance_valid(unit) or not unit is Node3D:
+		_abort_deployment(deployment_id, false)
+		return
+	var placement = deployment.get("placement")
+	if placement == null or not is_instance_valid(placement) or not placement is BuildingPlacement:
+		_abort_deployment(deployment_id, true)
 		return
 	var occupy_rows: Array[String] = []
 	occupy_rows.assign(deployment.get("occupy_rows", []))
-	if placement.has_immobile_unit_in_footprint(
+	var blocked_by_unit: bool = placement.has_any_unit_in_footprint(
 		occupy_rows, placement.rotation_quarter_turns(), deployment["hover_cell"], null, unit
-	):
+	)
+	if blocked_by_unit and _deployment_keeps_waiting(deployment, occupy_rows, placement, unit):
+		return
+	if blocked_by_unit:
 		_abort_deployment(deployment_id, true)
 		return
 
@@ -340,6 +362,60 @@ func _on_deployment_animation_finished(deployment_id: int) -> void:
 	# has queue_free() but not request_despawn() -- a direct call would be a
 	# compile error that fails this whole file's parse.
 	unit.call("request_despawn")
+
+
+## Only a unit that can leave buys the deadline. An immobile unit falls through
+## to the existing abort, because five seconds cannot make a deployed,
+## deploying, or undeploying unit leave the footprint.
+func _deployment_keeps_waiting(
+		deployment: Dictionary, occupy_rows: Array[String], placement, unit: Node3D
+	) -> bool:
+	if placement.has_immobile_unit_in_footprint(
+		occupy_rows, placement.rotation_quarter_turns(), deployment["hover_cell"], null, unit
+	):
+		return false
+	var wait = deployment.get("wait")
+	if wait == null:
+		wait = DeploymentWait.new()
+		wait.ticks_left = PendingPlacementScript.PENDING_DEADLINE_TICKS
+		deployment["wait"] = wait
+		return true
+	return wait.ticks_left > 0
+
+
+## Controller-shaped, so Match calls this directly rather than through a
+## group. A resolution may erase its own record, hence the key snapshot.
+func advance_tick() -> void:
+	for deployment_id in _deployments.keys():
+		var deployment: Dictionary = _deployments.get(deployment_id, {})
+		if deployment.is_empty():
+			continue
+		var wait = deployment.get("wait")
+		if wait == null:
+			continue
+		wait.ticks_left -= 1
+		_resolve_deployment(deployment_id)
+
+
+## Navigation reserves a waiting deploy's footprint the way it reserves a
+## pending building placement or waiting wall segment.
+func waiting_deployment_reserved_nav_cells() -> Array[Vector2i]:
+	var cells: Array[Vector2i] = []
+	for deployment in _deployments.values():
+		if deployment.get("wait") == null:
+			continue
+		var unit := deployment.get("unit") as Node3D
+		var placement := deployment.get("placement") as BuildingPlacement
+		if unit == null or not is_instance_valid(unit) or placement == null or not is_instance_valid(placement):
+			continue
+		var occupy_rows: Array[String] = []
+		occupy_rows.assign(deployment.get("occupy_rows", []))
+		cells.append_array(
+			placement.reserved_nav_cells(
+				occupy_rows, placement.rotation_quarter_turns(), deployment["hover_cell"]
+			)
+		)
+	return cells
 
 
 func _on_building_placed(building: Node3D, deployment_id: int) -> void:

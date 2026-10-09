@@ -1,12 +1,14 @@
 extends SceneTree
-
 const LegacyRulesFixture := preload("res://tests/support/legacy_rules_fixture.gd")
-
 const CombatTurretScript := preload("res://scripts/combat/combat_turret.gd")
 const CombatLingerEffectScript := preload("res://scripts/combat/combat_linger_effect.gd")
 const CombatProjectileScript := preload("res://scripts/combat/combat_projectile.gd")
 const CombatBullets := preload("res://tests/combat/support/combat_bullets.gd")
 const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
+const UnitDeploymentControllerScript := preload("res://scripts/units/unit_deployment_controller.gd")
+const BuildingPlacementScript := preload("res://scripts/buildings/building_placement.gd")
+const PlacementContextScript := preload("res://scripts/buildings/placement_context.gd")
+const NavConstantsScript := preload("res://scripts/units/navigation/shared/nav_constants.gd")
 const BuildingDefinitionCatalogScript := preload(
 	"res://scripts/buildings/building_definition_catalog.gd"
 )
@@ -32,7 +34,6 @@ const ATConYardScene := preload("res://assets/converted/buildings/ATConYard/ATCo
 const ATSmWindtrapScene := preload(
 	"res://assets/converted/buildings/ATSmWindtrap/ATSmWindtrap.scn"
 )
-
 ## Regression test for a startup-ordering bug: Match._enter_tree() used to
 ## compute the building-panel roster via Rules.buildable_building_ids_for_house(),
 ## but the Rules autoload only loads its catalog in its own _ready() --
@@ -40,12 +41,16 @@ const ATSmWindtrapScene := preload(
 ## roster always read an empty catalog and the panel showed nothing buildable
 ## even with a Construction Yard and Windtrap already on the map. The fix
 ## moved the roster computation into Match._ready() instead.
-
 var _assertions := 0
 var _failures := 0
 var _current_case := ""
-
-
+class DeploymentWaitBlocker extends Node3D:
+	func sim_tick() -> void:
+		pass
+	func sim_tick_combat() -> void:
+		pass
+	func simulation_position() -> Vector3:
+		return global_position
 func _initialize() -> void:
 	LegacyRulesFixture.install(root)
 	await _run_case("units and buildings use authored collision meshes", _test_authored_collision_meshes)
@@ -77,6 +82,16 @@ func _initialize() -> void:
 		"the public tick pump leaves the clock unchanged for zero ticks",
 		_test_advance_ticks_zero_is_a_no_op,
 		1
+	)
+	await _run_case(
+		"the match tick loop retries waiting MCV deployments",
+		_test_match_tick_retries_waiting_deployment,
+		1
+	)
+	await _run_case(
+		"a waiting MCV deployment reservation reaches navigation in a real match",
+		_test_waiting_deployment_reservation_reaches_navigation,
+		3
 	)
 	await _run_case(
 		"a real unit's turret reload advances from the match loop alone",
@@ -123,15 +138,12 @@ func _initialize() -> void:
 	await _run_case("real match units execute forced friendly attack orders", _test_real_forced_friendly_attack)
 	await _run_case("real harvester completes a refinery unload trip", _test_real_harvester_unload_trip)
 	await _run_case("occupy matrices match converted model orientation", _test_occupy_rows_are_mirrored)
-
 	if _failures > 0:
 		printerr("Match integration tests: %d failures after %d assertions" % [_failures, _assertions])
 		quit(1)
 		return
 	print("Match integration tests: %d assertions passed" % _assertions)
 	quit(0)
-
-
 func _run_case(case_name: String, test: Callable, expected_assertions: int = -1) -> void:
 	_current_case = case_name
 	var failures_before := _failures
@@ -146,16 +158,12 @@ func _run_case(case_name: String, test: Callable, expected_assertions: int = -1)
 		return
 	if _failures == failures_before:
 		print("PASS: %s" % case_name)
-
-
 func _expect(condition: bool, message: String) -> void:
 	_assertions += 1
 	if condition:
 		return
 	_failures += 1
 	printerr("FAIL: %s: %s" % [_current_case, message])
-
-
 func _test_authored_collision_meshes() -> void:
 	var match_instance := MatchFixtureScene.instantiate()
 	get_root().add_child(match_instance)
@@ -169,7 +177,6 @@ func _test_authored_collision_meshes() -> void:
 	# happened to take and is not guaranteed to produce a tick at all.
 	match_instance.advance_ticks(1)
 	var navigation := match_instance.get_node_or_null("UnitNavigationSystem")
-
 	for unit_name in [&"ScoutA", &"OrdosAPC", &"NIABTank"]:
 		var unit := match_instance.get_node("Units/%s" % unit_name)
 		_expect(unit._collision_sources().size() > 0, "%s must expose an authored collision volume" % unit_name)
@@ -194,7 +201,6 @@ func _test_authored_collision_meshes() -> void:
 				collision.shape is ConvexPolygonShape3D,
 				"%s must not use a hand-authored box or capsule collision" % unit_name
 			)
-
 	for building_name in [&"ATConYard", &"ATSmWindtrap"]:
 		var building := match_instance.get_node("Buildings/%s" % building_name)
 		var body := building.get_node_or_null("SelectionCollision") as StaticBody3D
@@ -219,17 +225,13 @@ func _test_authored_collision_meshes() -> void:
 				collision.shape is ConvexPolygonShape3D,
 				"%s must not fall back to a generated box collision" % building_name
 			)
-
 	match_instance.queue_free()
-
-
 func _test_units_follow_terrain() -> void:
 	var match_instance := MatchFixtureScene.instantiate()
 	get_root().add_child(match_instance)
 	await physics_frame
 	await physics_frame
 	await physics_frame
-
 	for unit_name in [&"ScoutA", &"OrdosAPC", &"NIABTank"]:
 		var unit := match_instance.get_node("Units/%s" % unit_name) as Unit
 		_expect(unit.collision_mask == 0, "%s must not physically collide with terrain triangles" % unit_name)
@@ -253,7 +255,6 @@ func _test_units_follow_terrain() -> void:
 					visual_up.dot(terrain_normal.normalized()) > 0.999,
 					"%s visual up axis must follow the terrain normal" % unit_name
 				)
-
 	var vehicle := match_instance.get_node("Units/OrdosAPC") as Unit
 	var synthetic_normal := Vector3(0.35, 1.0, -0.2).normalized()
 	vehicle.call("_set_visual_slope_target", synthetic_normal)
@@ -262,16 +263,12 @@ func _test_units_follow_terrain() -> void:
 		vehicle.visual_root.global_transform.basis.y.normalized().dot(synthetic_normal) > 0.999,
 		"a ground vehicle must pitch and roll toward a non-flat terrain normal"
 	)
-
 	var infantry := match_instance.get_node("Units/ScoutA") as Unit
 	infantry.setup(&"ATMongoose")
 	_expect(not infantry.aligns_visual_to_terrain_slope(), "Mech=true walkers must not tilt their complete visual")
 	infantry.setup(&"INTLWalker")
 	_expect(not infantry.aligns_visual_to_terrain_slope(), "the legacy Tleilaxu walker must remain upright")
-
 	match_instance.queue_free()
-
-
 func _terrain_hit_below(unit: CharacterBody3D) -> Dictionary:
 	if unit == null:
 		return {}
@@ -283,13 +280,10 @@ func _terrain_hit_below(unit: CharacterBody3D) -> Dictionary:
 	)
 	query.exclude = [unit.get_rid()]
 	return get_root().get_world_3d().direct_space_state.intersect_ray(query)
-
-
 func _test_unit_turn_rates() -> void:
 	var match_instance := MatchFixtureScene.instantiate()
 	get_root().add_child(match_instance)
 	await physics_frame
-
 	var expected_rates := {
 		&"ScoutA": 0.2,
 		&"OrdosAPC": 0.05,
@@ -308,7 +302,6 @@ func _test_unit_turn_rates() -> void:
 			is_equal_approx(absf(unit.rotation.y), expected_rate),
 			"%s must turn by %.3f radians in one rules movement update (got %.3f)" % [unit_name, expected_rate, absf(unit.rotation.y)]
 		)
-
 	var omnidirectional := match_instance.get_node("Units/OrdosAPC") as Unit
 	_expect(omnidirectional.can_move_any_direction, "ORAPC must load CanMoveAnyDirection=true from its rules")
 	omnidirectional.rotation = Vector3.ZERO
@@ -322,7 +315,6 @@ func _test_unit_turn_rates() -> void:
 		not is_equal_approx(omnidirectional.rotation.y, -PI / 2.0),
 		"the omnidirectional unit must still obey its turn-rate limit while translating"
 	)
-
 	var sequential := match_instance.get_node("Units/ScoutA") as Unit
 	sequential.setup(&"IMTANK")
 	_expect(not sequential.can_move_any_direction, "a null CanMoveAnyDirection rule must load as false")
@@ -342,10 +334,7 @@ func _test_unit_turn_rates() -> void:
 		sequential.global_position.x > sequential_start.x,
 		"a sequential unit must begin translating after it finishes turning"
 	)
-
 	match_instance.queue_free()
-
-
 func _test_entity_orientation_contract() -> void:
 	var building := Building.new()
 	var unit := Unit.new()
@@ -358,15 +347,12 @@ func _test_entity_orientation_contract() -> void:
 		)
 	building.free()
 	unit.free()
-
-
 func _test_unit_movement_animations() -> void:
 	var match_instance := MatchFixtureScene.instantiate()
 	get_root().add_child(match_instance)
 	await physics_frame
 	await physics_frame
 	await physics_frame
-
 	for unit_name in [&"ScoutA", &"OrdosAPC", &"NIABTank"]:
 		var unit := match_instance.get_node("Units/%s" % unit_name) as Unit
 		var player := _unit_animation_player(unit)
@@ -400,10 +386,7 @@ func _test_unit_movement_animations() -> void:
 		unit.stop_at_current_position()
 		_expect(player != null and _is_unit_idle(player), "%s must return to an idle animation when stopped" % unit_name)
 		_expect(player != null and is_equal_approx(player.speed_scale, 1.0), "%s must reset its animation speed when stopped" % unit_name)
-
 	match_instance.queue_free()
-
-
 func _test_mech_gait_speeds() -> void:
 	var match_instance := MatchFixtureScene.instantiate()
 	get_root().add_child(match_instance)
@@ -412,7 +395,6 @@ func _test_mech_gait_speeds() -> void:
 	# tolerance read further down needs ScoutA to actually hold an agent, and
 	# since slice C6c that happens on the first tick, not in Match._ready().
 	match_instance.advance_ticks(1)
-
 	var unit := match_instance.get_node("Units/ScoutA") as Unit
 	unit.setup(&"ATMongoose")
 	unit.replace_visual_scene(ATMongooseModelScene)
@@ -436,7 +418,6 @@ func _test_mech_gait_speeds() -> void:
 		is_equal_approx(authored_average * cadence, unit.mech_speed),
 		"MechSpeed must calibrate the authored profile's average through cadence"
 	)
-
 	unit._locomotion.seek_gait_phase(0.0)
 	_expect(
 		is_equal_approx(unit.navigation_move_speed(), 1.0 * cadence),
@@ -456,13 +437,11 @@ func _test_mech_gait_speeds() -> void:
 		unit.navigation_move_speed() < unit.move_speed,
 		"a mech gait must never use the ordinary Speed rule"
 	)
-
 	unit.velocity = Vector3.RIGHT * unit.navigation_move_speed()
 	_expect(
 		is_equal_approx(unit._locomotion.movement_animation_speed_scale(), cadence),
 		"the physical XBF speed and Move playback must share one cadence"
 	)
-
 	unit.setup(&"HKDevastator")
 	unit.replace_visual_scene(HKDevastatorModelScene)
 	var forward := unit.facing_direction()
@@ -487,7 +466,6 @@ func _test_mech_gait_speeds() -> void:
 		and devastator_player.current_animation == &"Move",
 		"the tick-owned Move_Start deadline must enter Move and advance its authored zero-speed phase"
 	)
-
 	var navigation = unit.get("_navigation_system")
 	if navigation != null:
 		navigation.unregister_unit(unit)
@@ -506,20 +484,16 @@ func _test_mech_gait_speeds() -> void:
 		devastator_player != null and devastator_player.current_animation == &"Move_Stop",
 		"Devastator must stop its gait when navigation considers the destination reached"
 	)
-
 	unit.setup(&"IMTANK")
 	_expect(
 		is_equal_approx(unit.navigation_move_speed(), unit.move_speed),
 		"non-mechs must retain their ordinary constant movement speed"
 	)
 	match_instance.queue_free()
-
-
 func _test_mech_locomotion_transitions() -> void:
 	var match_instance := MatchFixtureScene.instantiate()
 	get_root().add_child(match_instance)
 	await physics_frame
-
 	var unit := match_instance.get_node("Units/ScoutA") as Unit
 	var mech_models := [
 		[&"ATMongoose", ATMongooseModelScene],
@@ -538,7 +512,6 @@ func _test_mech_locomotion_transitions() -> void:
 				model_player.has_animation(clip_name),
 				"%s must retain its authored %s clip" % [model_case[0], clip_name]
 			)
-
 	unit.setup(&"ATMongoose")
 	unit.replace_visual_scene(ATMongooseModelScene)
 	var player := _unit_animation_player(unit)
@@ -558,7 +531,6 @@ func _test_mech_locomotion_transitions() -> void:
 		),
 		"a mech must remain in place while Move_Start is playing"
 	)
-
 	_expect(
 		_advance_mech_until_clip(
 			unit, player, &"Move", forward * unit.navigation_move_speed()
@@ -570,7 +542,6 @@ func _test_mech_locomotion_transitions() -> void:
 		unit.global_position.distance_to(start_position) > 0.0,
 		"a mech must translate after Move_Start has completed"
 	)
-
 	unit.stop_at_current_position()
 	_expect(
 		player != null and player.current_animation == &"Move_Stop",
@@ -580,7 +551,6 @@ func _test_mech_locomotion_transitions() -> void:
 		_advance_mech_until_idle(unit, player),
 		"the tick-owned Move_Stop deadline must return the mech to Stationary"
 	)
-
 	unit.rotation = Vector3.ZERO
 	unit.set_navigation_destination(unit.global_position + Vector3.RIGHT * 10.0)
 	unit.navigation_step(Vector3.RIGHT * unit.navigation_move_speed(), tick_delta)
@@ -588,7 +558,6 @@ func _test_mech_locomotion_transitions() -> void:
 		player != null and player.current_animation == &"Turn_Right",
 		"a clockwise in-place turn must use Turn_Right"
 	)
-
 	unit.rotation = Vector3.ZERO
 	unit.set_navigation_destination(unit.global_position + Vector3.LEFT * 10.0)
 	unit.navigation_step(Vector3.LEFT * unit.navigation_move_speed(), tick_delta)
@@ -596,17 +565,13 @@ func _test_mech_locomotion_transitions() -> void:
 		player != null and player.current_animation == &"Turn_Left",
 		"a counter-clockwise in-place turn must use Turn_Left"
 	)
-
 	unit.face_direction(Vector3.LEFT)
 	unit.navigation_step(Vector3.LEFT * unit.navigation_move_speed(), tick_delta)
 	_expect(
 		player != null and player.current_animation == &"Move_Start",
 		"finishing an in-place turn must transition through Move_Start"
 	)
-
 	match_instance.queue_free()
-
-
 func _advance_mech_until_clip(
 	unit: Unit, player: AnimationPlayer, animation_name: StringName, velocity: Vector3
 	) -> bool:
@@ -617,8 +582,6 @@ func _advance_mech_until_clip(
 		if player.current_animation == animation_name:
 			return true
 	return false
-
-
 func _advance_mech_until_idle(unit: Unit, player: AnimationPlayer) -> bool:
 	if player == null:
 		return false
@@ -627,8 +590,6 @@ func _advance_mech_until_idle(unit: Unit, player: AnimationPlayer) -> bool:
 		if _is_unit_idle(player):
 			return true
 	return false
-
-
 func _unit_animation_player(unit: Unit) -> AnimationPlayer:
 	if unit == null:
 		return null
@@ -638,32 +599,24 @@ func _unit_animation_player(unit: Unit) -> AnimationPlayer:
 		if player.has_animation(&"Move") and player.has_animation(&"Stationary"):
 			return player
 	return null
-
-
 func _projectile_has_visible_mesh(projectile: Node) -> bool:
 	if projectile == null:
 		return false
 	var visual := projectile.get_node_or_null("Visual")
 	return visual is MeshInstance3D \
 		or (visual != null and not visual.find_children("*", "MeshInstance3D", true, false).is_empty())
-
-
 func _is_unit_idle(player: AnimationPlayer) -> bool:
 	if player == null:
 		return false
 	if _idle_animation_count(player) > 0:
 		return player.current_animation == &"Stationary" or String(player.current_animation).begins_with("Idle")
 	return player.current_animation == &"Stationary"
-
-
 func _idle_animation_count(player: AnimationPlayer) -> int:
 	var idle_variants := 0
 	for animation_name in player.get_animation_list():
 		if String(animation_name).begins_with("Idle"):
 			idle_variants += 1
 	return idle_variants
-
-
 func _authored_collision_shapes(node: Node) -> Array[CollisionShape3D]:
 	var result: Array[CollisionShape3D] = []
 	if node == null:
@@ -672,14 +625,11 @@ func _authored_collision_shapes(node: Node) -> Array[CollisionShape3D]:
 		if child is CollisionShape3D:
 			result.append(child)
 	return result
-
-
 func _test_match_roster_populated() -> void:
 	var match_instance := MatchFixtureScene.instantiate()
 	get_root().add_child(match_instance)
 	await process_frame
 	await process_frame
-
 	_expect(
 		not match_instance._building_option_ids.is_empty(),
 		"the local player's building roster must not be empty when a Construction Yard already exists"
@@ -688,16 +638,12 @@ func _test_match_roster_populated() -> void:
 		match_instance._building_option_ids.has(&"ATBarracks"),
 		"ATBarracks must be available given the fixture's starting ATConYard + ATSmWindtrap"
 	)
-
 	var side_panel = match_instance.get_node("HUD/SidePanel")
 	_expect(
 		side_panel._building_option_ids.has(&"ATBarracks"),
 		"the roster must reach the side panel's building grid, not just Match's own state"
 	)
-
 	match_instance.queue_free()
-
-
 ## Player 2 is intentionally made able to order an Atreides Barracks here:
 ## Match configures the controller's catalog from local Atreides roster, while
 ## D5 will make the catalog player-specific. This test is only about D2's
@@ -707,20 +653,17 @@ func _test_player_two_build_order_owns_credits_and_building() -> void:
 	get_root().add_child(match_instance)
 	await process_frame
 	await process_frame
-
 	var players = get_root().get_node("Players")
 	var player_one = players.player(1)
 	var player_two = players.player(2)
 	_add_player_two_building_prerequisites(match_instance)
 	await process_frame
-
 	var controller = match_instance.get_node("BuildingController") as BuildingController
 	var placement_cell: Variant = _first_buildable_barracks_cell(match_instance, controller)
 	_expect(placement_cell != null, "setup: the fixture must provide a buildable Barracks cell")
 	if placement_cell == null:
 		match_instance.queue_free()
 		return
-
 	var player_one_money_before: int = player_one.money
 	var player_two_money_before: int = player_two.money
 	var order := SimBuildOrderCommandScript.new()
@@ -729,7 +672,6 @@ func _test_player_two_build_order_owns_credits_and_building() -> void:
 	order.button_index = MOUSE_BUTTON_LEFT
 	match_instance._command_bus.submit(order, match_instance.next_orderable_tick())
 	match_instance.advance_ticks(1)
-
 	var ready := false
 	for _tick in 2000:
 		match_instance.advance_ticks(1)
@@ -738,7 +680,6 @@ func _test_player_two_build_order_owns_credits_and_building() -> void:
 			ready = true
 			break
 	_expect(ready, "the player-2 order must reach ready through Match's tick loop")
-
 	var place := SimPlaceBuildingCommandScript.new()
 	place.player_id = 2
 	place.building_id = &"ATBarracks"
@@ -746,7 +687,6 @@ func _test_player_two_build_order_owns_credits_and_building() -> void:
 	place.rotation_quarter_turns = 0
 	match_instance._command_bus.submit(place, match_instance.next_orderable_tick())
 	match_instance.advance_ticks(1)
-
 	var placed := _newest_building_with_config(match_instance, &"ATBarracks")
 	_expect(placed != null, "the player-2 place command must add a Barracks")
 	_expect(
@@ -761,10 +701,7 @@ func _test_player_two_build_order_owns_credits_and_building() -> void:
 		player_one.money == player_one_money_before,
 		"control: player 1's fixture credits must stay untouched by player 2's order"
 	)
-
 	match_instance.queue_free()
-
-
 ## The local ready queue opens this preview through the controller's normal UI
 ## path. A remote command must not call begin()/try_place_at_hover_cell() on
 ## this object: either call clears its active preview and the committed click.
@@ -773,7 +710,6 @@ func _test_player_two_placement_does_not_touch_local_preview() -> void:
 	get_root().add_child(match_instance)
 	await process_frame
 	await process_frame
-
 	_add_player_two_building_prerequisites(match_instance)
 	await process_frame
 	var controller = match_instance.get_node("BuildingController") as BuildingController
@@ -782,7 +718,6 @@ func _test_player_two_placement_does_not_touch_local_preview() -> void:
 	if placement_cell == null:
 		match_instance.queue_free()
 		return
-
 	var order := SimBuildOrderCommandScript.new()
 	order.player_id = 2
 	order.building_id = &"ATBarracks"
@@ -797,7 +732,6 @@ func _test_player_two_placement_does_not_touch_local_preview() -> void:
 			ready = true
 			break
 	_expect(ready, "setup: player 2's order must reach ready before its place command")
-
 	var local_queue = _queue_for_test(controller, 1)
 	var remote_queue = _queue_for_test(controller, 2)
 	_expect(
@@ -816,7 +750,6 @@ func _test_player_two_placement_does_not_touch_local_preview() -> void:
 	)
 	var committed_cell := Vector2i(placement_cell.x + 1, placement_cell.y + 1)
 	controller._committed_placement_cell = committed_cell
-
 	var place := SimPlaceBuildingCommandScript.new()
 	place.player_id = 2
 	place.building_id = &"ATBarracks"
@@ -824,7 +757,6 @@ func _test_player_two_placement_does_not_touch_local_preview() -> void:
 	place.rotation_quarter_turns = 0
 	match_instance._command_bus.submit(place, match_instance.next_orderable_tick())
 	match_instance.advance_ticks(1)
-
 	var placed := _newest_building_with_config(match_instance, &"ATBarracks")
 	_expect(placed != null and placed.owner_player_id == 2, "player 2's building must still place")
 	_expect(controller._building_placement.is_active(), "player 2's placement must leave the local preview active")
@@ -832,10 +764,7 @@ func _test_player_two_placement_does_not_touch_local_preview() -> void:
 		controller._committed_placement_cell == committed_cell,
 		"player 2's placement must leave the local committed-click state unchanged"
 	)
-
 	match_instance.queue_free()
-
-
 func _add_player_two_building_prerequisites(match_instance) -> void:
 	var buildings := match_instance.get_node("Buildings") as Node3D
 	var local_yard := buildings.get_node("ATConYard") as Building
@@ -848,8 +777,6 @@ func _add_player_two_building_prerequisites(match_instance) -> void:
 	windtrap.owner_player_id = 2
 	windtrap.position = local_windtrap.position
 	buildings.add_child(windtrap)
-
-
 func _first_buildable_barracks_cell(match_instance, controller: BuildingController):
 	var config = controller._building_config(&"ATBarracks")
 	var occupy_rows: Array[String] = controller._building_occupy_rows(config)
@@ -876,8 +803,6 @@ func _first_buildable_barracks_cell(match_instance, controller: BuildingControll
 					return candidate
 	controller._building_placement.cancel()
 	return null
-
-
 func _newest_building_with_config(match_instance, config_id: StringName) -> Building:
 	var result: Building = null
 	for node in match_instance.get_node("Buildings").get_children():
@@ -885,8 +810,6 @@ func _newest_building_with_config(match_instance, config_id: StringName) -> Buil
 		if building != null and building.config_id == config_id:
 			result = building
 	return result
-
-
 ## D2 adds the public player-keyed accessor. Before that migration the one
 ## legacy queue is the only available observation, which lets this regression
 ## prove the old wrong ownership path rather than failing to compile first.
@@ -894,8 +817,6 @@ func _queue_for_test(controller: BuildingController, player_id: int):
 	if controller.has_method("building_queue_for_player"):
 		return controller.call("building_queue_for_player", player_id)
 	return controller._building_queue
-
-
 ## The one case that proves the wiring rather than the parts. Every other test
 ## of tick-driven behaviour calls a controller's advance_tick() directly, so
 ## all of them would still pass if Match._process() never reached
@@ -920,7 +841,6 @@ func _test_match_loop_drives_the_clock() -> void:
 		await process_frame
 	var started_msec := Time.get_ticks_msec()
 	var started_tick: int = match_instance.current_tick()
-
 	# Long enough for several ticks even if every frame runs at the 60 fps cap,
 	# with a frame cap so a stalled loop fails the assertions below instead of
 	# hanging the suite.
@@ -928,7 +848,6 @@ func _test_match_loop_drives_the_clock() -> void:
 	while Time.get_ticks_msec() - started_msec < 200 and frames < 400:
 		await process_frame
 		frames += 1
-
 	var elapsed_msec := Time.get_ticks_msec() - started_msec
 	var advanced: int = match_instance.current_tick() - started_tick
 	# Two ticks of slack: one for the sub-tick remainder the driver was already
@@ -954,10 +873,7 @@ func _test_match_loop_drives_the_clock() -> void:
 		"the clock must advance less often than once per frame: %d ticks over %d frames" \
 			% [advanced, frames]
 	)
-
 	match_instance.queue_free()
-
-
 func _test_advance_ticks_advances_exact_count() -> void:
 	var match_instance := MatchFixtureScene.instantiate()
 	get_root().add_child(match_instance)
@@ -970,8 +886,6 @@ func _test_advance_ticks_advances_exact_count() -> void:
 	)
 	_expect(final_tick == match_instance.current_tick(), "advance_ticks() must return the clock boundary it reached")
 	match_instance.queue_free()
-
-
 func _test_advance_ticks_zero_is_a_no_op() -> void:
 	var match_instance := MatchFixtureScene.instantiate()
 	get_root().add_child(match_instance)
@@ -980,7 +894,83 @@ func _test_advance_ticks_zero_is_a_no_op() -> void:
 	match_instance.advance_ticks(0)
 	_expect(match_instance.current_tick() == started_tick, "advance_ticks(0) must not advance a tick")
 	match_instance.queue_free()
+func _test_match_tick_retries_waiting_deployment() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	get_root().add_child(match_instance)
+	await process_frame
+	var controller = match_instance._unit_deployment_controller
+	var deploying_mcv := Node3D.new()
+	match_instance.get_node("Units").add_child(deploying_mcv)
+	var wait := UnitDeploymentControllerScript.DeploymentWait.new()
+	wait.ticks_left = 1
+	controller._deployments[deploying_mcv.get_instance_id()] = {
+		"unit": deploying_mcv,
+		"wait": wait,
+	}
+	var deployment_id := deploying_mcv.get_instance_id()
+	deploying_mcv.free()
+	match_instance.advance_ticks(1)
+	_expect(
+		not controller._deployments.has(deployment_id),
+		"the central Match tick must resolve and erase an invalid waiting deployment"
+	)
+	match_instance.queue_free()
+	await process_frame
 
+func _test_waiting_deployment_reservation_reaches_navigation() -> void:
+	var match_instance := MatchFixtureScene.instantiate()
+	get_root().add_child(match_instance)
+	await process_frame
+	var controller = match_instance._unit_deployment_controller
+	var grid = match_instance.terrain.navigation_grid
+	var config: Resource = BuildingDefinitionCatalogScript.new().definition(&"ATConYard")
+	var occupy_rows: Array[String] = []
+	occupy_rows.assign(config.occupy_rows)
+	var placement := BuildingPlacementScript.new()
+	controller.add_child(placement)
+	var context := PlacementContextScript.new()
+	context.navigation_grid = grid
+	context.buildings_root = match_instance.get_node("Buildings") as Node3D
+	placement.setup(context)
+	var hover_cell := Vector2i(180, 180)
+	var footprint_cells: Array[Vector2i] = placement.reserved_nav_cells(occupy_rows, 0, hover_cell)
+	var deploying_mcv := Node3D.new()
+	match_instance.get_node("Units").add_child(deploying_mcv)
+	var blocker := DeploymentWaitBlocker.new()
+	blocker.add_to_group("sim_units")
+	blocker.position = grid.grid_to_world(footprint_cells[0])
+	match_instance.get_node("Units").add_child(blocker)
+	var wait := UnitDeploymentControllerScript.DeploymentWait.new()
+	wait.ticks_left = 1000
+	controller._deployments[deploying_mcv.get_instance_id()] = {
+		"unit": deploying_mcv,
+		"placement": placement,
+		"hover_cell": hover_cell,
+		"occupy_rows": occupy_rows,
+		"building_id": &"ATConYard",
+		"building_scene": ATConYardScene,
+		"owner_player_id": 1,
+		"wait": wait,
+	}
+	var reserved_cells: Array[Vector2i] = match_instance.reserved_nav_cells()
+	var match_reserves_footprint := true
+	for cell in footprint_cells:
+		match_reserves_footprint = match_reserves_footprint and reserved_cells.has(cell)
+	_expect(match_reserves_footprint, "Match must union a waiting deployment footprint into its reservation provider")
+	var building_cells: Array[Vector2i] = match_instance._building_controller.pending_placement_reserved_nav_cells()
+	var building_controller_does_not_offer_footprint := true
+	for cell in footprint_cells:
+		building_controller_does_not_offer_footprint = building_controller_does_not_offer_footprint and not building_cells.has(cell)
+	_expect(building_controller_does_not_offer_footprint, "the reservation must come from the deployment half of Match's union")
+	match_instance.advance_ticks(
+		int(NavConstantsScript.BLOCKER_REFRESH_SECONDS * MatchClockScript.TICKS_PER_SECOND) + 1
+	)
+	_expect(
+		match_instance._unit_navigation_system.runtime_map.is_reserved_no_stop(footprint_cells[0]),
+		"navigation's live no-stop map must receive Match's waiting-deployment reservation"
+	)
+	match_instance.queue_free()
+	await process_frame
 
 ## The per-entity counterpart to _test_match_loop_drives_the_clock above.
 ## Every other assertion of turret reload counting down (turret_mount_run.gd,
@@ -1039,7 +1029,6 @@ func _test_match_loop_drives_unit_turret_reload() -> void:
 	)
 
 	match_instance.queue_free()
-
 
 ## The linger-effect counterpart to _test_match_loop_drives_unit_turret_reload
 ## above -- same failure mode, same shape. Every other lingering-damage
@@ -1112,7 +1101,6 @@ func _test_match_loop_drives_unit_linger_effect() -> void:
 
 	effect.queue_free()
 	match_instance.queue_free()
-
 
 ## The projectile-flight counterpart to _test_match_loop_drives_unit_linger_effect
 ## above -- same failure mode, same shape. Every other assertion that a
@@ -1203,7 +1191,6 @@ func _test_match_loop_drives_projectile_flight() -> void:
 	if is_instance_valid(projectile):
 		projectile.free()
 	match_instance.queue_free()
-
 
 ## The building-firing counterpart to _test_match_loop_drives_projectile_flight
 ## above -- same failure mode, same shape, but for a different move: B3b took
@@ -1362,7 +1349,6 @@ func _test_match_loop_drives_building_fire() -> void:
 	building.free()
 	match_instance.queue_free()
 
-
 ## The unit-firing counterpart to _test_match_loop_drives_building_fire above
 ## -- same invariant, same probe idiom, but for the other half of B3c's move.
 ## _test_real_forced_friendly_attack below already proves a real unit fires
@@ -1495,7 +1481,6 @@ func _test_match_loop_drives_unit_fire() -> void:
 			projectile.free()
 	match_instance.queue_free()
 
-
 func _test_match_loop_drives_spice_mound_maturity() -> void:
 	var match_instance := MatchFixtureScene.instantiate()
 	get_root().add_child(match_instance)
@@ -1551,7 +1536,6 @@ func _test_match_loop_drives_spice_mound_maturity() -> void:
 
 	mound.queue_free()
 	match_instance.queue_free()
-
 
 ## The spice layer is the only step in Match._advance_simulation_tick() that is
 ## not a group loop -- it is called directly through terrain.spice_layer -- so
@@ -1613,7 +1597,6 @@ func _test_match_loop_drives_spice_layer() -> void:
 	spice_layer.spread().cancel(source_cell)
 	match_instance.queue_free()
 
-
 func _test_roster_controls_ignore_keyboard_focus() -> void:
 	var match_instance := MatchFixtureScene.instantiate()
 	get_root().add_child(match_instance)
@@ -1635,7 +1618,6 @@ func _test_roster_controls_ignore_keyboard_focus() -> void:
 		)
 
 	match_instance.queue_free()
-
 
 func _test_unified_debug_shortcut() -> void:
 	var match_instance := MatchFixtureScene.instantiate()
@@ -1688,7 +1670,6 @@ func _test_unified_debug_shortcut() -> void:
 
 	match_instance.queue_free()
 
-
 func _test_match_panel_icons() -> void:
 	var match_instance := MatchFixtureScene.instantiate()
 	get_root().add_child(match_instance)
@@ -1708,7 +1689,6 @@ func _test_match_panel_icons() -> void:
 		)
 
 	match_instance.queue_free()
-
 
 func _test_rules_sidebar_tabs() -> void:
 	var match_instance := MatchFixtureScene.instantiate()
@@ -1744,7 +1724,6 @@ func _test_rules_sidebar_tabs() -> void:
 	# EntityNodeIndex.request_release() actually resolving the right one, so
 	# the stale registration now silently frees the wrong entity instead.
 	await process_frame
-
 
 ## Regression test: a building's DeathCorpse (BuildingDeathSequence.begin(),
 ## scripts/buildings/building_death_sequence.gd) is spawned as a sibling
@@ -1810,7 +1789,6 @@ func _test_dying_building_survives_sidebar_refresh() -> void:
 
 	match_instance.queue_free()
 
-
 ## Regression test: BuildingUpgradeController.setup() filters its incoming
 ## roster down to buildings with upgrade_cost/upgrade_tech_level both set
 ## (see _has_upgrade_definition()), but match.gd used to hand the panel the
@@ -1846,7 +1824,6 @@ func _test_upgrade_panel_matches_controller() -> void:
 	)
 
 	match_instance.queue_free()
-
 
 ## Regression test: BuildingController.process() polls _is_building_available()
 ## every frame and diffs it against a cached dict so the BUILDINGS grid
@@ -1905,7 +1882,6 @@ func _test_upgrade_availability_polls() -> void:
 	)
 
 	match_instance.queue_free()
-
 
 ## Units share the building grid (docs/mechanics/production.md sections 3 and
 ## 5): a unit's slot must appear only once its primary production building is
@@ -2005,7 +1981,6 @@ func _test_unit_roster_availability() -> void:
 
 	match_instance.queue_free()
 
-
 ## A tracked Barracks dirties the availability tracker synchronously when it
 ## leaves the fixture's Buildings node. The following command must therefore
 ## be refused on the next simulation tick even though no engine frame runs
@@ -2051,7 +2026,6 @@ func _test_unit_order_refreshes_availability_after_prerequisite_loss() -> void:
 	)
 
 	match_instance.queue_free()
-
 
 func _test_unit_production_rally_and_primary() -> void:
 	var match_instance := MatchFixtureScene.instantiate()
@@ -2260,7 +2234,6 @@ func _test_unit_production_rally_and_primary() -> void:
 
 	match_instance.queue_free()
 
-
 func _test_shared_unit_native_producer() -> void:
 	var match_instance := MatchFixtureScene.instantiate()
 	get_root().add_child(match_instance)
@@ -2291,7 +2264,6 @@ func _test_shared_unit_native_producer() -> void:
 	)
 
 	match_instance.queue_free()
-
 
 func _test_real_forced_friendly_attack() -> void:
 	var match_instance := MatchFixtureScene.instantiate()
@@ -2483,7 +2455,6 @@ func _test_real_forced_friendly_attack() -> void:
 	match_instance.queue_free()
 	await process_frame
 
-
 func _test_real_harvester_unload_trip() -> void:
 	var match_instance = MatchFixtureScene.instantiate()
 	for child in match_instance.get_node("Buildings").get_children():
@@ -2554,7 +2525,6 @@ func _test_real_harvester_unload_trip() -> void:
 	_expect(player.money == money_before + 100, "the real unload trip must credit all cargo to the player")
 
 	match_instance.queue_free()
-
 
 ## The model converter negates Z (left-handed source -> Godot), which puts
 ## every building's low skirt/apron on its +Z side, while the footprint code

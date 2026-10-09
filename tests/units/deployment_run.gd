@@ -13,6 +13,7 @@ const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 const UnitDeploymentControllerScript := preload("res://scripts/units/unit_deployment_controller.gd")
 const UnitRosterControllerScript := preload("res://scripts/units/unit_roster_controller.gd")
 const UnitProductionSystemScript := preload("res://scripts/production/unit_production_system.gd")
+const PendingPlacementScript := preload("res://scripts/buildings/pending_placement.gd")
 const NavConstantsScript := preload("res://scripts/units/navigation/shared/nav_constants.gd")
 const SpatialOrientationScript := preload("res://scripts/world/spatial_orientation.gd")
 const UnitScene := preload("res://scenes/units/unit.tscn")
@@ -158,7 +159,11 @@ func _initialize() -> void:
 	await _run_case("invalid terrain rejects deployment before locking the MCV", _test_invalid_site)
 	await _run_case("MCV deployment aborts for another immobile unit", _test_deployment_immobile_blocker)
 	await _run_case("MCV deployment excludes the MCV from its footprint check", _test_deployment_excludes_mcv)
-	await _run_case("MCV deployment still shoves a mobile unit", _test_deployment_shoves_mobile_unit)
+	await _run_case("MCV deployment waits for a mobile unit instead of shoving it", _test_deployment_waits_for_mobile_unit)
+	await _run_case("a cleared MCV deployment site completes on its next tick", _test_deployment_wait_completes_when_cleared)
+	await _run_case("an uncleared MCV deployment site aborts at its deadline", _test_deployment_wait_expires)
+	await _run_case("an immobile MCV deployment blocker aborts on the resolution tick", _test_deployment_immobile_blocker_aborts_immediately)
+	await _run_case("a waiting MCV deployment reserves and releases its footprint", _test_waiting_deployment_reserves_footprint)
 	await _run_case("Kindjal toggles into stationary combat mode and back", _test_combat_deploy_toggle)
 	await _run_case("a combat-deployable unit is data-driven, excluding IMADVSardaukar", _test_combat_deploy_eligibility)
 	if _failures > 0:
@@ -611,7 +616,7 @@ func _test_deployment_excludes_mcv() -> void:
 	await process_frame
 
 
-func _test_deployment_shoves_mobile_unit() -> void:
+func _test_deployment_waits_for_mobile_unit() -> void:
 	var fixture := _new_deployment_footprint_fixture()
 	var world: Node3D = fixture[0]
 	var buildings: Node3D = fixture[1]
@@ -625,8 +630,105 @@ func _test_deployment_shoves_mobile_unit() -> void:
 	var original_position := mobile.global_position
 	var result: Dictionary = controller.try_deploy(mcv)
 	mcv.deployment_animation_finished.emit()
-	_expect(bool(result.get("started", false)) and buildings.get_child_count() == 1, "a mobile unit must not prevent MCV deployment")
-	_expect(mobile.simulation_position() != original_position, "a successful MCV deployment must still shove a mobile unit aside")
+	_expect(bool(result.get("started", false)) and buildings.get_child_count() == 0, "a mobile unit must defer MCV deployment without spawning a building")
+	_expect(mobile.simulation_position() == original_position, "a waiting MCV deployment must not shove a mobile unit aside")
+	_expect(mcv.finished_consumed == null, "a waiting MCV deployment must not resolve as success or abort")
+	_expect(controller._deployments.size() == 1, "a waiting MCV deployment record must survive for retry")
+	world.queue_free()
+	await process_frame
+
+
+func _test_deployment_wait_completes_when_cleared() -> void:
+	var fixture := _new_deployment_footprint_fixture()
+	var world: Node3D = fixture[0]
+	var buildings: Node3D = fixture[1]
+	var controller: UnitDeploymentController = fixture[2]
+	var mcv: FakeMCV = fixture[3]
+	var mobile := FootprintUnit.new()
+	mobile.position = mcv.position
+	mobile.add_to_group("sim_units")
+	mobile.add_to_group("units")
+	world.add_child(mobile)
+	controller.try_deploy(mcv)
+	mcv.deployment_animation_finished.emit()
+	mobile.free()
+	controller.advance_tick()
+	_expect(buildings.get_child_count() == 1, "a cleared deployment site must spawn its Construction Yard on the next tick")
+	_expect(mcv.finished_consumed == true, "a cleared deployment site must finish the MCV handoff")
+	_expect(controller._deployments.is_empty(), "a completed waiting deployment must erase its record")
+	world.queue_free()
+	await process_frame
+
+
+func _test_deployment_wait_expires() -> void:
+	var fixture := _new_deployment_footprint_fixture()
+	var world: Node3D = fixture[0]
+	var buildings: Node3D = fixture[1]
+	var controller: UnitDeploymentController = fixture[2]
+	var mcv: FakeMCV = fixture[3]
+	var mobile := FootprintUnit.new()
+	mobile.position = mcv.position
+	mobile.add_to_group("sim_units")
+	mobile.add_to_group("units")
+	world.add_child(mobile)
+	controller.try_deploy(mcv)
+	mcv.deployment_animation_finished.emit()
+	for _tick in PendingPlacementScript.PENDING_DEADLINE_TICKS - 1:
+		controller.advance_tick()
+	_expect(buildings.get_child_count() == 0, "an uncleared site must not spawn before the final wait tick")
+	_expect(mcv.finished_consumed == null, "an uncleared site must remain unresolved before the final wait tick")
+	controller.advance_tick()
+	_expect(buildings.get_child_count() == 0, "an expired wait must abort instead of placing through a mobile unit")
+	_expect(mcv.finished_consumed == false, "an expired wait must use the existing deployment abort")
+	_expect(controller._deployments.is_empty(), "an expired wait must erase its deployment record")
+	world.queue_free()
+	await process_frame
+
+
+func _test_deployment_immobile_blocker_aborts_immediately() -> void:
+	var fixture := _new_deployment_footprint_fixture()
+	var world: Node3D = fixture[0]
+	var controller: UnitDeploymentController = fixture[2]
+	var mcv: FakeMCV = fixture[3]
+	var blocker := FootprintUnit.new()
+	blocker.deployed = true
+	blocker.position = mcv.position
+	blocker.add_to_group("sim_units")
+	world.add_child(blocker)
+	controller.try_deploy(mcv)
+	mcv.deployment_animation_finished.emit()
+	# No advance_tick() call: immobility is decided on the resolution event.
+	_expect(mcv.finished_consumed == false, "an immobile blocker must abort on the resolution tick, not at the deadline")
+	world.queue_free()
+	await process_frame
+
+
+func _test_waiting_deployment_reserves_footprint() -> void:
+	var fixture := _new_deployment_footprint_fixture()
+	var world: Node3D = fixture[0]
+	var controller: UnitDeploymentController = fixture[2]
+	var mcv: FakeMCV = fixture[3]
+	var mobile := FootprintUnit.new()
+	mobile.position = mcv.position
+	mobile.add_to_group("sim_units")
+	world.add_child(mobile)
+	controller.try_deploy(mcv)
+	mcv.deployment_animation_finished.emit()
+	var deployment: Dictionary = controller._deployments.get(mcv.get_instance_id(), {})
+	var placement = deployment.get("placement")
+	var occupy_rows: Array[String] = []
+	occupy_rows.assign(deployment.get("occupy_rows", []))
+	var expected_cells: Array[Vector2i] = placement.reserved_nav_cells(
+		occupy_rows, placement.rotation_quarter_turns(), deployment["hover_cell"]
+	)
+	var reserved_cells := controller.waiting_deployment_reserved_nav_cells()
+	var reserves_exactly := reserved_cells.size() == expected_cells.size()
+	for cell in expected_cells:
+		reserves_exactly = reserves_exactly and reserved_cells.has(cell)
+	_expect(reserves_exactly, "a waiting deployment must reserve exactly its footprint cells")
+	mobile.free()
+	controller.advance_tick()
+	_expect(controller.waiting_deployment_reserved_nav_cells().is_empty(), "a completed deployment must release its footprint reservation")
 	world.queue_free()
 	await process_frame
 

@@ -372,9 +372,22 @@ func _setup_building_controller() -> void:
 		Callable(self, "next_orderable_tick")
 	)
 	_unit_navigation_system.set_reserved_cells_provider(
-		Callable(_building_controller, "pending_placement_reserved_nav_cells")
+		Callable(self, "reserved_nav_cells")
 	)
 	_building_controller.interaction_mode_changed.connect(_on_building_interaction_mode_changed)
+
+
+## The one provider NavBlockerTracker keeps, unioned here because pending
+## placements/walls and waiting MCV deploys live in sibling controllers.
+## Navigation only consumes cells, and its dictionaries make duplicates and
+## order immaterial.
+func reserved_nav_cells() -> Array[Vector2i]:
+	var cells: Array[Vector2i] = []
+	if _building_controller != null:
+		cells.append_array(_building_controller.pending_placement_reserved_nav_cells())
+	if _unit_deployment_controller != null:
+		cells.append_array(_unit_deployment_controller.waiting_deployment_reserved_nav_cells())
+	return cells
 
 
 func _setup_production_system() -> void:
@@ -932,6 +945,10 @@ func _advance_simulation_tick() -> void:
 		_production_system.advance_tick()
 	if _building_controller != null:
 		_building_controller.advance_tick()
+	# Pending placements retry first. A deploy whose cell they take this tick
+	# sees the building on its retry and takes its immediate placement failure.
+	if _unit_deployment_controller != null:
+		_unit_deployment_controller.advance_tick()
 	if _upgrade_production_system != null:
 		_upgrade_production_system.advance_tick()
 	if _unit_production_system != null:
