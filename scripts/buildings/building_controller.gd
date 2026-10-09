@@ -35,7 +35,6 @@ const CursorManagerScript := preload("res://scripts/ui/cursor_manager.gd")
 const GameSettingsCatalogScript := preload("res://scripts/rules/game_settings_catalog.gd")
 const BuildingRepairServiceScript := preload("res://scripts/production/building_repair_service.gd")
 const PendingPlacementScript := preload("res://scripts/buildings/pending_placement.gd")
-const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 const PlacementPointerGestureScript := preload("res://scripts/buildings/placement_pointer_gesture.gd")
 const BuildingSaleServiceScript := preload("res://scripts/production/building_sale_service.gd")
 const BuildingCatalogViewScript := preload("res://scripts/buildings/building_catalog_view.gd")
@@ -295,7 +294,10 @@ func advance_tick() -> void:
 ## BuildingController reference. The pending module itself has only command
 ## input, so this controller supplies the rule lookup and footprint seam.
 func pending_placement_reserved_nav_cells() -> Array[Vector2i]:
-	return _pending_placement.reserved_nav_cells(Callable(self, "_reserved_cells_for_pending_entry"))
+	var cells := _pending_placement.reserved_nav_cells(Callable(self, "_reserved_cells_for_pending_entry"))
+	if _production_system != null:
+		cells.append_array(_production_system.waiting_wall_segment_reserved_nav_cells())
+	return cells
 
 
 ## ProductionSystem owns queues in both shipping matches and controller tests.
@@ -612,7 +614,8 @@ func handle_building_intent(building_id: StringName, button_index: int) -> bool:
 ## _building_queue -- see handle_building_intent()'s doc comment. Read-only:
 ## deciding whether *this* click is a mode action must not itself mutate
 ## anything, since the mutating branch still needs an untouched queue to
-## classify against if this returns false.
+## classify against if this returns false. A waiting wall segment deliberately
+## remains a mode action here; its handler swallows the click instead.
 func _left_building_intent_is_mode_action(building_id: StringName) -> bool:
 	var order := _building_queue.current_order()
 	if order != null and order.building_id == building_id and order.ready:
@@ -674,6 +677,9 @@ func execute_build_order_command(command: SimBuildOrderCommand) -> void:
 func _execute_player_build_order(command: SimBuildOrderCommand) -> BuildOrderExecution:
 	var queue = building_queue_for_player(command.player_id)
 	var order := queue.current_order()
+	# A PLACING icon can neither cancel its order nor begin another. The widget
+	# suppresses this locally; this is the authority half for direct commands.
+	var waiting_wall_segment := _production_system.has_waiting_wall_segment(command.player_id)
 	match command.button_index:
 		MOUSE_BUTTON_LEFT:
 			if order == null:
@@ -696,6 +702,8 @@ func _execute_player_build_order(command: SimBuildOrderCommand) -> BuildOrderExe
 				)
 			if order.building_id != command.building_id:
 				return _build_order_execution(BuildOrderOutcome.BUSY)
+			if waiting_wall_segment:
+				return _build_order_execution(BuildOrderOutcome.NONE)
 			if order.ready:
 				return _build_order_execution(BuildOrderOutcome.READY)
 			if order.manually_paused:
@@ -707,6 +715,8 @@ func _execute_player_build_order(command: SimBuildOrderCommand) -> BuildOrderExe
 			)
 		MOUSE_BUTTON_RIGHT:
 			if order == null or order.building_id != command.building_id:
+				return _build_order_execution(BuildOrderOutcome.NONE)
+			if waiting_wall_segment:
 				return _build_order_execution(BuildOrderOutcome.NONE)
 			if order.ready or order.manually_paused:
 				var refunded := queue.cancel()
@@ -1233,6 +1243,8 @@ func _refresh_player_resources() -> void:
 
 func _on_building_slot_left_pressed(building_id: StringName) -> void:
 	if _is_wall_building_id(building_id):
+		if _production_system != null and _production_system.has_waiting_wall_segment(_local_player_id()):
+			return
 		_set_wall_line_mode(true, building_id)
 		return
 
@@ -1439,7 +1451,7 @@ func execute_place_building_command(command: SimPlaceBuildingCommand) -> void:
 		command.building_id,
 		command.nav_cell,
 		command.rotation_quarter_turns,
-		5 * MatchClockScript.TICKS_PER_SECOND
+		PendingPlacementScript.PENDING_DEADLINE_TICKS
 	)
 
 
@@ -1713,7 +1725,10 @@ func _refresh_building_option_states() -> void:
 			continue
 
 		if order.ready:
-			if _committed_placement_cell != null:
+			if _committed_placement_cell != null or (
+				_production_system != null
+				and _production_system.has_waiting_wall_segment(_local_player_id())
+			):
 				building_option_state_changed.emit(BuildingOptionStateScript.new(
 					building_id, BuildingOptionStateScript.State.PLACING, 100.0, "BUILDING", tooltip
 				))

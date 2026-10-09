@@ -80,13 +80,16 @@ Rules for placing a ready building on the map:
   through, a unit standing in the footprint makes the placement *wait* for up
   to five seconds while the site clears, and the order is abandoned if it has
   not. An immobile (deployed/deploying) unit therefore usually outlasts the
-  deadline, since nothing can move it. See [`quirks.md`](../quirks.md), "A
+  deadline, since nothing can move it. Since slice `AH1` the same is true of a
+  wall segment, through the chain's own skip rather than through an abandoned
+  order (see the walls entry below), so the two routes a player actually builds
+  through both wait. See [`quirks.md`](../quirks.md), "A
   deployed unit on a building site was engulfed rather than blocking", and
   decision 12 in
   [`network-multiplayer.md`](../architecture/network-multiplayer.md).
-  **Two paths still displace mobile units exactly as recorded here**: wall
-  segments and MCV deployment, which reach the spawn without passing the
-  execution-time check that defers;
+  **MCV deployment is the only remaining path that displaces a mobile unit**:
+  it reaches the spawn without passing the execution-time check that defers,
+  and it is what keeps `UnitPushAside`'s shove alive;
 - **build radius** (verified): a new building can be placed only near the
   player's existing buildings `[Rules: radius]`. **All buildings except walls**
   provide this radius; walls extend the radius **only for constructing other
@@ -103,10 +106,18 @@ Rules for placing a ready building on the map:
     selection and **skipped without stopping the remaining wall chain**. Since
     slice `AG1` an OpenEBfD wall segment also skips a cell held by an immobile
     (deployed/deploying) unit, through that same skip rather than by engulfing
-    it; the blocked-cell *preview* is still terrain-only, deliberately, because
-    segments are ordered one at a time over many seconds and a unit's position
-    during line selection says nothing about where it will be when its segment
-    is built;
+    it. Since slice `AH1` a cell held by a unit that *can* move is not skipped
+    at once either: the segment waits up to five seconds for the unit to leave,
+    with its cell reserved against parking so no unit may be ordered to stop
+    there, and it is built the moment the cell clears. Only when the deadline
+    passes is the segment refunded and skipped, through that same outcome. The
+    icon reads `BUILDING` and accepts no clicks while a segment waits, so the
+    wait cannot be cancelled — the deadline is its only exit. The blocked-cell
+    *preview* is still terrain-only, deliberately, and `AH1` strengthens the
+    reason rather than weakening it: segments are ordered one at a time over
+    many seconds, and a unit's position during line selection now says even
+    less about the outcome, since a unit that is there when the segment is
+    ordered may simply be waited out;
   - after the line is confirmed, its buildable cells retain `build_wall`
     markers until the corresponding segment is built or the order is canceled;
   - **cancelling one cell's order also cancels all later ones** (the next cell is

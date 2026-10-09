@@ -79,6 +79,31 @@ a wall chain would lose a segment and a deploy would fail outright if they
 deferred on a unit merely walking past. Walls get their wait from decision 12's
 item 6; the MCV case is an open fork, recorded there.
 
+**OpenEBfD compatibility decision (slice `AH1`, 2026-10-09):** the wall half of
+that wait has landed, and the paragraph above narrows to MCV deployment alone. A
+wall segment whose cell holds a mobile unit now waits for a mobile unit instead
+of displacing it: the cell is reserved against parking for up to five seconds,
+the segment is built the moment the unit leaves, and only when the deadline
+passes is it refunded and skipped through the chain's existing outcome. So on
+the wall path the divergence from the original is no longer the *shove* but the
+*wait* — a mobile unit standing where a wall is about to appear is neither
+engulfed nor moved, and the segment is given up instead. The original displaced
+it; OpenEBfD waits for it and then builds around the problem by skipping, which
+costs the player one cell of a wall line rather than moving a unit they did not
+order to move.
+
+An immobile unit on a wall cell still skips immediately rather than waiting,
+which is the opposite of what ordinary building placement does, and the reason
+is the chain rather than the unit: a wall chain occupies the player's entire
+build queue for its whole length, so waiting five seconds for a blocker nothing
+can move would cost the queue once per blocked segment. Decision 12's item 6
+records that argument in full.
+
+`UnitPushAside.push_units_out_of_footprint()` is now kept alive by MCV
+deployment alone. Its shape was settled by the human decision of 2026-10-08 —
+the same two-branch split, plus a check that the MCV is still ordered to deploy
+when its wait resolves — so it is the next slice rather than an open fork.
+
 ## Animation timing
 
 ### Infantry base movement animation is too slow

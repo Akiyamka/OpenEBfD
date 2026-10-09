@@ -110,6 +110,18 @@ The driver sends you exactly one of these. Do the step, write the files, stop.
      mutated and enumerate the cases per caller. If the answer is "one caller",
      say so — that is worth knowing too.
 
+     **An assertion that survives one mutation survives it in every case.**
+     `AH1` predicted five failures in a case and measured four. The one that
+     stayed green — "a waiting segment must keep its paid credits" — is green
+     because a segment that was *placed* and a segment that is *waiting* have
+     both spent the order's cost and refunded nothing, so that assertion cannot
+     tell them apart. The same conclusion had already been reached, correctly,
+     for the identical assertion in a later case of the same brief; it was
+     simply not carried back to the earlier one. So once a trace decides some
+     assertion survives a mutation, grep the suite for that assertion's subject
+     and apply the answer to every case asserting it, rather than re-deriving
+     it per case and getting a different answer.
+
      **Falsifiability is per mutation, not a property of an assertion.** An
      assertion can bind under one control and be *unreachable* under another:
      `AF1`'s unit-position assertion fails when the authority is reverted,

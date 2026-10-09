@@ -576,15 +576,21 @@ The mechanic:
    there is no second copy to drift.
 
    **What is still owed is the teleport's deletion**, and after `AG1` it is
-   gated on *mobile* units rather than on the bypasses existing at all. A mobile
-   unit still reaches `_spawn_placed_building()` on both paths and still needs
-   shoving, so deleting the write today would make both engulf where they
-   currently displace. Two facts measured while landing `AF1` are worth keeping for whoever
-   does it. The behaviour is **wholly untested** on those two paths: deleting
+   gated on *mobile* units rather than on the bypasses existing at all — and
+   after `AH1`, on **one** caller rather than two. A mobile unit still reaches
+   `_spawn_placed_building()` through MCV deployment and still needs shoving
+   there, so deleting the write today would make a deploy engulf a unit where it
+   currently displaces it; the wall path no longer reaches the shove at all,
+   because a mobile unit on a segment's cell now defers that segment instead.
+   Two facts measured while landing `AF1` are worth keeping for whoever
+   does it, with one of them now half-settled. The behaviour was **wholly
+   untested** on both paths: deleting
    the call fails exactly one assertion in the whole suite, the deliberately
    retargeted bypass case in `placement_immobile_unit_run.gd`, and nothing else
-   anywhere — so that slice must add wall and MCV-deployment coverage before it
-   can trust a green run. And the call cannot be deleted on its own: it is the
+   anywhere — so that slice must add MCV-deployment coverage before it
+   can trust a green run. `AH1` supplied the wall half of what that measurement
+   demanded, and it did so by making the wall behaviour it would have covered
+   obsolete rather than by testing the shove. And the call cannot be deleted on its own: it is the
    only consumer of `_spawn_placed_building()`'s `excluded_unit` parameter,
    which GDScript then reports as an unused-parameter parse error, so the
    parameter goes with it — and that parameter is the MCV's exclusion, which is
@@ -627,6 +633,21 @@ The mechanic:
    that arrives anyway, since the panel is refreshed by a signal and `Match`
    wires `building_intent_pressed` straight through without consulting the
    slot.
+
+   **Decided 2026-10-09, asked by `AH1`: `PLACING` is non-interactive for every
+   caller, with no exception for walls.** `AH1` gives a waiting wall segment
+   this same icon state, and the obvious-looking concession — let the right
+   click cancel the wall line, since a chain is a long-running thing a player
+   may want to abandon — was refused, because the only way to grant it is to
+   make `PLACING` accept a button, and that reopens cancellation for *every*
+   pending placement. A waiting wall segment therefore has no cancel at all:
+   **the deadline is its only exit**, and expiring there already refunds the
+   segment and skips it. The plan review caught the contradiction before any
+   code was written, and it caught it in the widget rather than in the prose:
+   `QueueSlot._gui_input()` returns before emitting either button while the
+   state is `PLACING`, so the cancel the brief had described could never have
+   reached the controller anyway. One structural consequence is recorded under
+   item 6, because the next slice depends on it.
 6. A wall segment that cannot be placed is still **skipped** rather than
    cancelling the chain — `ProductionSystem.WallChainOutcome.SKIPPED` already
    exists with its own status strings — except that the skip now waits for the
@@ -635,16 +656,68 @@ The mechanic:
    unit crossing just before a segment is built now costs a pause instead of
    the segment.
 
-   **`AG1` supplied the check, so this item is now the _wait_ rather than the
-   check.** A wall segment already refuses an immobile unit and skips, through
-   the chain's own `CANNOT_BUILD` outcome. What item 6 adds is the deadline, and
-   widening the wall question from immobile-only to **any** unit belongs to it
-   rather than to `AG1`: without a wait, deferring on a unit walking past the
-   line would cost that segment permanently, because the chain skips and moves
-   on. With the wait, the same unit costs a pause — which is exactly what the
-   paragraph above promises. Landing item 6 is also what frees
-   `UnitPushAside`'s teleport on the wall path, since nothing mobile would reach
-   the spawn any more.
+   **`AG1` supplied the check and `AH1` landed the wait, so this item is
+   done.** `AG1` had already made a wall segment refuse an immobile unit and
+   skip, through the chain's own `CANNOT_BUILD` outcome; what `AH1` added is the
+   deadline, and with it the widening of the wall question from immobile-only to
+   **any** unit — the two had to land together, because without a wait,
+   deferring on a unit walking past the line would cost that segment
+   permanently, while without the widening the wait could only ever wait for
+   units that will never move, which is `AE1`'s pre-`AF1` state.
+
+   Four things `AH1` settled are worth keeping here.
+
+   **An immobile unit still skips immediately; only a unit that can leave buys
+   the deadline.** This item's text does not say what happens to the immobile
+   answer, and ordinary placement's reading is the opposite one — `AE1` defers
+   on an immobile unit and gives up at the deadline. The wall path diverges
+   because a chain holds the player's *entire* build queue for its whole length
+   (`execute_wall_line()` refuses to start while `queue.has_order()`), so five
+   seconds spent on a blocker that nothing in those five seconds can move is
+   five seconds of the player's only queue, per blocked segment, on a line that
+   may be twenty segments long. For a mobile unit the expected cost is a tick or
+   two, which is item 2's own promise. That is also the split the human decision
+   of 2026-10-08 prescribed for MCV deployment, so both bypass callers end up
+   the same shape.
+
+   **The waiting segment keeps its ready order in the queue.** The alternative —
+   taking the order and holding it beside the wait — empties the queue for five
+   seconds, and `has_order()` is what makes the rest of the construction tab
+   `BLOCKED`, what refuses a second wall line as busy, and what the chain's
+   exclusive hold on the queue is expressed as. Keeping it there means every one
+   of those readers sees, while a segment waits, exactly what it sees while one
+   is building. The cost is that `order.ready` becomes observable for five
+   seconds where it previously lasted zero ticks, which is what item 5's
+   2026-10-09 decision answers.
+
+   **There is exactly one place the wait is cleared, and a second would be
+   unreachable.** The clear sits immediately before `take_ready()`, so pending,
+   refused and placed outcomes cannot drift apart. A clear in
+   `_end_wall_chain()` was specified and then removed, because once the cancel
+   is refused no route ends a chain while its segment waits: `cancel_wall_chain()`
+   has one caller and it is the refused one, the availability cancel tests
+   `not order.ready` and a waiting segment's order is ready, `advance_wall_chain()`
+   is called only at chain start and after a resolution, and
+   `_place_ready_wall_segment()`'s own terminal branches all sit below the clear.
+   **That is a reachability argument, so it has an owner:** a later slice that
+   gives a waiting segment any cancel route, or that lets the availability
+   branch see a ready order, must add the clear and a case that reaches it. A
+   leaked wait is not cosmetic — the countdown decrements whenever the wait is
+   non-null, so it would run past zero forever and then deny the next chain's
+   first blocked segment its deadline.
+
+   **The countdown runs after `queue.advance_tick()`, and the position is
+   behaviour.** On the ordinary path a segment's successor is started from
+   inside `queue.advance_tick()`, so it gets its first tick of progress on the
+   following tick; a retry that resolves — by placing *or* by expiring into the
+   skip — also starts the successor, and above that call it would hand it a tick
+   of progress the ordinary path never gives. With a one-tick build time that is
+   two segments resolved in one tick, and it was the plan's most-corrected
+   prediction: the review had to fix the stated reach of that mutation twice,
+   once for the success path and once for the expiry.
+
+   Landing this also frees `UnitPushAside`'s teleport on the wall path: nothing
+   mobile reaches the spawn there any more.
 
 What this forbids elsewhere: **refusing a click on anything that is not
 provably hopeless.** The local filter may suppress only what the clicking
@@ -662,7 +735,7 @@ seconds at a time — immobile, and inside the placing player's build radius,
 which is a far worse trade for its owner than a scout was. The abuse is priced,
 not removed.
 
-**Landed so far: `AA1`, `AB1`, `AD1`, `AE1`, `AF1` and `AG1`** — an immobile unit inside the
+**Landed so far: `AA1`, `AB1`, `AD1`, `AE1`, `AF1`, `AG1` and `AH1`** — an immobile unit inside the
 footprint refuses the placement, friend-filtered at the click and owner-blind at
 execution (`AA1`); the ready icon shows a third, non-interactive state while its
 placement command is in flight (`AB1`); an idle unit parked on a no-stop cell is
@@ -672,23 +745,34 @@ against being parked on while it waits (`AE1`, items 1, 2 and 3); and that wait
 now applies to **any** unit rather than only one that cannot move, so the site
 actually clears (`AF1`, the first half of item 4); and the two callers that
 reached the spawn without ever asking — a wall segment and an MCV deployment —
-now ask it too, so neither engulfs an immobile unit (`AG1`).
+now ask it too, so neither engulfs an immobile unit (`AG1`); and a wall segment
+blocked by a unit that *can* leave now waits five seconds for its cell with that
+cell reserved, instead of skipping it, which completes item 6 (`AH1`).
 
-**Still owed: the teleport's deletion, and item 6's wall deferral.** `AF1` took
-the first half of item 4 — the authority defers on any unit, so `AE1`'s wait
-clears sites instead of only outlasting units that will never move — and `AG1`
-gave the two bypass callers the same check, so neither engulfs an immobile unit
-any more.
+**Still owed: the teleport's deletion, now gated on MCV deployment alone.**
+`AF1` took the first half of item 4 — the authority defers on any unit, so
+`AE1`'s wait clears sites instead of only outlasting units that will never move
+— `AG1` gave the two bypass callers the same check, so neither engulfs an
+immobile unit any more, and `AH1` gave the wall path the wait that item 6 owed,
+after which nothing mobile reaches the spawn through a wall segment.
 
 What remains of item 4 is removing `UnitPushAside`'s
-`set_simulation_position()` write, and the gate is now **mobile** units on the
-two paths that have no wait. Walls get there through item 6: once a blocked
-segment waits for the deadline instead of being skipped instantly, the any-unit
-question becomes safe there, and the shove has nothing left to do. **MCV
-deployment is a fork nobody has picked**, and it is the last thing holding the
-write alive: a deploy has no pending state and no deadline, so the choices are
-to abort on any unit, to give the deploy a wait of its own, or to keep the shove
-for that one caller. `AG1` deliberately did not pick it.
+`set_simulation_position()` write, and after `AH1` exactly one caller still
+needs it: **MCV deployment**, where a mobile unit in the footprint is still
+displaced. The fork `AG1` left open there was settled by the human decision of
+2026-10-08, which is the next slice rather than an open question — the deploy
+takes the same two-branch split the wall path now has, `AG1`'s immediate abort
+for an immobile unit and a pending state with a no-stop reservation for any
+other, plus one piece of MCV-specific logic: the MCV is itself mobile, so the
+player may give it a new order while its deploy is pending, and at resolution a
+deploy whose unit is no longer ordered to deploy is abandoned silently — the
+reservation is cleared and nothing else happens. Two things make that slice
+bigger than `AH1` was: `UnitDeploymentController` is driven by an animation
+signal and joins no tick, so its wait needs a place in
+`Match._advance_simulation_tick()`'s fixed order, and its reservation needs a
+second source behind the single provider `NavBlockerTracker` holds — `AH1`
+unioned its own at `BuildingController.pending_placement_reserved_nav_cells()`
+rather than teaching navigation about a list, and the deploy can do the same.
 
 **Correction, 2026-10-07:** this paragraph used to say that items 1 through 4
 are mutually dependent and that only the wall deferral could go next on its own.

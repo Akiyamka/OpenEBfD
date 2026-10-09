@@ -14,6 +14,7 @@ const SimBuildOrderCommandScript := preload("res://scripts/sim/commands/build_or
 const SimPlaceBuildingCommandScript := preload("res://scripts/sim/commands/place_building_command.gd")
 const CommandPumpScript := preload("res://tests/match/support/command_pump.gd")
 const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
+const PendingPlacementScript := preload("res://scripts/buildings/pending_placement.gd")
 
 ## Status line each mode emits on its way out, keyed the same as _enter_mode().
 const MODE_CANCEL_STATUS := {
@@ -181,7 +182,14 @@ func _initialize() -> void:
 	_run_case("wall chain continues when an ordered segment becomes blocked", _test_wall_chain_continues_after_late_block)
 	_run_case("wall chain refunds and skips an immobile unit", _test_wall_chain_skips_immobile_unit.bind(local_player))
 	_run_case("wall chain still places a later clear segment", _test_wall_chain_places_after_immobile_skip)
-	_run_case("wall chain still shoves a mobile unit", _test_wall_chain_shoves_mobile_unit)
+	_run_case("wall chain waits for a mobile unit", _test_wall_chain_waits_for_mobile_unit.bind(local_player))
+	_run_case("wall chain builds when a mobile unit leaves", _test_wall_chain_places_after_mobile_unit_leaves.bind(local_player))
+	_run_case("wall chain wait expires into a skip", _test_wall_chain_mobile_unit_wait_expires.bind(local_player))
+	_run_case("waiting wall segment reserves its footprint", _test_waiting_wall_segment_reservation.bind(local_player))
+	_run_case("waiting wall segment icon is placing", _test_waiting_wall_segment_icon.bind(local_player))
+	_run_case("waiting wall segment ignores cancel command", _test_waiting_wall_segment_ignores_cancel.bind(local_player))
+	_run_case("waiting wall segment ignores local wall mode", _test_waiting_wall_segment_ignores_wall_mode.bind(local_player))
+	_run_case("waiting wall segment ignores ready command", _test_waiting_wall_segment_ignores_ready_command.bind(local_player))
 	_run_case("world right click does not cancel a fixed wall line", _test_fixed_wall_line_ignores_world_right_click)
 	_run_case("fixed wall markers remain until built or canceled", _test_fixed_wall_marker_lifecycle)
 	_run_case("building sale plays the authored sell transition", _test_sale_animation.bind(local_player))
@@ -597,29 +605,191 @@ func _test_wall_chain_places_after_immobile_skip(token: int) -> int:
 	buildings.free()
 	return token
 
-
-func _test_wall_chain_shoves_mobile_unit(token: int) -> int:
+func _test_wall_chain_waits_for_mobile_unit(token: int, local_player: PlayerData) -> int:
 	var fixture := _new_wall_placement_fixture()
 	var controller: BuildingController = fixture[0]
 	var buildings: Node3D = fixture[1]
-	var unit := MobilePlacementUnit.new()
-	unit.position = Vector3(2.5, 0.0, 4.5)
-	unit.add_to_group("sim_units")
-	unit.add_to_group("units")
-	root.add_child(unit)
-	_production_for(controller).set_wall_chain_for_player(1, WallChainScript.new(
-		&"ATWall", "Wall", 10, 1, [Vector2i(2, 4)]
-	))
-	_production_for(controller).advance_wall_chain(1)
-	var local_player = root.get_node("Players").player(1)
-	controller._building_queue.advance_tick(local_player.money, Callable(local_player, &"spend_money"))
-	_expect(buildings.get_child_count() == 1, "a mobile unit must not prevent wall placement")
-	_expect(unit.simulation_position() != Vector3(2.5, 0.0, 4.5), "wall placement must still shove a mobile unit aside")
+	var unit := _new_mobile_wall_blocker()
+	var money_before := local_player.money
+	_begin_waiting_wall_segment(controller, local_player)
+	_expect(buildings.get_child_count() == 0, "a mobile unit must defer the blocked wall segment")
+	_expect(unit.simulation_position() == Vector3(2.5, 0.0, 4.5), "waiting must not shove a mobile unit aside")
+	_expect(
+		controller._wall_chain != null and controller._wall_chain.current_cell() == Vector2i(2, 4),
+		"a waiting segment must keep the chain on its blocked cell"
+	)
+	_expect(
+		controller._building_queue.current_order() != null and controller._building_queue.current_order().ready,
+		"a waiting segment must keep its ready order in the queue"
+	)
+	_expect(local_player.money == money_before - 10, "a waiting segment must keep its paid credits")
 	unit.free()
 	controller.free()
 	buildings.free()
 	return token
 
+func _test_wall_chain_places_after_mobile_unit_leaves(token: int, local_player: PlayerData) -> int:
+	var fixture := _new_wall_placement_fixture()
+	var controller: BuildingController = fixture[0]
+	var buildings: Node3D = fixture[1]
+	var unit := _new_mobile_wall_blocker()
+	_begin_waiting_wall_segment(controller, local_player)
+	unit.free()
+	_production_for(controller).advance_tick()
+	_expect(buildings.get_child_count() == 1, "a cleared waiting segment must be placed")
+	_expect(
+		controller._wall_chain != null and controller._wall_chain.current_cell() == Vector2i(4, 4),
+		"a placed waiting segment must advance to the next cell"
+	)
+	_expect(
+		_production_for(controller)._by_player_id[1].wall_segment_wait == null,
+		"placing a waiting segment must clear its wait state"
+	)
+	controller.free()
+	buildings.free()
+	return token
+
+func _test_wall_chain_mobile_unit_wait_expires(token: int, local_player: PlayerData) -> int:
+	var fixture := _new_wall_placement_fixture()
+	var controller: BuildingController = fixture[0]
+	var buildings: Node3D = fixture[1]
+	var unit := _new_mobile_wall_blocker()
+	var money_before := local_player.money
+	_begin_waiting_wall_segment(controller, local_player)
+	for _tick in PendingPlacementScript.PENDING_DEADLINE_TICKS - 1:
+		_production_for(controller).advance_tick()
+	_expect(buildings.get_child_count() == 0, "a segment must not place before its wait expires")
+	_expect(local_player.money == money_before - 10, "a segment must not refund before its wait expires")
+	_expect(
+		controller._wall_chain != null and controller._wall_chain.current_cell() == Vector2i(2, 4),
+		"a segment must not advance before its wait expires"
+	)
+	_production_for(controller).advance_tick()
+	_expect(local_player.money == money_before, "an expired waiting segment must refund its credits")
+	_expect(
+		controller._wall_chain != null and controller._wall_chain.current_cell() == Vector2i(4, 4),
+		"an expired waiting segment must skip to the next cell"
+	)
+	_expect(buildings.get_child_count() == 0, "an expired waiting segment must not spawn a building")
+	unit.free()
+	controller.free()
+	buildings.free()
+	return token
+
+func _test_waiting_wall_segment_reservation(token: int, local_player: PlayerData) -> int:
+	var fixture := _new_wall_placement_fixture()
+	var controller: BuildingController = fixture[0]
+	var buildings: Node3D = fixture[1]
+	var unit := _new_mobile_wall_blocker()
+	_begin_waiting_wall_segment(controller, local_player)
+	var rows := controller._building_occupy_rows(controller._building_config(&"ATWall"))
+	var expected := controller._building_placement.reserved_nav_cells(rows, 0, Vector2i(2, 4))
+	var reserved := controller.pending_placement_reserved_nav_cells()
+	var reservation_matches := reserved.size() == expected.size()
+	for cell in expected:
+		reservation_matches = reservation_matches and reserved.has(cell)
+	_expect(reservation_matches, "a waiting wall footprint must be reserved and contain no extra cells")
+	unit.free()
+	_production_for(controller).advance_tick()
+	_expect(
+		controller.pending_placement_reserved_nav_cells().is_empty(),
+		"a resolved waiting wall footprint must stop being reserved"
+	)
+	controller.free()
+	buildings.free()
+	return token
+
+func _test_waiting_wall_segment_icon(token: int, _local_player: PlayerData) -> int:
+	var fixture := _new_wall_placement_fixture()
+	var controller: BuildingController = fixture[0]
+	var buildings: Node3D = fixture[1]
+	var unit := _new_mobile_wall_blocker()
+	var latest_states: Dictionary = {}
+	controller.building_option_state_changed.connect(func(option_state: BuildingOptionState) -> void:
+		if option_state.building_id == &"ATWall":
+			latest_states[option_state.building_id] = option_state
+	)
+	_production_for(controller).set_wall_chain_for_player(1, WallChainScript.new(
+		&"ATWall", "Wall", 10, 1, [Vector2i(2, 4), Vector2i(4, 4)]
+	))
+	_production_for(controller).advance_wall_chain(1)
+	_production_for(controller).advance_tick()
+	controller._refresh_building_option_states()
+	var latest_state: BuildingOptionState = latest_states.get(&"ATWall")
+	_expect(
+		latest_state != null
+		and latest_state.state == BuildingOptionStateScript.State.PLACING
+		and latest_state.status_text == "BUILDING",
+		"a waiting wall segment must display the inert BUILDING state"
+	)
+	unit.free()
+	controller.free()
+	buildings.free()
+	return token
+
+func _test_waiting_wall_segment_ignores_cancel(token: int, local_player: PlayerData) -> int:
+	var fixture := _new_wall_placement_fixture()
+	var controller: BuildingController = fixture[0]
+	var buildings: Node3D = fixture[1]
+	var unit := _new_mobile_wall_blocker()
+	var money_before := local_player.money
+	_begin_waiting_wall_segment(controller, local_player)
+	_execute_wall_build_order(controller, MOUSE_BUTTON_RIGHT)
+	_expect(
+		controller._wall_chain != null and controller._wall_chain.current_cell() == Vector2i(2, 4),
+		"a cancel command must not end a waiting wall chain"
+	)
+	_expect(
+		controller._building_queue.current_order() != null and controller._building_queue.current_order().ready,
+		"a cancel command must not remove a waiting wall order"
+	)
+	_expect(local_player.money == money_before - 10, "a cancel command must not refund a waiting wall order")
+	unit.free()
+	controller.free()
+	buildings.free()
+	return token
+
+func _test_waiting_wall_segment_ignores_wall_mode(token: int, local_player: PlayerData) -> int:
+	var fixture := _new_wall_placement_fixture()
+	var controller: BuildingController = fixture[0]
+	var buildings: Node3D = fixture[1]
+	var unit := _new_mobile_wall_blocker()
+	_begin_waiting_wall_segment(controller, local_player)
+	controller.handle_building_intent(&"ATWall", MOUSE_BUTTON_LEFT)
+	_expect(not controller._wall_line_mode, "a waiting wall click must not enter wall-line mode")
+	unit.free()
+	controller.free()
+	buildings.free()
+	return token
+
+func _test_waiting_wall_segment_ignores_ready_command(token: int, local_player: PlayerData) -> int:
+	var fixture := _new_wall_placement_fixture()
+	var controller: BuildingController = fixture[0]
+	var buildings: Node3D = fixture[1]
+	var unit := _new_mobile_wall_blocker()
+	_begin_waiting_wall_segment(controller, local_player)
+	_execute_wall_build_order(controller, MOUSE_BUTTON_LEFT)
+	_expect(not controller._building_placement.is_active(), "a ready command must not begin a waiting wall placement")
+	unit.free()
+	controller.free()
+	buildings.free()
+	return token
+
+func _new_mobile_wall_blocker() -> MobilePlacementUnit:
+	var unit := MobilePlacementUnit.new()
+	unit.owner_player_id = 2
+	unit.position = Vector3(2.5, 0.0, 4.5)
+	unit.add_to_group("sim_units")
+	unit.add_to_group("units")
+	root.add_child(unit)
+	return unit
+
+func _begin_waiting_wall_segment(controller: BuildingController, local_player: PlayerData) -> void:
+	_production_for(controller).set_wall_chain_for_player(1, WallChainScript.new(
+		&"ATWall", "Wall", 10, 1, [Vector2i(2, 4), Vector2i(4, 4)]
+	))
+	_production_for(controller).advance_wall_chain(1)
+	controller._building_queue.advance_tick(local_player.money, Callable(local_player, &"spend_money"))
 
 func _new_wall_placement_fixture() -> Array:
 	var controller := _new_controller()
@@ -631,10 +801,11 @@ func _new_wall_placement_fixture() -> Array:
 	var buildings := Node3D.new()
 	root.add_child(buildings)
 	_setup_controller_placement(controller, null, FakeGrid.new(), buildings, null, null, null, null, Callable())
+	_production_for(controller)._is_building_available = func(_player_id: int, _building_id: StringName) -> bool:
+		return true
 	_production_for(controller)._wall_scene_provider = func(_building_id: StringName) -> String:
 		return "res://scenes/effects/death_corpse.tscn"
 	return [controller, buildings]
-
 
 func _test_fixed_wall_line_ignores_world_right_click(token: int) -> int:
 	var controller := _new_controller()

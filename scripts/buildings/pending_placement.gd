@@ -1,6 +1,12 @@
 class_name PendingPlacement
 extends RefCounted
 
+const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
+
+## Decision 12 item 1: the pending window, held as a tick expression rather
+## than a bare 125 so re-testing another rate stays a one-constant change.
+const PENDING_DEADLINE_TICKS := 5 * MatchClockScript.TICKS_PER_SECOND
+
 ## Per-player deferred placement input. The command already supplies the
 ## player id, so it is the dictionary key rather than duplicate entry data.
 class Entry extends RefCounted:

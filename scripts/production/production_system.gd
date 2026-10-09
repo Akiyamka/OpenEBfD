@@ -3,6 +3,7 @@ extends RefCounted
 
 const BuildingPlacementScript := preload("res://scripts/buildings/building_placement.gd")
 const BuildingQueueScript := preload("res://scripts/buildings/building_queue.gd")
+const PendingPlacementScript := preload("res://scripts/buildings/pending_placement.gd")
 const RuleTicksScript := preload("res://scripts/rules/rule_ticks.gd")
 const WallChainScript := preload("res://scripts/buildings/wall_chain.gd")
 const WallLineScript := preload("res://scripts/buildings/wall_line.gd")
@@ -29,9 +30,16 @@ class WallChainExecution extends RefCounted:
 	var cells: Array[Vector2i] = []
 
 
+## A wall segment whose site holds a unit that can leave. `null` is the whole
+## "not waiting" state: zero must not start a fresh deadline on re-entry.
+class WallSegmentWait extends RefCounted:
+	var ticks_left: int
+
+
 class PlayerProduction extends RefCounted:
 	var build_queue: BuildingQueue = BuildingQueueScript.new()
 	var wall_chain: WallChain
+	var wall_segment_wait: WallSegmentWait
 
 
 var _players
@@ -69,6 +77,27 @@ func build_queue_for_player(player_id: int) -> BuildingQueue:
 
 func wall_chain_for_player(player_id: int) -> WallChain:
 	return _production_for(player_id).wall_chain
+
+
+## Navigation reserves a waiting segment's footprint the way it reserves a
+## pending building placement's. BuildingController unions the two providers.
+func waiting_wall_segment_reserved_nav_cells() -> Array[Vector2i]:
+	var cells: Array[Vector2i] = []
+	for player_id in _by_player_id:
+		var production: PlayerProduction = _by_player_id[player_id]
+		var chain := production.wall_chain
+		if production.wall_segment_wait == null or chain == null:
+			continue
+		var config: Resource = _wall_config_provider.call(chain.building_id)
+		var rows: Array[String] = _wall_rows_provider.call(config)
+		cells.append_array(_wall_placement.reserved_nav_cells(rows, 0, chain.current_cell()))
+	return cells
+
+
+## A wait names a segment, so it is meaningful only while its chain remains.
+func has_waiting_wall_segment(player_id: int) -> bool:
+	var production := _production_for(player_id)
+	return production.wall_segment_wait != null and production.wall_chain != null
 
 
 ## Test seam for wall-chain state. Shipping code starts chains through
@@ -167,6 +196,9 @@ func advance_tick() -> void:
 			continue
 		if queue.advance_tick(player.money, Callable(player, &"spend_money")):
 			build_queue_progressed.emit(player_id)
+		if production.wall_segment_wait != null:
+			production.wall_segment_wait.ticks_left -= 1
+			_place_ready_wall_segment(player_id)
 
 
 func _production_for(player_id: int) -> PlayerProduction:
@@ -190,9 +222,18 @@ func _place_ready_wall_segment(player_id: int) -> void:
 	var chain := production.wall_chain
 	if chain == null:
 		return
-	var completed_order := production.build_queue.take_ready()
 	var config: Resource = _wall_config_provider.call(chain.building_id)
 	var rows: Array[String] = _wall_rows_provider.call(config)
+	# Ask before take_ready(): a wait keeps the ready order visible to every
+	# queue reader, including the chain's exclusive hold on this player's queue.
+	var blocked_by_unit: bool = (
+		not rows.is_empty()
+		and _wall_placement.has_any_unit_in_footprint(rows, 0, chain.current_cell(), null)
+	)
+	if blocked_by_unit and _wall_segment_keeps_waiting(production, rows, chain.current_cell()):
+		return
+	production.wall_segment_wait = null
+	var completed_order := production.build_queue.take_ready()
 	if rows.is_empty():
 		_refund_wall_order(player_id, completed_order)
 		_emit_wall(player_id, WallChainOutcome.MISSING_ROWS, chain.display_name)
@@ -209,7 +250,7 @@ func _place_ready_wall_segment(player_id: int) -> void:
 	# chain is in PlayerProduction, the dictionary key is its sole authority.
 	var owner_player_id: int = player_id
 	var placed: int = BuildingPlacementScript.PlaceResult.CANNOT_BUILD
-	if not _wall_placement.has_immobile_unit_in_footprint(rows, 0, chain.current_cell(), null):
+	if not blocked_by_unit:
 		placed = _wall_placement.place_without_preview(
 			chain.building_id, chain.display_name, rows, true, 0, chain.current_cell(), scene,
 			owner_player_id
@@ -236,6 +277,21 @@ func _place_ready_wall_segment(player_id: int) -> void:
 	else:
 		_emit_wall(player_id, WallChainOutcome.COMPLETE, chain.display_name)
 		_end_wall_chain(player_id)
+
+
+## Only a unit that can leave buys the deadline. An immobile unit falls through
+## to the ordinary refusal, because no useful movement can happen while the
+## chain holds this player's only queue.
+func _wall_segment_keeps_waiting(
+		production: PlayerProduction, rows: Array[String], cell: Vector2i
+	) -> bool:
+	if _wall_placement.has_immobile_unit_in_footprint(rows, 0, cell, null):
+		return false
+	if production.wall_segment_wait == null:
+		production.wall_segment_wait = WallSegmentWait.new()
+		production.wall_segment_wait.ticks_left = PendingPlacementScript.PENDING_DEADLINE_TICKS
+		return true
+	return production.wall_segment_wait.ticks_left > 0
 
 
 func _evaluate_wall_cell(building_id: StringName, cell: Vector2i, player_id: int) -> int:
