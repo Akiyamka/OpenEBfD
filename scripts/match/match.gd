@@ -59,7 +59,7 @@ const PING_INTERVAL_CADENCE_CYCLES := 6
 ## so tests can exercise validation without changing the running process.
 static func _parse_local_player_id(args: PackedStringArray) -> int:
 	for arg in args:
-		if arg.begins_with("--net-room="):
+		if arg.begins_with("--net-room=") or arg.begins_with("--net-players="):
 			continue
 		if not arg.begins_with("--local-player-id="):
 			continue
@@ -73,7 +73,16 @@ static func _parse_local_player_id(args: PackedStringArray) -> int:
 	return LOCAL_PLAYER_ID
 
 
-## Parses the relay URL and owns diagnostics for arguments neither net parser
+## Returns whether arg belongs to one of the network parsers.
+static func _is_known_net_argument(arg: String) -> bool:
+	return (
+		arg.begins_with("--net-room=")
+		or arg.begins_with("--local-player-id=")
+		or arg.begins_with("--net-players=")
+	)
+
+
+## Parses the relay URL and owns diagnostics for arguments none of the net parsers
 ## recognizes, so a command line prints each unknown flag only once.
 static func _parse_net_room_url(args: PackedStringArray) -> String:
 	var room_url := ""
@@ -81,10 +90,28 @@ static func _parse_net_room_url(args: PackedStringArray) -> String:
 		if arg.begins_with("--net-room="):
 			room_url = arg.trim_prefix("--net-room=")
 			continue
-		if arg.begins_with("--local-player-id="):
+		if _is_known_net_argument(arg):
 			continue
 		push_warning("Unknown match network argument: %s" % arg)
 	return room_url
+
+
+## Parses the requested gathering roster independently from process arguments
+## so validation remains directly testable.
+static func _parse_net_player_count(args: PackedStringArray) -> int:
+	for arg in args:
+		if not arg.begins_with("--net-players="):
+			continue
+		var value := arg.trim_prefix("--net-players=")
+		if value.is_valid_int():
+			var player_count := int(value)
+			if player_count >= 1 and player_count <= ENEMY_PLAYER_ID:
+				return player_count
+		push_error(
+			"Invalid --net-players value '%s'; valid range is 1..%d" % [value, ENEMY_PLAYER_ID]
+		)
+		return 0
+	return 0
 
 @onready var camera: Camera3D = $CameraRig/Camera3D
 @onready var camera_rig: Node3D = $CameraRig
@@ -98,6 +125,7 @@ static func _parse_net_room_url(args: PackedStringArray) -> String:
 var _fps_update_time := 0.0
 var _local_player_id := LOCAL_PLAYER_ID
 var _net_room_url := ""
+var _net_player_count := 0
 var _clock: MatchClock
 var _tick_driver: FrameTickDriver
 ## Owned alongside _entity_index (see that field's comment) for the same
@@ -117,6 +145,7 @@ var _checksum_exchange: ChecksumExchange
 var _rtt_tracker: RttTracker
 var _applied_input_delay_ticks := -1
 var _input_delay_change_count := 0
+var _last_present_player_count := -1
 var _halted_at_tick := -1
 var _halt_diagnostic := ""
 ## Off by default (see ReplayRecorder's doc comment,
@@ -228,6 +257,9 @@ func _enter_tree() -> void:
 	_admission_queue = SimAdmissionQueueScript.new()
 	_local_player_id = _resolve_local_player_id()
 	_net_room_url = _resolve_net_room_url()
+	_net_player_count = _resolve_net_player_count()
+	if _net_player_count >= 2 and _net_room_url.is_empty():
+		push_error("--net-players needs --net-room")
 	# Children initialize their owner visuals in _ready(), so the player
 	# roster must exist before buildings and units enter the scene tree.
 	# The Rules autoload's catalog, in contrast, only loads in its own
@@ -249,6 +281,10 @@ func _ready() -> void:
 	_turn_scheduler = TurnSchedulerScript.new(
 		_command_bus, transport, _local_player_id, _checksum_exchange, _rtt_tracker
 	)
+	if _uses_start_barrier():
+		_turn_scheduler.begin_gathering(_net_player_count, _start_barrier_hello_interval_msec())
+		_command_bus.input_delay_ticks = RttTrackerScript.INPUT_DELAY_FLOOR_TICKS
+		_applied_input_delay_ticks = RttTrackerScript.INPUT_DELAY_FLOOR_TICKS
 	_replay_recorder = ReplayRecorderScript.new()
 	_replay_player = ReplayPlayerScript.new()
 	_player_elimination_tracker = PlayerEliminationTrackerScript.new()
@@ -294,6 +330,12 @@ func _ready() -> void:
 		_building_upgrade_controller
 	)
 	_update_selection_label()
+	if _uses_start_barrier():
+		print(
+			"Match: waiting for %d players as player %d in %s"
+			% [_net_player_count, _local_player_id, _net_room_url]
+		)
+		_update_selection_label("Waiting for players: %d of %d present" % [_turn_scheduler.present_player_count(), _net_player_count])
 	_update_fps_label()
 	_place_on_map()
 
@@ -312,6 +354,18 @@ func _resolve_local_player_id() -> int:
 
 func _resolve_net_room_url() -> String:
 	return _parse_net_room_url(OS.get_cmdline_user_args())
+
+
+func _resolve_net_player_count() -> int:
+	return _parse_net_player_count(OS.get_cmdline_user_args())
+
+
+func _uses_start_barrier() -> bool:
+	return not _net_room_url.is_empty() and _net_player_count >= 2
+
+
+func _start_barrier_hello_interval_msec() -> int:
+	return roundi(CHECKSUM_INTERVAL_TICKS * MatchClockScript.SECONDS_PER_TICK * 1000.0)
 
 
 func _on_panel_command(command: StringName) -> void:
@@ -524,8 +578,11 @@ func _snap_to_ground(point: Vector3) -> Vector3:
 
 
 func _process(delta: float) -> void:
-	var due := _tick_driver.pending_ticks(delta)
-	advance_ticks(due)
+	if _turn_scheduler.is_gathering():
+		_poll_start_barrier()
+	else:
+		var due := _tick_driver.pending_ticks(delta)
+		advance_ticks(due)
 
 	_refresh_sidebar_house_pages()
 	if _building_controller != null:
@@ -541,6 +598,21 @@ func _process(delta: float) -> void:
 	if _fps_update_time >= 0.25:
 		_fps_update_time = 0.0
 		_update_fps_label()
+
+
+func _poll_start_barrier() -> void:
+	var was_gathering := _turn_scheduler.is_gathering()
+	_turn_scheduler.poll_gathering(Time.get_ticks_msec())
+	var present_player_count := _turn_scheduler.present_player_count()
+	if present_player_count != _last_present_player_count:
+		_last_present_player_count = present_player_count
+		print("Match: %d of %d players present" % [present_player_count, _net_player_count])
+		_update_selection_label(
+			"Waiting for players: %d of %d present" % [present_player_count, _net_player_count]
+		)
+	if was_gathering and not _turn_scheduler.is_gathering():
+		print("Match: all %d players present; match started" % _net_player_count)
+		_update_selection_label("All %d players present; match started" % _net_player_count)
 
 
 ## The single place a system gets attached to the simulation tick as phase 1
@@ -1005,6 +1077,10 @@ func current_tick() -> int:
 	return _clock.current_tick()
 
 
+func is_waiting_for_players() -> bool:
+	return _turn_scheduler.is_gathering()
+
+
 ## Whether one remote player was heard from and has then been silent for more
 ## than the decision 8 liveness threshold. A player never heard from is absent,
 ## not stalled; the local player never arrives over the transport.
@@ -1058,7 +1134,7 @@ func replay_exhausted() -> bool:
 ## clock boundary, which may be less than the old boundary plus count when halted.
 func advance_ticks(count: int) -> int:
 	for _i in count:
-		if _halted_at_tick >= 0:
+		if _halted_at_tick >= 0 or _turn_scheduler.is_gathering():
 			break
 		_advance_simulation_tick()
 	return _clock.current_tick()

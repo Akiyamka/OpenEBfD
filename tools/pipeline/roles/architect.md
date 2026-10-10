@@ -94,7 +94,12 @@ The driver sends you exactly one of these. Do the step, write the files, stop.
      fail", walk the mutated path: does it still reach the assertion, which
      *other* cases now also fail, and is the failure the one named? State
      every case the mutation breaks — a mutation that breaks two is normal and
-     reporting only one makes the extra failure look like a defect.
+     reporting only one makes the extra failure look like a defect. The same
+     staleness happens when a revision *adds* a case: `AK1`'s revision 2 added
+     G8 to time the first hello, and G8 also observes the second, so the
+     earlier "send a hello only once" control failed 6 assertions against a
+     prediction of 5. Whenever `STEP=plan-questions` adds a case, re-trace
+     every existing mutation against it, not only the new mutations it brings.
 
      **Count the callers of the line you are editing.** Under-tracing kept
      happening after the rule above was written — `AE1`, `AF1` and `AG1` each

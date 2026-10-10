@@ -9,6 +9,8 @@ const ChecksumExchangeScript := preload("res://scripts/net/checksum_exchange.gd"
 const LoopbackHubScript := preload("res://scripts/net/loopback_hub.gd")
 const MatchFixtureScene := preload("res://tests/fixtures/match_fixture.tscn")
 const RttTrackerScript := preload("res://scripts/net/rtt_tracker.gd")
+const NetTransportScript := preload("res://scripts/net/net_transport.gd")
+const RecordingTransportScript := preload("res://tests/net/support/recording_transport.gd")
 const SimCommandBusScript := preload("res://scripts/sim/command_bus.gd")
 const SimMoveCommandScript := preload("res://scripts/sim/commands/move_command.gd")
 const TurnSchedulerScript := preload("res://scripts/net/turn_scheduler.gd")
@@ -54,6 +56,14 @@ func _initialize() -> void:
 	_run_case("remote activity is tracked independently by sender", _test_remote_activity_tracks_senders_independently)
 	_run_case("an unheard sender has no activity tick", _test_unheard_sender_has_no_activity_tick)
 	_run_case("every remote frame kind credits its sender", _test_all_remote_frame_kinds_credit_sender)
+	_run_case("gathering re-sends lost hellos and releases together", _test_gathering_resends_hello)
+	_run_case("the leader releases on the START echo", _test_leader_waits_for_start_echo)
+	_run_case("a follower never sends START", _test_follower_never_sends_start)
+	_run_case("commands are held until gathering releases", _test_gathering_holds_commands)
+	_run_case("frames delivered with START wait for the first tick", _test_start_stashes_batch_frames)
+	_run_case("presence frames after release are inert", _test_released_presence_frames_are_inert)
+	_run_case("short presence frames reject and gathering is opt-in", _test_presence_rejections_and_opt_in)
+	_run_case("hello timing begins when a connected transport sends", _test_hello_timing_starts_on_real_send)
 	await _run_async_case("sequential matches agree after a transported command", _test_matching_hashes)
 	await _run_async_case("a differing transported target stays equal per peer but changes the result", _test_differing_target_control)
 	_finish("Turn scheduler tests")
@@ -402,7 +412,7 @@ func _test_rejects_checksum_frames() -> void:
 	var endpoints: Dictionary = _new_connected_endpoints()
 	var scheduler = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["a"], 1)
 
-	endpoints["a"].receive(PackedByteArray([4]))
+	endpoints["a"].receive(PackedByteArray([255]))
 	scheduler.advance_tick(0)
 	_expect(scheduler.rejected_frame_count() == 1, "an unknown discriminator must increment once")
 
@@ -557,6 +567,165 @@ func _test_all_remote_frame_kinds_credit_sender() -> void:
 	endpoints["a"].receive(PackedByteArray([3, 0, 0, 0, 4, 0, 0, 0, 1, 0, 0, 0, 2]))
 	scheduler.advance_tick(5)
 	_expect(scheduler.last_remote_activity_tick_for(2) == 5, "a pong must credit its sender")
+
+
+func _gathering_pair() -> Dictionary:
+	var hub := LoopbackHubScript.new()
+	var follower_endpoint = hub.add_endpoint(&"F")
+	var leader_endpoint = hub.add_endpoint(&"L")
+	follower_endpoint.open("")
+	var follower_bus := SimCommandBusScript.new()
+	follower_bus.input_delay_ticks = 2
+	var leader_bus := SimCommandBusScript.new()
+	leader_bus.input_delay_ticks = 2
+	var follower = TurnSchedulerScript.new(follower_bus, follower_endpoint, 2)
+	var leader = TurnSchedulerScript.new(leader_bus, leader_endpoint, 1)
+	follower.begin_gathering(2, 320)
+	leader.begin_gathering(2, 320)
+	return {"hub": hub, "follower": follower, "leader": leader, "follower_endpoint": follower_endpoint, "leader_endpoint": leader_endpoint, "follower_bus": follower_bus, "leader_bus": leader_bus}
+
+
+func _run_gathering_sequence(pair: Dictionary) -> void:
+	var hub = pair["hub"]
+	var follower = pair["follower"]
+	var leader = pair["leader"]
+	follower.poll_gathering(0)
+	pair["leader_endpoint"].open("")
+	leader.poll_gathering(0)
+	hub.step()
+	leader.poll_gathering(20)
+	follower.poll_gathering(20)
+	hub.step()
+	leader.poll_gathering(40)
+	follower.poll_gathering(40)
+
+
+func _finish_gathering_sequence(pair: Dictionary) -> void:
+	var hub = pair["hub"]
+	var follower = pair["follower"]
+	var leader = pair["leader"]
+	follower.poll_gathering(320)
+	leader.poll_gathering(320)
+	hub.step()
+	leader.poll_gathering(340)
+	follower.poll_gathering(340)
+	hub.step()
+	leader.poll_gathering(360)
+	follower.poll_gathering(360)
+
+
+func _test_gathering_resends_hello() -> void:
+	var pair := _gathering_pair()
+	_run_gathering_sequence(pair)
+	_expect(pair["leader"].present_player_count() == 1, "the leader must miss the follower hello sent while unseated")
+	_expect(pair["leader"].is_gathering() and pair["follower"].is_gathering(), "neither scheduler may start before both players are present")
+	_finish_gathering_sequence(pair)
+	_expect(not pair["leader"].is_gathering(), "the leader must release after the re-sent hello and START echo")
+	_expect(not pair["follower"].is_gathering(), "the follower must release on the same relayed START")
+
+
+func _test_leader_waits_for_start_echo() -> void:
+	var pair := _gathering_pair()
+	_run_gathering_sequence(pair)
+	var hub = pair["hub"]
+	var follower = pair["follower"]
+	var leader = pair["leader"]
+	follower.poll_gathering(320)
+	leader.poll_gathering(320)
+	hub.step()
+	leader.poll_gathering(340)
+	follower.poll_gathering(340)
+	_expect(leader.is_gathering(), "sending START must not release the leader before its relay copy")
+	hub.step()
+	leader.poll_gathering(360)
+	follower.poll_gathering(360)
+	_expect(not leader.is_gathering(), "the leader must release when its START copy arrives")
+
+
+func _test_follower_never_sends_start() -> void:
+	var hub := LoopbackHubScript.new()
+	var endpoint = hub.add_endpoint(&"F")
+	endpoint.open("")
+	var follower = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoint, 2)
+	follower.begin_gathering(2, 320)
+	endpoint.receive(PackedByteArray([4, 0, 0, 0, 1]))
+	follower.poll_gathering(0)
+	for now_msec in [20, 40, 60]:
+		hub.step()
+		follower.poll_gathering(now_msec)
+	_expect(follower.present_player_count() == 2, "the follower must observe the complete roster")
+	_expect(follower.is_gathering(), "only player one may send the START frame")
+
+
+func _test_gathering_holds_commands() -> void:
+	var pair := _gathering_pair()
+	var follower = pair["follower"]
+	follower.submit_local(_make_move_command(2), 1)
+	_expect(pair["follower_bus"].pending_count() == 1, "the local command must enter its own bus while gathering")
+	_run_gathering_sequence(pair)
+	_finish_gathering_sequence(pair)
+	pair["hub"].step()
+	pair["leader"].advance_tick(1)
+	follower.advance_tick(1)
+	_expect(pair["leader_bus"].pending_count() == 1, "the released command must reach the peer")
+	_expect(pair["leader_bus"].drain(3).size() == 1 and pair["follower_bus"].drain(3).size() == 1, "both buses must retain the command for its transmitted target tick")
+	_expect(pair["leader_bus"].dropped_late_count() == 0, "the peer must not reject the held command as late")
+
+
+func _test_start_stashes_batch_frames() -> void:
+	var endpoints: Dictionary = _new_connected_endpoints()
+	var bus := SimCommandBusScript.new()
+	var follower = TurnSchedulerScript.new(bus, endpoints["a"], 2)
+	follower.begin_gathering(2, 320)
+	var sender = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["b"], 1)
+	endpoints["a"].receive(PackedByteArray([5, 0, 0, 0, 1]))
+	endpoints["a"].receive(sender._encode_frame(3, _make_move_command(1)))
+	follower.poll_gathering(0)
+	_expect(not follower.is_gathering(), "START must release gathering")
+	follower.advance_tick(1)
+	_expect(bus.pending_count() == 1, "a command behind START in one batch must reach the first tick")
+	_expect(follower.rejected_frame_count() == 0, "stashed valid frames must not be rejected")
+
+
+func _test_released_presence_frames_are_inert() -> void:
+	var endpoints: Dictionary = _new_connected_endpoints()
+	var follower = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["a"], 2)
+	follower.begin_gathering(2, 320)
+	endpoints["a"].receive(PackedByteArray([5, 0, 0, 0, 1]))
+	follower.poll_gathering(0)
+	endpoints["a"].receive(PackedByteArray([4, 0, 0, 0, 1]))
+	endpoints["a"].receive(PackedByteArray([5, 0, 0, 0, 1]))
+	follower.advance_tick(5)
+	_expect(follower.rejected_frame_count() == 0, "presence frames after release must not be rejected")
+	_expect(follower.last_remote_activity_tick_for(1) == -1, "presence frames must not credit remote activity")
+
+
+func _test_presence_rejections_and_opt_in() -> void:
+	var endpoints: Dictionary = _new_connected_endpoints()
+	var scheduler = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["a"], 1)
+	endpoints["a"].receive(PackedByteArray([4]))
+	scheduler.advance_tick(0)
+	_expect(scheduler.rejected_frame_count() == 1, "a short hello must reject once")
+	endpoints["a"].receive(PackedByteArray([5, 0]))
+	scheduler.advance_tick(1)
+	_expect(scheduler.rejected_frame_count() == 2, "a short START must reject once")
+	_expect(not TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["b"], 2).is_gathering(), "gathering must remain opt-in")
+
+
+func _test_hello_timing_starts_on_real_send() -> void:
+	var transport = RecordingTransportScript.new()
+	transport._state = NetTransportScript.State.CONNECTING
+	var scheduler = TurnSchedulerScript.new(SimCommandBusScript.new(), transport, 2)
+	scheduler.begin_gathering(2, 320)
+	scheduler.poll_gathering(0)
+	_expect(transport.sent_frames.size() == 0, "a connecting transport must not send or stamp hello")
+	transport.open("")
+	scheduler.poll_gathering(1)
+	_expect(transport.sent_frames.size() == 1 and transport.sent_frames[0][0] == 4, "the first connected poll must send HELLO")
+	scheduler.poll_gathering(320)
+	_expect(transport.sent_frames.size() == 1, "319 ms after a real send must not repeat HELLO")
+	scheduler.poll_gathering(321)
+	_expect(transport.sent_frames.size() == 2, "320 ms after a real send must repeat HELLO")
 
 
 func _test_matching_hashes() -> void:

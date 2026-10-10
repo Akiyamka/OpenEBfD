@@ -354,7 +354,12 @@ arrive after the receiver drained its target tick, be dropped silently by
 `submit_at()`, and desync the match — the cap would guarantee the failure it
 looks like it prevents. A match that has measured nothing changes nothing:
 without that gate the floor of 2 would be written into every single-player
-match, which boots at 0.
+match, which boots at 0. The one exception is a match the start barrier has
+gathered (`AK1`, `--net-players`). It has peers by construction, so **a gathered
+match starts at the floor** before anything is measured, and `Z1`'s first
+measurement then counts as a change only if it actually moves the delay. That
+gate's argument was about a peer that does not exist, and a gathered match has
+one. A plain `--net-room` boot is unchanged and still starts at 0.
 
 What remains genuinely open is the direction of travel. A *falling*
 recommendation shortens the delay, and if the network is in fact slower than the
@@ -4116,6 +4121,82 @@ source cites a number you cannot place.
   human-confirmed one and the unit was the error, so the labels were corrected
   and the constant left alone. Nine written statements were falsified by this
   slice and not one of them would have failed a test.
+  **`AK1` — landed, a networked match waits for every player before its first
+  tick.** This was directed by the human on 2026-10-10. They run two clients by
+  hand against the relay and cannot launch them at the same instant, and until
+  now nothing synchronised a start. Each client ticked from its first frame.
+  `WebSocketTransport.send()` drops a frame silently while the socket is still
+  connecting, and the relay keeps no history. So two hand-launched clients
+  started seconds apart. Whatever the first sent before the second was seated
+  was lost, and the second's commands then arrived behind the first's clock and
+  were dropped late by `submit_at()`. A third argument now asks for the wait,
+  `--net-players=<N>`, alongside `T1`'s two:
+
+  ```
+  make relay
+  godot --path . -- --net-room=ws://127.0.0.1:8910/dev --local-player-id=1 --net-players=2
+  godot --path . -- --net-room=ws://127.0.0.1:8910/dev --local-player-id=2 --net-players=2
+  ```
+
+  **The barrier lives on the client**, because decision 1's relay is dumb on
+  purpose. While waiting, the match does not tick: `_process()` polls the
+  barrier instead of the tick driver, and `advance_ticks()` refuses, extending
+  `V1`'s guard to a second condition. Every client re-sends a presence frame
+  (`HELLO`, discriminator `4`) once per checksum cadence, 320 ms, because a
+  frame sent before a peer is seated is gone for good. A client counts itself
+  present only when its own hello comes back from the relay, which proves it is
+  seated rather than merely connected. Player 1, the lowest id, so nobody
+  negotiates, sends one `START` (discriminator `5`) once all N are present.
+  **Every client, player 1 included, starts on the relay's copy of START**, not
+  on sending it. The relay fans a frame to every seated endpoint, its sender
+  included, at once. So start skew is the difference of the two relay legs,
+  `|r_A − r_B|`, plus under two frames of polling quantization. A
+  "ready → go" handshake would instead leave the full one-way latency.
+
+  What skew is tolerable follows from the late-drop rule. A command clicked at
+  the sender's tick `x` targets `x + 1 + d`. The receiver accepts it if it has
+  not yet drained that tick when the frame arrives. With `S` the receiver's lead
+  in ticks, `ow` the one-way latency in ticks and `d` the sender's input delay,
+  that condition is `S + ow < d`. `Z1`'s zero-until-measured delay fails it for
+  the first two seconds of any networked match, even at zero skew. So a
+  gathered match starts at the floor of two ticks (decision 8). On one machine
+  or a LAN, `S` is at most two frames, about 33 ms at 60 fps, and `S + ow` sits
+  well under the 80 ms the floor allows.
+
+  **Commands issued while waiting are held, not refused.** `submit_local()`
+  still queues them in the local bus but keeps the frame until release. None of
+  its thirteen call sites, which all discard the return value, is left holding
+  view state that nothing will resolve. **Presence frames are scheduler frames**,
+  like checksums and pings, not `SimCommand`s. After release they are ignored
+  without counting as activity, so a client that missed START cannot mask the
+  silence `X1` looks for.
+
+  **Without `--net-players` every boot is byte for byte what it was**, including
+  a plain `--net-room` boot's zero-until-measured delay. `N = 1` means nothing
+  to wait for and behaves the same, and `N` is capped at 2 because the roster
+  holds two players.
+
+  **How it is proven.** Two raw schedulers run on a `LoopbackHub`, which, like
+  the relay, delivers only to endpoints seated at send time. After a hello lost
+  to an unseated peer is re-sent, both release on the same delivery of START.
+  One live `Match` waits and then starts on its own frame loop, without the test
+  ever calling `advance_ticks()`, since two live matches cannot coexist. All
+  eighteen mutation controls were measured. One prediction in the brief was
+  wrong: dropping the re-send also fails the case added in revision 2 to time
+  the first hello, because that case observes the second hello too.
+
+  Two things are owed and deliberately not built.
+
+  - **A WAN client is exposed before its first round trip is measured.** At 50
+    ms one way and a 20 ms leg difference, `S + ow` is about 100 ms against the
+    floor's 80, for the two seconds until the first pong. The fix is to seed the
+    delay from a round trip measured during the barrier, in wall-clock time,
+    since ticks are frozen there.
+  - **The barrier bounds only the initial skew: clocks are never resynchronised
+    after start.** `FrameTickDriver` discards ticks past five per frame on a
+    hitch, so a client that stalls for more than 200 ms falls permanently behind,
+    and nothing re-aligns two clients afterwards. Below about 30 fps, the
+    two-frame quantization term alone approaches the floor.
 - **Phase 6 — polish.** Cosmetic prediction, parameter tuning under induced
   latency and loss, save/load of a networked match.
 

@@ -21,10 +21,13 @@ const _TICK_PREFIX_BYTES := 4
 const _CHECKSUM_REPORT_BYTES := 12
 const _PING_BYTES := 8
 const _PONG_BYTES := 12
+const _PRESENCE_BYTES := 4
 const _COMMAND_DISCRIMINATOR := 0
 const _CHECKSUM_REPORT_DISCRIMINATOR := 1
 const _PING_DISCRIMINATOR := 2
 const _PONG_DISCRIMINATOR := 3
+const _HELLO_DISCRIMINATOR := 4
+const _START_DISCRIMINATOR := 5
 
 var _command_bus: SimCommandBus
 var _transport: NetTransport
@@ -35,6 +38,14 @@ var _discarded_echo_count := 0
 var _discarded_command_echo_count := 0
 var _rejected_frame_count := 0
 var _last_remote_activity_tick_by_sender: Dictionary = {}
+var _gathering := false
+var _expected_player_count := 0
+var _hello_interval_msec := 0
+var _last_hello_msec := -1
+var _present_player_ids: Dictionary = {}
+var _start_sent := false
+var _held_frames: Array[PackedByteArray] = []
+var _stashed_frames: Array[Dictionary] = []
 
 
 func _init(
@@ -62,8 +73,67 @@ func submit_local(command: SimCommand, current_tick: int) -> int:
 		)
 		return -1
 	var target_tick := _command_bus.submit(command, current_tick)
-	_transport.send(_encode_frame(target_tick, command))
+	var frame := _encode_frame(target_tick, command)
+	if _gathering:
+		_held_frames.append(frame)
+	else:
+		_transport.send(frame)
 	return target_tick
+
+
+func begin_gathering(expected_player_count: int, hello_interval_msec: int) -> void:
+	_gathering = true
+	_expected_player_count = expected_player_count
+	_hello_interval_msec = hello_interval_msec
+	_last_hello_msec = -1
+	_present_player_ids.clear()
+	_start_sent = false
+	_held_frames.clear()
+	_stashed_frames.clear()
+
+
+func is_gathering() -> bool:
+	return _gathering
+
+
+func present_player_count() -> int:
+	return _present_player_ids.size()
+
+
+## Runs the pre-tick client-side start barrier. Wall-clock input is supplied by
+## Match so this scheduler remains deterministic and directly testable.
+func poll_gathering(now_msec: int) -> void:
+	if not _gathering:
+		return
+	if (
+		_transport.state() == NetTransportScript.State.CONNECTED
+		and (_last_hello_msec < 0 or now_msec - _last_hello_msec >= _hello_interval_msec)
+	):
+		_transport.send(_encode_presence_frame(_HELLO_DISCRIMINATOR))
+		_last_hello_msec = now_msec
+	for frame in _transport.poll():
+		var decoded: Variant = _decode_frame(frame)
+		if decoded == null:
+			continue
+		if _gathering and decoded["kind"] == "hello":
+			var hello_player_id := int(decoded["sender_player_id"])
+			if hello_player_id >= 1 and hello_player_id <= _expected_player_count:
+				_present_player_ids[hello_player_id] = true
+		elif _gathering and decoded["kind"] == "start":
+			_gathering = false
+			for held_frame in _held_frames:
+				_transport.send(held_frame)
+			_held_frames.clear()
+		else:
+			_stashed_frames.append(decoded)
+	if (
+		_gathering
+		and _local_player_id == 1
+		and not _start_sent
+		and _present_player_ids.size() == _expected_player_count
+	):
+		_transport.send(_encode_presence_frame(_START_DISCRIMINATOR))
+		_start_sent = true
 
 
 ## Polls every received frame once. A clean remote frame records activity at
@@ -71,28 +141,37 @@ func submit_local(command: SimCommand, current_tick: int) -> int:
 ## echoed local frame is deliberately discarded because the local submission
 ## already entered this client's command bus.
 func advance_tick(current_tick: int) -> void:
+	for decoded in _stashed_frames:
+		_handle_decoded_frame(decoded, current_tick)
+	_stashed_frames.clear()
 	for frame in _transport.poll():
 		var decoded: Variant = _decode_frame(frame)
 		if decoded == null:
 			continue
-		if decoded["kind"] == "checksum_report":
-			if int(decoded["sender_player_id"]) != _local_player_id:
-				_last_remote_activity_tick_by_sender[int(decoded["sender_player_id"])] = current_tick
-			_handle_checksum_report(decoded)
-			continue
-		if decoded["kind"] == "ping":
-			_handle_ping(decoded, current_tick)
-			continue
-		if decoded["kind"] == "pong":
-			_handle_pong(decoded, current_tick)
-			continue
-		var command: SimCommand = decoded["command"]
-		if command.player_id == _local_player_id:
-			_discarded_echo_count += 1
-			_discarded_command_echo_count += 1
-			continue
-		_last_remote_activity_tick_by_sender[command.player_id] = current_tick
-		_command_bus.submit_at(command, int(decoded["target_tick"]))
+		_handle_decoded_frame(decoded, current_tick)
+
+
+func _handle_decoded_frame(decoded: Dictionary, current_tick: int) -> void:
+	if decoded["kind"] == "hello" or decoded["kind"] == "start":
+		return
+	if decoded["kind"] == "checksum_report":
+		if int(decoded["sender_player_id"]) != _local_player_id:
+			_last_remote_activity_tick_by_sender[int(decoded["sender_player_id"])] = current_tick
+		_handle_checksum_report(decoded)
+		return
+	if decoded["kind"] == "ping":
+		_handle_ping(decoded, current_tick)
+		return
+	if decoded["kind"] == "pong":
+		_handle_pong(decoded, current_tick)
+		return
+	var command: SimCommand = decoded["command"]
+	if command.player_id == _local_player_id:
+		_discarded_echo_count += 1
+		_discarded_command_echo_count += 1
+		return
+	_last_remote_activity_tick_by_sender[command.player_id] = current_tick
+	_command_bus.submit_at(command, int(decoded["target_tick"]))
 
 
 ## Sends a per-tick state checksum over the scheduler-owned transport. Checksum
@@ -170,6 +249,10 @@ func _decode_frame(frame: PackedByteArray):
 			return _decode_ping_frame(frame, buffer)
 		_PONG_DISCRIMINATOR:
 			return _decode_pong_frame(frame, buffer)
+		_HELLO_DISCRIMINATOR:
+			return _decode_presence_frame(frame, buffer, "hello")
+		_START_DISCRIMINATOR:
+			return _decode_presence_frame(frame, buffer, "start")
 		_:
 			_rejected_frame_count += 1
 			push_error(
@@ -238,6 +321,16 @@ func _decode_pong_frame(frame: PackedByteArray, buffer: StreamPeerBuffer):
 	}
 
 
+func _decode_presence_frame(frame: PackedByteArray, buffer: StreamPeerBuffer, kind: String):
+	if frame.size() < _FRAME_DISCRIMINATOR_BYTES + _PRESENCE_BYTES:
+		_rejected_frame_count += 1
+		push_error(
+			"TurnScheduler.advance_tick(): frame too short for the %s (%d bytes)" % [kind, frame.size()]
+		)
+		return null
+	return {"kind": kind, "sender_player_id": buffer.get_32()}
+
+
 func _handle_checksum_report(decoded: Dictionary) -> void:
 	if int(decoded["sender_player_id"]) == _local_player_id:
 		_discarded_echo_count += 1
@@ -282,6 +375,14 @@ func _encode_ping_pong_frame(discriminator: int, tick: int) -> PackedByteArray:
 	buffer.big_endian = true
 	buffer.put_u8(discriminator)
 	buffer.put_u32(tick)
+	buffer.put_32(_local_player_id)
+	return buffer.data_array
+
+
+func _encode_presence_frame(discriminator: int) -> PackedByteArray:
+	var buffer := StreamPeerBuffer.new()
+	buffer.big_endian = true
+	buffer.put_u8(discriminator)
 	buffer.put_32(_local_player_id)
 	return buffer.data_array
 
