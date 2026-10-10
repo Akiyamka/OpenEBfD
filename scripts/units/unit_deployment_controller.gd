@@ -349,8 +349,7 @@ func _resolve_deployment(deployment_id: int) -> void:
 	var result: int = placement.try_place_at_hover_cell(
 		deployment["hover_cell"],
 		deployment["building_scene"],
-		deployment["owner_player_id"],
-		unit
+		deployment["owner_player_id"]
 	)
 	if result != BuildingPlacement.PlaceResult.PLACED:
 		_abort_deployment(deployment_id, true)

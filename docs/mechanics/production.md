@@ -90,8 +90,10 @@ Rules for placing a ready building on the map:
   Since slice `AI1` the same is true of MCV deployment, which waits for the
   footprint of the Construction Yard it is about to become, so **no path
   displaces a mobile unit** any more: every route to a building spawn asks the
-  execution-time check first, and `UnitPushAside`'s shove is left with no
-  caller that can reach it with a unit in the way;
+  execution-time check first. Since slice `AJ1` the shove itself is deleted, so
+  **a building spawn moves no unit** at all: the check is the only thing that
+  keeps a unit out of a new building, and a unit it does not see stays where it
+  stands;
 - **build radius** (verified): a new building can be placed only near the
   player's existing buildings `[Rules: radius]`. **All buildings except walls**
   provide this radius; walls extend the radius **only for constructing other

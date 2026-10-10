@@ -127,6 +127,26 @@ refused. A check for "is the order still deploy" could therefore never answer
 no, so `AI1` left it out and a pending deploy is uninterruptible exactly as the
 animation before it already was. Decision 12 carries the four routes in full.
 
+**OpenEBfD compatibility decision (slice `AJ1`, 2026-10-10):** with no caller
+left to reach it, `UnitPushAside.push_units_out_of_footprint()` is deleted, and
+**a building spawn moves no unit**. The original's displacement — the verified
+behaviour this entry opened with — is now modelled nowhere. In its place, every
+route to a spawn asks first: an ordinary placement waits and then gives the
+order up, a wall segment waits and then skips its cell, and an MCV deploy waits
+and then aborts, each refusing at once on a unit that cannot move. Disabling the
+shove before deleting it failed exactly one assertion in the whole suite, a
+test that called the spawn directly so the shove would have something to move.
+
+One theoretical residue is recorded rather than built for. The check counts
+only units the simulation has admitted, and the shove moved every unit in the
+`units` group, so a unit **not yet admitted** — created earlier in the same tick
+— inside a footprint would now stay put inside the new building instead of being
+moved. No route to that case is known: the placements resolve before unit
+production in the tick, and the one later resolution, an MCV deploy's first
+attempt, cannot meet a freshly produced unit, which appears on its own
+factory's footprint where no new building can be placed. Decision 12 carries
+the trace.
+
 ## Animation timing
 
 ### Infantry base movement animation is too slow

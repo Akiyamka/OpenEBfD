@@ -370,10 +370,6 @@ func _test_mobile_unit_defers() -> void:
 	var fixture := _new_fixture(Vector2i(6, 4))
 	var unit := _new_blocker(fixture[3])
 	unit.deployed = false
-	# D1 alone also enters `units`: UnitPushAside intentionally walks that
-	# production group, while the shared blocker fixture must remain sim-only
-	# for the other pending-placement cases.
-	unit.add_to_group("units")
 	var starting_position := unit.simulation_position()
 	var statuses := _submit_blocked(fixture, unit)
 	var order = fixture[0]._building_queue.current_order()

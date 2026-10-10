@@ -200,12 +200,6 @@ exempt = [
 	# unit.gd is, not because anything else in it writes a position -- nothing
 	# does.
 	"scripts/buildings/building.gd",
-	# Units caught in a footprint that is not (yet, or ever) a Unit -- nothing
-	# in this project puts a non-Unit Node3D in the "units" group today, but
-	# this function has never assumed only Units reach it (see its own
-	# comment) -- fall back to a direct write. The guarded branch above it
-	# routes every real Unit through set_simulation_position().
-	"scripts/buildings/unit_push_aside.gd",
 	# Placement preview meshes (the footprint cell markers and the facing
 	# arrow), plus one fallback for a placed scene whose root is not a
 	# Building at all -- tests/buildings/placement_run.gd packs a bare Node3D

@@ -481,7 +481,7 @@ func _release_entity_id() -> void:
 ## The single place this unit's position is written -- by this file's own
 ## locomotion/navigation/transport code, or by a collaborator holding a `_unit`
 ## / `unit` reference (UnitTerrainAlignment, UnitFlightController,
-## UnitPushAside, BuildingSurvivors, UnitDeploymentController,
+## BuildingSurvivors, UnitDeploymentController,
 ## UnitRosterController, Match._place_on_map()). Routes through the running
 ## match's SimEntityState (scripts/sim/entity_state.gd) when this unit has
 ## one, then mirrors the result into global_position -- decision 3 makes the

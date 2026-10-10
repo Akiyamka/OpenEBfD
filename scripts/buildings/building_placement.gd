@@ -160,8 +160,8 @@ func evaluate_without_preview(
 ## Answers whether an immobile unit occupies the command's rotated footprint
 ## without reading or altering the local preview. This walks `sim_units`, not
 ## `units`: only units admitted to the simulation may affect a verdict every
-## client must reach identically. An MCV deployment flow must supply its own
-## exclusion when it eventually uses this query.
+## client must reach identically. The MCV deployment flow supplies its
+## exclusion through this query and has_any_unit_in_footprint().
 func has_immobile_unit_in_footprint(
 		occupy_rows: Array[String], rotation_turns: int, hover_cell: Vector2i, owner_player_id = null,
 		excluded_unit: Node3D = null
@@ -386,8 +386,7 @@ func try_place(pointer_position: Vector2, building_scene: PackedScene, owner_pla
 func try_place_at_hover_cell(
 		hover_cell: Vector2i,
 		building_scene: PackedScene,
-		owner_player_id = null,
-		excluded_unit: Node3D = null
+		owner_player_id = null
 	) -> PlaceResult:
 	if not is_active():
 		return PlaceResult.INACTIVE
@@ -415,7 +414,7 @@ func try_place_at_hover_cell(
 	var is_wall_segment := _is_wall_candidate
 	var result := _spawn_placed_building(
 		_building_id, _rotation_quarter_turns, _anchor_cell, _occupy_rows,
-		_is_wall_candidate, building_scene, owner_player_id, excluded_unit
+		_is_wall_candidate, building_scene, owner_player_id
 	)
 	if result == PlaceResult.PLACED:
 		_clear()
@@ -431,8 +430,7 @@ func _spawn_placed_building(
 		occupy_rows: Array[String],
 		_is_wall: bool,
 		building_scene: PackedScene,
-		owner_player_id,
-		excluded_unit: Node3D = null
+		owner_player_id
 	) -> PlaceResult:
 	if building_scene == null:
 		return PlaceResult.INVALID_SCENE
@@ -478,7 +476,6 @@ func _spawn_placed_building(
 	building.set_meta(&"placement_anchor_cell", anchor_cell)
 	if owner_player_id != null and building.has_method("set_owner_player_id"):
 		building.call("set_owner_player_id", owner_player_id)
-	_push_units_out_of_footprint(anchor_cell, occupy_rows, excluded_unit)
 	building_placed.emit(building)
 	_play_placed_building_animation(building)
 	return PlaceResult.PLACED
@@ -511,28 +508,6 @@ func _hover_cell_from_pointer(pointer_position: Vector2):
 	if hit.is_empty():
 		return null
 	return _navigation_grid.world_to_grid(hit["position"])
-
-
-func _push_units_out_of_footprint(
-		anchor_cell: Vector2i, occupy_rows: Array[String], excluded_unit: Node3D = null
-	) -> void:
-	if not is_inside_tree() or _navigation_grid == null:
-		return
-	var units := get_tree().get_nodes_in_group("units").filter(
-		func(unit: Node) -> bool: return unit != excluded_unit
-	)
-	if units.is_empty():
-		return
-
-	var footprint_box := _footprint_world_box(anchor_cell, occupy_rows)
-	var start: Vector3 = footprint_box[0]
-	var end: Vector3 = footprint_box[1]
-	var cell_step: Vector3 = (
-		_navigation_grid.grid_to_world(Vector2i(1, 0), false)
-		- _navigation_grid.grid_to_world(Vector2i.ZERO, false)
-	)
-	var margin := maxf(cell_step.length(), 0.1)
-	UnitPushAsideScript.push_units_out_of_footprint(units, start, end, margin)
 
 
 func _footprint_world_box(anchor_cell: Vector2i, occupy_rows: Array[String]) -> Array[Vector3]:

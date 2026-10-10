@@ -531,8 +531,8 @@ The mechanic:
    because `stop()` does not clear `command_id`: the expiry branch walks a
    positive-id agent back to `agent["destination"]`, which `stop()` left on the
    stranded cell, so a wider boundary would oscillate rather than relocate. And
-   it does not touch `UnitPushAside`, whose teleport is still what clears a
-   footprint at placement. The other half — walking units out of a *reserved*
+   it does not touch `UnitPushAside`, whose teleport was then still what cleared
+   a footprint at placement (until `AJ1` deleted it). The other half — walking units out of a *reserved*
    footprint — waited on item **3**, the reservation. (This sentence named item
    2 until `AE1` landed; the reservation is item 3, and the cross-reference was
    simply wrong.)
@@ -593,25 +593,60 @@ The mechanic:
    after the building controller so that a deploy whose cell a placement takes
    this tick sees the building on its own retry.
 
-   **What is still owed is the teleport's deletion**, and after `AI1`
-   **no caller reaches the shove** with a unit it would have to move: both
-   bypass paths defer on any unit, so `_spawn_placed_building()` is only ever
-   entered with a footprint the authority has already found clear.
-   Two facts measured while landing `AF1` are worth keeping for whoever
-   does it, with one of them now half-settled. The behaviour was **wholly
-   untested** on both paths: deleting
-   the call fails exactly one assertion in the whole suite, the deliberately
-   retargeted bypass case in `placement_immobile_unit_run.gd`, and nothing else
-   anywhere — so that slice must add MCV-deployment coverage before it
-   can trust a green run. `AH1` supplied the wall half of what that measurement
-   demanded, and it did so by making the wall behaviour it would have covered
-   obsolete rather than by testing the shove. And the call cannot be deleted on its own: it is the
-   only consumer of `_spawn_placed_building()`'s `excluded_unit` parameter,
-   which GDScript then reports as an unused-parameter parse error, so the
-   parameter goes with it — and that parameter is the MCV's exclusion, which is
-   precisely the thing the deploy path needs re-expressed as a unit check rather
-   than removed. How far the sweep has to reach is a measurement,
-   recorded here
+   **The teleport's deletion landed in `AJ1`.** After `AI1`, **no caller
+   reaches the shove** with a unit it would have to move. All four production
+   call sites into `_spawn_placed_building()` ask `has_any_unit_in_footprint()`
+   first and do not spawn while it answers true: the two in
+   `BuildingController._attempt_pending_placement()`, the wall segment's in
+   `ProductionSystem._place_ready_wall_segment()` and the deploy's in
+   `UnitDeploymentController._resolve_deployment()`. Each covers its first
+   attempt and every retry, because both arrive through the same function. So
+   `UnitPushAside.push_units_out_of_footprint()` and
+   `BuildingPlacement._push_units_out_of_footprint()` are gone, and **a building
+   spawn moves no unit**. `UnitPushAside` keeps only the two predicates the
+   queries share.
+
+   Two facts measured while landing `AF1` decided how the deletion was done.
+   First, the behaviour had been **wholly untested** on the bypass paths:
+   deleting the call failed exactly one assertion in the whole suite, the
+   deliberately retargeted bypass case in `placement_immobile_unit_run.gd`.
+   Re-measured while planning `AJ1` on 2026-10-10, with `AH1` and `AI1` in
+   place, disabling the shove still failed that one assertion and nothing else,
+   because the two paths it could not vouch for had since gained gates and tests
+   of their own. `AJ1` inverted that case into the control for the deletion: it
+   now asserts that a direct call places the building without moving the unit,
+   and restoring the shove fails exactly that assertion.
+
+   Second, the call could not be deleted on its own, and the sentence that said
+   so here understated the cascade: it took **two parameters and an argument**,
+   not one parameter. With `unused_parameter=2`, removing
+   `_spawn_placed_building()`'s `excluded_unit` left
+   `try_place_at_hover_cell()`'s own `excluded_unit` with no use either. The
+   deploy's call site passed the fourth argument that fed it, and because that
+   call is dynamic there, leaving the argument would have failed only at
+   runtime. The MCV's exclusion was not lost with them: `AG1` had already
+   re-expressed it on the two footprint queries, which are now the only place it
+   lives. The deletion also took `unit_push_aside.gd` off
+   `global-position-bypasses-store`'s exempt list, since the shove's fallback for
+   a non-`Unit` node was that file's only direct position write.
+
+   **One gap is recorded rather than owed.** The gates walk `sim_units` and skip
+   anything `EntityQuery.is_live()` rejects, but the shove walked `units`. So the
+   only units it could still have reached were ones the gates cannot see. One
+   kind is a unit already queued for deletion, which is freed at the end of its
+   tick regardless. The other is a unit **not yet admitted**: created during the
+   same tick and waiting for slice `C6c`'s admission queue, which drains at the
+   top of the next. Such a unit inside a footprint now stays where it stands,
+   inside the new building. No route to it is known, though this is traced
+   rather than measured. Every placement resolves before `UnitProductionSystem`
+   in `Match._advance_simulation_tick()`, except an MCV deploy's first attempt,
+   which arrives through `Unit.sim_tick()` afterwards. And a produced unit
+   appears at `BuildingRallyPoint.spawn_position()`, the factory's authored exit
+   marker or the nearest skirt cell of its own footprint, which no new footprint
+   can overlap. If a route is ever found, the fix belongs on the admission side,
+   not in a teleport.
+
+   How far the sweep has to reach is a measurement, recorded here
    because the plan brief that got it wrong is not kept: across the 152 building
    definitions in `assets/converted/rules/buildings/`, 54 author at least one
    `s`/`d`/`p` marker, and expanding each footprint at `OCCUPY_CELL_SPAN` puts
@@ -750,7 +785,7 @@ seconds at a time — immobile, and inside the placing player's build radius,
 which is a far worse trade for its owner than a scout was. The abuse is priced,
 not removed.
 
-**Landed so far: `AA1`, `AB1`, `AD1`, `AE1`, `AF1`, `AG1`, `AH1` and `AI1`** — an immobile unit inside the
+**Landed so far: `AA1`, `AB1`, `AD1`, `AE1`, `AF1`, `AG1`, `AH1`, `AI1` and `AJ1`** — an immobile unit inside the
 footprint refuses the placement, friend-filtered at the click and owner-blind at
 execution (`AA1`); the ready icon shows a third, non-interactive state while its
 placement command is in flight (`AB1`); an idle unit parked on a no-stop cell is
@@ -764,17 +799,15 @@ now ask it too, so neither engulfs an immobile unit (`AG1`); and a wall segment
 blocked by a unit that *can* leave now waits five seconds for its cell with that
 cell reserved, instead of skipping it, which completes item 6 (`AH1`); and an
 MCV deploy does the same for the Construction Yard footprint it is about to
-become, which was the last caller that still displaced anything (`AI1`).
+become, which was the last caller that still displaced anything (`AI1`); and
+`UnitPushAside`'s teleport, left with nothing to move, is deleted, so a
+building spawn moves no unit (`AJ1`, the last of item 4).
 
-**Still owed: the teleport's deletion, and nothing gates it any more.** `AF1`
-took the first half of item 4 — the authority defers on any unit, so `AE1`'s
-wait clears sites instead of only outlasting units that will never move — `AG1`
-gave the two bypass callers the same check, `AH1` gave the wall path the wait
-item 6 owed, and `AI1` gave the deploy its own. All that remains is removing
-`UnitPushAside`'s `set_simulation_position()` write, and the one constraint on
-doing so is mechanical rather than behavioural: the call is the only consumer of
-`_spawn_placed_building()`'s `excluded_unit` parameter, which GDScript then
-reports as an unused parameter, so the parameter goes with it.
+**Still owed: nothing.** Every numbered item has landed. Item 4 records one
+gap, a unit not yet admitted to the simulation, and it is not owed because no
+route to it is known. If one is found, it is a slice of its own on the admission
+side. Making a pending deploy interruptible, below, is likewise a slice that
+would need wanting first, not debt.
 
 **One piece of the 2026-10-08 decision was deliberately not built, and the
 reason belongs here so nobody re-derives it.** That decision asked for a check,

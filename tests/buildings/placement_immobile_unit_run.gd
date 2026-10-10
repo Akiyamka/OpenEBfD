@@ -68,7 +68,7 @@ func _initialize() -> void:
 	_run_case("a friendly immobile unit suppresses the place click before the wire", _test_friendly_filter)
 	_run_case("authority refuses another player's immobile unit", _test_authority_other_owner)
 	_run_case("enemy immobile units pass the filter but fail at authority", _test_owner_asymmetry)
-	_run_case("a bypassing caller still shoves a mobile unit aside", _test_mobile_unit_still_places)
+	_run_case("a bypassing caller places without moving a mobile unit", _test_mobile_unit_still_places)
 	_run_case("the query uses the rotated footprint", _test_rotation)
 	_run_case("a refusal leaves the order ready and placement uncommitted", _test_refusal_preserves_order)
 	_run_case("the two footprint questions differ on a mobile unit", _test_mobile_unit_questions_differ)
@@ -191,9 +191,13 @@ func _test_owner_asymmetry(token: int) -> int:
 	return token
 
 
+## The unit question belongs to each caller, which answers it differently.
+## This direct path may place over a unit; it pins only that spawning moves
+## nothing.
 func _test_mobile_unit_still_places(token: int) -> int:
 	var fixture := _new_ready_controller(Vector2i(6, 4))
 	var unit := _new_unit(1, false, Vector3(6.5, 0.0, 4.5))
+	var starting_position := unit.simulation_position()
 	var template := Node3D.new()
 	var scene := PackedScene.new()
 	var rows: Array[String] = ["b"]
@@ -203,7 +207,7 @@ func _test_mobile_unit_still_places(token: int) -> int:
 		&"ATWall", "Wall", rows, true, 0, Vector2i(6, 4), scene, 1
 	)
 	_expect(result == BuildingPlacementScript.PlaceResult.PLACED and fixture[1].get_child_count() > 0, "a bypassing caller must still place the building")
-	_expect(unit.simulation_position().x < 6.0 or unit.simulation_position().z < 4.0, "a bypassing caller must still shove a mobile unit out")
+	_expect(unit.simulation_position() == starting_position, "the spawn path must not move a unit in the footprint")
 	unit.free()
 	_free_controller_fixture(fixture)
 	return token

@@ -438,8 +438,8 @@ func _release_entity_id() -> void:
 ## spot hovers above or sinks into the terrain, which is loud by itself. It
 ## would instead stack a second, differently shaped failure on top of the
 ## logged one, with the building's visible footprint disagreeing with a
-## placement decision that has already been committed: cells reserved, units
-## pushed out of the way, the anchor cell stamped into metadata. One contract
+## placement decision that has already been committed: cells reserved, the
+## anchor cell stamped into metadata. One contract
 ## shared by both kinds is worth more than a second rule for the same
 ## operation, so this writes the node unconditionally.
 func set_simulation_position(value: Vector3) -> void:
