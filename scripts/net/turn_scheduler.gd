@@ -28,6 +28,7 @@ const _PING_DISCRIMINATOR := 2
 const _PONG_DISCRIMINATOR := 3
 const _HELLO_DISCRIMINATOR := 4
 const _START_DISCRIMINATOR := 5
+const MAX_LATE_DROP_LINES := 8
 
 var _command_bus: SimCommandBus
 var _transport: NetTransport
@@ -46,6 +47,8 @@ var _present_player_ids: Dictionary = {}
 var _start_sent := false
 var _held_frames: Array[PackedByteArray] = []
 var _stashed_frames: Array[Dictionary] = []
+var _late_drop_lines := PackedStringArray()
+var _late_drop_count_by_sender: Dictionary = {}
 
 
 func _init(
@@ -171,7 +174,18 @@ func _handle_decoded_frame(decoded: Dictionary, current_tick: int) -> void:
 		_discarded_command_echo_count += 1
 		return
 	_last_remote_activity_tick_by_sender[command.player_id] = current_tick
-	_command_bus.submit_at(command, int(decoded["target_tick"]))
+	var target_tick := int(decoded["target_tick"])
+	var dropped_late_before := _command_bus.dropped_late_count()
+	_command_bus.submit_at(command, target_tick)
+	if _command_bus.dropped_late_count() > dropped_late_before:
+		_late_drop_count_by_sender[command.player_id] = late_drop_count_for(command.player_id) + 1
+		var line := "[desync] late drop: player %d %s for tick %d, refused at local tick %d" % [
+			command.player_id, describe_command(command), target_tick, current_tick,
+		]
+		print(line)
+		_late_drop_lines.append(line)
+		while _late_drop_lines.size() > MAX_LATE_DROP_LINES:
+			_late_drop_lines.remove_at(0)
 
 
 ## Sends a per-tick state checksum over the scheduler-owned transport. Checksum
@@ -201,6 +215,27 @@ func discarded_command_echo_count() -> int:
 
 func rejected_frame_count() -> int:
 	return _rejected_frame_count
+
+
+func late_drop_lines() -> PackedStringArray:
+	return _late_drop_lines.duplicate()
+
+
+func late_drop_count_for(sender_player_id: int) -> int:
+	return int(_late_drop_count_by_sender.get(sender_player_id, 0))
+
+
+static func describe_command(command: SimCommand) -> String:
+	return "%s %08x" % [
+		command.get_script().get_global_name(), _fnv1a32(SimCommandCodecScript.encode(command)),
+	]
+
+
+static func _fnv1a32(bytes: PackedByteArray, state: int = 2166136261) -> int:
+	var result := state
+	for byte in bytes:
+		result = (result ^ byte) * 16777619 & 0xffffffff
+	return result
 
 
 ## The receiving tick of the newest successfully decoded remote frame across

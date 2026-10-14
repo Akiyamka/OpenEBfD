@@ -913,6 +913,14 @@ noticed on. Still owed: dumping state, which has no second state to dump
 (only the peer's hash crosses the wire) and no path decided, and writing the
 replay, which cannot work while nothing calls `ReplayRecorder.start()`.
 Surfacing the tick to a *player* is also still owed; there is no UI for it.
+Since `AL1`, a halt prints a short `[desync]` block on each client's terminal,
+after `V1`'s unchanged headline. It holds the clock and frame counters, the
+late drops, a per-player fingerprint of every command executed in the whole
+match, and the commands executed in the last 80 ticks. Diffing the two blocks
+points to a category of cause; the Phase 5 entry for `AL1` gives the table. It
+does not dump state. The entity-state dump and the replay remain owed, and they
+are what would localise a genuine nondeterminism, or name a culprit older than
+the window.
 
 ## Rules for sim code
 
@@ -4197,6 +4205,95 @@ source cites a number you cannot place.
     hitch, so a client that stalls for more than 200 ms falls permanently behind,
     and nothing re-aligns two clients afterwards. Below about 30 fps, the
     two-frame quantization term alone approaches the floor.
+  **`AL1` — landed, a desync halt says which client dropped what.** This was
+  directed by the human on 2026-10-14. The first real two-process run over
+  `AK1`'s barrier halted once at tick 400 and could not be explained afterwards.
+  Both terminals printed only `V1`'s one line, while every fact that would have
+  told the causes apart was counted or known and never surfaced:
+  `SimCommandBus.dropped_late_count()`, `FrameTickDriver.dropped_ticks()`, and
+  which commands each client executed on which tick.
+
+  It is diagnostics for a human reading two terminals, not a proof system.
+  `scripts/sim/` is untouched, and `V1`'s halt is unchanged. Two output sites
+  are added, and both are unreachable in single-player and in replay
+  playback:
+
+  - **A late drop is printed when it happens**, by `TurnScheduler`, the one
+    place a remote command enters the bus:
+    `[desync] late drop: player 2 SimMoveCommand 1a2b3c4d for tick 395, refused at local tick 397`.
+  - **At the halt**, after `V1`'s `push_error()`, each client prints:
+    - `[desync] player 1 halted at tick 400: input_delay_ticks=2 dropped_late_count=0 dropped_ticks=0 rejected_frames=0`;
+    - up to the 8 newest late-drop lines;
+    - one line per roster player, `[desync] player 2 stream: executed 14,
+      dropped late 0, content 5e1f0a7c, timed 9a03b2d4`;
+    - `[desync] commands executed in the last 80 ticks: N`, followed by
+      `[desync] tick T player P <description>` for each.
+
+  A command's description is its class name and a 32-bit FNV-1a of its codec
+  bytes. FNV-1a is used rather than engine `hash()`, because nothing pins
+  `hash()` to be stable across processes. Extract each terminal's block with
+  `grep '\[desync\]'` and diff the two.
+
+  **The per-player lines rest on one verified fact: the issuing client always
+  executes its own commands.** A local submission targets past every drained
+  tick, so it can never be refused late. So within one player's line, a
+  receiver can only fall short of the issuer, and losses cannot cancel. Losses
+  on different players show up as separate shortfalls, where one combined count
+  would have hidden them.
+
+  **The digests are a fingerprint, not a proof.** The plan review constructed
+  two different `SimMoveCommand` targets for the same unit that share a 32-bit
+  description digest, and on the same tick they would leave both dumps
+  identical. The table below therefore reads **evidence categories**, and it
+  assumes **a single discrepancy**. Several faults at once can combine into a
+  pattern that reads as another, and where even one fault leaves two readings,
+  the row says so.
+
+  For each player P, compare P's stream line on P's own client (the issuer)
+  with P's line on the other client (the receiver):
+
+  | pattern in P's two lines | points to |
+  | --- | --- |
+  | Receiver executed k fewer; its `dropped late` for P is k. | (a) dropped late. Its `late drop` lines name the commands. |
+  | Receiver executed k fewer; `dropped late` for P is 0. | (e) **loss, undecodable frame or echo-collision**. This is ambiguous: the dump does not separate them. A nonzero `rejected_frames` makes "undecodable" likelier, but cannot attribute the frame to a player. |
+  | Receiver executed k fewer; `dropped late` is j, with 0 < j < k. | (a) for j; the rest fall under (e)'s ambiguity. |
+  | Receiver executed **more** than the issuer. | A spurious or duplicated command. Record it. |
+  | Counts equal; content digests differ. | (f) **content or order differed**. This is ambiguous: the digest folds order, and a loss plus a spurious extra reads the same. The recent lists separate them if the culprit is recent. |
+  | Counts and content equal; timed digests differ. | (c) a command ran on different ticks. The code says this cannot happen today, and the dump shows it anyway. |
+  | Every line matches, and there are no late drops. | Consistent with (d), a genuine nondeterminism, **by elimination** of the command-stream causes. This includes state outside `state_hash()` that already differed. A fingerprint collision would look identical. |
+
+  **(b), a clock that fell behind**, is the scalar line's `dropped_ticks` > 0.
+  It causes nothing alone: it appears beside row (a) on the *other* client,
+  whose `late drop` line's target tick against its refusal tick measures by how
+  much.
+
+  **Why the summary covers the whole match.** `state_hash()` misses order
+  queues, production queues, money and the RNG cursor, so a lost build order
+  surfaces only when its building spawns, possibly minutes later. No bounded
+  list can be guaranteed to hold the culprit.
+
+  **Why the recent list is 80 ticks.** Its job is only to *name* a culprit the
+  very next checksum caught. A report for checksum tick T is accepted until
+  the newest recorded hash passes T + `RETAINED_TICKS`. Because a tick records
+  after it polls, `V1` can halt as late as T + 72, and that culprit ran no
+  earlier than T − 7. So the window is `RETAINED_TICKS + 2 ×
+  CHECKSUM_INTERVAL_TICKS` = 80, as `Match.DESYNC_LOG_WINDOW_TICKS`. The first
+  brief used 64, and the review showed that retention bounds bookkeeping, not
+  a causal command's age.
+
+  **How it is proven.** Three plan-review rounds shaped it, each narrowing a
+  claim the dump could not keep. The 64-tick window. A whole-match line first
+  promised as exact, then per-player once the review found two cross-player
+  losses that cancel. And two "unambiguous" rows that a decode failure, an echo
+  collision or a reordering also explain. One halt case plants every scalar
+  with a distinct value. Another plants exactly the T + 72 worst case. Unit
+  cases prove the per-player summary outlives the window and that losses on
+  two players do not cancel. Twenty mutation controls, five re-measured at
+  land.
+
+  **Owed**, as decision 7 records: the entity-state dump and the replay, for
+  localising row (d), naming an old culprit, or settling a fingerprint
+  collision.
 - **Phase 6 — polish.** Cosmetic prediction, parameter tuning under induced
   latency and loss, save/load of a networked match.
 

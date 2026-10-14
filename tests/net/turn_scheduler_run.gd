@@ -12,6 +12,7 @@ const RttTrackerScript := preload("res://scripts/net/rtt_tracker.gd")
 const NetTransportScript := preload("res://scripts/net/net_transport.gd")
 const RecordingTransportScript := preload("res://tests/net/support/recording_transport.gd")
 const SimCommandBusScript := preload("res://scripts/sim/command_bus.gd")
+const SimCommandCodecScript := preload("res://scripts/sim/command_codec.gd")
 const SimMoveCommandScript := preload("res://scripts/sim/commands/move_command.gd")
 const TurnSchedulerScript := preload("res://scripts/net/turn_scheduler.gd")
 
@@ -64,6 +65,11 @@ func _initialize() -> void:
 	_run_case("presence frames after release are inert", _test_released_presence_frames_are_inert)
 	_run_case("short presence frames reject and gathering is opt-in", _test_presence_rejections_and_opt_in)
 	_run_case("hello timing begins when a connected transport sends", _test_hello_timing_starts_on_real_send)
+	_run_case("a late remote command is printed and recorded once", _test_late_remote_command_is_logged)
+	_run_case("an accepted remote command records no late drop", _test_accepted_remote_command_is_not_logged)
+	_run_case("late lines cap without capping per-sender attribution", _test_late_line_cap_and_sender_attribution)
+	_run_case("command descriptions survive the wire", _test_command_description_round_trips)
+	_run_case("command description hashing is FNV-1a", _test_fnv1a32)
 	await _run_async_case("sequential matches agree after a transported command", _test_matching_hashes)
 	await _run_async_case("a differing transported target stays equal per peer but changes the result", _test_differing_target_control)
 	_finish("Turn scheduler tests")
@@ -726,6 +732,77 @@ func _test_hello_timing_starts_on_real_send() -> void:
 	_expect(transport.sent_frames.size() == 1, "319 ms after a real send must not repeat HELLO")
 	scheduler.poll_gathering(321)
 	_expect(transport.sent_frames.size() == 2, "320 ms after a real send must repeat HELLO")
+
+
+func _test_late_remote_command_is_logged() -> void:
+	var endpoints: Dictionary = _new_connected_endpoints()
+	var local_bus := SimCommandBusScript.new()
+	local_bus.drain(5)
+	var local = TurnSchedulerScript.new(local_bus, endpoints["a"], 1)
+	var remote = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["b"], 2)
+	var command := _make_move_command(2)
+	remote.submit_local(command, 3)
+	endpoints["hub"].step()
+	local.advance_tick(6)
+	var lines := local.late_drop_lines()
+	_expect(lines.size() == 1, "one refused remote command must produce one late-drop line")
+	_expect(
+		lines.size() > 0 and lines[0] == "[desync] late drop: player 2 %s for tick 3, refused at local tick 6" % TurnSchedulerScript.describe_command(command),
+		"the late-drop line must identify sender, description, target and receiving tick"
+	)
+	_expect(local_bus.dropped_late_count() == 1, "the bus must retain its authoritative late-drop count")
+
+
+func _test_accepted_remote_command_is_not_logged() -> void:
+	var endpoints: Dictionary = _new_connected_endpoints()
+	var local = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["a"], 1)
+	var remote = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["b"], 2)
+	remote.submit_local(_make_move_command(2), 9)
+	endpoints["hub"].step()
+	local.advance_tick(6)
+	_expect(local.late_drop_lines().is_empty(), "an accepted remote command must add no late-drop line")
+	_expect(local.late_drop_count_for(2) == 0, "an accepted remote command must add no sender late-drop count")
+
+
+func _test_late_line_cap_and_sender_attribution() -> void:
+	var endpoints: Dictionary = _new_connected_endpoints()
+	var local_bus := SimCommandBusScript.new()
+	local_bus.drain(20)
+	var local = TurnSchedulerScript.new(local_bus, endpoints["a"], 1)
+	var remote = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["b"], 2)
+	for tick in range(1, 11):
+		remote.submit_local(_make_move_command(2, tick), tick)
+	endpoints["hub"].step()
+	local.advance_tick(21)
+	var lines := local.late_drop_lines()
+	_expect(lines.size() == 8, "only the newest eight late-drop lines must remain")
+	_expect(lines.size() > 0 and "for tick 3" in lines[0], "the capped first line must name tick 3")
+	_expect(local.late_drop_count_for(2) == 10, "sender attribution must retain every late drop")
+	_expect(local.late_drop_count_for(1) == 0, "a sender with no drops must not share another sender's count")
+
+
+func _test_command_description_round_trips() -> void:
+	var command := _make_move_command(2, 1)
+	var decoded = SimCommandCodecScript.decode(SimCommandCodecScript.encode(command))
+	_expect(
+		decoded != null and TurnSchedulerScript.describe_command(command) == TurnSchedulerScript.describe_command(decoded),
+		"a description must be identical before and after codec round-trip"
+	)
+	_expect(
+		TurnSchedulerScript.describe_command(command) != TurnSchedulerScript.describe_command(_make_move_command(2, 2)),
+		"a changed entity id must change the description"
+	)
+	_expect(TurnSchedulerScript.describe_command(command).begins_with("SimMoveCommand "), "the description must name the command class")
+
+
+func _test_fnv1a32() -> void:
+	_expect(TurnSchedulerScript._fnv1a32(PackedByteArray()) == 0x811c9dc5, "the FNV offset basis must hash empty bytes")
+	_expect(TurnSchedulerScript._fnv1a32("a".to_utf8_buffer()) == 0xe40c292c, "FNV must hash a")
+	_expect(TurnSchedulerScript._fnv1a32("foobar".to_utf8_buffer()) == 0xbf9cf968, "FNV must hash foobar")
+	_expect(
+		TurnSchedulerScript._fnv1a32("bar".to_utf8_buffer(), TurnSchedulerScript._fnv1a32("foo".to_utf8_buffer())) == 0xbf9cf968,
+		"continuing FNV must equal hashing concatenated bytes"
+	)
 
 
 func _test_matching_hashes() -> void:

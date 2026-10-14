@@ -14,6 +14,7 @@ const NullTransportScript := preload("res://scripts/net/null_transport.gd")
 const WebSocketTransportScript := preload("res://scripts/net/websocket_transport.gd")
 const NetTransportScript := preload("res://scripts/net/net_transport.gd")
 const TurnSchedulerScript := preload("res://scripts/net/turn_scheduler.gd")
+const RecentCommandLogScript := preload("res://scripts/match/recent_command_log.gd")
 const ChecksumExchangeScript := preload("res://scripts/net/checksum_exchange.gd")
 const RttTrackerScript := preload("res://scripts/net/rtt_tracker.gd")
 const CommandExecutorScript := preload("res://scripts/match/command_executor.gd")
@@ -47,6 +48,9 @@ const ENEMY_PLAYER_ID := 2
 ## Decision 7's starting parameters specify this cadence; tune checksum
 ## frequency here without changing MatchClock's single simulation tick rate.
 const CHECKSUM_INTERVAL_TICKS := 8
+## A mismatch first visible at a checksum can halt 72 ticks later; its command
+## can be seven ticks earlier, so retain the 79-tick maximum age plus one.
+const DESYNC_LOG_WINDOW_TICKS := ChecksumExchangeScript.RETAINED_TICKS + 2 * CHECKSUM_INTERVAL_TICKS
 ## Human decision 2026-10-02 sets liveness at ten heartbeats; retaining this
 ## as cycles means the threshold remains ten heartbeats when checksum cadence changes.
 const STALL_THRESHOLD_CADENCE_CYCLES := 10
@@ -148,6 +152,8 @@ var _input_delay_change_count := 0
 var _last_present_player_count := -1
 var _halted_at_tick := -1
 var _halt_diagnostic := ""
+var _halt_dump := PackedStringArray()
+var _recent_command_log := RecentCommandLogScript.new(DESYNC_LOG_WINDOW_TICKS)
 ## Off by default (see ReplayRecorder's doc comment,
 ## scripts/match/replay_recorder.gd) -- nothing in this file calls start()
 ## on it. It is still constructed unconditionally here, alongside
@@ -1003,6 +1009,7 @@ func _advance_simulation_tick() -> void:
 	# are the same variable, not two facts a bug could let drift apart.
 	var commands := _command_bus.drain(tick)
 	_replay_recorder.record_tick(tick, commands)
+	_recent_command_log.record(tick, commands)
 	for command in commands:
 		var result: Dictionary = _command_executor.execute(command)
 		if _unit_command_controller != null:
@@ -1069,6 +1076,9 @@ func _advance_simulation_tick() -> void:
 			]
 		)
 		push_error(_halt_diagnostic)
+		_halt_dump = _build_halt_dump(tick)
+		for line in _halt_dump:
+			print(line)
 
 
 ## The simulation's current tick, for later slices and tests that need a way
@@ -1225,6 +1235,32 @@ func halted_at_tick() -> int:
 
 func halt_diagnostic() -> String:
 	return _halt_diagnostic
+
+
+func halt_dump() -> PackedStringArray:
+	return _halt_dump.duplicate()
+
+
+func _build_halt_dump(tick: int) -> PackedStringArray:
+	var lines := PackedStringArray([
+		"[desync] player %d halted at tick %d: input_delay_ticks=%d dropped_late_count=%d dropped_ticks=%d rejected_frames=%d" % [
+			_local_player_id, tick, _command_bus.input_delay_ticks,
+			_command_bus.dropped_late_count(), _tick_driver.dropped_ticks(),
+			_turn_scheduler.rejected_frame_count(),
+		],
+	])
+	for line in _turn_scheduler.late_drop_lines():
+		lines.append(line)
+	for player_id in _players().player_ids(false):
+		lines.append("[desync] player %d stream: executed %d, dropped late %d, content %08x, timed %08x" % [
+			player_id, _recent_command_log.count_for(player_id),
+			_turn_scheduler.late_drop_count_for(player_id),
+			_recent_command_log.content_digest_for(player_id),
+			_recent_command_log.timed_digest_for(player_id),
+		])
+	for line in _recent_command_log.recent_lines():
+		lines.append(line)
+	return lines
 
 
 func player_elimination_tracker() -> PlayerEliminationTracker:
