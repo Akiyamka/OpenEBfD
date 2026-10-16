@@ -22,12 +22,14 @@ const _CHECKSUM_REPORT_BYTES := 12
 const _PING_BYTES := 8
 const _PONG_BYTES := 12
 const _PRESENCE_BYTES := 4
+const _HORIZON_BYTES := 8
 const _COMMAND_DISCRIMINATOR := 0
 const _CHECKSUM_REPORT_DISCRIMINATOR := 1
 const _PING_DISCRIMINATOR := 2
 const _PONG_DISCRIMINATOR := 3
 const _HELLO_DISCRIMINATOR := 4
 const _START_DISCRIMINATOR := 5
+const _HORIZON_DISCRIMINATOR := 6
 const MAX_LATE_DROP_LINES := 8
 
 var _command_bus: SimCommandBus
@@ -39,6 +41,7 @@ var _discarded_echo_count := 0
 var _discarded_command_echo_count := 0
 var _rejected_frame_count := 0
 var _last_remote_activity_tick_by_sender: Dictionary = {}
+var _last_remote_activity_msec_by_sender: Dictionary = {}
 var _gathering := false
 var _expected_player_count := 0
 var _hello_interval_msec := 0
@@ -49,6 +52,15 @@ var _held_frames: Array[PackedByteArray] = []
 var _stashed_frames: Array[Dictionary] = []
 var _late_drop_lines := PackedStringArray()
 var _late_drop_count_by_sender: Dictionary = {}
+var _turn_barrier_armed := false
+var _turn_barrier_player_count := 0
+var _keepalive_interval_msec := 0
+var _known_horizon_by_sender: Dictionary = {}
+var _sent_horizon := -1
+var _now_msec := -1
+var _wait_started_msec := -1
+var _last_keepalive_msec := -1
+var _waiting_player_ids: Array[int] = []
 
 
 func _init(
@@ -75,7 +87,14 @@ func submit_local(command: SimCommand, current_tick: int) -> int:
 			% [command.player_id, _local_player_id]
 		)
 		return -1
-	var target_tick := _command_bus.submit(command, current_tick)
+	var target_tick := (
+		_command_bus.submit_at(
+			command,
+			maxi(current_tick + _command_bus.input_delay_ticks, _sent_horizon + 1)
+		)
+		if _turn_barrier_armed
+		else _command_bus.submit(command, current_tick)
+	)
 	var frame := _encode_frame(target_tick, command)
 	if _gathering:
 		_held_frames.append(frame)
@@ -93,6 +112,76 @@ func begin_gathering(expected_player_count: int, hello_interval_msec: int) -> vo
 	_start_sent = false
 	_held_frames.clear()
 	_stashed_frames.clear()
+
+
+func begin_turn_barrier(expected_player_count: int, keepalive_interval_msec: int) -> void:
+	_turn_barrier_armed = true
+	_turn_barrier_player_count = expected_player_count
+	_keepalive_interval_msec = keepalive_interval_msec
+	_known_horizon_by_sender.clear()
+	_sent_horizon = -1
+	_now_msec = -1
+	_wait_started_msec = -1
+	_last_keepalive_msec = -1
+	_waiting_player_ids.clear()
+	_last_remote_activity_msec_by_sender.clear()
+
+
+func announce_horizon(executed_tick: int) -> void:
+	if not _turn_barrier_armed:
+		return
+	_sent_horizon = maxi(_sent_horizon, executed_tick + _command_bus.input_delay_ticks)
+	_send_horizon(_sent_horizon)
+
+
+func sent_horizon() -> int:
+	return _sent_horizon
+
+
+func known_horizon_for(sender_player_id: int) -> int:
+	return int(_known_horizon_by_sender.get(sender_player_id, -1))
+
+
+func peers_cover_tick(tick: int) -> bool:
+	return not _turn_barrier_armed or _uncovered_player_ids(tick).is_empty()
+
+
+func poll_turn_barrier(next_tick: int, now_msec: int) -> void:
+	if not _turn_barrier_armed or _gathering:
+		return
+	_now_msec = now_msec
+	_drain_frames(next_tick)
+	_waiting_player_ids = _uncovered_player_ids(next_tick)
+	if _waiting_player_ids.is_empty():
+		_wait_started_msec = -1
+		return
+	if _wait_started_msec < 0:
+		_wait_started_msec = now_msec
+		_last_keepalive_msec = now_msec
+	elif (
+		_sent_horizon >= 0
+		and now_msec - _last_keepalive_msec >= _keepalive_interval_msec
+	):
+		_send_horizon(_sent_horizon)
+		_last_keepalive_msec = now_msec
+
+
+func waiting_player_ids() -> Array[int]:
+	return _waiting_player_ids.duplicate()
+
+
+func turn_wait_msec() -> int:
+	if _wait_started_msec < 0:
+		return 0
+	return _now_msec - _wait_started_msec
+
+
+func wait_silence_msec_for(player_id: int) -> int:
+	if not player_id in _waiting_player_ids:
+		return 0
+	return _now_msec - maxi(
+		_wait_started_msec, int(_last_remote_activity_msec_by_sender.get(player_id, -1))
+	)
 
 
 func is_gathering() -> bool:
@@ -127,6 +216,7 @@ func poll_gathering(now_msec: int) -> void:
 			for held_frame in _held_frames:
 				_transport.send(held_frame)
 			_held_frames.clear()
+			announce_horizon(0)
 		else:
 			_stashed_frames.append(decoded)
 	if (
@@ -144,6 +234,10 @@ func poll_gathering(now_msec: int) -> void:
 ## echoed local frame is deliberately discarded because the local submission
 ## already entered this client's command bus.
 func advance_tick(current_tick: int) -> void:
+	_drain_frames(current_tick)
+
+
+func _drain_frames(current_tick: int) -> void:
 	for decoded in _stashed_frames:
 		_handle_decoded_frame(decoded, current_tick)
 	_stashed_frames.clear()
@@ -157,9 +251,12 @@ func advance_tick(current_tick: int) -> void:
 func _handle_decoded_frame(decoded: Dictionary, current_tick: int) -> void:
 	if decoded["kind"] == "hello" or decoded["kind"] == "start":
 		return
+	if decoded["kind"] == "horizon":
+		_handle_horizon(decoded, current_tick)
+		return
 	if decoded["kind"] == "checksum_report":
 		if int(decoded["sender_player_id"]) != _local_player_id:
-			_last_remote_activity_tick_by_sender[int(decoded["sender_player_id"])] = current_tick
+			_credit_activity(int(decoded["sender_player_id"]), current_tick)
 		_handle_checksum_report(decoded)
 		return
 	if decoded["kind"] == "ping":
@@ -173,7 +270,7 @@ func _handle_decoded_frame(decoded: Dictionary, current_tick: int) -> void:
 		_discarded_echo_count += 1
 		_discarded_command_echo_count += 1
 		return
-	_last_remote_activity_tick_by_sender[command.player_id] = current_tick
+	_credit_activity(command.player_id, current_tick)
 	var target_tick := int(decoded["target_tick"])
 	var dropped_late_before := _command_bus.dropped_late_count()
 	_command_bus.submit_at(command, target_tick)
@@ -186,6 +283,22 @@ func _handle_decoded_frame(decoded: Dictionary, current_tick: int) -> void:
 		_late_drop_lines.append(line)
 		while _late_drop_lines.size() > MAX_LATE_DROP_LINES:
 			_late_drop_lines.remove_at(0)
+
+
+func _handle_horizon(decoded: Dictionary, current_tick: int) -> void:
+	var sender_player_id := int(decoded["sender_player_id"])
+	if sender_player_id == _local_player_id:
+		_discarded_echo_count += 1
+		return
+	_known_horizon_by_sender[sender_player_id] = maxi(
+		known_horizon_for(sender_player_id), int(decoded["horizon"])
+	)
+	_credit_activity(sender_player_id, current_tick)
+
+
+func _credit_activity(sender_player_id: int, current_tick: int) -> void:
+	_last_remote_activity_tick_by_sender[sender_player_id] = current_tick
+	_last_remote_activity_msec_by_sender[sender_player_id] = _now_msec
 
 
 ## Sends a per-tick state checksum over the scheduler-owned transport. Checksum
@@ -288,6 +401,8 @@ func _decode_frame(frame: PackedByteArray):
 			return _decode_presence_frame(frame, buffer, "hello")
 		_START_DISCRIMINATOR:
 			return _decode_presence_frame(frame, buffer, "start")
+		_HORIZON_DISCRIMINATOR:
+			return _decode_horizon_frame(frame, buffer)
 		_:
 			_rejected_frame_count += 1
 			push_error(
@@ -366,6 +481,20 @@ func _decode_presence_frame(frame: PackedByteArray, buffer: StreamPeerBuffer, ki
 	return {"kind": kind, "sender_player_id": buffer.get_32()}
 
 
+func _decode_horizon_frame(frame: PackedByteArray, buffer: StreamPeerBuffer):
+	if frame.size() < _FRAME_DISCRIMINATOR_BYTES + _HORIZON_BYTES:
+		_rejected_frame_count += 1
+		push_error(
+			"TurnScheduler.advance_tick(): frame too short for the horizon (%d bytes)" % frame.size()
+		)
+		return null
+	return {
+		"kind": "horizon",
+		"horizon": buffer.get_u32(),
+		"sender_player_id": buffer.get_32(),
+	}
+
+
 func _handle_checksum_report(decoded: Dictionary) -> void:
 	if int(decoded["sender_player_id"]) == _local_player_id:
 		_discarded_echo_count += 1
@@ -383,7 +512,7 @@ func _handle_ping(decoded: Dictionary, current_tick: int) -> void:
 	if int(decoded["sender_player_id"]) == _local_player_id:
 		_discarded_echo_count += 1
 		return
-	_last_remote_activity_tick_by_sender[int(decoded["sender_player_id"])] = current_tick
+	_credit_activity(int(decoded["sender_player_id"]), current_tick)
 	_transport.send(
 		_encode_pong_frame(int(decoded["tick"]), int(decoded["sender_player_id"]))
 	)
@@ -393,7 +522,7 @@ func _handle_pong(decoded: Dictionary, current_tick: int) -> void:
 	if int(decoded["sender_player_id"]) == _local_player_id:
 		_discarded_echo_count += 1
 		return
-	_last_remote_activity_tick_by_sender[int(decoded["sender_player_id"])] = current_tick
+	_credit_activity(int(decoded["sender_player_id"]), current_tick)
 	if int(decoded["ping_sender_player_id"]) != _local_player_id:
 		return
 	if _rtt_tracker == null:
@@ -420,6 +549,23 @@ func _encode_presence_frame(discriminator: int) -> PackedByteArray:
 	buffer.put_u8(discriminator)
 	buffer.put_32(_local_player_id)
 	return buffer.data_array
+
+
+func _send_horizon(horizon: int) -> void:
+	var buffer := StreamPeerBuffer.new()
+	buffer.big_endian = true
+	buffer.put_u8(_HORIZON_DISCRIMINATOR)
+	buffer.put_u32(horizon)
+	buffer.put_32(_local_player_id)
+	_transport.send(buffer.data_array)
+
+
+func _uncovered_player_ids(tick: int) -> Array[int]:
+	var uncovered: Array[int] = []
+	for player_id in range(1, _turn_barrier_player_count + 1):
+		if player_id != _local_player_id and known_horizon_for(player_id) < tick:
+			uncovered.append(player_id)
+	return uncovered
 
 
 func _encode_pong_frame(tick: int, ping_sender_player_id: int) -> PackedByteArray:

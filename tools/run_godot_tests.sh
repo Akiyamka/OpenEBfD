@@ -76,6 +76,7 @@ readonly SUITES=(
 	tests/match/match_rtt_wiring_run.gd
 	tests/match/match_input_delay_run.gd
 	tests/match/match_start_barrier_run.gd
+	tests/match/match_turn_barrier_run.gd
 	tests/navigation/run.gd
 	tests/navigation/store_reads_run.gd
 	tests/navigation/no_stop_relocation_run.gd

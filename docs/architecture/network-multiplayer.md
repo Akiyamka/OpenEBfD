@@ -389,8 +389,22 @@ section**, and no slice owes a second one: confirmed 2026-10-02, the removal
 above is a player action and player-facing game logic rather than a threshold
 this track picks, so it is deferred alongside the lobby UI this track has never
 built and will not build. `X1`'s `Match.is_player_stalled()` /
-`stalled_player_ids()` is what such a mechanism would read from, and nothing
-about the detection needs to change for it.
+`stalled_player_ids()` is what such a mechanism would read from. The detection
+changed once, at `AM1` (2026-10-16): a turn-barrier wait freezes the clock `X1`
+counts silence in, so while a gathered match waits, silence is also counted in
+wall-clock time, against the same ten heartbeats (3.2 s).
+
+Since `AM1`, a gathered match has the pause this section describes. Its turn
+barrier holds a client whose peer has not yet announced the next tick. Once a
+wait has lasted one checksum cadence, 320 ms, the terminal and the status line
+say `Waiting for player 2`. When the wall-clock silence passes the threshold,
+they say `Player 2 is not responding`. If the player is heard again but is still
+behind, they go back to waiting, and a second silence is reported again. At the
+threshold the match keeps waiting with the player named: it does not halt, drop
+or continue alone, and it resumes by itself when the player's horizon arrives.
+Removing the player stays the deferred vote-kick above, so a peer that never
+returns leaves a paused, explained match for the human to close. No new UI was
+built: the status line and the terminal are the ones `AK1` already used.
 
 A dropped player's units and buildings **freeze**: they stay in the world,
 receive no new orders, and their turrets and defensive structures keep working.
@@ -864,7 +878,9 @@ Starting parameters, to be tuned against the loopback transport with induced
 latency and loss:
 
 - **turn** = 2 sim ticks (80 ms), which keeps the frame rate on the wire at
-  12.5 per client per second;
+  12.5 per client per second. Since `AM1`, a gathered match also sends one
+  horizon frame every tick, 25 per client per second plus the relay's echo of
+  each. Coalescing them into this two-tick turn is Phase 6 tuning;
 - **input delay** = 3 turns (240 ms) by default, then adaptive with a floor of
   2 ticks and **no upper bound**. An earlier version of this line gave the range
   as "2–8" turns; the upper half was never implemented and must not be — see
@@ -4199,12 +4215,16 @@ source cites a number you cannot place.
     ms one way and a 20 ms leg difference, `S + ow` is about 100 ms against the
     floor's 80, for the two seconds until the first pong. The fix is to seed the
     delay from a round trip measured during the barrier, in wall-clock time,
-    since ticks are frozen there.
+    since ticks are frozen there. (2026-10-16: under `AM1`'s turn barrier this
+    exposure is waiting, not late drops, so it is no longer a desync risk. An
+    early round trip would now only shorten the waits.)
   - **The barrier bounds only the initial skew: clocks are never resynchronised
     after start.** `FrameTickDriver` discards ticks past five per frame on a
     hitch, so a client that stalls for more than 200 ms falls permanently behind,
     and nothing re-aligns two clients afterwards. Below about 30 fps, the
-    two-frame quantization term alone approaches the floor.
+    two-frame quantization term alone approaches the floor. Closed by `AM1`,
+    2026-10-16: a gathered match now holds every tick until each peer's
+    horizon covers it.
   **`AL1` — landed, a desync halt says which client dropped what.** This was
   directed by the human on 2026-10-14. The first real two-process run over
   `AK1`'s barrier halted once at tick 400 and could not be explained afterwards.
@@ -4265,7 +4285,12 @@ source cites a number you cannot place.
   **(b), a clock that fell behind**, is the scalar line's `dropped_ticks` > 0.
   It causes nothing alone: it appears beside row (a) on the *other* client,
   whose `late drop` line's target tick against its refusal tick measures by how
-  much.
+  much. Corrected 2026-10-16: the second two-process run fell 242 ticks behind
+  with `dropped_ticks=0` on both clients, because Godot clamps `_process` delta
+  after a long stall and `FrameTickDriver` never sees the lost time. So
+  `dropped_ticks` cannot be trusted to show (b). Read the gap between a
+  `late drop` line's target tick and its refusal tick instead. Since `AM1`, a
+  gathered match cannot fall behind silently: its peers wait for it.
 
   **Why the summary covers the whole match.** `state_hash()` misses order
   queues, production queues, money and the RNG cursor, so a lost build order
@@ -4294,6 +4319,111 @@ source cites a number you cannot place.
   **Owed**, as decision 7 records: the entity-state dump and the replay, for
   localising row (d), naming an old culprit, or settling a fingerprint
   collision.
+
+  **`AM1` — landed, a turn barrier keeps gathered clients in step.** This was
+  directed by the human on 2026-10-16, who chose it over slewing the clock and
+  over a larger input delay. The second two-process run halted with player 2
+  printing `[desync] late drop: player 1 SimMoveCommand 602d2e46 for tick 727,
+  refused at local tick 969`, a lag of about 10 s, with `dropped_ticks=0` on
+  both clients. The human measured the cause. Godot clamps `_process` delta
+  after a long stall: a 3000 ms stall produced a delta of 0.144 s. So
+  `FrameTickDriver` never sees the lost time, and nothing tied two clocks
+  together but a two-tick input delay. Player 2 then played on alone, because
+  player 1's report for the diverging tick arrived about 240 ticks late, past
+  `ChecksumExchange`'s 64-tick window.
+
+  **The rule.** After running tick t, each client of a `--net-players` match
+  announces a **horizon** (`HORIZON`, discriminator `6`): `max(previous
+  horizon, t + input_delay_ticks)`. It promises that every command the client
+  sends from then on targets a later tick. A client runs tick T only once
+  every peer's horizon it has received covers T. The relay forwards each
+  sender's frames in order, so a received horizon means every command it
+  covers has already arrived. Over ordered, reliable delivery, a remote
+  command can no longer arrive after its tick. Horizons go out only after
+  `START`, when every peer is seated. A client discards its own echo, and a
+  lower horizon never reopens a tick.
+
+  **The max, and what skew is bounded by.** `Z1` can lower the delay, and
+  `t + d` would then fall below a horizon already promised. So the
+  announcement never falls, and `submit_local()` clamps a command's target past
+  it. Skew is therefore bounded by the sender's effective delay, its announced
+  horizon minus its clock. That is also the delay its commands are scheduled
+  with. It equals `input_delay_ticks` except after `Z1` lowers it, when it
+  falls by one tick per tick. In the meantime a receiver may run to the older,
+  larger horizon: a fall from 5 to 2 lets it lead by 4, then 3, then 2. A
+  promised horizon cannot be withdrawn, so bounding skew by the current value
+  would need `Z1`'s write damped, which the 2026-10-02 decision rules out.
+  `Z1`'s write is unchanged. Under the barrier, a lower recommendation reaches
+  commands one tick per tick.
+
+  **Liveness.** The gate reads each receiver's *known* horizon, which lags
+  what the sender announced while a frame is in flight. So a wait cycle can
+  exist transiently: at release, both clients are at tick 0, and each waits on
+  the other until the release horizons arrive. The claim is no permanent
+  deadlock under eventual reliable delivery, and it rests on five assumptions:
+
+  - every frame is eventually delivered;
+  - a waiting client checks the network every frame;
+  - every client announces a horizon before it can wait, at release and after
+    every tick;
+  - every delay is at least 1;
+  - peers are alive, since a dead peer is a stall, not a deadlock.
+
+  A running client's horizons grow with its clock, so clients that wait
+  forever must wait on each other in a cycle. Once their latest horizons are
+  delivered, each edge gives `c_i + 1 > c_{i+1} + d_{i+1}`, and summing around
+  the cycle gives `k > Σd ≥ k`. That makes `AK1`'s floor of 2 load-bearing for
+  liveness. At delay 0 the sum is no contradiction, which is one reason a plain
+  `--net-room` boot has no barrier.
+
+  **While waiting, wall-clock time does the work.** A waiting client runs no
+  tick, so `Match._process()` polls the transport every frame. It handles each
+  frame exactly as an in-tick poll at the next tick would; without it, the
+  first wait would never end. A waiting client answers pings at once, so the
+  other side's round trip does not swell by the length of the wait. It
+  re-sends its unchanged horizon every 320 ms, so a peer catching up through a
+  long wait does not judge it silent. And `X1`'s verdict also counts silence
+  in wall-clock time while waiting, because a waiting client's tick clock is
+  frozen. Decision 8 records what the terminal and the status line show, and
+  that at the threshold the match keeps waiting.
+
+  **The second symptom closes as a consequence.** A peer's report for tick T
+  is sent before any horizon at or after T. So a receiver holds it before it
+  may pass `T − 1` plus the sender's effective delay, and a report can go stale
+  only if that effective delay exceeds 65 ticks. The 65-tick bound is on the
+  effective delay, not the current one, and it can lapse only briefly after a
+  fall from a delay above 65.
+
+  One gap had to be closed for this to hold. `V1`'s halt was checked only at
+  the end of a tick, and a waiting client runs none, so a mismatch arriving
+  while it waited would have sat unacted on. The halt block now also runs
+  right after each wall-clock poll, halting at the last executed tick. A halted
+  match stops polling, so its `AL1` dump stays the last thing it prints.
+
+  **Without `--net-players`, every boot is byte for byte what it was.** A
+  plain `--net-room` boot does not know how many peers will come and starts at
+  delay 0. So it keeps free-running clocks and stays exposed to skew: use
+  `--net-players` for a real match.
+
+  **How it is proven.** Two raw schedulers on a `LoopbackHub` reproduce the
+  human's symptom. One stalls for 100 rounds, and the other is held within two
+  ticks of it. The stalled client's next command then runs on the same tick on
+  both, and with the gate disabled the same case drops it late. Six `Match`
+  cases cover the wiring, including the real frame loop, the shown and
+  downgraded wait, and a halt while gated. Three plan-review rounds corrected
+  the brief, each time a claim rather than code: skew bounded by the current
+  delay rather than the effective one, a stall status that latched, and a
+  liveness argument written on announced rather than received horizons.
+  Twenty-four mutation controls, seven of them re-measured at land. All but
+  one fail exactly as predicted. Dropping the release announcement fails 12
+  rather than 9. The test helper's own sync poll already finds tick 1 gated,
+  so a wait starts there: M4 then shows and stalls it early, and the shown
+  wait overwrites the status line that `AK1`'s start case reads.
+
+  **Owed.** Units visibly stutter while a wait is shown, because view
+  interpolation keeps cycling with no tick to blend toward. That is Phase 6
+  polish. One horizon per tick is the simplest choice; coalescing them into
+  the two-tick turn is tuning. A lost command frame still desyncs and halts.
 - **Phase 6 — polish.** Cosmetic prediction, parameter tuning under induced
   latency and loss, save/load of a networked match.
 

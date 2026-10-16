@@ -48,6 +48,7 @@ func _new_peer(hub) -> Dictionary:
 	bus.input_delay_ticks = 2
 	var peer = TurnSchedulerScript.new(bus, endpoint, 2, ChecksumExchangeScript.new())
 	peer.begin_gathering(2, 320)
+	peer.begin_turn_barrier(2, 320)
 	return {"endpoint": endpoint, "bus": bus, "peer": peer}
 
 
@@ -120,6 +121,9 @@ func _test_floor_measurement_is_not_change() -> void:
 	var hub = arm["hub"]
 	var peer_data := _new_peer(hub)
 	_release_directly(match_instance, hub, peer_data["peer"])
+	peer_data["peer"].announce_horizon(47)
+	hub.step()
+	match_instance._poll_turn_barrier(400)
 	match_instance.advance_ticks(MatchScript.PING_INTERVAL_CADENCE_CYCLES * MatchScript.CHECKSUM_INTERVAL_TICKS)
 	hub.step()
 	peer_data["peer"].advance_tick(match_instance.current_tick())

@@ -70,6 +70,14 @@ func _initialize() -> void:
 	_run_case("late lines cap without capping per-sender attribution", _test_late_line_cap_and_sender_attribution)
 	_run_case("command descriptions survive the wire", _test_command_description_round_trips)
 	_run_case("command description hashing is FNV-1a", _test_fnv1a32)
+	_run_case("horizon frames use their own big-endian layout and reject short frames", _test_horizon_wire_format)
+	_run_case("the turn barrier is opt-in", _test_turn_barrier_opt_in)
+	_run_case("a peer's horizon gates ticks and never moves backwards", _test_horizon_gates_ticks)
+	_run_case("the announced horizon never falls and no command targets inside it", _test_horizon_clamps_commands)
+	_run_case("release announces the floor horizon so both clients can start", _test_release_announces_horizon)
+	_run_case("a waiting client re-sends its horizon each cadence once it has one", _test_horizon_keepalive)
+	_run_case("a waiting client measures silence in wall-clock time and answers pings", _test_wait_silence_and_ping)
+	_run_case("a stalled client holds the other and its command is not dropped late", _test_stalled_client_holds_peer)
 	await _run_async_case("sequential matches agree after a transported command", _test_matching_hashes)
 	await _run_async_case("a differing transported target stays equal per peer but changes the result", _test_differing_target_control)
 	_finish("Turn scheduler tests")
@@ -135,6 +143,223 @@ func _new_connected_endpoints() -> Dictionary:
 	endpoint_a.open("")
 	endpoint_b.open("")
 	return {"hub": hub, "a": endpoint_a, "b": endpoint_b}
+
+
+func _frame_tick(frame: PackedByteArray) -> int:
+	return (frame[1] << 24) | (frame[2] << 16) | (frame[3] << 8) | frame[4]
+
+
+func _test_horizon_wire_format() -> void:
+	var transport := RecordingTransportScript.new()
+	transport.open("")
+	var bus := SimCommandBusScript.new()
+	bus.input_delay_ticks = 2
+	var scheduler = TurnSchedulerScript.new(bus, transport, 1)
+	scheduler.begin_turn_barrier(2, 320)
+	scheduler.announce_horizon(3)
+	_expect(
+		transport.sent_frames.size() == 1
+		and transport.sent_frames[0] == PackedByteArray([6, 0, 0, 0, 5, 0, 0, 0, 1]),
+		"a horizon must be discriminator, u32 horizon, then s32 sender in big-endian order"
+	)
+	var endpoints := _new_connected_endpoints()
+	var rejected = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["a"], 1)
+	endpoints["a"].receive(PackedByteArray([6, 0, 0, 0, 5, 0, 0, 0]))
+	rejected.advance_tick(0)
+	_expect(rejected.rejected_frame_count() == 1, "a short horizon must increment the rejection count")
+
+
+func _test_turn_barrier_opt_in() -> void:
+	var transport := RecordingTransportScript.new()
+	transport.open("")
+	var bus := SimCommandBusScript.new()
+	bus.input_delay_ticks = 2
+	var scheduler = TurnSchedulerScript.new(bus, transport, 1)
+	_expect(scheduler.peers_cover_tick(1000000), "an unarmed barrier must cover every tick")
+	scheduler.announce_horizon(5)
+	scheduler.poll_turn_barrier(1, 0)
+	scheduler.poll_turn_barrier(1, 5000)
+	_expect(transport.sent_frames.is_empty(), "an unarmed scheduler must not send horizons")
+	_expect(
+		scheduler.waiting_player_ids().is_empty() and scheduler.turn_wait_msec() == 0,
+		"an unarmed scheduler must not enter a wait"
+	)
+	_expect(
+		scheduler.submit_local(_make_move_command(1), 12) == 14,
+		"an unarmed scheduler must preserve submit's existing delay path"
+	)
+
+
+func _test_horizon_gates_ticks() -> void:
+	var endpoints := _new_connected_endpoints()
+	var scheduler = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["a"], 1)
+	scheduler.begin_turn_barrier(2, 320)
+	_expect(not scheduler.peers_cover_tick(1), "an unheard peer must leave the first tick uncovered")
+	_expect(scheduler.known_horizon_for(2) == -1, "an unheard peer must have horizon -1")
+	endpoints["a"].receive(PackedByteArray([6, 0, 0, 0, 5, 0, 0, 0, 2]))
+	scheduler.advance_tick(0)
+	_expect(scheduler.known_horizon_for(2) == 5, "a remote horizon must be recorded")
+	_expect(scheduler.peers_cover_tick(5), "the announced horizon must cover itself")
+	_expect(not scheduler.peers_cover_tick(6), "a horizon must not cover the next tick")
+	endpoints["a"].receive(PackedByteArray([6, 0, 0, 0, 3, 0, 0, 0, 2]))
+	scheduler.advance_tick(1)
+	_expect(scheduler.known_horizon_for(2) == 5, "a later lower horizon must not reopen ticks")
+	_expect(scheduler.last_remote_activity_tick_for(2) == 1, "a horizon must credit remote activity")
+	endpoints["a"].receive(PackedByteArray([6, 0, 0, 0, 9, 0, 0, 0, 1]))
+	scheduler.advance_tick(2)
+	_expect(
+		scheduler.known_horizon_for(1) == -1 and scheduler.discarded_echo_count() == 1,
+		"a local horizon echo must not establish a known horizon"
+	)
+
+
+func _test_horizon_clamps_commands() -> void:
+	var transport := RecordingTransportScript.new()
+	transport.open("")
+	var bus := SimCommandBusScript.new()
+	bus.input_delay_ticks = 5
+	var scheduler = TurnSchedulerScript.new(bus, transport, 1)
+	scheduler.begin_turn_barrier(2, 320)
+	scheduler.announce_horizon(10)
+	bus.input_delay_ticks = 2
+	scheduler.announce_horizon(11)
+	_expect(transport.sent_frames.size() == 2 and _frame_tick(transport.sent_frames[1]) == 15, "a horizon must not fall with the delay")
+	_expect(scheduler.sent_horizon() == 15, "the stored horizon must retain its maximum")
+	var target := scheduler.submit_local(_make_move_command(1), 12)
+	_expect(target == 16, "the command target must be clamped after the horizon")
+	_expect(transport.sent_frames.size() == 3 and _frame_tick(transport.sent_frames[2]) == 16, "the clamped target must be carried on the wire")
+	_expect(bus.drain(14).is_empty() and bus.drain(16).size() == 1, "a clamped command must not drain inside the promise")
+	scheduler.announce_horizon(12)
+	scheduler.announce_horizon(13)
+	scheduler.announce_horizon(14)
+	_expect(
+		transport.sent_frames.size() == 6
+		and _frame_tick(transport.sent_frames[3]) == 15
+		and _frame_tick(transport.sent_frames[4]) == 15
+		and _frame_tick(transport.sent_frames[5]) == 16,
+		"effective delay must decay one tick at a time after a fall"
+	)
+	_expect(scheduler.submit_local(_make_move_command(1), 15) == 17, "the ordinary delay must apply after the clamp stops binding")
+
+
+func _test_release_announces_horizon() -> void:
+	var pair := _gathering_pair()
+	pair["leader"].begin_turn_barrier(2, 320)
+	pair["follower"].begin_turn_barrier(2, 320)
+	_run_gathering_sequence(pair)
+	_finish_gathering_sequence(pair)
+	pair["hub"].step()
+	pair["leader"].poll_turn_barrier(1, 400)
+	pair["follower"].poll_turn_barrier(1, 400)
+	_expect(pair["leader"].known_horizon_for(2) == 2 and pair["follower"].known_horizon_for(1) == 2, "release must announce each floor horizon")
+	_expect(pair["leader"].peers_cover_tick(2), "the release horizon must cover tick two")
+	_expect(not pair["leader"].peers_cover_tick(3), "the release horizon must not over-cover tick three")
+
+
+func _test_horizon_keepalive() -> void:
+	var transport := RecordingTransportScript.new()
+	transport.open("")
+	var bus := SimCommandBusScript.new()
+	bus.input_delay_ticks = 2
+	var scheduler = TurnSchedulerScript.new(bus, transport, 1)
+	scheduler.begin_turn_barrier(2, 320)
+	scheduler.announce_horizon(0)
+	scheduler.poll_turn_barrier(1, 1000)
+	scheduler.poll_turn_barrier(1, 1319)
+	_expect(transport.sent_frames.size() == 1, "no keepalive must precede its cadence")
+	scheduler.poll_turn_barrier(1, 1320)
+	_expect(transport.sent_frames.size() == 2 and transport.sent_frames[1] == transport.sent_frames[0], "the cadence must resend the last horizon")
+	_expect(scheduler.turn_wait_msec() == 320, "the wait duration must start at the first uncovered poll")
+	scheduler.poll_turn_barrier(1, 1639)
+	scheduler.poll_turn_barrier(1, 1640)
+	_expect(transport.sent_frames.size() == 3, "each complete cadence must send one keepalive")
+	var empty_transport := RecordingTransportScript.new()
+	empty_transport.open("")
+	var empty_scheduler = TurnSchedulerScript.new(SimCommandBusScript.new(), empty_transport, 1)
+	empty_scheduler.begin_turn_barrier(2, 320)
+	empty_scheduler.poll_turn_barrier(1, 0)
+	empty_scheduler.poll_turn_barrier(1, 5000)
+	_expect(empty_transport.sent_frames.is_empty(), "a scheduler with no promise must not send an unsigned horizon")
+
+
+func _test_wait_silence_and_ping() -> void:
+	var endpoints := _new_connected_endpoints()
+	var local_bus := SimCommandBusScript.new()
+	local_bus.input_delay_ticks = 2
+	var peer_bus := SimCommandBusScript.new()
+	peer_bus.input_delay_ticks = 2
+	var tracker := RttTrackerScript.new()
+	var local = TurnSchedulerScript.new(local_bus, endpoints["a"], 1)
+	var peer = TurnSchedulerScript.new(peer_bus, endpoints["b"], 2, ChecksumExchangeScript.new(), tracker)
+	local.begin_turn_barrier(2, 320)
+	peer.begin_turn_barrier(2, 320)
+	local.announce_horizon(0)
+	local.poll_turn_barrier(1, 1000)
+	local.poll_turn_barrier(1, 2000)
+	_expect(local.wait_silence_msec_for(2) == 1000, "silence must count from the wait start")
+	_expect(local.wait_silence_msec_for(1) == 0, "only a waited-on peer can be silent")
+	peer.send_ping(7)
+	endpoints["hub"].step()
+	local.poll_turn_barrier(1, 2500)
+	_expect(local.wait_silence_msec_for(2) == 0, "a ping must refresh waited-peer activity")
+	endpoints["hub"].step()
+	peer.advance_tick(9)
+	_expect(tracker.rtt_ticks_for(1) == 2, "a waiting client must answer pings immediately")
+	local.poll_turn_barrier(1, 2700)
+	_expect(local.wait_silence_msec_for(2) == 200, "silence must resume from the received ping")
+	peer.announce_horizon(0)
+	endpoints["hub"].step()
+	local.poll_turn_barrier(1, 2800)
+	_expect(local.waiting_player_ids().is_empty() and local.turn_wait_msec() == 0 and local.wait_silence_msec_for(2) == 0, "a covering horizon must end the wait")
+
+
+func _test_stalled_client_holds_peer() -> void:
+	var endpoints := _new_connected_endpoints()
+	var bus_a := SimCommandBusScript.new()
+	var bus_b := SimCommandBusScript.new()
+	bus_a.input_delay_ticks = 2
+	bus_b.input_delay_ticks = 2
+	var scheduler_a = TurnSchedulerScript.new(bus_a, endpoints["a"], 1)
+	var scheduler_b = TurnSchedulerScript.new(bus_b, endpoints["b"], 2)
+	scheduler_a.begin_turn_barrier(2, 320)
+	scheduler_b.begin_turn_barrier(2, 320)
+	scheduler_a.announce_horizon(0)
+	scheduler_b.announce_horizon(0)
+	var clock_a := 0
+	var clock_b := 0
+	var now := 0
+	var executed_a: Dictionary = {}
+	var executed_b: Dictionary = {}
+	for _round in 10:
+		endpoints["hub"].step()
+		now += 40
+		clock_a = _step_barrier_side(scheduler_a, bus_a, clock_a, now, executed_a)
+		clock_b = _step_barrier_side(scheduler_b, bus_b, clock_b, now, executed_b)
+	for _round in 100:
+		endpoints["hub"].step()
+		now += 40
+		clock_a = _step_barrier_side(scheduler_a, bus_a, clock_a, now, executed_a)
+	_expect(clock_a <= clock_b + 2, "the running side must stay within the peer's effective delay")
+	var target := scheduler_b.submit_local(_make_move_command(2), clock_b + 1)
+	for _round in 20:
+		endpoints["hub"].step()
+		now += 40
+		clock_a = _step_barrier_side(scheduler_a, bus_a, clock_a, now, executed_a)
+		clock_b = _step_barrier_side(scheduler_b, bus_b, clock_b, now, executed_b)
+	_expect(bus_a.dropped_late_count() == 0 and scheduler_a.late_drop_count_for(2) == 0, "a caught-up command must not be dropped late")
+	_expect(executed_a.has(target) and executed_a[target] == executed_b.get(target, ""), "both sides must execute the held command on its carried tick")
+
+
+func _step_barrier_side(scheduler, bus, clock: int, now: int, executed: Dictionary) -> int:
+	scheduler.poll_turn_barrier(clock + 1, now)
+	if not scheduler.peers_cover_tick(clock + 1):
+		return clock
+	var tick := clock + 1
+	scheduler.advance_tick(tick)
+	for command in bus.drain(tick):
+		executed[tick] = TurnSchedulerScript.describe_command(command)
+	scheduler.announce_horizon(tick)
+	return tick
 
 
 func _test_rejects_mismatched_player_id() -> void:

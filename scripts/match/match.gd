@@ -153,6 +153,8 @@ var _last_present_player_count := -1
 var _halted_at_tick := -1
 var _halt_diagnostic := ""
 var _halt_dump := PackedStringArray()
+var _turn_wait_shown := false
+var _turn_wait_stalled_ids: Array[int] = []
 var _recent_command_log := RecentCommandLogScript.new(DESYNC_LOG_WINDOW_TICKS)
 ## Off by default (see ReplayRecorder's doc comment,
 ## scripts/match/replay_recorder.gd) -- nothing in this file calls start()
@@ -289,6 +291,7 @@ func _ready() -> void:
 	)
 	if _uses_start_barrier():
 		_turn_scheduler.begin_gathering(_net_player_count, _start_barrier_hello_interval_msec())
+		_turn_scheduler.begin_turn_barrier(_net_player_count, _start_barrier_hello_interval_msec())
 		_command_bus.input_delay_ticks = RttTrackerScript.INPUT_DELAY_FLOOR_TICKS
 		_applied_input_delay_ticks = RttTrackerScript.INPUT_DELAY_FLOOR_TICKS
 	_replay_recorder = ReplayRecorderScript.new()
@@ -588,6 +591,8 @@ func _process(delta: float) -> void:
 		_poll_start_barrier()
 	else:
 		var due := _tick_driver.pending_ticks(delta)
+		if _uses_start_barrier():
+			_poll_turn_barrier(Time.get_ticks_msec())
 		advance_ticks(due)
 
 	_refresh_sidebar_house_pages()
@@ -1065,20 +1070,26 @@ func _advance_simulation_tick() -> void:
 		_turn_scheduler.send_checksum_report(tick, state_hash)
 	if tick % (PING_INTERVAL_CADENCE_CYCLES * CHECKSUM_INTERVAL_TICKS) == 0:
 		_turn_scheduler.send_ping(tick)
-	if _halted_at_tick < 0 and _checksum_exchange.mismatch_count() > 0:
-		_halted_at_tick = tick
-		var mismatch := _checksum_exchange.last_mismatch()
-		_halt_diagnostic = (
-			"Match halted: simulation checksum diverged from player %d at tick %d (local %d, remote %d)"
-			% [
-				mismatch["sender_player_id"], mismatch["tick"],
-				mismatch["local_hash"], mismatch["remote_hash"],
-			]
-		)
-		push_error(_halt_diagnostic)
-		_halt_dump = _build_halt_dump(tick)
-		for line in _halt_dump:
-			print(line)
+	_turn_scheduler.announce_horizon(tick)
+	_halt_if_diverged(tick)
+
+
+func _halt_if_diverged(tick: int) -> void:
+	if _halted_at_tick >= 0 or _checksum_exchange.mismatch_count() == 0:
+		return
+	_halted_at_tick = tick
+	var mismatch := _checksum_exchange.last_mismatch()
+	_halt_diagnostic = (
+		"Match halted: simulation checksum diverged from player %d at tick %d (local %d, remote %d)"
+		% [
+			mismatch["sender_player_id"], mismatch["tick"],
+			mismatch["local_hash"], mismatch["remote_hash"],
+		]
+	)
+	push_error(_halt_diagnostic)
+	_halt_dump = _build_halt_dump(tick)
+	for line in _halt_dump:
+		print(line)
 
 
 ## The simulation's current tick, for later slices and tests that need a way
@@ -1097,11 +1108,22 @@ func is_waiting_for_players() -> bool:
 func is_player_stalled(player_id: int) -> bool:
 	if player_id == _local_player_id:
 		return false
+	if _turn_scheduler.wait_silence_msec_for(player_id) > _stall_threshold_msec():
+		return true
 	var last_activity_tick := _turn_scheduler.last_remote_activity_tick_for(player_id)
 	if last_activity_tick == -1:
 		return false
 	return current_tick() - last_activity_tick > (
 		STALL_THRESHOLD_CADENCE_CYCLES * CHECKSUM_INTERVAL_TICKS
+	)
+
+
+func _stall_threshold_msec() -> int:
+	return roundi(
+		STALL_THRESHOLD_CADENCE_CYCLES
+		* CHECKSUM_INTERVAL_TICKS
+		* MatchClockScript.SECONDS_PER_TICK
+		* 1000.0
 	)
 
 
@@ -1135,7 +1157,7 @@ func replay_exhausted() -> bool:
 
 
 ## Advances the simulation by up to count whole ticks without making callers
-## reach into the private tick method; a halted match advances no further. This replaces 68 hand-rolled test loops,
+## reach into the private tick method; a halted or turn-gated match advances no further. This replaces 68 hand-rolled test loops,
 ## including 36 call()-by-string reaches whose rename failure would otherwise
 ## wait until runtime. A non-positive count is a no-op, matching
 ## FrameTickDriver.pending_ticks() for a non-positive delta; no clamp belongs
@@ -1144,10 +1166,62 @@ func replay_exhausted() -> bool:
 ## clock boundary, which may be less than the old boundary plus count when halted.
 func advance_ticks(count: int) -> int:
 	for _i in count:
-		if _halted_at_tick >= 0 or _turn_scheduler.is_gathering():
+		if (
+			_halted_at_tick >= 0
+			or _turn_scheduler.is_gathering()
+			or not _turn_scheduler.peers_cover_tick(_clock.current_tick() + 1)
+		):
 			break
 		_advance_simulation_tick()
 	return _clock.current_tick()
+
+
+func _poll_turn_barrier(now_msec: int) -> void:
+	if _halted_at_tick >= 0:
+		return
+	_turn_scheduler.poll_turn_barrier(current_tick() + 1, now_msec)
+	if _checksum_exchange.mismatch_count() > 0:
+		_halt_if_diverged(current_tick())
+		return
+	var waiting := _turn_scheduler.waiting_player_ids()
+	if waiting.is_empty():
+		if _turn_wait_shown:
+			_turn_wait_shown = false
+			_turn_wait_stalled_ids.clear()
+			print("Match: resumed at tick %d" % current_tick())
+			_update_selection_label()
+		return
+	if not _turn_wait_shown:
+		if _turn_scheduler.turn_wait_msec() < _start_barrier_hello_interval_msec():
+			return
+		_turn_wait_shown = true
+		_show_turn_wait(waiting)
+	var stalled: Array[int] = []
+	for player_id in waiting:
+		if is_player_stalled(player_id):
+			stalled.append(player_id)
+	if stalled == _turn_wait_stalled_ids:
+		return
+	_turn_wait_stalled_ids = stalled
+	if stalled.is_empty():
+		_show_turn_wait(waiting)
+		return
+	var stalled_ids := _format_player_ids(stalled)
+	print("Match: player %s is not responding at tick %d" % [stalled_ids, current_tick()])
+	_update_selection_label("Player %s is not responding" % stalled_ids)
+
+
+func _show_turn_wait(ids: Array[int]) -> void:
+	var ids_text := _format_player_ids(ids)
+	print("Match: waiting for player %s at tick %d" % [ids_text, current_tick()])
+	_update_selection_label("Waiting for player %s" % ids_text)
+
+
+func _format_player_ids(ids: Array[int]) -> String:
+	var values := PackedStringArray()
+	for player_id in ids:
+		values.append(str(player_id))
+	return ", ".join(values)
 
 
 ## How far this frame has advanced into the tick the simulation has not run

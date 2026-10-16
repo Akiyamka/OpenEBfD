@@ -134,6 +134,17 @@ The driver sends you exactly one of these. Do the step, write the files, stop.
      the shove call itself is deleted, because the correct authority returns
      before the spawn. Check reachability separately for each control rather
      than once for the assertion.
+
+     **Trace the setup a case runs before its first step, and every old reader
+     of a value the slice newly writes.** `AM1` predicted 9 failures for
+     dropping the release announcement and measured 12. Two came from the test
+     helper `_release_and_sync()`. Under the mutation, its poll already found
+     tick 1 gated, so a wait began 600 ms before the case's own first poll and
+     was shown and stalled early. The third came from `AK1`'s start case,
+     which reads the status line the slice's shown wait now overwrites. When a
+     mutation changes *when* a state begins, walk the shared helpers as well as
+     the steps. When a slice adds a writer to a shared observable, grep every
+     suite for that observable's readers.
 5. Write **`.pipeline/slice.json`** matching `tools/pipeline/schemas/slice.json`.
    Set `revision` to 1 for a fresh slice. Set `needs_godot_tests` true whenever
    the slice touches runtime code — the container suite is slow, so it is opt-in
