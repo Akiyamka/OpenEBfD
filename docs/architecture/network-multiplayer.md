@@ -925,18 +925,24 @@ reconcile to — and surfaces the diverging tick through `halt_diagnostic()`
 and a `push_error()`. Note *diverging*, not *halting*: a report can arrive a
 tick or two after the tick it describes, so the number worth reporting is
 `ChecksumExchange.last_mismatch()["tick"]`, not the tick the halt was
-noticed on. Still owed: dumping state, which has no second state to dump
-(only the peer's hash crosses the wire) and no path decided, and writing the
-replay, which cannot work while nothing calls `ReplayRecorder.start()`.
+noticed on. Still owed: writing the replay, which cannot work while nothing
+calls `ReplayRecorder.start()`. (Revised 2026-10-20. This sentence also owed
+dumping state, which had no second state to dump, since only the peer's hash
+crosses the wire, and no path decided. `AN1` instead dumps each client's own
+state to its terminal, and the human diffs the two.)
 Surfacing the tick to a *player* is also still owed; there is no UI for it.
 Since `AL1`, a halt prints a short `[desync]` block on each client's terminal,
 after `V1`'s unchanged headline. It holds the clock and frame counters, the
 late drops, a per-player fingerprint of every command executed in the whole
 match, and the commands executed in the last 80 ticks. Diffing the two blocks
-points to a category of cause; the Phase 5 entry for `AL1` gives the table. It
-does not dump state. The entity-state dump and the replay remain owed, and they
-are what would localise a genuine nondeterminism, or name a culprit older than
-the window.
+points to a category of cause; the Phase 5 entry for `AL1` gives the table.
+Since `AN1`, a halt also prints a `[desync-state]` block. It holds every live
+entity's hashed fields, as the exact bytes `state_hash()` folds, together with
+each unit's navigation state and each turret's aim, all as of the earliest
+mismatched checksum tick. Diffing the two blocks names the first entity and
+field that diverged; the Phase 5 entry for `AN1` gives the formats. The replay
+remains owed, and it is what would name a culprit older than the command
+window.
 
 ## Rules for sim code
 
@@ -4318,7 +4324,8 @@ source cites a number you cannot place.
 
   **Owed**, as decision 7 records: the entity-state dump and the replay, for
   localising row (d), naming an old culprit, or settling a fingerprint
-  collision.
+  collision. (2026-10-20: the entity-state dump landed at `AN1`. The replay
+  remains owed.)
 
   **`AM1` — landed, a turn barrier keeps gathered clients in step.** This was
   directed by the human on 2026-10-16, who chose it over slewing the clock and
@@ -4424,6 +4431,142 @@ source cites a number you cannot place.
   interpolation keeps cycling with no tick to blend toward. That is Phase 6
   polish. One horizon per tick is the simplest choice; coalescing them into
   the two-tick turn is tuning. A lost command frame still desyncs and halts.
+
+  **`AN1` — landed, a desync halt dumps entity state at the diverging tick.**
+  This was directed by the human on 2026-10-20. The third real two-process
+  run, on one machine under `AM1`'s barrier, halted both clients at tick 1008
+  with identical `AL1` dumps:
+
+  - player 1 had executed 9 commands and player 2 none;
+  - nothing was dropped late, no tick was dropped, and no frame was rejected;
+  - nothing ran in the last 80 ticks;
+  - checksum 1000 agreed.
+
+  That is `AL1`'s row (d): the simulation itself diverged with no new input,
+  the genuine nondeterminism that only a state dump can localise. So decision
+  7's owed dump landed, terminal only, like `AL1`'s block.
+
+  **What prints.** After `AL1`'s block, each client prints lines prefixed
+  `[desync-state]`; extract them with `grep '\[desync-state\]'`, which
+  `AL1`'s `grep '\[desync\]'` does not match.
+
+  ```
+  [desync-state] state after tick <T>: <N> live entities
+  [desync-state] entity <id> <kind> pos=<V> hp=<F32> sh=<F32> own=<int> inv=<flag>/<ticks>
+  [desync-state] nav <id> agent=… cmd=… mode=… order=… hold=… anchor=… reserved=… turn=… yaw=<F32> dest=<V> steer=<V> path=<i>/<n> blocked=<F64> yield=<F64> ydir=<V> swap=<int> orca=<V> avoid=<V>
+  [desync-state] turret <id> weapon=<int> yaw=<F64> pitch=<F64>
+  ```
+
+  - **Order.** Entities follow `live_ids()` order. Each unit's `nav` line and
+    each turret line follows its own entity line.
+  - **Encoding.** Every value prints as `str()` followed by the hex of its
+    packed bytes in brackets; the brackets are authoritative. For hashed
+    fields they are exactly the bytes `state_hash()` folds. So **whenever two
+    clients' hashes differ, at least one entity line differs**, by
+    construction.
+  - **The header** carries neither the player nor the halt tick, both of which
+    are on `AL1`'s line. Two identical states therefore diff empty.
+
+  **As of the earliest mismatched checksum tick, not the halt tick.** Under
+  `AM1` two clients can halt up to an effective delay apart, and a dump of
+  two different ticks would differ on every moving entity. So `Match` keeps a
+  ring of the last ten captures, one per checksum tick. Ten is the minimum:
+  a mismatch at T can halt as late as T + 72, which is nine captures later.
+
+  At a halt it prints the capture for `ChecksumExchange.earliest_mismatch_tick()`,
+  the minimum over every mismatch resolved. That is deliberately not
+  `last_mismatch()`. Review found that one scheduler drain can resolve the
+  peer's reports for T and T + 8 together, which leaves `last_mismatch()` at
+  T + 8 while the peer, resolving T alone, dumps T.
+
+  For two players the earliest tick is the same on both clients. Each client
+  records its own ticks in order, and each sender's reports arrive in order, so
+  the first differing tick resolves no later than any later one. That holds as
+  long as its report was not dropped as stale.
+
+  `V1`'s published headline is unchanged: it still names `last_mismatch()`.
+  In that two-mismatch drain it can therefore name a later tick than the state
+  header does. Each line names its own tick.
+
+  **Why the lines nobody hashes are there.** They explain *why* a position or
+  a health differs.
+
+  - **Navigation**, which was the human's lead: a unit stuck between two others
+    kept trying to get out, and jittered. The fields come from the facade's
+    public `agent_debug()`, extended with eleven read-only keys: the yield, the
+    swap cooldown, the steering target, path progress, the ORCA velocity and
+    the rest.
+  - **Hull yaw**, written only on the tick.
+  - **Turret aim**, because the planning audit below found per-process
+    randomness in turret idle scans.
+
+  Capture runs only when a room is set, and calls only readers. Single-player
+  and every no-room boot are byte for byte unchanged, and `scripts/sim/` is
+  untouched.
+
+  **The planning audit, as measured facts.** On one machine, nothing in
+  `scripts/units/navigation/` differs between two processes.
+
+  - It has no RNG, no wall clock and no physics query. The tick passes a fixed
+    delta.
+  - Instance ids are only dictionary keys, which Godot iterates in insertion
+    order.
+  - Ordering comes from agent ids, assigned in registration order.
+  - The stuck, yield and swap machinery is all tick-domain.
+
+  It does break rules that matter across builds:
+
+  - unstable sorts with no tie-break (`orca_avoidance.gd:101`, `:132`);
+  - libm trigonometry that decision 5 forbids in simulation code
+    (`attack_arc_allocator.gd`, `orca_avoidance.gd:98`);
+  - a sort tie-break that falls back to a per-process instance id
+    (`attack_arc_allocator.gd:93`), which no unregistered unit is known to
+    reach.
+
+  So a jittering unit reads as an *amplifier* of a small upstream difference,
+  not as its source.
+
+  Outside navigation, on simulation paths, five sources can differ between
+  processes:
+
+  - **Turret idle scans** draw from a per-process seed. `combat_turret.gd:138`
+    calls `randomize()`, and `current_yaw` decides how long a turret takes to
+    aim, so it decides fire ticks. This runs for units and buildings alike, on
+    the tick.
+  - **The fire clip** is chosen with a global `randi()` (`unit_combat.gd:780`),
+    and that clip's authored shot times set when shots fire.
+  - **Building survivors** spawn at global `randf_range()` positions
+    (`building_survivors.gd:81`), which are hashed.
+  - **Spice mound maturity** uses a global `randf()` when given no fraction
+    (`spice_mound.gd:153`); its callers were not traced.
+  - **Undeploy turret recentering** runs from `_process()` on *frame* delta
+    (`unit.gd:714`). Its completion starts the undeploy transition, so when the
+    unit can move again depends on frame rate.
+
+  The turret idle scan is the strongest candidate for a divergence with no
+  input. Every fix waits for the dump to locate this divergence, by the human's
+  direction.
+
+  **How it is proven.** Seven `Match` cases and one exchange case cover:
+
+  - snapshot rather than live state;
+  - exact packed values;
+  - the navigation and turret lines;
+  - the ring's window;
+  - a missing capture;
+  - read-only capture;
+  - no output without a room;
+  - and, added at review, one drain resolving two mismatches.
+
+  Sixteen mutation controls, six of them re-measured at land. Five fail
+  exactly as predicted. The sixth, never constructing the ring, fails 21
+  rather than 15: the read-only case calls `ring.capture()` before its
+  guarded assertions, so it aborts on the null ring, and its unfreed arm then
+  fails the next two cases' teardowns.
+
+  **Owed.** The replay still owes decision 7, and a fix for each source the
+  audit found is its own slice. Unit locomotion internals beyond hull yaw are
+  not dumped.
 - **Phase 6 — polish.** Cosmetic prediction, parameter tuning under induced
   latency and loss, save/load of a networked match.
 

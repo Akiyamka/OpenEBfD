@@ -16,6 +16,7 @@ var _newest_recorded_tick := 0
 var _agreement_count := 0
 var _mismatch_count := 0
 var _last_mismatch: Dictionary = {}
+var _earliest_mismatch_tick := -1
 var _dropped_stale_report_count := 0
 
 
@@ -69,6 +70,10 @@ func last_mismatch() -> Dictionary:
 	return _last_mismatch
 
 
+func earliest_mismatch_tick() -> int:
+	return _earliest_mismatch_tick
+
+
 func _is_stale(tick: int) -> bool:
 	return tick < _newest_recorded_tick - RETAINED_TICKS
 
@@ -89,6 +94,7 @@ func _resolve(sender_player_id: int, tick: int, local_hash: int, remote_hash: in
 		_agreement_count += 1
 		return
 	_mismatch_count += 1
+	_earliest_mismatch_tick = tick if _earliest_mismatch_tick < 0 else mini(_earliest_mismatch_tick, tick)
 	_last_mismatch = {
 		"sender_player_id": sender_player_id,
 		"tick": tick,

@@ -17,6 +17,7 @@ func _initialize() -> void:
 	_run_case("an evicted pending report is counted stale", _test_evicted_pending_report)
 	_run_case("evicting pending reports counts each peer", _test_evicted_multiple_pending_reports)
 	_run_case("eviction preserves checksum comparison history", _test_eviction_preserves_history)
+	_run_case("the earliest mismatch is kept as the minimum resolved tick", _test_earliest_mismatch_tick)
 	_finish("Checksum exchange tests")
 
 
@@ -176,3 +177,22 @@ func _test_eviction_preserves_history() -> void:
 		== {"sender_player_id": 3, "tick": mismatch_tick, "local_hash": 200, "remote_hash": 999},
 		"eviction must retain the original mismatch details"
 	)
+
+
+func _test_earliest_mismatch_tick() -> void:
+	var agreement = ChecksumExchangeScript.new()
+	agreement.record_local_hash(8, 100)
+	agreement.on_report_received(2, 8, 100)
+	_expect(agreement.earliest_mismatch_tick() == -1, "an agreement must not establish an earliest mismatch")
+	var ascending = ChecksumExchangeScript.new()
+	ascending.record_local_hash(8, 100)
+	ascending.record_local_hash(16, 200)
+	ascending.on_report_received(2, 8, 101)
+	ascending.on_report_received(2, 16, 201)
+	_expect(ascending.earliest_mismatch_tick() == 8 and int(ascending.last_mismatch()["tick"]) == 16, "the earliest mismatch must survive a later resolved mismatch")
+	var descending = ChecksumExchangeScript.new()
+	descending.record_local_hash(8, 100)
+	descending.record_local_hash(16, 200)
+	descending.on_report_received(2, 16, 201)
+	descending.on_report_received(2, 8, 101)
+	_expect(descending.earliest_mismatch_tick() == 8, "the earliest mismatch must be the minimum tick rather than the first resolved one")

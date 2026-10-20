@@ -604,6 +604,17 @@ func agent_debug(unit: Node3D) -> Dictionary:
 		"no_stop_destination": agent["no_stop_destination"],
 		"departure_access": agent["departure_access"],
 		"blocked_time": agent["blocked_time"],
+		"active_order": agent["active_order"],
+		"reserved": agent["reserved"],
+		"steering_turn_in_place": agent["steering_turn_in_place"],
+		"steering_target": agent["steering_target"],
+		"path_index": agent["path_index"],
+		"path_size": (agent["path"] as Array).size(),
+		"yield_remaining": agent["yield_remaining"],
+		"yield_direction": agent["yield_direction"],
+		"swap_tick": agent["swap_tick"],
+		"orca_velocity": agent["orca_velocity"],
+		"avoidance_direction": agent["avoidance_direction"],
 		"route_ready": bool(agent["direct_path"]) or not (agent["path"] as Array).is_empty() or (agent["exit_point"] as Vector3).is_finite(),
 	}
 

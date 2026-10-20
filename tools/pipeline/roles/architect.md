@@ -94,7 +94,13 @@ The driver sends you exactly one of these. Do the step, write the files, stop.
      fail", walk the mutated path: does it still reach the assertion, which
      *other* cases now also fail, and is the failure the one named? State
      every case the mutation breaks — a mutation that breaks two is normal and
-     reporting only one makes the extra failure look like a defect. The same
+     reporting only one makes the extra failure look like a defect. `AN1`
+     repeated the first of these. Its read-only case guarded both assertions
+     with `ring != null`, but called `ring.capture()` unguarded on the line
+     before. Never constructing the ring therefore crashed the case instead of
+     failing it, and the arm it never freed failed two later teardowns.
+     Guarding the assertion does not guard the call: trace every statement
+     the mutated value reaches. The same
      staleness happens when a revision *adds* a case: `AK1`'s revision 2 added
      G8 to time the first hello, and G8 also observes the second, so the
      earlier "send a hello only once" control failed 6 assertions against a

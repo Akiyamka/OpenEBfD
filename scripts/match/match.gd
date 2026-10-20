@@ -15,6 +15,7 @@ const WebSocketTransportScript := preload("res://scripts/net/websocket_transport
 const NetTransportScript := preload("res://scripts/net/net_transport.gd")
 const TurnSchedulerScript := preload("res://scripts/net/turn_scheduler.gd")
 const RecentCommandLogScript := preload("res://scripts/match/recent_command_log.gd")
+const DesyncStateRingScript := preload("res://scripts/match/desync_state_ring.gd")
 const ChecksumExchangeScript := preload("res://scripts/net/checksum_exchange.gd")
 const RttTrackerScript := preload("res://scripts/net/rtt_tracker.gd")
 const CommandExecutorScript := preload("res://scripts/match/command_executor.gd")
@@ -51,6 +52,9 @@ const CHECKSUM_INTERVAL_TICKS := 8
 ## A mismatch first visible at a checksum can halt 72 ticks later; its command
 ## can be seven ticks earlier, so retain the 79-tick maximum age plus one.
 const DESYNC_LOG_WINDOW_TICKS := ChecksumExchangeScript.RETAINED_TICKS + 2 * CHECKSUM_INTERVAL_TICKS
+## A checksum mismatch can resolve up to 72 ticks after its capture; retaining
+## its own capture plus the nine later checksum captures requires ten entries.
+const DESYNC_STATE_RETAINED_CAPTURES := ChecksumExchangeScript.RETAINED_TICKS / CHECKSUM_INTERVAL_TICKS + 2
 ## Human decision 2026-10-02 sets liveness at ten heartbeats; retaining this
 ## as cycles means the threshold remains ten heartbeats when checksum cadence changes.
 const STALL_THRESHOLD_CADENCE_CYCLES := 10
@@ -153,9 +157,11 @@ var _last_present_player_count := -1
 var _halted_at_tick := -1
 var _halt_diagnostic := ""
 var _halt_dump := PackedStringArray()
+var _halt_state_dump := PackedStringArray()
 var _turn_wait_shown := false
 var _turn_wait_stalled_ids: Array[int] = []
 var _recent_command_log := RecentCommandLogScript.new(DESYNC_LOG_WINDOW_TICKS)
+var _desync_state_ring
 ## Off by default (see ReplayRecorder's doc comment,
 ## scripts/match/replay_recorder.gd) -- nothing in this file calls start()
 ## on it. It is still constructed unconditionally here, alongside
@@ -282,6 +288,8 @@ func _ready() -> void:
 	_tick_driver = FrameTickDriverScript.new()
 	_command_bus = SimCommandBusScript.new()
 	_checksum_exchange = ChecksumExchangeScript.new()
+	if not _net_room_url.is_empty():
+		_desync_state_ring = DesyncStateRingScript.new(DESYNC_STATE_RETAINED_CAPTURES)
 	_rtt_tracker = RttTrackerScript.new()
 	var transport := _create_net_transport()
 	if transport.state() == NetTransportScript.State.DISCONNECTED:
@@ -1068,6 +1076,8 @@ func _advance_simulation_tick() -> void:
 		var state_hash := _entity_state.state_hash()
 		_checksum_exchange.record_local_hash(tick, state_hash)
 		_turn_scheduler.send_checksum_report(tick, state_hash)
+		if _desync_state_ring != null:
+			_desync_state_ring.capture(tick, _entity_state, _entity_index, _unit_navigation_system)
 	if tick % (PING_INTERVAL_CADENCE_CYCLES * CHECKSUM_INTERVAL_TICKS) == 0:
 		_turn_scheduler.send_ping(tick)
 	_turn_scheduler.announce_horizon(tick)
@@ -1090,6 +1100,10 @@ func _halt_if_diverged(tick: int) -> void:
 	_halt_dump = _build_halt_dump(tick)
 	for line in _halt_dump:
 		print(line)
+	if _desync_state_ring != null:
+		_halt_state_dump = _desync_state_ring.lines_for(_checksum_exchange.earliest_mismatch_tick())
+		for line in _halt_state_dump:
+			print(line)
 
 
 ## The simulation's current tick, for later slices and tests that need a way
@@ -1104,7 +1118,7 @@ func is_waiting_for_players() -> bool:
 
 ## Whether one remote player was heard from and has then been silent for more
 ## than the decision 8 liveness threshold. A player never heard from is absent,
-## not stalled; the local player never arrives over the transport.
+## not stalled, except a barrier peer that has kept the match waiting past the threshold.
 func is_player_stalled(player_id: int) -> bool:
 	if player_id == _local_player_id:
 		return false
@@ -1313,6 +1327,10 @@ func halt_diagnostic() -> String:
 
 func halt_dump() -> PackedStringArray:
 	return _halt_dump.duplicate()
+
+
+func halt_state_dump() -> PackedStringArray:
+	return _halt_state_dump.duplicate()
 
 
 func _build_halt_dump(tick: int) -> PackedStringArray:
