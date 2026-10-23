@@ -82,15 +82,17 @@ static func owner_player_id_of(object: Object) -> Variant:
 
 static func collision_rids(target: Object) -> Array[RID]:
 	var result: Array[RID] = []
-	_collect_collision_rids(target, result)
+	append_collision_rids(target, result)
 	return result
 
 
-static func _collect_collision_rids(object: Object, result: Array[RID]) -> void:
+## Appends collision RIDs without allocating a short-lived intermediate array.
+## CombatLineOfFire reuses query scratch through this hot-path form.
+static func append_collision_rids(object: Object, result: Array[RID]) -> void:
 	if object == null or not is_instance_valid(object):
 		return
 	if object is CollisionObject3D:
 		result.append((object as CollisionObject3D).get_rid())
 	if object is Node:
 		for child in (object as Node).get_children():
-			_collect_collision_rids(child, result)
+			append_collision_rids(child, result)

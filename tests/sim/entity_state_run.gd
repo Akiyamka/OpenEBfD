@@ -159,6 +159,7 @@ func _initialize() -> void:
 	_run_case(
 		"restore() fails closed on malformed invulnerability data", _test_restore_malformed_invulnerability
 	)
+	_run_case("combat line profile and carried state hash and round-trip", _test_combat_line_profile_state)
 	_finish("SimEntityState tests")
 
 
@@ -177,6 +178,27 @@ func _test_has_position() -> void:
 	_expect(not state.has_position(id), "a freshly allocated id must have no position until set_position() is called")
 	state.set_position(id, Vector3.ONE)
 	_expect(state.has_position(id), "has_position() must be true right after set_position()")
+
+
+func _test_combat_line_profile_state() -> void:
+	var registry := SimEntityRegistryScript.new()
+	var state := SimEntityStateScript.new(registry)
+	var id := registry.allocate(SimEntityRegistryScript.Kind.UNIT)
+	state.set_position(id, Vector3.ZERO)
+	var before := state.state_hash()
+	state.set_combat_line_bounds(id, 1.5, -0.75, 2.25)
+	state.set_combat_line_carried(id, true)
+	_expect(state.has_combat_line_bounds(id) and state.has_combat_line_carried(id), "profile and carried presence must distinguish a Unit from a building")
+	_expect(state.state_hash() != before, "profile and carried writes must be hash-observed")
+	var captured := state.capture()
+	var restored := SimEntityStateScript.new(registry)
+	_expect(restored.restore(captured), "profile capture must restore")
+	_expect(restored.combat_line_radius(id) == 1.5 and restored.combat_line_min_y(id) == -0.75 and restored.combat_line_max_y(id) == 2.25 and restored.combat_line_carried(id), "profile and carried values must round-trip")
+	var malformed: Dictionary = captured.duplicate(true)
+	malformed["combat_line_radius"][0] = -1.0
+	var before_malformed := restored.state_hash()
+	_expect(not restored.restore(malformed), "malformed profile restore must be refused")
+	_expect(restored.state_hash() == before_malformed, "malformed profile restore must leave state untouched")
 
 
 func _test_read_unallocated_id_errors() -> void:

@@ -412,6 +412,15 @@ func _ready() -> void:
 	# collision layer remains enabled, so mouse rays can still select this unit.
 	collision_mask = 0
 	_authored_collision.add_body_shapes()
+	var line_bounds := _authored_collision.combat_line_bounds()
+	if _entity_id != 0:
+		var line_store = MatchLookupScript.entity_state(self)
+		if line_store != null:
+			if not line_bounds.is_empty():
+				line_store.set_combat_line_bounds(
+					_entity_id, line_bounds["radius"], line_bounds["min_y"], line_bounds["max_y"]
+				)
+			line_store.set_combat_line_carried(_entity_id, false)
 	_shader_fx.attach_model()
 	var players := _animation_director.refresh(visual_root)
 	_locomotion.attach_model(players)
@@ -523,6 +532,13 @@ func set_simulation_position(value: Vector3) -> void:
 		if store != null:
 			store.set_position(_entity_id, value)
 	global_position = value
+
+
+func combat_line_bounds() -> Dictionary:
+	return _authored_collision.combat_line_bounds()
+
+func combat_line_entry_distance(from: Vector3, to: Vector3, stored_position: Vector3) -> float:
+	return _authored_collision.combat_line_entry_distance(from, to, stored_position)
 
 
 ## The read counterpart of set_simulation_position(), added by slice R2: the
@@ -1642,9 +1658,9 @@ func transport_abort_docking_recover() -> void:
 
 
 func transport_mark_carried(carrier: Node3D) -> void:
+	_set_transport_carrier(carrier)
 	_transport_carried_vertical_bounds = transport_vertical_bounds()
 	_transport_has_carried_vertical_bounds = true
-	_transport_carrier_ref = weakref(carrier)
 	_transport_reservation_ref = null
 	_transport_docking_locked = false
 	cancel_all_orders()
@@ -1655,7 +1671,7 @@ func transport_mark_carried(carrier: Node3D) -> void:
 
 
 func transport_mark_released(world_position: Vector3, carrier_facing: Vector3) -> void:
-	_transport_carrier_ref = null
+	_set_transport_carrier(null)
 	_transport_has_carried_vertical_bounds = false
 	_transport_reservation_ref = null
 	_transport_docking_locked = false
@@ -1676,7 +1692,7 @@ func _reset_locomotion_after_transport() -> void:
 
 
 func transport_mark_destroyed_release() -> void:
-	_transport_carrier_ref = null
+	_set_transport_carrier(null)
 	_transport_has_carried_vertical_bounds = false
 	_transport_reservation_ref = null
 	_transport_docking_locked = false
@@ -1719,6 +1735,13 @@ func _transport_carrier() -> Node3D:
 	var carrier: Variant = _transport_carrier_ref.get_ref() if _transport_carrier_ref != null else null
 	return carrier as Node3D if carrier != null and is_instance_valid(carrier) else null
 
+
+func _set_transport_carrier(carrier: Node3D) -> void:
+	_transport_carrier_ref = weakref(carrier) if carrier != null else null
+	if _entity_id != 0:
+		var store = MatchLookupScript.entity_state(self)
+		if store != null:
+			store.set_combat_line_carried(_entity_id, carrier != null)
 
 func _transport_reservation() -> Node3D:
 	var reservation: Variant = _transport_reservation_ref.get_ref() if _transport_reservation_ref != null else null
@@ -1816,7 +1839,7 @@ func _begin_death_sequence(cause: StringName) -> void:
 		var carrier := _transport_carrier()
 		if carrier != null and carrier.has_method("transport_cargo_destroyed"):
 			carrier.call("transport_cargo_destroyed", self)
-		_transport_carrier_ref = null
+		_set_transport_carrier(null)
 	if _advanced_carryall_transport != null:
 		_advanced_carryall_transport.on_owner_death()
 	_death_sequence.begin(cause, _previous_global_position)

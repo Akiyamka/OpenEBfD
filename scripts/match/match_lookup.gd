@@ -125,10 +125,10 @@ static func _live_match(node: Node, method: StringName) -> Node:
 static func entity_index(node: Node) -> Variant:
 	if node == null or not node.is_inside_tree():
 		return null
-	var match_node := _live_match(node, &"entity_index")
-	if match_node == null:
+	var match_owner := _live_match(node, &"entity_index")
+	if match_owner == null:
 		return null
-	return match_node.call("entity_index")
+	return match_owner.call("entity_index")
 
 
 ## The SimEntityState the running Match owns (scripts/sim/entity_state.gd), or
@@ -138,10 +138,19 @@ static func entity_index(node: Node) -> Variant:
 static func entity_state(node: Node) -> Variant:
 	if node == null or not node.is_inside_tree():
 		return null
-	var match_node := _live_match(node, &"entity_state")
-	if match_node == null:
+	var match_owner := _live_match(node, &"entity_state")
+	if match_owner == null:
 		return null
-	return match_node.call("entity_state")
+	return match_owner.call("entity_state")
+
+
+## The owning Match itself for systems that need two coherent Match-owned
+## values in one query (for example its tick and entity state) without walking
+## the node ancestry twice. Null outside a live Match, like entity_state().
+static func match_node(node: Node) -> Node:
+	if node == null or not node.is_inside_tree():
+		return null
+	return _live_match(node, &"current_tick")
 
 
 ## The running Match's sub-tick interpolation fraction in [0, 1]
@@ -161,10 +170,10 @@ static func entity_state(node: Node) -> Variant:
 static func interpolation_fraction(node: Node) -> float:
 	if node == null or not node.is_inside_tree():
 		return INF
-	var match_node := _live_match(node, &"interpolation_fraction")
-	if match_node == null:
+	var match_owner := _live_match(node, &"interpolation_fraction")
+	if match_owner == null:
 		return INF
-	return float(match_node.call("interpolation_fraction"))
+	return float(match_owner.call("interpolation_fraction"))
 
 
 ## The SimAdmissionQueue the running Match owns (scripts/match/sim_admission_queue.gd),
@@ -175,10 +184,10 @@ static func interpolation_fraction(node: Node) -> float:
 static func admission_queue(node: Node) -> Variant:
 	if node == null or not node.is_inside_tree():
 		return null
-	var match_node := _live_match(node, &"admission_queue")
-	if match_node == null:
+	var match_owner := _live_match(node, &"admission_queue")
+	if match_owner == null:
 		return null
-	return match_node.call("admission_queue")
+	return match_owner.call("admission_queue")
 
 
 ## The one call every group join C6b defers goes through: resolves the

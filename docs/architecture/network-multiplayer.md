@@ -4452,7 +4452,7 @@ source cites a number you cannot place.
 
   ```
   [desync-state] state after tick <T>: <N> live entities
-  [desync-state] entity <id> <kind> pos=<V> hp=<F32> sh=<F32> own=<int> inv=<flag>/<ticks>
+  [desync-state] entity <id> <kind> pos=<V> hp=<F32> sh=<F32> own=<int> inv=<flag>/<ticks> line_r=<F32> line_ymin=<F32> line_ymax=<F32> line_carried=<byte>
   [desync-state] nav <id> agent=… cmd=… mode=… order=… hold=… anchor=… reserved=… turn=… yaw=<F32> dest=<V> steer=<V> path=<i>/<n> blocked=<F64> yield=<F64> ydir=<V> swap=<int> orca=<V> avoid=<V>
   [desync-state] turret <id> weapon=<int> yaw=<F64> pitch=<F64>
   ```
@@ -4543,9 +4543,11 @@ source cites a number you cannot place.
     (`unit.gd:714`). Its completion starts the undeploy transition, so when the
     unit can move again depends on frame rate.
 
-  The turret idle scan is the strongest candidate for a divergence with no
-  input. Every fix waits for the dump to locate this divergence, by the human's
-  direction.
+  At the AN1 audit, turret idle scans looked like the strongest untested
+  candidate for a no-input divergence. The fourth two-process dump instead
+  located the first difference in a combat-originated firing-position order;
+  AO1 addresses its frame-dependent friendly-line decision below. The other
+  sources remain separate debt.
 
   **How it is proven.** Seven `Match` cases and one exchange case cover:
 
@@ -4567,6 +4569,9 @@ source cites a number you cannot place.
   **Owed.** The replay still owes decision 7, and a fix for each source the
   audit found is its own slice. Unit locomotion internals beyond hull yaw are
   not dumped.
+
+  **`AO1` — post-movement combat grid firing lines.** Normal-unit occupancy uses a post-movement combat grid of stable entity ids and the simulation position, not navigation's ephemeral pre-movement ground/air hashes: it includes an admitted unit with no navigation agent and aircraft, then resolves only nearby candidates. There is no per-shot all-unit RID copy: nearby normal RIDs alone are excluded while distant physics bodies are pierced to the explicit 4096-pierce safety limit. The coder's quieter-host 16/50/200/1000 whole-call scaling passed its flat-within-noise gate (medians 83.022/83.497/82.843/82.812 µs per call, noise 1.830 µs). The reviewer's loaded-host rerun was INCONCLUSIVE because batch noise exceeded the 5.0 µs limit; at land, a noisy first set triggered the allowed repeat, which printed PASS with medians 76.436/77.260/76.254/76.410 µs, 1.006 µs spread and 3.333 µs noise. The yaw-only enclosing cylinder is conservative, so a false-positive circle graze can be old-clear/new-hold; measured radii are Minotaurus 4.58 (a 9.2-unit corridor), Mongoose 1.94, Trike 1.84, APC 1.87 and infantry 0.89. Authored corners cannot lie outside that circle, but pose/scale/body-shape changes require profile repair. The start-inside exact hull branch means away from neighbour fires when clear, while toward neighbour holds when it enters the hull. A carried legacy ray remains frame-dependent, and a no stored position normal unit is skipped; the result remains conditional on same shot endpoints. Some building turrets can reach this check from the render frame: authored handoff is tick-driven but aim/acquisition stay frame-timed. In the refreshed stable alternating six-run set after the bounded grid walk, the HEAD baseline median was 33.765 ticks/s and the tree median was 35.905 ticks/s (spans 0.280 and 0.192); the four-core host load ranged 2.52–3.53. Two earlier loaded sets drifted beyond the stability limit and were inconclusive. After staging the new grid at land, the same six-command helper completed another stable set: HEAD median 38.279 ticks/s (span 0.300), tree median 40.985 (span 0.261), with all 49-building, 16-unit, 28/28 combat-window and 110/110 patrol-interval checks passing. AO2/AO3 remain debt. `line_r=<F32>`, `line_ymin=<F32>`, `line_ymax=<F32>` and `line_carried=<byte>` remain byte-exact AN1 hashed fields.
+
 - **Phase 6 — polish.** Cosmetic prediction, parameter tuning under induced
   latency and loss, save/load of a networked match.
 

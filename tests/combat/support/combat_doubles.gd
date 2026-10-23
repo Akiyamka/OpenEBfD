@@ -52,7 +52,11 @@ class PhysicsCombatTarget extends StaticBody3D:
 	var damage_taken := 0.0
 	var owner_player_id := 2
 	var alive := true
+	# Immutable after _init: combat_line_hulls is cached from this radius.
 	var hit_radius := 0.5
+	var has_authoritative_position := false
+	var authoritative_position := Vector3.ZERO
+	var carried := false
 
 	## Slice R6 migrated CombatTargetAcquisition's candidate distances onto
 	## simulation_position(). This double stands in for a Unit or a Building
@@ -62,7 +66,46 @@ class PhysicsCombatTarget extends StaticBody3D:
 	## this; R3 fixed two in tests/navigation and tests/match, R4 one in
 	## tests/units.
 	func simulation_position() -> Vector3:
-		return global_position
+		return authoritative_position if has_authoritative_position else global_position
+
+
+	func is_carried() -> bool:
+		return carried
+
+
+	## Test-only convex body geometry matching the line-facing box around this
+	## stand-in. Runtime code accepts only convex face sets; spheres remain
+	## physics fixtures, never a production geometry branch.
+	func combat_line_hulls() -> Array[Dictionary]:
+		var radius := hit_radius
+		return [{
+			"bounding_radius": radius * sqrt(3.0),
+			"planes": [
+				Plane(Vector3.RIGHT, radius), Plane(Vector3.LEFT, radius),
+				Plane(Vector3.UP, radius), Plane(Vector3.DOWN, radius),
+				Plane(Vector3.FORWARD, radius), Plane(Vector3.BACK, radius),
+			],
+		}]
+
+
+	func combat_line_bounds() -> Dictionary:
+		return {"radius": hit_radius + 0.01, "min_y": -hit_radius - 0.01, "max_y": hit_radius + 0.01}
+
+
+	func combat_line_entry_distance(from: Vector3, to: Vector3, stored_position: Vector3) -> float:
+		var radius := hit_radius
+		var offset := to - from
+		var local_from := from - stored_position
+		if local_from.length_squared() <= radius * radius:
+			return INF
+		var a := offset.length_squared()
+		var b := 2.0 * local_from.dot(offset)
+		var c := local_from.length_squared() - radius * radius
+		var discriminant := b * b - 4.0 * a * c
+		if discriminant < 0.0:
+			return INF
+		var fraction := (-b - sqrt(discriminant)) / (2.0 * a)
+		return from.distance_to(to) * fraction if fraction >= 0.0 and fraction <= 1.0 else INF
 
 
 	func _init(world_position: Vector3, radius := 0.5) -> void:

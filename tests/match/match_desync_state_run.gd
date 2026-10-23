@@ -38,6 +38,9 @@ func _test_snapshot_at_mismatch() -> void:
 			break
 	var position: Vector3 = match_instance.entity_state().position(unit_id)
 	var health: float = match_instance.entity_state().health(unit_id)
+	var line_radius: float = match_instance.entity_state().combat_line_radius(unit_id)
+	var line_min_y: float = match_instance.entity_state().combat_line_min_y(unit_id)
+	var line_max_y: float = match_instance.entity_state().combat_line_max_y(unit_id)
 	var position_token := " pos=%s[%s] " % [str(position), PackedVector3Array([position]).to_byte_array().hex_encode()]
 	var health_token := " hp=%s[%s] " % [str(health), PackedFloat32Array([health]).to_byte_array().hex_encode()]
 	var real: int = match_instance.entity_state().state_hash()
@@ -52,6 +55,11 @@ func _test_snapshot_at_mismatch() -> void:
 	_expect(dump.size() > 0 and dump[0] == "[desync-state] state after tick 8: %d live entities" % ids.size(), "the dump header must name the captured mismatch tick and live count")
 	_expect(_entity_ids(dump) == ids, "entity lines must retain the registry's ascending live-id order")
 	_expect(not _entity_line(dump, unit_id).is_empty() and position_token in _entity_line(dump, unit_id) and health_token in _entity_line(dump, unit_id), "the unit line must retain its tick-eight position and health bytes")
+	var profile_tokens := " line_r=%s[%s]" % [str(line_radius), PackedFloat32Array([line_radius]).to_byte_array().hex_encode()]
+	profile_tokens += " line_ymin=%s[%s]" % [str(line_min_y), PackedFloat32Array([line_min_y]).to_byte_array().hex_encode()]
+	profile_tokens += " line_ymax=%s[%s]" % [str(line_max_y), PackedFloat32Array([line_max_y]).to_byte_array().hex_encode()]
+	var retained_line := _entity_line(dump, unit_id)
+	_expect(profile_tokens in retained_line and " line_carried=0[00]" in retained_line, "the retained line must print byte-exact profile and carried fields")
 	_expect(not _entity_line(dump, unit_id).is_empty() and not new_health_token in _entity_line(dump, unit_id), "the dump must be a snapshot rather than live state at the halt")
 	var all_prefixed := dump.size() > 0
 	for line in dump:

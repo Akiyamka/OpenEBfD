@@ -334,6 +334,16 @@ var _invulnerable: PackedByteArray = PackedByteArray()
 var _invulnerability_remaining_ticks: PackedInt32Array = PackedInt32Array()
 var _invulnerability_has_value: PackedByteArray = PackedByteArray()
 
+## AO1's authored body envelope and carriage state travel with positions: both
+## affect a combat decision, so both are hashable simulation observations.
+var _combat_line_radius := PackedFloat32Array()
+var _combat_line_min_y := PackedFloat32Array()
+var _combat_line_max_y := PackedFloat32Array()
+var _combat_line_bounds_has_value := PackedByteArray()
+var _combat_line_carried := PackedByteArray()
+var _combat_line_carried_has_value := PackedByteArray()
+var _combat_line_revision := 0
+
 
 func _init(registry: SimEntityRegistry) -> void:
 	_registry = registry
@@ -383,6 +393,7 @@ func set_position(id: int, value: Vector3) -> void:
 		_position_previous[id] = _position[id]
 		_position_tick_sequence[id] = _tick_sequence
 	_position[id] = value
+	_combat_line_revision += 1
 
 
 ## `id`'s position as of its most recent set_position() call. Errors loudly
@@ -432,6 +443,59 @@ func previous_position(id: int) -> Vector3:
 ## without triggering its push_error().
 func has_position(id: int) -> bool:
 	return _registry.is_alive(id) and id < _has_value.size() and _has_value[id] == 1
+
+
+func set_combat_line_bounds(id: int, radius: float, min_y: float, max_y: float) -> void:
+	if not _registry.is_alive(id) or not is_finite(radius) or not is_finite(min_y) \
+	or not is_finite(max_y) or radius <= 0.0 or min_y > max_y:
+		push_error("SimEntityState.set_combat_line_bounds(): invalid body profile")
+		return
+	_ensure_combat_line_bounds_capacity(id)
+	_combat_line_radius[id] = radius
+	_combat_line_min_y[id] = min_y
+	_combat_line_max_y[id] = max_y
+	_combat_line_bounds_has_value[id] = 1
+	_combat_line_revision += 1
+
+
+func has_combat_line_bounds(id: int) -> bool:
+	return _registry.is_alive(id) and id < _combat_line_bounds_has_value.size() \
+	and _combat_line_bounds_has_value[id] == 1
+
+
+func combat_line_radius(id: int) -> float:
+	return _combat_line_radius[id]
+
+
+func combat_line_min_y(id: int) -> float:
+	return _combat_line_min_y[id]
+
+
+func combat_line_max_y(id: int) -> float:
+	return _combat_line_max_y[id]
+
+
+func set_combat_line_carried(id: int, carried: bool) -> void:
+	if not _registry.is_alive(id):
+		push_error("SimEntityState.set_combat_line_carried(): id is not alive")
+		return
+	_ensure_combat_line_carried_capacity(id)
+	_combat_line_carried[id] = 1 if carried else 0
+	_combat_line_carried_has_value[id] = 1
+	_combat_line_revision += 1
+
+
+func has_combat_line_carried(id: int) -> bool:
+	return _registry.is_alive(id) and id < _combat_line_carried_has_value.size() \
+	and _combat_line_carried_has_value[id] == 1
+
+
+func combat_line_carried(id: int) -> bool:
+	return _combat_line_carried[id] == 1
+
+
+func combat_line_revision() -> int:
+	return _combat_line_revision
 
 
 ## Writes `value` -- already clamped by the caller, see this class's doc
@@ -615,6 +679,14 @@ func state_hash() -> int:
 			hash = _fold_hash_bytes(
 				hash, PackedInt32Array([_invulnerability_remaining_ticks[id]]).to_byte_array()
 			)
+		hash = _fold_hash_presence(hash, has_combat_line_bounds(id))
+		if has_combat_line_bounds(id):
+			hash = _fold_hash_bytes(hash, PackedFloat32Array([
+				_combat_line_radius[id], _combat_line_min_y[id], _combat_line_max_y[id],
+			]).to_byte_array())
+		hash = _fold_hash_presence(hash, has_combat_line_carried(id))
+		if has_combat_line_carried(id):
+			hash = _fold_hash_bytes(hash, PackedByteArray([_combat_line_carried[id]]))
 	return hash
 
 
@@ -679,6 +751,22 @@ func capture() -> Dictionary:
 			invulnerability_written_ids.append(id)
 			invulnerable_rows.append(_invulnerable[id] == 1)
 			invulnerability_remaining_ticks_rows.append(_invulnerability_remaining_ticks[id])
+	var line_profile_ids: Array = []
+	var line_radius: Array = []
+	var line_min_y: Array = []
+	var line_max_y: Array = []
+	for id in _combat_line_bounds_has_value.size():
+		if _combat_line_bounds_has_value[id] == 1:
+			line_profile_ids.append(id)
+			line_radius.append(_combat_line_radius[id])
+			line_min_y.append(_combat_line_min_y[id])
+			line_max_y.append(_combat_line_max_y[id])
+	var line_carried_ids: Array = []
+	var line_carried: Array = []
+	for id in _combat_line_carried_has_value.size():
+		if _combat_line_carried_has_value[id] == 1:
+			line_carried_ids.append(id)
+			line_carried.append(_combat_line_carried[id] == 1)
 	return {
 		"version": 1,
 		"written_ids": written_ids,
@@ -692,6 +780,12 @@ func capture() -> Dictionary:
 		"invulnerability_written_ids": invulnerability_written_ids,
 		"invulnerable": invulnerable_rows,
 		"invulnerability_remaining_ticks": invulnerability_remaining_ticks_rows,
+		"combat_line_profile_ids": line_profile_ids,
+		"combat_line_radius": line_radius,
+		"combat_line_min_y": line_min_y,
+		"combat_line_max_y": line_max_y,
+		"combat_line_carried_ids": line_carried_ids,
+		"combat_line_carried": line_carried,
 	}
 
 
@@ -772,6 +866,29 @@ func restore(data: Dictionary) -> bool:
 		push_error("SimEntityState.restore(): invulnerability ids differ between value and expiry")
 		return false
 	var invulnerability_expiry_values: Array = expiry_parsed["values"]
+
+	var profile_radius_parsed := _parse_float_field(data, "combat_line_profile_ids", "combat_line_radius")
+	var profile_min_parsed := _parse_float_field(data, "combat_line_profile_ids", "combat_line_min_y")
+	var profile_max_parsed := _parse_float_field(data, "combat_line_profile_ids", "combat_line_max_y")
+	if profile_radius_parsed.is_empty() or profile_min_parsed.is_empty() or profile_max_parsed.is_empty():
+		return false
+	if profile_radius_parsed["ids"] != profile_min_parsed["ids"] \
+	or profile_radius_parsed["ids"] != profile_max_parsed["ids"]:
+		push_error("SimEntityState.restore(): combat line profile ids differ between fields")
+		return false
+	var profile_ids: Array = profile_radius_parsed["ids"]
+	var profile_radius_values: Array = profile_radius_parsed["values"]
+	var profile_min_values: Array = profile_min_parsed["values"]
+	var profile_max_values: Array = profile_max_parsed["values"]
+	for i in profile_ids.size():
+		if float(profile_radius_values[i]) <= 0.0 or float(profile_min_values[i]) > float(profile_max_values[i]):
+			push_error("SimEntityState.restore(): malformed combat line profile")
+			return false
+	var carried_parsed := _parse_bool_field(data, "combat_line_carried_ids", "combat_line_carried")
+	if carried_parsed.is_empty():
+		return false
+	var carried_ids: Array = carried_parsed["ids"]
+	var carried_values: Array = carried_parsed["values"]
 
 	var max_id := 0
 	for id in ids:
@@ -857,6 +974,35 @@ func restore(data: Dictionary) -> bool:
 	_invulnerable = new_invulnerable
 	_invulnerability_remaining_ticks = new_invulnerability_remaining_ticks
 	_invulnerability_has_value = new_invulnerability_has_value
+	var max_profile_id := 0
+	for id in profile_ids:
+		max_profile_id = maxi(max_profile_id, int(id))
+	_combat_line_radius = PackedFloat32Array()
+	_combat_line_min_y = PackedFloat32Array()
+	_combat_line_max_y = PackedFloat32Array()
+	_combat_line_bounds_has_value = PackedByteArray()
+	_combat_line_radius.resize(max_profile_id + 1)
+	_combat_line_min_y.resize(max_profile_id + 1)
+	_combat_line_max_y.resize(max_profile_id + 1)
+	_combat_line_bounds_has_value.resize(max_profile_id + 1)
+	for i in profile_ids.size():
+		var profile_id: int = profile_ids[i]
+		_combat_line_radius[profile_id] = float(profile_radius_values[i])
+		_combat_line_min_y[profile_id] = float(profile_min_values[i])
+		_combat_line_max_y[profile_id] = float(profile_max_values[i])
+		_combat_line_bounds_has_value[profile_id] = 1
+	var max_carried_id := 0
+	for id in carried_ids:
+		max_carried_id = maxi(max_carried_id, int(id))
+	_combat_line_carried = PackedByteArray()
+	_combat_line_carried_has_value = PackedByteArray()
+	_combat_line_carried.resize(max_carried_id + 1)
+	_combat_line_carried_has_value.resize(max_carried_id + 1)
+	for i in carried_ids.size():
+		var carried_id: int = carried_ids[i]
+		_combat_line_carried[carried_id] = 1 if bool(carried_values[i]) else 0
+		_combat_line_carried_has_value[carried_id] = 1
+	_combat_line_revision += 1
 	return true
 
 
@@ -901,6 +1047,24 @@ func _ensure_invulnerability_capacity(id: int) -> void:
 	_invulnerable.resize(new_size)
 	_invulnerability_remaining_ticks.resize(new_size)
 	_invulnerability_has_value.resize(new_size)
+
+
+func _ensure_combat_line_bounds_capacity(id: int) -> void:
+	if id < _combat_line_radius.size():
+		return
+	var new_size := id + 1
+	_combat_line_radius.resize(new_size)
+	_combat_line_min_y.resize(new_size)
+	_combat_line_max_y.resize(new_size)
+	_combat_line_bounds_has_value.resize(new_size)
+
+
+func _ensure_combat_line_carried_capacity(id: int) -> void:
+	if id < _combat_line_carried.size():
+		return
+	var new_size := id + 1
+	_combat_line_carried.resize(new_size)
+	_combat_line_carried_has_value.resize(new_size)
 
 
 ## Shared parsing for restore()'s health and shields fields, which are

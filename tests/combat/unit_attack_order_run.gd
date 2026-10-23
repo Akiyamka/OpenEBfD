@@ -4,12 +4,20 @@ const LegacyRulesFixture := preload("res://tests/support/legacy_rules_fixture.gd
 const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 const FrameTickDriverScript := preload("res://scripts/match/frame_tick_driver.gd")
 const CombatTurretScript := preload("res://scripts/combat/combat_turret.gd")
+const BallisticsScript := preload("res://scripts/combat/ballistics.gd")
 const FireRequestScript := preload("res://scripts/combat/fire_request.gd")
 const SimTickPumpScript := preload("res://tests/combat/support/sim_tick_pump.gd")
 const Doubles := preload("res://tests/combat/support/combat_doubles.gd")
+const FriendlyLineOracle := preload("res://tests/combat/support/friendly_line_oracle.gd")
+const CombatLineOfFireScript := preload("res://scripts/combat/combat_line_of_fire.gd")
+const CombatLineGridScript := preload("res://scripts/sim/combat_line_grid.gd")
+const EntityNodeIndexScript := preload("res://scripts/match/entity_node_index.gd")
+const SimEntityStateScript := preload("res://scripts/sim/entity_state.gd")
 const Assertions := preload("res://tests/combat/support/combat_assertions.gd")
 const UnitScript := preload("res://scripts/units/unit.gd")
 const UnitScene := preload("res://scenes/units/unit.tscn")
+const ATAPCScene := preload("res://scenes/units/atapc.tscn")
+const ATOrniScene := preload("res://scenes/units/at_orni.tscn")
 const ATAPCModelScene := preload("res://assets/converted/models/AT_APC_H0/AT_APC_H0.scn")
 const ATInfantryModelScene := preload("res://assets/converted/models/AT_inf_H0/AT_inf_H0.scn")
 const ATMongooseModelScene := preload("res://assets/converted/models/AT_mongoose_H0/AT_mongoose_H0.scn")
@@ -29,6 +37,52 @@ class PhysicsCliff extends StaticBody3D:
 		box.size = size
 		collision.shape = box
 		add_child(collision)
+
+
+## Small real-Match seam for AO1's Match-only path: it owns the same index and
+## store interfaces as Match without running the unrelated command systems.
+class FriendlyLineMatch extends Node:
+	var index := EntityNodeIndexScript.new()
+	var state := SimEntityStateScript.new(index.registry())
+
+	func _ready() -> void:
+		add_to_group(&"match_root")
+
+	func current_tick() -> int:
+		return 1
+
+	func entity_index():
+		return index
+
+	func entity_state():
+		return state
+
+
+class PositionErrorLogger extends Logger:
+	var saw_unwritten_position := false
+
+	func _log_error(_function, _file, _line, code, rationale, _editor_notify, _error_type, _script_backtraces) -> void:
+		saw_unwritten_position = saw_unwritten_position or ("has no position" in str(code)) or ("has no position" in str(rationale))
+
+
+class ProxyStartTarget extends Doubles.PhysicsCombatTarget:
+	func combat_line_bounds() -> Dictionary:
+		return {"radius": 3.0, "min_y": -1.0, "max_y": 1.0}
+
+	func combat_line_entry_distance(from: Vector3, to: Vector3, _stored_position: Vector3) -> float:
+		# The away ray exits the proxy without touching the narrow hull; the
+		# toward ray reaches it. This is the public start-inside seam Units use.
+		return INF if to.z > from.z else from.distance_to(to) * 0.25
+
+
+class AlliedShooter extends Doubles.PhysicsCombatTarget:
+	func is_allied_with(player_id: int) -> bool:
+		return player_id == 2
+
+
+class AirTarget extends Doubles.PhysicsCombatTarget:
+	func combat_is_airborne() -> bool:
+		return true
 
 ## Same collider and layer as Doubles.PhysicsCombatTarget, but exposing the footprint
 ## hull that identifies a building rather than a unit.
@@ -51,6 +105,29 @@ class RejectingAttackNavigation extends RefCounted:
 
 	func stop(_unit: Node3D) -> void:
 		pass
+
+
+## Mirrors CombatTurret.friendly_blocks_fire()'s exact flown segment for the
+## old-ray oracle. Stationary characterization must not compare its result to
+## the ideal muzzle-to-aim line when the turret actually fires elsewhere.
+func _old_ray_turret_blocks(turret, target_or_position: Variant, shooter: Object) -> bool:
+	var emission: Dictionary = turret.peek_emission()
+	var origin := Vector3(emission["position"])
+	var aim := Vector3(target_or_position) if target_or_position is Vector3 else Vector3.ZERO
+	if not (target_or_position is Vector3):
+		var target := target_or_position as Object
+		if target == null or not target.has_method("combat_aim_position"):
+			return false
+		aim = target.call("combat_aim_position")
+	var flight_target := BallisticsScript.parallel_impact_position(
+		origin, aim, Vector3(emission["direction"])
+	)
+	var ignored: Array = [shooter]
+	if target_or_position is Object:
+		ignored.append(target_or_position as Object)
+	return FriendlyLineOracle.friendly_on_line(
+		root.get_world_3d(), origin, flight_target, shooter, ignored
+	)
 
 
 func _initialize() -> void:
@@ -77,11 +154,147 @@ func _initialize() -> void:
 		"the muzzle gate checks the line the round actually flies",
 		_test_friendly_on_the_flown_line_holds_fire
 	)
+	await _run_async_case(
+		"friendly firing lines use simulation convex hulls instead of stale bodies",
+		_test_simulation_friendly_line_geometry
+	)
+	await _run_async_case(
+		"friendly firing-line acceptance uses real hulls and static ordering",
+		_test_friendly_line_acceptance_cases
+	)
+	await _run_async_case("proxy-start hull entries retain both directions", _test_proxy_start_entries)
+	await _run_async_case("stale body crowds pierce to the static blocker", _test_stale_decoy_pierces)
+	await _run_async_case("Match line follows stored normal candidates", _test_match_normal_line_cases)
+	_run_case("Match snapshot changes with Match identity", _test_sequential_match_snapshot)
+	await _run_async_case("real Unit publishes its Match line profile and carried bit", _test_match_unit_line_publication)
+	await _run_async_case("carried cargo keeps its no-Match ray", _test_no_match_carried_line)
+	await _run_async_case("Match skips live candidates with no stored position", _test_no_position_candidate_skip)
 	_run_case(
 		"an intermittently blocked line still reaches the reposition",
 		_test_flickering_block_still_repositions
 	)
+	_run_case("combat line grid returns stable local ids across cells", _test_combat_line_grid)
+	_run_case("combat line grid walk terminates and covers boundary strips", _test_combat_line_grid_boundaries)
 	_finish("Unit attack order tests")
+
+
+func _test_combat_line_grid() -> void:
+	var grid = CombatLineGridScript.new()
+	# Insert in reverse stable-id order: query ordering must not depend on it.
+	grid.insert(42, Vector3(14.0, 0.0, 14.0), 0.5)
+	grid.insert(7, Vector3(2.0, 0.0, 2.0), 0.5)
+	grid.insert(11, Vector3(-2.0, 0.0, -2.0), 4.58)
+	_expect(grid.query_segment(Vector3(0.1, 0.0, 0.1), Vector3(16.0, 0.0, 16.0)) == PackedInt32Array([7, 11, 42]), "the long diagonal must return far and near ids ascending")
+	_expect(grid.query_segment(Vector3(-8.0, 0.0, -8.0), Vector3.ZERO).has(11), "a Minotaurus-scale radius must reach an adjacent negative cell")
+	var corner = CombatLineGridScript.new()
+	corner.insert(9, Vector3(4.1, 0.0, -0.1), 0.2)
+	_expect(corner.query_segment(Vector3.ZERO, Vector3(8.0, 0.0, 8.0)).has(9), "corner supercover must include side cells")
+	var exact_tie = CombatLineGridScript.new()
+	exact_tie.insert(12, Vector3(4.1, 0.0, 0.1), 0.0)
+	_expect(exact_tie.query_segment(Vector3.ZERO, Vector3(8.0, 0.0, 8.0)).has(12), "an exact cell-corner crossing must include its side cell")
+	var reversed = CombatLineGridScript.new()
+	reversed.insert(9, Vector3(1.0, 0.0, 1.0), 0.1)
+	reversed.insert(3, Vector3(1.5, 0.0, 1.5), 0.1)
+	_expect(reversed.query_segment(Vector3.ZERO, Vector3(3.0, 0.0, 3.0)) == PackedInt32Array([3, 9]), "reversed insertion must still return ascending ids")
+	var multi_cell = CombatLineGridScript.new()
+	multi_cell.insert(17, Vector3(4.0, 0.0, 4.0), 4.58)
+	_expect(multi_cell.query_segment(Vector3.ZERO, Vector3(8.0, 0.0, 8.0)) == PackedInt32Array([17]), "a large-radius candidate must appear only once")
+	# AO1's vertical branch has no horizontal quadratic.  Keep both arms here so
+	# a future refactor cannot silently turn a finite cylinder into a column.
+	_expect(
+		is_finite(CombatLineOfFireScript._cylinder_entry_distance(
+			Vector3(0.0, -2.0, 0.0), Vector3(0.0, 2.0, 0.0), Vector3.ZERO, 1.0, -1.0, 1.0
+		)),
+		"a vertical segment through a finite cylinder must enter it"
+	)
+	_expect(
+		is_inf(CombatLineOfFireScript._cylinder_entry_distance(
+			Vector3(3.0, -2.0, 0.0), Vector3(3.0, 2.0, 0.0), Vector3.ZERO, 1.0, -1.0, 1.0
+		)),
+		"a vertical segment outside a finite cylinder must remain clear"
+	)
+
+
+func _test_combat_line_grid_boundaries() -> void:
+	var cases: Array = [
+		[Vector3(1, 0, 1), Vector3(7.99999, 0, 8.00001)],
+		[Vector3(-0.000000001, 0, -0.000000001), Vector3(0.000000001, 0, 0.000000001)],
+		[Vector3(1, 0, 1), Vector3(7.99999, 0, 7.99999)],
+		[Vector3(1, 0, 1), Vector3(8.00001, 0, 8.00001)],
+		[Vector3(1, 0, 1), Vector3(8, 0, 8)],
+		[Vector3(1, 0, 1), Vector3(7.99999, 0, 8)],
+		[Vector3(1, 0, 1), Vector3(8, 0, 7.99999)],
+		[Vector3(1, 0, 1), Vector3(8, 0, 8.00001)],
+		[Vector3(1, 0, 1), Vector3(8.00001, 0, 8)],
+		[Vector3(1, 0, 1), Vector3(1, 0, 1)],
+		[Vector3(4, 0, 4), Vector3(4, 0, 4)],
+		[Vector3(4, 0, -8), Vector3(4, 0, 8)],
+		[Vector3(-8, 0, 4), Vector3(8, 0, 4)],
+		[Vector3(1, 0, 1), Vector3(9, 0, 1)],
+		[Vector3(1, 0, 1), Vector3(1, 0, 9)],
+	]
+	for x_sign in [-1.0, 1.0]:
+		for z_sign in [-1.0, 1.0]:
+			cases.append([
+				Vector3(x_sign, 0, z_sign),
+				Vector3(x_sign * 7.99999, 0, z_sign * 8.00001),
+			])
+	for case_index in cases.size():
+		_expect_grid_matches_reference(cases[case_index][0], cases[case_index][1], "boundary %d" % case_index)
+	var random := RandomNumberGenerator.new()
+	random.seed = 20001023
+	var jitter := [-0.00001, 0.0, 0.00001]
+	for sample in 2000:
+		var from := Vector3(
+			float(random.randi_range(-4, 4)) * 4.0 + jitter[random.randi_range(0, 2)], 0,
+			float(random.randi_range(-4, 4)) * 4.0 + jitter[random.randi_range(0, 2)]
+		)
+		var to := Vector3(
+			float(random.randi_range(-4, 4)) * 4.0 + jitter[random.randi_range(0, 2)], 0,
+			float(random.randi_range(-4, 4)) * 4.0 + jitter[random.randi_range(0, 2)]
+		)
+		_expect_grid_matches_reference(from, to, "seeded segment %d" % sample)
+
+
+func _expect_grid_matches_reference(from: Vector3, to: Vector3, label: String) -> void:
+	var grid = CombatLineGridScript.new()
+	var expected := PackedInt32Array()
+	var min_x := floori(minf(from.x, to.x) / 4.0) - 1
+	var max_x := floori(maxf(from.x, to.x) / 4.0) + 1
+	var min_z := floori(minf(from.z, to.z) / 4.0) - 1
+	var max_z := floori(maxf(from.z, to.z) / 4.0) + 1
+	for cell_x in range(min_x, max_x + 1):
+		for cell_z in range(min_z, max_z + 1):
+			var id := (cell_x + 6) * 100 + cell_z + 7
+			grid.insert(id, Vector3((float(cell_x) + 0.5) * 4.0, 0, (float(cell_z) + 0.5) * 4.0), 0)
+			if _segment_touches_closed_cell(from, to, cell_x, cell_z):
+				expected.append(id)
+	expected.sort()
+	var actual: PackedInt32Array = grid.query_segment(from, to)
+	_expect(grid.step_cap_hits() == 0, "%s: grid step cap must not be reached" % label)
+	for id in expected:
+		_expect(actual.has(id), "%s (%s -> %s): missed touched cell id %d; got %s" % [label, from, to, id, actual])
+
+
+func _segment_touches_closed_cell(from: Vector3, to: Vector3, cell_x: int, cell_z: int) -> bool:
+	var low := Vector2(float(cell_x) * 4.0, float(cell_z) * 4.0)
+	var high := low + Vector2(4.0, 4.0)
+	var start := Vector2(from.x, from.z)
+	var delta := Vector2(to.x - from.x, to.z - from.z)
+	var enter := 0.0
+	var leave := 1.0
+	for axis in 2:
+		var value := start[axis]
+		var direction := delta[axis]
+		if direction == 0.0:
+			if value < low[axis] or value > high[axis]:
+				return false
+			continue
+		var first := (low[axis] - value) / direction
+		var last := (high[axis] - value) / direction
+		enter = maxf(enter, minf(first, last))
+		leave = minf(leave, maxf(first, last))
+	return enter <= leave
 
 func _test_unit_attack_order() -> void:
 	var unit = UnitScene.instantiate()
@@ -644,14 +857,23 @@ func _test_friendly_on_the_line_holds_fire() -> void:
 		"the friendly-fire regression must begin with the target inside weapon range"
 	)
 	_expect(
+		not _old_ray_turret_blocks(turret, target, attacker),
+		"the open muzzle-line old-ray oracle must stay clear"
+	)
+	_expect(
 		not turret.friendly_blocks_fire(target, attacker),
 		"an open muzzle line must not be reported as friendly-blocked"
 	)
 
 	var squadmate := Doubles.PhysicsCombatTarget.new(midpoint, 2.5)
 	squadmate.owner_player_id = attacker.owner_player_id
+	squadmate.add_to_group(&"sim_units")
 	root.add_child(squadmate)
 	await physics_frame
+	_expect(
+		_old_ray_turret_blocks(turret, target, attacker),
+		"the stationary friendly muzzle-line old-ray oracle must hit the squadmate"
+	)
 	_expect(
 		turret.has_line_of_fire(target, attacker),
 		"a squadmate must not count as an obstruction: the shell would still arrive"
@@ -666,6 +888,10 @@ func _test_friendly_on_the_line_holds_fire() -> void:
 	squadmate.get_parent().remove_child(squadmate)
 	root.add_child(enemy_blocker)
 	await physics_frame
+	_expect(
+		not _old_ray_turret_blocks(turret, target, attacker),
+		"the enemy-body muzzle-line old-ray oracle must stay clear"
+	)
 	_expect(
 		not turret.friendly_blocks_fire(target, attacker),
 		"an enemy body on the line is a target, not a reason to hold the shot"
@@ -702,6 +928,10 @@ func _test_friendly_on_the_line_holds_fire() -> void:
 
 	squadmate.free()
 	await physics_frame
+	_expect(
+		not _old_ray_turret_blocks(turret, target, attacker),
+		"the removed-squadmate muzzle-line old-ray oracle must clear"
+	)
 	_expect(
 		not turret.friendly_blocks_fire(target, attacker),
 		"removing the squadmate must clear the friendly block"
@@ -799,8 +1029,13 @@ func _test_friendly_arriving_mid_clip_cancels_the_shot() -> void:
 
 	var squadmate := Doubles.PhysicsCombatTarget.new(midpoint, 2.5)
 	squadmate.owner_player_id = attacker.owner_player_id
+	squadmate.add_to_group(&"sim_units")
 	root.add_child(squadmate)
 	await physics_frame
+	_expect(
+		_old_ray_turret_blocks(turret, target, attacker),
+		"the arriving-mid-clip old-ray oracle must hit the squadmate on the flown line"
+	)
 	_expect(
 		turret.friendly_blocks_fire(target, attacker),
 		"the arriving squadmate must land on the muzzle line"
@@ -856,9 +1091,21 @@ func _test_friendly_on_the_flown_line_holds_fire() -> void:
 	on_heading.y = muzzle.y * 0.5
 	var squadmate := Doubles.PhysicsCombatTarget.new(on_heading, 0.9)
 	squadmate.owner_player_id = attacker.owner_player_id
+	squadmate.add_to_group(&"sim_units")
 	root.add_child(squadmate)
 	await physics_frame
 
+	var current_emission: Dictionary = turret.peek_emission()
+	var current_origin := Vector3(current_emission["position"])
+	var flown_target := BallisticsScript.parallel_impact_position(
+		current_origin, ground, Vector3(current_emission["direction"])
+	)
+	_expect(
+		FriendlyLineOracle.friendly_on_line(
+			root.get_world_3d(), current_origin, flown_target, attacker
+		),
+		"the flown-line stationary old-ray oracle must hit the squadmate"
+	)
 	_expect(
 		turret.friendly_blocks_fire(ground, attacker),
 		"a squadmate on the muzzle's actual heading must read as friendly-blocking"
@@ -883,6 +1130,682 @@ func _test_friendly_on_the_flown_line_holds_fire() -> void:
 			projectile.free()
 	squadmate.free()
 	attacker.free()
+
+
+func _test_no_position_candidate_skip() -> void:
+	var line_match := FriendlyLineMatch.new()
+	root.add_child(line_match)
+	var shooter := Doubles.PhysicsCombatTarget.new(Vector3(-1.0, 0.0, 0.0), 0.1)
+	shooter.owner_player_id = 1
+	root.add_child(shooter)
+	var unwritten := Doubles.PhysicsCombatTarget.new(Vector3(5.0, 0.0, 0.0), 0.5)
+	unwritten.owner_player_id = 1
+	unwritten.add_to_group(&"sim_units")
+	root.add_child(unwritten)
+	var unwritten_id: int = line_match.index.register(unwritten, 1)
+	line_match.state.set_combat_line_bounds(unwritten_id, 0.51, -0.51, 0.51)
+	line_match.state.set_combat_line_carried(unwritten_id, false)
+	var logger := PositionErrorLogger.new()
+	OS.add_logger(logger)
+	var result := CombatLineOfFireScript.friendly_on_line(root.get_world_3d(), Vector3.ZERO, Vector3(10.0, 0.0, 0.0), shooter)
+	OS.remove_logger(logger)
+	_expect(not result and not logger.saw_unwritten_position, "a live candidate without a stored position must be skipped without a SimEntityState.position error")
+	unwritten.free()
+	shooter.free()
+	line_match.free()
+
+
+func _test_stale_decoy_pierces() -> void:
+	for count in [9, 64, 1000]:
+		var line_match := FriendlyLineMatch.new()
+		root.add_child(line_match)
+		var shooter := Doubles.PhysicsCombatTarget.new(Vector3(-1.0, 0.0, 0.0), 0.05)
+		shooter.owner_player_id = 1
+		root.add_child(shooter)
+		var decoys: Array[Node] = []
+		var excludes: Array[RID] = [shooter.get_rid()]
+		for index in count:
+			var decoy := Doubles.PhysicsCombatTarget.new(Vector3(0.5 + float(index) * 7.0 / float(count), 0.0, 0.0), 0.01)
+			decoy.owner_player_id = 2
+			decoy.add_to_group(&"sim_units")
+			root.add_child(decoy)
+			var decoy_id: int = line_match.index.register(decoy, 1)
+			line_match.state.set_position(decoy_id, Vector3(100.0 + index, 0.0, 0.0))
+			line_match.state.set_combat_line_bounds(decoy_id, 0.02, -0.02, 0.02)
+			line_match.state.set_combat_line_carried(decoy_id, false)
+			excludes.append(decoy.get_rid())
+			decoys.append(decoy)
+		var friend := Doubles.PhysicsCombatTarget.new(Vector3(10.0, 0.0, 0.0), 0.5)
+		friend.owner_player_id = 1
+		friend.add_to_group(&"sim_units")
+		root.add_child(friend)
+		var friend_id: int = line_match.index.register(friend, 1)
+		line_match.state.set_position(friend_id, friend.global_position)
+		line_match.state.set_combat_line_bounds(friend_id, 0.51, -0.51, 0.51)
+		line_match.state.set_combat_line_carried(friend_id, false)
+		excludes.append(friend.get_rid())
+		var blocker := PhysicsCliff.new(Vector3(8.0, 0.0, 0.0), Vector3(0.3, 2.0, 2.0))
+		root.add_child(blocker)
+		await physics_frame
+		var world := root.get_world_3d()
+		_expect(CombatLineOfFireScript._first_obstruction_distance(world, Vector3.ZERO, Vector3(12.0, 0.0, 0.0), excludes) < INF, "the %d-decoy all-RID reference must reach terrain" % count)
+		_expect(not CombatLineOfFireScript.friendly_on_line(world, Vector3.ZERO, Vector3(12.0, 0.0, 0.0), shooter), "the %d stale decoys must not hide the static blocker" % count)
+		blocker.free()
+		friend.free()
+		var cargo := Doubles.PhysicsCombatTarget.new(Vector3(10.0, 0.0, 0.0), 0.25)
+		cargo.owner_player_id = 1
+		cargo.carried = true
+		cargo.add_to_group(&"sim_units")
+		root.add_child(cargo)
+		var cargo_id: int = line_match.index.register(cargo, 1)
+		line_match.state.set_position(cargo_id, Vector3(50.0, 0.0, 0.0))
+		line_match.state.set_combat_line_bounds(cargo_id, 0.26, -0.26, 0.26)
+		line_match.state.set_combat_line_carried(cargo_id, true)
+		await physics_frame
+		var reference_query := PhysicsRayQueryParameters3D.create(
+			Vector3.ZERO, Vector3(11.5, 0.0, 0.0), 3, excludes
+		)
+		var reference_hit := world.direct_space_state.intersect_ray(reference_query)
+		_expect(reference_hit.get("collider") == cargo, "the %d-decoy all-RID reference must reach carried cargo" % count)
+		_expect(CombatLineOfFireScript.friendly_on_line(world, Vector3.ZERO, Vector3(12.0, 0.0, 0.0), shooter), "the %d stale decoys must not hide carried cargo" % count)
+		cargo.free()
+		for decoy in decoys:
+			decoy.free()
+		shooter.free()
+		line_match.free()
+		await process_frame
+
+
+func _test_match_normal_line_cases() -> void:
+	var line_match := FriendlyLineMatch.new()
+	root.add_child(line_match)
+	var shooter := Doubles.PhysicsCombatTarget.new(Vector3(-2.0, 0.0, 0.0), 0.1)
+	shooter.owner_player_id = 1
+	root.add_child(shooter)
+	var friend := Doubles.PhysicsCombatTarget.new(Vector3(5.0, 0.0, 0.0), 0.4)
+	friend.owner_player_id = 1
+	friend.add_to_group(&"sim_units")
+	root.add_child(friend)
+	var id: int = line_match.index.register(friend, 1)
+	line_match.state.set_position(id, Vector3(5.0, 0.0, 8.0))
+	line_match.state.set_combat_line_bounds(id, 0.41, -0.41, 0.41)
+	line_match.state.set_combat_line_carried(id, false)
+	var world := root.get_world_3d()
+	var from := Vector3.ZERO
+	var to := Vector3(12.0, 0.0, 0.0)
+	line_match.state.begin_tick()
+	line_match.state.set_position(id, Vector3(5.0, 0.0, 0.0))
+	_expect(CombatLineOfFireScript.friendly_on_line(world, from, to, shooter), "post-navigation movement into the line must build the Match grid from current store position")
+	line_match.state.set_position(id, Vector3(5.0, 0.0, 8.0))
+	_expect(not CombatLineOfFireScript.friendly_on_line(world, from, to, shooter), "a same-tick cross-cell exit must clear the Match line")
+	line_match.state.set_position(id, Vector3(8.0, 0.0, 0.0))
+	_expect(CombatLineOfFireScript.friendly_on_line(world, from, to, shooter), "a same-tick cross-cell entry must block the Match line")
+	friend.set_meta("combat_ignore", true)
+	_expect(not CombatLineOfFireScript.friendly_on_line(world, from, to, shooter), "a Match combat-ignore friendly must not block")
+	friend.remove_meta("combat_ignore")
+	line_match.state.set_position(id, Vector3(6.2, 0.0, 0.0))
+	line_match.state.set_combat_line_bounds(id, 0.81, -0.41, 0.41)
+	var near_blocker := Doubles.PhysicsBuildingBlocker.new(Vector3(5.7, 0.0, 0.0), 0.1)
+	root.add_child(near_blocker)
+	await physics_frame
+	_expect(CombatLineOfFireScript.friendly_on_line(world, from, to, shooter), "a Match cylinder entry before a blocker wins when its centre lies behind")
+	near_blocker.free()
+	var ally_shooter := AlliedShooter.new(Vector3(-2.0, 0.0, 0.0), 0.1)
+	ally_shooter.owner_player_id = 1
+	root.add_child(ally_shooter)
+	friend.owner_player_id = 2
+	_expect(CombatLineOfFireScript.friendly_on_line(world, from, to, ally_shooter), "different-owner allies must block a Match firing line")
+	ally_shooter.free()
+	var aircraft := AirTarget.new(Vector3(5.0, 3.0, 0.0), 0.4)
+	aircraft.owner_player_id = 1
+	aircraft.add_to_group(&"sim_units")
+	root.add_child(aircraft)
+	var air_id: int = line_match.index.register(aircraft, 1)
+	line_match.state.set_position(air_id, aircraft.global_position)
+	line_match.state.set_combat_line_bounds(air_id, 0.41, -0.41, 0.41)
+	line_match.state.set_combat_line_carried(air_id, false)
+	_expect(CombatLineOfFireScript.friendly_on_line(world, Vector3(0.0, 3.0, 0.0), Vector3(12.0, 3.0, 0.0), shooter), "an admitted Match aircraft must block its airborne line")
+	aircraft.free()
+	friend.free()
+	shooter.free()
+	line_match.free()
+
+
+func _test_sequential_match_snapshot() -> void:
+	var world := root.get_world_3d()
+	var from := Vector3.ZERO
+	var to := Vector3(12.0, 0.0, 0.0)
+	for match_number in 2:
+		var line_match := FriendlyLineMatch.new()
+		root.add_child(line_match)
+		var shooter := Doubles.PhysicsCombatTarget.new(Vector3(-2.0, 0.0, 0.0), 0.1)
+		shooter.owner_player_id = 1
+		root.add_child(shooter)
+		var friend_position := Vector3(5.0, 0.0, 8.0) if match_number == 0 else Vector3(5.0, 0.0, 0.0)
+		var friend := Doubles.PhysicsCombatTarget.new(friend_position, 0.4)
+		friend.owner_player_id = 1
+		friend.add_to_group(&"sim_units")
+		root.add_child(friend)
+		var id: int = line_match.index.register(friend, 1)
+		line_match.state.set_position(id, friend_position)
+		line_match.state.set_combat_line_bounds(id, 0.41, -0.41, 0.41)
+		line_match.state.set_combat_line_carried(id, false)
+		var verdict := CombatLineOfFireScript.friendly_on_line(world, from, to, shooter)
+		_expect(verdict == (match_number == 1), "sequential Match %d must use its own grid at the same tick and revision" % match_number)
+		friend.free()
+		shooter.free()
+		line_match.free()
+
+
+func _test_match_unit_line_publication() -> void:
+	var line_match := FriendlyLineMatch.new()
+	root.add_child(line_match)
+	var shooter := Doubles.PhysicsCombatTarget.new(Vector3(-3.0, 1.0, 0.75), 0.1)
+	shooter.owner_player_id = 1
+	root.add_child(shooter)
+	var apc := ATAPCScene.instantiate()
+	apc.owner_player_id = 1
+	apc.position = Vector3(5.0, 0.0, 0.0)
+	line_match.add_child(apc)
+	apc.set_simulation_position(Vector3(5.0, 0.0, 0.0))
+	await process_frame
+	await physics_frame
+	var id: int = apc.entity_id
+	var state = line_match.state
+	_expect(id != 0 and state.has_combat_line_bounds(id), "a real Match APC must publish its installed hull profile")
+	if id != 0 and state.has_combat_line_bounds(id):
+		_expect(state.combat_line_radius(id) > 1.8, "the real APC stored profile must enclose its authored hull")
+		_expect(CombatLineOfFireScript.friendly_on_line(root.get_world_3d(), Vector3(0.0, 1.0, 0.75), Vector3(10.0, 1.0, 0.75), shooter), "a real Match APC must block an off-centre authored-hull line")
+		var carrier := Node3D.new()
+		line_match.add_child(carrier)
+		apc._set_transport_carrier(carrier)
+		_expect(state.combat_line_carried(id), "a real Unit carrier setter must publish the Match carried bit")
+		carrier.free()
+	apc.free()
+	shooter.free()
+	line_match.free()
+
+
+func _test_no_match_carried_line() -> void:
+	var shooter := Doubles.PhysicsCombatTarget.new(Vector3(-2.0, 0.0, 0.0), 0.1)
+	shooter.owner_player_id = 1
+	root.add_child(shooter)
+	var cargo := Doubles.PhysicsCombatTarget.new(Vector3(5.0, 0.0, 0.0), 0.4)
+	cargo.owner_player_id = 1
+	cargo.carried = true
+	cargo.add_to_group(&"sim_units")
+	root.add_child(cargo)
+	await physics_frame
+	_expect(CombatLineOfFireScript.friendly_on_line(root.get_world_3d(), Vector3.ZERO, Vector3(10.0, 0.0, 0.0), shooter), "no-Match carried cargo must remain on the legacy ray")
+	cargo.free()
+	shooter.free()
+
+
+func _test_proxy_start_entries() -> void:
+	var line_match := FriendlyLineMatch.new()
+	root.add_child(line_match)
+	var shooter := Doubles.PhysicsCombatTarget.new(Vector3(-5.0, 0.0, 0.0), 0.1)
+	shooter.owner_player_id = 1
+	root.add_child(shooter)
+	var candidate := ProxyStartTarget.new(Vector3.ZERO, 0.1)
+	candidate.owner_player_id = 1
+	candidate.add_to_group(&"sim_units")
+	root.add_child(candidate)
+	var id: int = line_match.index.register(candidate, 1)
+	line_match.state.set_position(id, Vector3.ZERO)
+	line_match.state.set_combat_line_bounds(id, 3.0, -1.0, 1.0)
+	line_match.state.set_combat_line_carried(id, false)
+	await physics_frame
+	var world := root.get_world_3d()
+	var start := Vector3(1.0, 0.0, 0.6)
+	_expect(
+		not CombatLineOfFireScript.friendly_on_line(world, start, Vector3(3.0, 0.0, 1.6), shooter),
+		"a muzzle inside only the proxy must remain clear when aimed away from the hull"
+	)
+	_expect(
+		CombatLineOfFireScript.friendly_on_line(world, start, Vector3(1.0, 0.0, -2.0), shooter),
+		"a muzzle inside the proxy must block when its narrow hull entry lies ahead"
+	)
+	_expect(
+		CombatLineOfFireScript.friendly_on_line(world, start, Vector3(1.6, 0.0, -0.2), shooter),
+		"a tangent-forward proxy start must still reach its narrow hull entry"
+	)
+	candidate.free()
+	shooter.free()
+	line_match.free()
+
+
+## AO1 keeps this deliberately close to the physics oracle: a body begins
+## settled, then the two immediate moves prove the new answer follows the
+## tick-owned position rather than the delayed broadphase snapshot.
+func _test_simulation_friendly_line_geometry() -> void:
+	var line_match := FriendlyLineMatch.new()
+	root.add_child(line_match)
+	var shooter := Doubles.PhysicsCombatTarget.new(Vector3(-2.0, 0.0, 0.0), 0.25)
+	shooter.owner_player_id = 1
+	root.add_child(shooter)
+	var squadmate := Doubles.PhysicsCombatTarget.new(Vector3(5.0, 0.0, 0.0), 1.0)
+	squadmate.owner_player_id = 1
+	squadmate.add_to_group(&"sim_units")
+	root.add_child(squadmate)
+	var squadmate_id: int = line_match.index.register(squadmate, 1)
+	line_match.state.set_position(squadmate_id, squadmate.global_position)
+	line_match.state.set_combat_line_bounds(squadmate_id, 1.01, -1.01, 1.01)
+	line_match.state.set_combat_line_carried(squadmate_id, false)
+	var from := Vector3.ZERO
+	var to := Vector3(10.0, 0.0, 0.0)
+	# Exercise the public perch route as well as the helper below.  Its own
+	# collider is well away from the deliberately fixed probe segment.
+	var route_attacker := UnitScene.instantiate()
+	route_attacker.config_id = &"ATAPC"
+	root.add_child(route_attacker)
+	route_attacker.replace_visual_scene(ATAPCModelScene)
+	route_attacker.owner_player_id = 1
+	route_attacker.global_position = Vector3(-10.0, 0.0, -10.0)
+	var route_turret = route_attacker.combat_turrets[0]
+	await physics_frame
+	var world := root.get_world_3d()
+	_expect(
+		FriendlyLineOracle.friendly_on_line(world, from, to, shooter),
+		"the stationary friendly-line geometry case must begin with the old-ray hit"
+	)
+	_expect(
+		CombatLineOfFireScript.friendly_on_line(world, from, to, shooter),
+		"a stationary convex hull must agree with the old body ray"
+	)
+
+	# The node has settled off the line, then the tick state moves onto it before
+	# another physics frame. The oracle must still see the old body position.
+	squadmate.global_position = Vector3(5.0, 0.0, 3.0)
+	squadmate.has_authoritative_position = true
+	squadmate.authoritative_position = squadmate.global_position
+	await physics_frame
+	squadmate.global_position = Vector3(5.0, 0.0, 0.0)
+	squadmate.authoritative_position = squadmate.global_position
+	line_match.state.set_position(squadmate_id, squadmate.authoritative_position)
+	_expect(
+		not FriendlyLineOracle.friendly_on_line(world, from, to, shooter),
+		"the immediate-entry old-ray precondition must still see the off-line body"
+	)
+	_expect(
+		CombatLineOfFireScript.friendly_on_line(world, from, to, shooter),
+		"an immediate entry must use the tick position before physics catches up"
+	)
+	_expect(
+		not FriendlyLineOracle.friendly_on_line(world, from, to, route_attacker),
+		"the public immediate-entry old-ray precondition must still see the off-line body"
+	)
+	_expect(
+		route_turret.friendly_blocks_fire_from(from, to, route_attacker),
+		"the public perch route must use the tick position on immediate entry"
+	)
+	await physics_frame
+	squadmate.global_position = Vector3(5.0, 0.0, 3.0)
+	squadmate.authoritative_position = squadmate.global_position
+	line_match.state.set_position(squadmate_id, squadmate.authoritative_position)
+	_expect(
+		FriendlyLineOracle.friendly_on_line(world, from, to, shooter),
+		"the immediate-exit old-ray precondition must still see the prior on-line body"
+	)
+	_expect(
+		not CombatLineOfFireScript.friendly_on_line(world, from, to, shooter),
+		"an immediate exit must stop using the stale broadphase body"
+	)
+	_expect(
+		FriendlyLineOracle.friendly_on_line(world, from, to, route_attacker),
+		"the public immediate-exit old-ray precondition must see the prior body"
+	)
+	_expect(
+		not route_turret.friendly_blocks_fire_from(from, to, route_attacker),
+		"the public perch route must ignore the stale body on immediate exit"
+	)
+
+	# Node and store can disagree without any pending physics move; this pins the
+	# accessor rather than relying on the immediate-move setup above.
+	await physics_frame
+	squadmate.authoritative_position = Vector3(5.0, 0.0, 0.0)
+	line_match.state.set_position(squadmate_id, squadmate.authoritative_position)
+	_expect(
+		not FriendlyLineOracle.friendly_on_line(world, from, to, shooter),
+		"the store/node disagreement oracle must remain visibly off-line"
+	)
+	_expect(
+		CombatLineOfFireScript.friendly_on_line(world, from, to, shooter),
+		"the convex query must read simulation_position rather than global_position"
+	)
+	_expect(
+		not FriendlyLineOracle.friendly_on_line(world, from, to, route_attacker),
+		"the public store/node oracle must remain visibly off-line"
+	)
+	_expect(
+		route_turret.friendly_blocks_fire_from(from, to, route_attacker),
+		"the public perch route must read simulation_position rather than global_position"
+	)
+
+	# A segment beginning inside a hull is not a friendly hit, matching the
+	# physics query's documented hit_from_inside=false default.
+	squadmate.global_position = from
+	squadmate.authoritative_position = from
+	line_match.state.set_position(squadmate_id, squadmate.authoritative_position)
+	await process_frame
+	await physics_frame
+	_expect(
+		not FriendlyLineOracle.friendly_on_line(world, from, to, shooter),
+		"the muzzle-start-inside old-ray oracle must stay clear"
+	)
+	_expect(
+		not CombatLineOfFireScript.friendly_on_line(world, from, to, shooter),
+		"a muzzle beginning inside a convex friendly hull must not self-block"
+	)
+
+	# The full 3D segment, not a horizontal column, decides these two cases.
+	squadmate.global_position = Vector3(5.0, 3.0, 0.0)
+	squadmate.authoritative_position = squadmate.global_position
+	line_match.state.set_position(squadmate_id, squadmate.authoritative_position)
+	await physics_frame
+	_expect(
+		not FriendlyLineOracle.friendly_on_line(world, from, to, shooter),
+		"the hull-above-ground old-ray oracle must stay clear"
+	)
+	_expect(
+		not CombatLineOfFireScript.friendly_on_line(world, from, to, shooter),
+		"a friendly hull above a ground line must not form an infinite column"
+	)
+	squadmate.global_position = Vector3(5.0, 0.0, 0.0)
+	squadmate.authoritative_position = squadmate.global_position
+	line_match.state.set_position(squadmate_id, squadmate.authoritative_position)
+	await physics_frame
+	_expect(
+		not FriendlyLineOracle.friendly_on_line(
+			world, from, Vector3(10.0, 5.0, 0.0), shooter
+		),
+		"the climbing-line old-ray oracle must stay clear"
+	)
+	_expect(
+		not CombatLineOfFireScript.friendly_on_line(
+			world, from, Vector3(10.0, 5.0, 0.0), shooter
+		),
+		"a climbing line above a ground hull must not be horizontally blocked"
+	)
+
+	# Static terrain/building entry distance limits the geometric result. The
+	# friendly's centre is beyond the blocker, but its leading face can be before
+	# it in the first case.
+	squadmate.global_position = Vector3(7.0, 0.0, 0.0)
+	squadmate.authoritative_position = squadmate.global_position
+	line_match.state.set_position(squadmate_id, squadmate.authoritative_position)
+	var wall := Doubles.PhysicsBuildingBlocker.new(Vector3(5.0, 0.0, 0.0), 0.5)
+	root.add_child(wall)
+	await physics_frame
+	_expect(
+		not FriendlyLineOracle.friendly_on_line(world, from, to, shooter),
+		"the wholly-behind-building old-ray oracle must stay clear"
+	)
+	_expect(
+		not CombatLineOfFireScript.friendly_on_line(world, from, to, shooter),
+		"a friendly wholly behind a building must not block the line"
+	)
+	wall.free()
+	var cliff := PhysicsCliff.new(Vector3(5.0, 0.0, 0.0), Vector3(1.0, 3.0, 3.0))
+	root.add_child(cliff)
+	await physics_frame
+	_expect(
+		not FriendlyLineOracle.friendly_on_line(world, from, to, shooter),
+		"the wholly-behind-terrain old-ray oracle must stay clear"
+	)
+	_expect(
+		not CombatLineOfFireScript.friendly_on_line(world, from, to, shooter),
+		"a friendly wholly behind terrain must not block the line"
+	)
+	cliff.free()
+
+	# Carried cargo intentionally remains a ray exception: its store says pickup
+	# while its collider follows the carrier visual pose.
+	squadmate.carried = true
+	squadmate.global_position = Vector3(5.0, 0.0, 0.0)
+	squadmate.authoritative_position = Vector3(50.0, 0.0, 0.0)
+	line_match.state.set_position(squadmate_id, squadmate.authoritative_position)
+	line_match.state.set_combat_line_carried(squadmate_id, true)
+	await physics_frame
+	_expect(
+		FriendlyLineOracle.friendly_on_line(world, from, to, shooter),
+		"the carried-cargo case must begin with the retained old-ray hit"
+	)
+	_expect(
+		CombatLineOfFireScript.friendly_on_line(world, from, to, shooter),
+		"carried cargo must retain the legacy physics-ray behavior"
+	)
+
+	squadmate.free()
+	shooter.free()
+	route_attacker.free()
+	line_match.free()
+
+
+func _test_friendly_line_acceptance_cases() -> void:
+	var shooter := Doubles.PhysicsCombatTarget.new(Vector3(-2.0, 1.0, 0.0), 0.25)
+	shooter.owner_player_id = 1
+	root.add_child(shooter)
+	var world := root.get_world_3d()
+	var from := Vector3(0.0, 1.0, 0.75)
+	var to := Vector3(10.0, 1.0, 0.75)
+
+	# This must be the authored scene, not UnitScene plus replace_visual_scene:
+	# _ready has already installed its first body's collision shapes by then.
+	var apc := ATAPCScene.instantiate()
+	root.add_child(apc)
+	apc.owner_player_id = 1
+	apc.global_position = Vector3(5.0, 0.0, 0.0)
+	await physics_frame
+	_expect(
+		absf(from.z - apc.global_position.z) >= 0.5,
+		"the real APC line must remain at least 0.5 world units off its centre"
+	)
+	_expect(
+		FriendlyLineOracle.friendly_on_line(world, from, to, shooter),
+		"the off-centre real APC line must begin with an authored-body ray hit"
+	)
+	_expect(
+		CombatLineOfFireScript.friendly_on_line(world, from, to, shooter),
+		"the off-centre real APC authored hull must block beyond combat_hit_radius"
+	)
+	apc.free()
+
+	var aircraft := ATOrniScene.instantiate()
+	root.add_child(aircraft)
+	aircraft.owner_player_id = 1
+	aircraft.global_position = Vector3(5.0, 4.0, 0.0)
+	await physics_frame
+	_expect(
+		not FriendlyLineOracle.friendly_on_line(
+			world, Vector3(0.0, 1.0, 0.0), Vector3(10.0, 1.0, 0.0), shooter
+		),
+		"the aircraft-above-ground old-ray precondition must be clear"
+	)
+	_expect(
+		not FriendlyLineOracle.friendly_on_line(
+			world, Vector3(0.0, 0.0, 0.0), Vector3(10.0, 5.0, 0.0), shooter
+		),
+		"the ground-friendly climbing old-ray oracle must stay clear"
+	)
+	_expect(
+		not CombatLineOfFireScript.friendly_on_line(
+			world, Vector3(0.0, 1.0, 0.0), Vector3(10.0, 1.0, 0.0), shooter
+		),
+		"a real aircraft above a ground line must not form an infinite column"
+	)
+	aircraft.global_position = Vector3(5.0, 2.5, 0.0)
+	await physics_frame
+	_expect(
+		FriendlyLineOracle.friendly_on_line(
+			world, Vector3(0.0, 2.5, 0.0), Vector3(10.0, 2.5, 0.0), shooter
+		),
+		"the actual-aircraft-hit line must begin with a real collider hit"
+	)
+	_expect(
+		CombatLineOfFireScript.friendly_on_line(
+			world, Vector3(0.0, 2.5, 0.0), Vector3(10.0, 2.5, 0.0), shooter
+		),
+		"a line through the real aircraft hull centre must block"
+	)
+	aircraft.free()
+
+	var ground_friend := Doubles.PhysicsCombatTarget.new(Vector3(5.0, 0.0, 0.0), 1.0)
+	ground_friend.owner_player_id = 1
+	ground_friend.add_to_group(&"sim_units")
+	root.add_child(ground_friend)
+	await physics_frame
+	_expect(
+		not FriendlyLineOracle.friendly_on_line(
+			world, Vector3(0.0, 0.0, 0.0), Vector3(10.0, 5.0, 0.0), shooter
+		),
+		"the ground-friendly climbing old-ray oracle must stay clear"
+	)
+	_expect(
+		not CombatLineOfFireScript.friendly_on_line(
+			world, Vector3(0.0, 0.0, 0.0), Vector3(10.0, 5.0, 0.0), shooter
+		),
+		"a real 3D climb over a ground friendly must not be horizontally blocked"
+	)
+
+	var blocker := Doubles.PhysicsBuildingBlocker.new(Vector3(5.7, 0.0, 0.0), 0.3)
+	root.add_child(blocker)
+	ground_friend.global_position = Vector3(6.2, 0.0, 0.0)
+	ground_friend.authoritative_position = ground_friend.global_position
+	await physics_frame
+	_expect(
+		FriendlyLineOracle.friendly_on_line(
+			world, Vector3.ZERO, Vector3(10.0, 0.0, 0.0), shooter
+		),
+		"the entry-before-blocker old-ray oracle must hit the friendly first"
+	)
+	_expect(
+		CombatLineOfFireScript.friendly_on_line(
+			world, Vector3.ZERO, Vector3(10.0, 0.0, 0.0), shooter
+		),
+		"a friendly hull entry before a blocker must win even when its centre is behind it"
+	)
+	blocker.free()
+	var before_building := Doubles.PhysicsBuildingBlocker.new(Vector3(6.0, 0.0, 0.0), 0.5)
+	ground_friend.global_position = Vector3(3.0, 0.0, 0.0)
+	ground_friend.authoritative_position = ground_friend.global_position
+	root.add_child(before_building)
+	await physics_frame
+	_expect(
+		FriendlyLineOracle.friendly_on_line(world, Vector3.ZERO, Vector3(10.0, 0.0, 0.0), shooter),
+		"the friendly-before-building old-ray oracle must hit the friendly first"
+	)
+	_expect(
+		CombatLineOfFireScript.friendly_on_line(world, Vector3.ZERO, Vector3(10.0, 0.0, 0.0), shooter),
+		"a friendly wholly before a building must still block"
+	)
+	before_building.free()
+	var before_terrain := PhysicsCliff.new(Vector3(6.0, 0.0, 0.0), Vector3(1.0, 3.0, 3.0))
+	root.add_child(before_terrain)
+	await physics_frame
+	_expect(
+		FriendlyLineOracle.friendly_on_line(world, Vector3.ZERO, Vector3(10.0, 0.0, 0.0), shooter),
+		"the friendly-before-terrain old-ray oracle must hit the friendly first"
+	)
+	_expect(
+		CombatLineOfFireScript.friendly_on_line(world, Vector3.ZERO, Vector3(10.0, 0.0, 0.0), shooter),
+		"a friendly wholly before terrain must still block"
+	)
+	before_terrain.free()
+
+	# A combat-ignore building is pierced by both the independent old ray and
+	# the static-limit ray, so the friendly behind it remains a real blocker.
+	var ignored_building := Doubles.PhysicsBuildingBlocker.new(Vector3(4.0, 0.0, 0.0), 0.5)
+	ignored_building.set_meta("combat_ignore", true)
+	root.add_child(ignored_building)
+	ground_friend.global_position = Vector3(7.0, 0.0, 0.0)
+	ground_friend.authoritative_position = ground_friend.global_position
+	await physics_frame
+	_expect(
+		FriendlyLineOracle.friendly_on_line(world, Vector3.ZERO, Vector3(10.0, 0.0, 0.0), shooter),
+		"the combat-ignore building oracle must pierce to the friendly"
+	)
+	_expect(
+		CombatLineOfFireScript.friendly_on_line(world, Vector3.ZERO, Vector3(10.0, 0.0, 0.0), shooter),
+		"a combat-ignore blocker before a friendly must not limit the hull verdict"
+	)
+	ignored_building.free()
+	ground_friend.free()
+
+	var crowd_blocker := PhysicsCliff.new(Vector3(5.5, 0.0, 0.0), Vector3(0.5, 3.0, 3.0))
+	root.add_child(crowd_blocker)
+	var enemies: Array[Node] = []
+	for index in 9:
+		var enemy := Doubles.PhysicsCombatTarget.new(Vector3(0.8 + index * 0.5, 0.0, 0.0), 0.2)
+		enemy.owner_player_id = 2
+		enemy.add_to_group(&"sim_units")
+		root.add_child(enemy)
+		enemies.append(enemy)
+	var rear_friend := Doubles.PhysicsCombatTarget.new(Vector3(7.0, 0.0, 0.0), 0.8)
+	rear_friend.owner_player_id = 1
+	rear_friend.add_to_group(&"sim_units")
+	root.add_child(rear_friend)
+	await physics_frame
+	await physics_frame
+	var crowd_excludes: Array[RID] = [shooter.get_rid(), rear_friend.get_rid()]
+	for enemy in enemies:
+		crowd_excludes.append((enemy as CollisionObject3D).get_rid())
+	_expect(
+		CombatLineOfFireScript._first_obstruction_distance(
+			world, Vector3.ZERO, Vector3(9.5, 0.0, 0.0), crowd_excludes
+		) < INF,
+		"the crowd setup must leave the terrain blocker visible after normal body RID exclusion"
+	)
+	_expect(
+		not FriendlyLineOracle.friendly_on_line(
+			world, Vector3.ZERO, Vector3(10.0, 0.0, 0.0), shooter
+		),
+		"the nine-enemy crowd old-ray oracle must exhaust without a friendly hit"
+	)
+	_expect(
+		not CombatLineOfFireScript.friendly_on_line(world, Vector3.ZERO, Vector3(10.0, 0.0, 0.0), shooter),
+		"nine enemy bodies cannot consume the static ray's eight pierces before its blocker"
+	)
+	for enemy in enemies:
+		enemy.free()
+	rear_friend.free()
+	crowd_blocker.free()
+
+	# Both public turret routes pass ignored target identity down to the helper.
+	var attacker = UnitScene.instantiate()
+	attacker.config_id = &"ATAPC"
+	root.add_child(attacker)
+	attacker.replace_visual_scene(ATAPCModelScene)
+	attacker.owner_player_id = 1
+	var ignored_target := Doubles.PhysicsCombatTarget.new(
+		Vector3(attacker.combat_turrets[0].peek_emission()["position"]) \
+		+ Vector3(attacker.combat_turrets[0].peek_emission()["direction"]) * 3.0, 1.0
+	)
+	ignored_target.owner_player_id = 1
+	ignored_target.add_to_group(&"sim_units")
+	root.add_child(ignored_target)
+	await physics_frame
+	var turret = attacker.combat_turrets[0]
+	var ignored_origin: Vector3 = turret.peek_emission()["position"]
+	_expect(
+		not FriendlyLineOracle.friendly_on_line(
+			world, ignored_origin, ignored_target.combat_aim_position(), attacker, [ignored_target]
+		),
+		"the ignored-friendly-target old-ray oracle must exclude the deliberately attacked body"
+	)
+	_expect(
+		not turret.friendly_blocks_fire(ignored_target, attacker),
+		"friendly_blocks_fire must ignore an intentionally attacked friendly target"
+	)
+	_expect(
+		not turret.friendly_blocks_fire_from(
+			Vector3(turret.peek_emission()["position"]), ignored_target, attacker
+		),
+		"friendly_blocks_fire_from must ignore the same friendly target"
+	)
+	ignored_target.free()
+	attacker.free()
+	shooter.free()
 
 
 ## The reposition used to require the line to stay blocked for a whole

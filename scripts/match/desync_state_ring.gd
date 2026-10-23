@@ -59,6 +59,12 @@ func _capture_hashed_fields(entity: Dictionary, id: int, entity_state) -> void:
 	if entity_state.has_invulnerability(id):
 		entity["invulnerable"] = entity_state.invulnerable(id)
 		entity["invulnerability_remaining_ticks"] = entity_state.invulnerability_remaining_ticks(id)
+	if entity_state.has_combat_line_bounds(id):
+		entity["line_r"] = entity_state.combat_line_radius(id)
+		entity["line_ymin"] = entity_state.combat_line_min_y(id)
+		entity["line_ymax"] = entity_state.combat_line_max_y(id)
+	if entity_state.has_combat_line_carried(id):
+		entity["line_carried"] = entity_state.combat_line_carried(id)
 
 
 func _capture_node_fields(entity: Dictionary, node: Node, navigation) -> void:
@@ -102,8 +108,12 @@ func _entity_line(entity: Dictionary) -> String:
 	var invulnerability := "-"
 	if entity.has("invulnerable"):
 		invulnerability = "%d/%d" % [1 if bool(entity["invulnerable"]) else 0, entity["invulnerability_remaining_ticks"]]
-	return "[desync-state] entity %d %s pos=%s hp=%s sh=%s own=%s inv=%s" % [
-		entity["id"], _kind_name(int(entity["kind"])), position, health, shields, owner, invulnerability,
+	var line_r := _float32_token(float(entity["line_r"])) if entity.has("line_r") else "-"
+	var line_ymin := _float32_token(float(entity["line_ymin"])) if entity.has("line_ymin") else "-"
+	var line_ymax := _float32_token(float(entity["line_ymax"])) if entity.has("line_ymax") else "-"
+	var line_carried := "%d[%02x]" % [1 if bool(entity["line_carried"]) else 0, 1 if bool(entity["line_carried"]) else 0] if entity.has("line_carried") else "-"
+	return "[desync-state] entity %d %s pos=%s hp=%s sh=%s own=%s inv=%s line_r=%s line_ymin=%s line_ymax=%s line_carried=%s" % [
+		entity["id"], _kind_name(int(entity["kind"])), position, health, shields, owner, invulnerability, line_r, line_ymin, line_ymax, line_carried,
 	]
 
 
