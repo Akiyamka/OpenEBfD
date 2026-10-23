@@ -139,7 +139,9 @@ watch_export() {
 
 run_relay() {
 	mapfile -t base_args < <(podman_base_args)
-	"${PODMAN_BIN}" run "${base_args[@]}" -p "${RELAY_PORT}:${RELAY_PORT}" "${IMAGE}" \
+	# --init: godot is otherwise PID 1, which the kernel exempts from default
+	# signal handling, so Ctrl+C and `podman stop` would never reach it.
+	"${PODMAN_BIN}" run "${base_args[@]}" --init -p "${RELAY_PORT}:${RELAY_PORT}" "${IMAGE}" \
 		godot --headless --path /workspace --script res://scripts/net/relay/relay_main.gd \
 		-- --port "${RELAY_PORT}" "$@"
 }
