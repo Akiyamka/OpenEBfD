@@ -23,6 +23,7 @@ func _initialize() -> void:
 	await _run_async_case("a capture changes no simulation state", _test_capture_is_read_only)
 	await _run_async_case("a boot without a room captures and prints nothing", _test_no_room_has_no_ring)
 	await _run_async_case("one drain resolving two mismatches dumps the earlier tick", _test_earliest_mismatch_dump)
+	await _run_async_case("seed and draw use change Match checksums and retained RNG fields", _test_rng_checksum_and_retention)
 	_finish("Match desync state tests")
 
 
@@ -43,7 +44,7 @@ func _test_snapshot_at_mismatch() -> void:
 	var line_max_y: float = match_instance.entity_state().combat_line_max_y(unit_id)
 	var position_token := " pos=%s[%s] " % [str(position), PackedVector3Array([position]).to_byte_array().hex_encode()]
 	var health_token := " hp=%s[%s] " % [str(health), PackedFloat32Array([health]).to_byte_array().hex_encode()]
-	var real: int = match_instance.entity_state().state_hash()
+	var real: int = match_instance.match_checksum()
 	var unit = match_instance.entity_index().node_for(unit_id)
 	unit.health = health * 0.5
 	var new_health: float = health * 0.5
@@ -150,7 +151,7 @@ func _test_capture_is_read_only() -> void:
 	var before: int = match_instance.entity_state().state_hash()
 	var first_unit = _first_live_unit(match_instance)
 	var agent_before: Dictionary = _agent(match_instance._unit_navigation_system, first_unit).duplicate(true)
-	ring.capture(8, match_instance.entity_state(), match_instance.entity_index(), match_instance._unit_navigation_system)
+	ring.capture(8, match_instance.entity_state(), match_instance.entity_index(), match_instance._unit_navigation_system, match_instance.sim_rng())
 	var after: int = match_instance.entity_state().state_hash()
 	var agent_after: Dictionary = _agent(match_instance._unit_navigation_system, first_unit).duplicate(true)
 	_expect(ring != null and before == after, "capturing a state dump must not change the entity hash")
@@ -161,7 +162,7 @@ func _test_capture_is_read_only() -> void:
 func _test_no_room_has_no_ring() -> void:
 	var match_instance = await _boot_plain_arm()
 	match_instance.advance_ticks(8)
-	var real: int = match_instance.entity_state().state_hash()
+	var real: int = match_instance.match_checksum()
 	match_instance.checksum_exchange().on_report_received(2, 8, real + 1)
 	match_instance.advance_ticks(1)
 	_expect(match_instance._desync_state_ring == null, "a no-room boot must not allocate a desync state ring")
@@ -186,6 +187,27 @@ func _test_earliest_mismatch_dump() -> void:
 	_expect(match_instance.is_halted() and match_instance.halted_at_tick() == 17 and match_instance.checksum_exchange().mismatch_count() == 2, "one scheduler drain must resolve both mismatches before the halt")
 	_expect(match_instance.halt_state_dump().size() > 0 and match_instance.halt_state_dump()[0].begins_with("[desync-state] state after tick 8:"), "the state dump must use the earliest mismatch rather than the last resolved one")
 	_expect(match_instance.halt_diagnostic().begins_with("Match halted: simulation checksum diverged from player 2 at tick 16 "), "the existing diagnostic must continue to name the last mismatch")
+	await _teardown_arm(match_instance)
+
+
+func _test_rng_checksum_and_retention() -> void:
+	var arm := await _boot_room_arm()
+	var match_instance = arm["match"]
+	var initial: int = match_instance.match_checksum()
+	var seed: int = match_instance.match_seed()
+	match_instance.sim_rng().seed = seed + 1
+	_expect(match_instance.match_checksum() != initial, "same entities with a different seed have different checksums")
+	match_instance.sim_rng().seed = seed
+	match_instance.sim_rng().draw(1, 2, 3, 4, 0)
+	_expect(match_instance.match_checksum() != initial, "one extra tracked draw changes the checksum")
+	match_instance.advance_ticks(8)
+	var recorded: int = int(match_instance.checksum_exchange()._local_hash_by_tick.get(8, -1))
+	_expect(recorded == match_instance.match_checksum(), "tick-eight record uses Match composite accessor")
+	var signature: int = match_instance.sim_rng().draw_signature
+	var expected := "[desync-state] rng seed=%016x version=%08x count=%016x signature=%08x" % [seed, 1, 1, signature]
+	match_instance.sim_rng().draw(1, 2, 3, 4, 1)
+	var retained: PackedStringArray = match_instance._desync_state_ring.lines_for(8)
+	_expect(expected in retained, "retained tick keeps exact seed, version, count and signature before later draws")
 	await _teardown_arm(match_instance)
 
 

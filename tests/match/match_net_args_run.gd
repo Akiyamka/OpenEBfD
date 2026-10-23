@@ -11,6 +11,7 @@ func _initialize() -> void:
 	_run_case("unknown arguments leave recognized values intact", _test_unknown_args)
 	_run_case("net player counts validate against the demo roster", _test_net_player_count)
 	_run_case("known network arguments are shared by every parser", _test_known_net_arguments)
+	_run_case("match seed parser rejects malformed and overflowing decimals", _test_match_seed)
 	_finish("Match network argument tests")
 
 
@@ -78,7 +79,20 @@ func _test_known_net_arguments() -> void:
 	_expect(MatchScript._is_known_net_argument("--net-players=2"), "the count argument must be known")
 	_expect(MatchScript._is_known_net_argument("--net-room=ws://h/r"), "the room argument must be known")
 	_expect(MatchScript._is_known_net_argument("--local-player-id=2"), "the player argument must be known")
+	_expect(MatchScript._is_known_net_argument("--match-seed=1"), "the seed argument must be known")
 	_expect(not MatchScript._is_known_net_argument("--totally-unknown=x"), "unknown arguments must remain unknown")
 	var args := PackedStringArray(["--net-players=2", "--net-room=ws://h/r", "--local-player-id=2"])
 	_expect(MatchScript._parse_net_room_url(args) == "ws://h/r", "the room parser must skip a count argument")
 	_expect(MatchScript._parse_local_player_id(args) == 2, "the player parser must skip a count argument")
+	_expect(MatchScript._parse_net_room_url(PackedStringArray(["--match-seed=1"])) == "", "a seed flag must not change the room")
+
+
+func _test_match_seed() -> void:
+	var absent: Dictionary = MatchScript._parse_match_seed(PackedStringArray())
+	_expect(not bool(absent["present"]) and bool(absent["valid"]), "absent seed is distinct from invalid")
+	for value in ["1", "9223372036854775807"]:
+		var parsed: Dictionary = MatchScript._parse_match_seed(PackedStringArray(["--match-seed=" + value]))
+		_expect(bool(parsed["present"]) and bool(parsed["valid"]) and str(parsed["seed"]) == value, "valid bound %s is exact" % value)
+	for value in ["", "0", "-1", "1x", "9223372036854775808", "18446744073709551615"]:
+		var parsed: Dictionary = MatchScript._parse_match_seed(PackedStringArray(["--match-seed=" + value]))
+		_expect(bool(parsed["present"]) and not bool(parsed["valid"]), "invalid seed %s must stay present and invalid" % value)

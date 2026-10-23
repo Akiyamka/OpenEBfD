@@ -55,6 +55,7 @@ func _initialize() -> void:
 		"play_tick() drops a record whose tick playback has already passed, via submit_at()'s own late-drop rule",
 		_test_play_tick_drops_a_record_whose_tick_has_already_passed
 	)
+	_run_case("invalid recorder metadata creates no file and malformed loads keep prior cursor", _test_metadata_rejection)
 	_finish("ReplayPlayer tests")
 
 
@@ -105,7 +106,7 @@ func _test_round_trip_record_playback_record_produces_identical_files() -> void:
 	var record_bus := SimCommandBusScript.new()
 	record_bus.input_delay_ticks = 2
 	var recorder := ReplayRecorderScript.new()
-	var start_result := recorder.start(record_path, SCENE_PATH, "")
+	var start_result := recorder.start(record_path, SCENE_PATH, "", 1, 0, 0)
 	_expect(bool(start_result.get("ok", false)), "recorder must start: %s" % [start_result.get("message", "")])
 
 	var stop_p1 := SimStopCommandScript.new()
@@ -164,7 +165,7 @@ func _test_round_trip_record_playback_record_produces_identical_files() -> void:
 	_expect(bool(load_result.get("ok", false)), "the recorded replay must load back: %s" % [load_result.get("message", "")])
 
 	var second_recorder := ReplayRecorderScript.new()
-	var second_start := second_recorder.start(playback_path, SCENE_PATH, "")
+	var second_start := second_recorder.start(playback_path, SCENE_PATH, "", 1, 0, 0)
 	_expect(bool(second_start.get("ok", false)), "second recorder must start: %s" % [second_start.get("message", "")])
 
 	for tick in range(0, last_tick + 1):
@@ -203,7 +204,7 @@ func _test_load_fails_on_snapshot_digest_mismatch() -> void:
 	var path := _temp_path("digest_mismatch")
 	_remove_if_exists(path)
 	var file := FileAccess.open(path, FileAccess.WRITE)
-	ReplayFileScript.write_header(file, SCENE_PATH, "abc123", 0, PackedByteArray())
+	ReplayFileScript.write_header(file, SCENE_PATH, "abc123", 1, PackedByteArray([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))
 	file.close()
 
 	var player := ReplayPlayerScript.new()
@@ -221,7 +222,7 @@ func _test_load_fails_on_snapshot_digest_mismatch() -> void:
 	var empty_digest_path := _temp_path("digest_mismatch_empty")
 	_remove_if_exists(empty_digest_path)
 	var empty_digest_file := FileAccess.open(empty_digest_path, FileAccess.WRITE)
-	ReplayFileScript.write_header(empty_digest_file, SCENE_PATH, "", 0, PackedByteArray())
+	ReplayFileScript.write_header(empty_digest_file, SCENE_PATH, "", 1, PackedByteArray([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))
 	empty_digest_file.close()
 
 	var empty_digest_player := ReplayPlayerScript.new()
@@ -238,7 +239,7 @@ func _test_load_fails_on_scene_path_mismatch() -> void:
 	var path := _temp_path("scene_path_mismatch")
 	_remove_if_exists(path)
 	var file := FileAccess.open(path, FileAccess.WRITE)
-	ReplayFileScript.write_header(file, "res://tests/fixtures/match_fixture.tscn", "", 0, PackedByteArray())
+	ReplayFileScript.write_header(file, "res://tests/fixtures/match_fixture.tscn", "", 1, PackedByteArray([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))
 	file.close()
 
 	var player := ReplayPlayerScript.new()
@@ -260,7 +261,7 @@ func _test_empty_replay_is_noop_and_exhausted_immediately() -> void:
 	var path := _temp_path("empty_playback")
 	_remove_if_exists(path)
 	var file := FileAccess.open(path, FileAccess.WRITE)
-	ReplayFileScript.write_header(file, SCENE_PATH, "", 0, PackedByteArray())
+	ReplayFileScript.write_header(file, SCENE_PATH, "", 1, PackedByteArray([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))
 	file.close()
 
 	var player := ReplayPlayerScript.new()
@@ -294,12 +295,13 @@ func _test_play_tick_drops_a_record_whose_tick_has_already_passed() -> void:
 	var path := _temp_path("late_drop")
 	_remove_if_exists(path)
 
+
 	var command := SimStopCommandScript.new()
 	command.player_id = 1
 	command.entity_ids = PackedInt32Array([1])
 
 	var file := FileAccess.open(path, FileAccess.WRITE)
-	ReplayFileScript.write_header(file, SCENE_PATH, "", 0, PackedByteArray())
+	ReplayFileScript.write_header(file, SCENE_PATH, "", 1, PackedByteArray([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))
 	ReplayFileScript.write_record(file, 3, SimCommandCodecScript.encode(command))
 	file.close()
 
@@ -320,3 +322,42 @@ func _test_play_tick_drops_a_record_whose_tick_has_already_passed() -> void:
 	_expect(player.is_exhausted(), "the record must still be consumed (and dropped), not left stuck forever")
 
 	_remove_if_exists(path)
+
+
+
+func _test_metadata_rejection() -> void:
+	var path := _temp_path("invalid_start")
+	_remove_if_exists(path)
+	var recorder := ReplayRecorderScript.new()
+	var failed: Dictionary = recorder.start(path, SCENE_PATH, "", 0, 0, 0)
+	_expect(not bool(failed.get("ok", true)) and not FileAccess.file_exists(path), "invalid seed refuses before opening a file")
+	failed = recorder.start(path, SCENE_PATH, "", 1, -1, 0)
+	_expect(not bool(failed.get("ok", true)) and not FileAccess.file_exists(path), "invalid audit refuses before opening a file")
+	var good_path := _temp_path("metadata_good")
+	var file := FileAccess.open(good_path, FileAccess.WRITE)
+	var good_state := PackedByteArray([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+	ReplayFileScript.write_header(file, SCENE_PATH, "", 1, good_state)
+	file.close()
+	var player := ReplayPlayerScript.new()
+	_expect(bool(player.load(good_path, "", SCENE_PATH).get("ok", false)), "valid baseline loads")
+	var prior_index: int = player._next_index
+	for invalid in [
+		{"label": "zero seed", "seed": 0, "state": good_state, "version": 2},
+		{"label": "negative seed", "seed": -1, "state": good_state, "version": 2},
+		{"label": "short state", "seed": 1, "state": PackedByteArray([0]), "version": 2},
+		{"label": "old version", "seed": 1, "state": good_state, "version": 1},
+	]:
+		file = FileAccess.open(path, FileAccess.WRITE)
+		ReplayFileScript.write_header(file, SCENE_PATH, "", invalid["seed"], invalid["state"])
+		file.close()
+		if int(invalid["version"]) == 1:
+			var bytes := FileAccess.get_file_as_bytes(path)
+			bytes[5] = 1
+			file = FileAccess.open(path, FileAccess.WRITE)
+			file.store_buffer(bytes)
+			file.close()
+		var result: Dictionary = player.load(path, "", SCENE_PATH)
+		_expect(not bool(result.get("ok", true)), "%s must reject" % invalid["label"])
+		_expect(player.is_loaded() and player._next_index == prior_index, "%s must preserve loaded cursor" % invalid["label"])
+	_remove_if_exists(path)
+	_remove_if_exists(good_path)

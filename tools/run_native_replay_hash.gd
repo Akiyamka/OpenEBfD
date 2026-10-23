@@ -30,7 +30,7 @@ func _initialize() -> void:
 		await process_frame
 		if match_instance.replay_exhausted() and match_instance.current_tick() > 0:
 			var ticks: int = match_instance.current_tick()
-			var state_hash: int = match_instance.entity_state().state_hash()
+			var state_hash: int = match_instance.match_checksum()
 			print("NATIVE_REPLAY_HASH ticks=%d hash=%d" % [ticks, state_hash])
 			quit(0)
 			return

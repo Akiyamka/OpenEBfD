@@ -24,6 +24,7 @@ func _initialize() -> void:
 	LegacyRulesFixture.install(root)
 	await _run_case("identical replays hash equal", _test_identical_replays_hash_equal)
 	await _run_case("differing replays hash unequal", _test_differing_replays_hash_unequal)
+	await _run_case("changing only replay seed changes one Match checksum", _test_seed_only_same_match)
 	_remove_replay(REPLAY_PATH)
 	_remove_replay(DIFFERING_REPLAY_PATH)
 	if _failures > 0:
@@ -75,6 +76,20 @@ func _test_differing_replays_hash_unequal() -> void:
 	_expect(int(first["hash"]) != int(second["hash"]), "different replay inputs must finish with different state hashes")
 
 
+func _test_seed_only_same_match() -> void:
+	var match_instance = await _boot_arm()
+	for seed in [101, 102]:
+		var file := FileAccess.open(REPLAY_PATH, FileAccess.WRITE)
+		ReplayFileScript.write_header(file, SCENE_PATH, "", seed, PackedByteArray([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))
+		file.close()
+		_expect(bool(match_instance.load_replay(REPLAY_PATH).get("ok", false)), "valid seed-only file loads at tick zero")
+		if seed == 101:
+			match_instance.set_meta("first_seed_hash", match_instance.match_checksum())
+		else:
+			_expect(match_instance.match_checksum() != int(match_instance.get_meta("first_seed_hash")), "seed-only file change alters composite checksum")
+	await _teardown_arm(match_instance)
+
+
 func _run_replay_arm(replay_path: String, move_offset: Vector3, write_replay: bool) -> Dictionary:
 	var match_instance: Node = await _boot_arm()
 	if write_replay:
@@ -86,6 +101,7 @@ func _run_replay_arm(replay_path: String, move_offset: Vector3, write_replay: bo
 
 func _boot_arm():
 	var match_instance := MatchFixtureScene.instantiate()
+	match_instance.match_seed_args_for_test = PackedStringArray(["--match-seed=501"])
 	root.add_child(match_instance)
 	match_instance.set_process(false)
 	await process_frame
@@ -110,7 +126,7 @@ func _write_replay(replay_path: String, match_instance, move_offset: Vector3) ->
 	attack.target_entity_id = scout.entity_id
 	attack.target = scout.simulation_position()
 	var file := FileAccess.open(replay_path, FileAccess.WRITE)
-	ReplayFileScript.write_header(file, SCENE_PATH, "", 0, PackedByteArray())
+	ReplayFileScript.write_header(file, SCENE_PATH, "", 1, PackedByteArray([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))
 	ReplayFileScript.write_record(file, 3, SimCommandCodecScript.encode(move))
 	ReplayFileScript.write_record(file, 4, SimCommandCodecScript.encode(attack))
 	file.close()
@@ -128,7 +144,7 @@ func _load_and_run_replay(match_instance, replay_path: String) -> Dictionary:
 		"replay_exhausted": match_instance.replay_exhausted(),
 		"moved": not scout.simulation_position().is_equal_approx(start_position),
 		"attacking": ordos_apc.has_attack_order(),
-		"hash": match_instance.entity_state().state_hash(),
+		"hash": match_instance.match_checksum(),
 	}
 
 

@@ -53,21 +53,26 @@ func is_recording() -> bool:
 ## returns rather than only once the match ends. `scene_path` and
 ## `snapshot_digest` are recorded as given -- see ReplayFile's doc comment
 ## for what snapshot_digest means and why an empty string is itself a
-## pinned fact rather than a missing one. rng_seed and start_state are
-## reserved and deliberately unused in this slice (see ReplayFile's doc
-## comment): always written as 0 and an empty block.
+## pinned fact rather than a missing one. The seed and audit fields are
+## mandatory version-2 metadata supplied by the direct caller.
 ##
 ## Returns a result Dictionary in the same {"ok": bool, "message": String}
 ## shape MatchSnapshot's own methods use (scripts/match/match_snapshot.gd),
 ## for the same reason: this is ordinary code called on request, not
 ## something anything needs to react to asynchronously.
-func start(path: String, scene_path: String, snapshot_digest: String) -> Dictionary:
+func start(path: String, scene_path: String, snapshot_digest: String, rng_seed: int, draw_count: int, draw_signature: int) -> Dictionary:
 	if _recording:
 		return {"ok": false, "message": "Already recording a replay"}
+	if rng_seed <= 0 or draw_count < 0 or draw_signature < 0 or draw_signature > 0xffffffff:
+		return {"ok": false, "message": "Invalid replay RNG metadata"}
+	var start_state_buffer := StreamPeerBuffer.new()
+	start_state_buffer.big_endian = true
+	start_state_buffer.put_u64(draw_count)
+	start_state_buffer.put_u32(draw_signature)
 	var file := FileAccess.open(path, FileAccess.WRITE)
 	if file == null:
 		return {"ok": false, "message": "Cannot write %s (error %d)" % [path, FileAccess.get_open_error()]}
-	ReplayFileScript.write_header(file, scene_path, snapshot_digest, 0, PackedByteArray())
+	ReplayFileScript.write_header(file, scene_path, snapshot_digest, rng_seed, start_state_buffer.data_array)
 	_file = file
 	_recording = true
 	return {"ok": true, "message": "Recording replay to %s" % path}

@@ -15,6 +15,7 @@ const RttTrackerScript := preload("res://scripts/net/rtt_tracker.gd")
 const SimCommandBusScript := preload("res://scripts/sim/command_bus.gd")
 const SimCommandCodecScript := preload("res://scripts/sim/command_codec.gd")
 const SimCommandScript := preload("res://scripts/sim/commands/sim_command.gd")
+const SimRngScript := preload("res://scripts/sim/sim_rng.gd")
 
 const _FRAME_DISCRIMINATOR_BYTES := 1
 const _TICK_PREFIX_BYTES := 4
@@ -48,6 +49,9 @@ var _hello_interval_msec := 0
 var _last_hello_msec := -1
 var _present_player_ids: Dictionary = {}
 var _start_sent := false
+var _start_proposal := 0
+var _bound_start_seed := 0
+var _protocol_fault := ""
 var _held_frames: Array[PackedByteArray] = []
 var _stashed_frames: Array[Dictionary] = []
 var _late_drop_lines := PackedStringArray()
@@ -110,8 +114,39 @@ func begin_gathering(expected_player_count: int, hello_interval_msec: int) -> vo
 	_last_hello_msec = -1
 	_present_player_ids.clear()
 	_start_sent = false
+	_start_proposal = 0
+	_bound_start_seed = 0
+	_protocol_fault = ""
 	_held_frames.clear()
 	_stashed_frames.clear()
+
+
+func set_start_proposal(seed: int) -> void:
+	if SimRngScript.valid_match_seed(seed):
+		_start_proposal = seed
+
+
+func bound_start_seed() -> int:
+	return _bound_start_seed
+
+
+func protocol_fault() -> String:
+	return _protocol_fault
+
+
+func _accept_start(seed: int) -> void:
+	if _bound_start_seed != 0 and _bound_start_seed != seed:
+		_protocol_fault = "Conflicting START seed %d (bound %d)" % [seed, _bound_start_seed]
+		push_error(_protocol_fault)
+		return
+	_bound_start_seed = seed
+	if not _gathering:
+		return
+	_gathering = false
+	for held_frame in _held_frames:
+		_transport.send(held_frame)
+	_held_frames.clear()
+	announce_horizon(0)
 
 
 func begin_turn_barrier(expected_player_count: int, keepalive_interval_msec: int) -> void:
@@ -195,7 +230,7 @@ func present_player_count() -> int:
 ## Runs the pre-tick client-side start barrier. Wall-clock input is supplied by
 ## Match so this scheduler remains deterministic and directly testable.
 func poll_gathering(now_msec: int) -> void:
-	if not _gathering:
+	if not _gathering or not _protocol_fault.is_empty():
 		return
 	if (
 		_transport.state() == NetTransportScript.State.CONNECTED
@@ -211,22 +246,34 @@ func poll_gathering(now_msec: int) -> void:
 			var hello_player_id := int(decoded["sender_player_id"])
 			if hello_player_id >= 1 and hello_player_id <= _expected_player_count:
 				_present_player_ids[hello_player_id] = true
-		elif _gathering and decoded["kind"] == "start":
-			_gathering = false
-			for held_frame in _held_frames:
-				_transport.send(held_frame)
-			_held_frames.clear()
-			announce_horizon(0)
+		elif decoded["kind"] == "start":
+			_accept_start(int(decoded["seed"]))
 		else:
 			_stashed_frames.append(decoded)
 	if (
 		_gathering
 		and _local_player_id == 1
 		and not _start_sent
+		and _start_proposal > 0
 		and _present_player_ids.size() == _expected_player_count
 	):
-		_transport.send(_encode_presence_frame(_START_DISCRIMINATOR))
+		_transport.send(_encode_start_frame(_start_proposal))
 		_start_sent = true
+
+
+## Checks post-release START frames before Match enters the next tick. Other
+## frames stay queued for the ordinary tick drain and retain their target tick.
+func poll_start_frames() -> void:
+	if _gathering:
+		return
+	for frame in _transport.poll():
+		var decoded: Variant = _decode_frame(frame)
+		if decoded == null:
+			continue
+		if decoded["kind"] == "start":
+			_accept_start(int(decoded["seed"]))
+		else:
+			_stashed_frames.append(decoded)
 
 
 ## Polls every received frame once. A clean remote frame records activity at
@@ -249,7 +296,10 @@ func _drain_frames(current_tick: int) -> void:
 
 
 func _handle_decoded_frame(decoded: Dictionary, current_tick: int) -> void:
-	if decoded["kind"] == "hello" or decoded["kind"] == "start":
+	if decoded["kind"] == "start":
+		_accept_start(int(decoded["seed"]))
+		return
+	if decoded["kind"] == "hello":
 		return
 	if decoded["kind"] == "horizon":
 		_handle_horizon(decoded, current_tick)
@@ -400,7 +450,7 @@ func _decode_frame(frame: PackedByteArray):
 		_HELLO_DISCRIMINATOR:
 			return _decode_presence_frame(frame, buffer, "hello")
 		_START_DISCRIMINATOR:
-			return _decode_presence_frame(frame, buffer, "start")
+			return _decode_start_frame(frame, buffer)
 		_HORIZON_DISCRIMINATOR:
 			return _decode_horizon_frame(frame, buffer)
 		_:
@@ -481,6 +531,20 @@ func _decode_presence_frame(frame: PackedByteArray, buffer: StreamPeerBuffer, ki
 	return {"kind": kind, "sender_player_id": buffer.get_32()}
 
 
+func _decode_start_frame(frame: PackedByteArray, buffer: StreamPeerBuffer):
+	if frame.size() != 13:
+		_rejected_frame_count += 1
+		push_error("TurnScheduler: START needs exactly 13 bytes")
+		return null
+	var sender := buffer.get_32()
+	var seed := buffer.get_64()
+	if sender != 1 or not SimRngScript.valid_match_seed(seed):
+		_rejected_frame_count += 1
+		push_error("TurnScheduler: invalid START sender or seed")
+		return null
+	return {"kind": "start", "sender_player_id": sender, "seed": seed}
+
+
 func _decode_horizon_frame(frame: PackedByteArray, buffer: StreamPeerBuffer):
 	if frame.size() < _FRAME_DISCRIMINATOR_BYTES + _HORIZON_BYTES:
 		_rejected_frame_count += 1
@@ -548,6 +612,15 @@ func _encode_presence_frame(discriminator: int) -> PackedByteArray:
 	buffer.big_endian = true
 	buffer.put_u8(discriminator)
 	buffer.put_32(_local_player_id)
+	return buffer.data_array
+
+
+func _encode_start_frame(seed: int) -> PackedByteArray:
+	var buffer := StreamPeerBuffer.new()
+	buffer.big_endian = true
+	buffer.put_u8(_START_DISCRIMINATOR)
+	buffer.put_32(_local_player_id)
+	buffer.put_64(seed)
 	return buffer.data_array
 
 

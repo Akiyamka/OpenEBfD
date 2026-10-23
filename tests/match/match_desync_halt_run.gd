@@ -59,7 +59,7 @@ func _test_clock_stays_stopped() -> void:
 func _test_matching_report_does_not_halt() -> void:
 	var match_instance = await _boot_arm()
 	match_instance.advance_ticks(8)
-	var real: int = match_instance.entity_state().state_hash()
+	var real: int = match_instance.match_checksum()
 	match_instance.checksum_exchange().on_report_received(2, 8, real)
 	_expect(match_instance.checksum_exchange().agreement_count() == 1, "the matching report must resolve as agreement")
 	_expect(match_instance.checksum_exchange().mismatch_count() == 0, "the matching report must not become a mismatch")
@@ -88,7 +88,7 @@ func _test_halt_dump() -> void:
 	match_instance.turn_scheduler()._rejected_frame_count = 4
 	match_instance.advance_ticks(8)
 	match_instance.command_bus().submit_at(_make_stop_command(1, 2), 1)
-	var real: int = match_instance.entity_state().state_hash()
+	var real: int = match_instance.match_checksum()
 	match_instance.checksum_exchange().on_report_received(2, 8, real + 1)
 	match_instance.advance_ticks(1)
 	var description := TurnSchedulerScript.describe_command(stop)
@@ -129,7 +129,7 @@ func _test_recent_list_worst_case_halt() -> void:
 	match_instance.command_bus().submit_at(_make_stop_command(1, 1), 71)
 	match_instance.command_bus().submit_at(_make_stop_command(1, 2), 73)
 	match_instance.advance_ticks(80)
-	var real: int = match_instance.entity_state().state_hash()
+	var real: int = match_instance.match_checksum()
 	match_instance.advance_ticks(71)
 	match_instance.checksum_exchange().on_report_received(2, 80, real + 1)
 	match_instance.advance_ticks(1)
@@ -190,7 +190,7 @@ func _test_cross_player_losses_do_not_cancel() -> void:
 func _boot_with_planted_mismatch() -> Array:
 	var match_instance = await _boot_arm()
 	match_instance.advance_ticks(8)
-	var real: int = match_instance.entity_state().state_hash()
+	var real: int = match_instance.match_checksum()
 	match_instance.checksum_exchange().on_report_received(2, 8, real + 1)
 	return [match_instance, real]
 

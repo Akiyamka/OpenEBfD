@@ -49,6 +49,7 @@ func _initialize() -> void:
 		_test_truncated_tail_at_several_offsets
 	)
 	_run_case("a header-only file (zero records) reads back as a clean, non-truncated empty replay", _test_header_only_file_is_empty_replay)
+	_run_case("version two requires valid seed and exactly twelve audit bytes", _test_rng_header_validation)
 	_run_case(
 		"submit_at() schedules for the exact absolute tick given, ignoring input_delay_ticks, and still drops an already-drained tick",
 		_test_submit_at_ignores_delay_and_drops_late
@@ -71,7 +72,7 @@ func _test_header_round_trip() -> void:
 
 	var file := FileAccess.open(path, FileAccess.WRITE)
 	ReplayFileScript.write_header(
-		file, "res://scenes/match/demo_match.tscn", "9f3a1c...deadbeef", -123456789012345, PackedByteArray([9, 8, 7, 6, 5])
+		file, "res://scenes/match/demo_match.tscn", "9f3a1c...deadbeef", 9007199254740993, PackedByteArray([0, 0, 0, 0, 0, 0, 0, 9, 8, 7, 6, 5])
 	)
 	file.close()
 
@@ -85,9 +86,9 @@ func _test_header_round_trip() -> void:
 		String(result.get("snapshot_digest", "")) == "9f3a1c...deadbeef",
 		"snapshot_digest must round-trip exactly"
 	)
-	_expect(int(result.get("rng_seed", 0)) == -123456789012345, "a negative rng_seed must round-trip exactly, as s64")
+	_expect(int(result.get("rng_seed", 0)) == 9007199254740993, "a high positive rng_seed must round-trip exactly, as s64")
 	_expect(
-		(result.get("start_state", PackedByteArray()) as PackedByteArray) == PackedByteArray([9, 8, 7, 6, 5]),
+		(result.get("start_state", PackedByteArray()) as PackedByteArray) == PackedByteArray([0, 0, 0, 0, 0, 0, 0, 9, 8, 7, 6, 5]),
 		"start_state must round-trip byte for byte"
 	)
 	_expect((result.get("records", []) as Array).is_empty(), "a header with no records must read back with none")
@@ -117,7 +118,7 @@ func _test_record_round_trip_multiple_types() -> void:
 	build_order.button_index = MOUSE_BUTTON_LEFT
 
 	var file := FileAccess.open(path, FileAccess.WRITE)
-	ReplayFileScript.write_header(file, "res://scenes/match/demo_match.tscn", "", 0, PackedByteArray())
+	ReplayFileScript.write_header(file, "res://scenes/match/demo_match.tscn", "", 1, PackedByteArray([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))
 	ReplayFileScript.write_record(file, 10, SimCommandCodecScript.encode(stop))
 	ReplayFileScript.write_record(file, 10, SimCommandCodecScript.encode(move))
 	ReplayFileScript.write_record(file, 15, SimCommandCodecScript.encode(build_order))
@@ -174,7 +175,7 @@ func _test_same_tick_different_players_preserve_write_order() -> void:
 	second.entity_ids = PackedInt32Array([2])
 
 	var file := FileAccess.open(path, FileAccess.WRITE)
-	ReplayFileScript.write_header(file, "res://scenes/match/demo_match.tscn", "", 0, PackedByteArray())
+	ReplayFileScript.write_header(file, "res://scenes/match/demo_match.tscn", "", 1, PackedByteArray([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))
 	ReplayFileScript.write_record(file, 20, SimCommandCodecScript.encode(first))
 	ReplayFileScript.write_record(file, 20, SimCommandCodecScript.encode(second))
 	file.close()
@@ -230,14 +231,15 @@ func _test_unknown_format_version_fails_closed() -> void:
 	header_buffer.put_u16(scene_path_bytes.size())
 	header_buffer.put_data(scene_path_bytes)
 	header_buffer.put_u16(0)  # empty snapshot_digest
-	header_buffer.put_64(0)  # rng_seed
-	header_buffer.put_u32(0)  # empty start_state
+	header_buffer.put_64(1)  # rng_seed
+	header_buffer.put_u32(12)
+	header_buffer.put_data(PackedByteArray([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))
 	var header_bytes := header_buffer.data_array
 
 	var buffer := StreamPeerBuffer.new()
 	buffer.big_endian = true
 	buffer.put_data(ReplayFileScript.MAGIC.to_utf8_buffer())
-	buffer.put_u16(9999)
+	buffer.put_u16(1)
 	buffer.put_u32(header_bytes.size())
 	buffer.put_data(header_bytes)
 
@@ -284,7 +286,7 @@ func _test_truncated_tail_at_several_offsets() -> void:
 	third.move_mode = 0
 
 	var file := FileAccess.open(path, FileAccess.WRITE)
-	ReplayFileScript.write_header(file, "res://scenes/match/demo_match.tscn", "", 0, PackedByteArray())
+	ReplayFileScript.write_header(file, "res://scenes/match/demo_match.tscn", "", 1, PackedByteArray([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))
 	ReplayFileScript.write_record(file, 5, SimCommandCodecScript.encode(first))
 	ReplayFileScript.write_record(file, 5, SimCommandCodecScript.encode(second))
 	var prefix_length := file.get_position()
@@ -330,18 +332,43 @@ func _test_truncated_tail_at_several_offsets() -> void:
 func _test_header_only_file_is_empty_replay() -> void:
 	var path := _temp_path("header_only")
 	_remove_if_exists(path)
-
 	var file := FileAccess.open(path, FileAccess.WRITE)
-	ReplayFileScript.write_header(file, "res://scenes/match/demo_match.tscn", "", 0, PackedByteArray())
+	ReplayFileScript.write_header(file, "res://scenes/match/demo_match.tscn", "", 1, PackedByteArray([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))
 	file.close()
-
 	var result := ReplayFileScript.read(path)
 	_expect(bool(result.get("ok", false)), "a header-only file must still read back ok")
 	_expect((result.get("records", []) as Array).is_empty(), "a header-only file must read back with zero records")
 	_expect(not bool(result.get("truncated", true)), "a header-only file must not be reported as truncated")
-
 	_remove_if_exists(path)
 
+
+func _test_rng_header_validation() -> void:
+	var good := PackedByteArray([0, 0, 0, 0, 0, 0, 0, 7, 0x12, 0x34, 0x56, 0x78])
+	for bad_seed in [0, -1]:
+		var path := _temp_path("bad_seed_%d" % bad_seed)
+		var file := FileAccess.open(path, FileAccess.WRITE)
+		ReplayFileScript.write_header(file, "res://fixture", "", bad_seed, good)
+		file.close()
+		_expect(not bool(ReplayFileScript.read(path).get("ok", true)), "seed %d must reject" % bad_seed)
+		_remove_if_exists(path)
+	for length in [0, 11, 13]:
+		var path := _temp_path("bad_state_%d" % length)
+		var file := FileAccess.open(path, FileAccess.WRITE)
+		ReplayFileScript.write_header(file, "res://fixture", "", 1, good.slice(0, length) if length < 12 else good + PackedByteArray([0]))
+		file.close()
+		_expect(not bool(ReplayFileScript.read(path).get("ok", true)), "audit length %d must reject" % length)
+		_remove_if_exists(path)
+	var version_path := _temp_path("version_one_complete")
+	var version_file := FileAccess.open(version_path, FileAccess.WRITE)
+	ReplayFileScript.write_header(version_file, "res://fixture", "", 1, good)
+	version_file.close()
+	var bytes := FileAccess.get_file_as_bytes(version_path)
+	bytes[5] = 1
+	version_file = FileAccess.open(version_path, FileAccess.WRITE)
+	version_file.store_buffer(bytes)
+	version_file.close()
+	_expect(not bool(ReplayFileScript.read(version_path).get("ok", true)), "otherwise complete version-one file must reject")
+	_remove_if_exists(version_path)
 
 func _test_submit_at_ignores_delay_and_drops_late() -> void:
 	var bus := SimCommandBusScript.new()

@@ -170,7 +170,9 @@ func _test_live_checksum_exchange() -> void:
 	await _teardown_match(match_a)
 
 	var match_b = await _boot_match(2, "", transport_b)
-	while match_b.current_tick() < WINDOW:
+	for _tick in WINDOW:
+		if match_b.current_tick() >= WINDOW or match_b.is_halted():
+			break
 		match_b.advance_ticks(1)
 	_expect(
 		match_b.checksum_exchange().agreement_count() == EXPECTED_REPORTS,
@@ -185,6 +187,7 @@ func _boot_match(local_player_id: int, room_url: String, transport_override: Net
 	var match_instance = WebSocketMatchFixtureScene.instantiate()
 	match_instance.local_player_id_for_test = local_player_id
 	match_instance.net_room_url_for_test = room_url
+	match_instance.match_seed_args_for_test = PackedStringArray(["--match-seed=123456789"])
 	match_instance.transport_override = transport_override
 	root.add_child(match_instance)
 	match_instance.set_process(false)

@@ -2,6 +2,7 @@ class_name MatchSnapshot
 extends RefCounted
 
 const EntityQueryScript := preload("res://scripts/world/entity_query.gd")
+const SimRngScript := preload("res://scripts/sim/sim_rng.gd")
 
 ## Exported Godot games cannot usually modify res:// resources. A compact
 ## snapshot in user:// gives the same "start from here" behaviour everywhere.
@@ -14,11 +15,16 @@ func _init(path := DEFAULT_PATH) -> void:
 	storage_path = path
 
 
-func save(buildings_root: Node3D, units_root: Node3D) -> Dictionary:
+func save(buildings_root: Node3D, units_root: Node3D, seed: int, draw_count: int, draw_signature: int) -> Dictionary:
+	if not SimRngScript.valid_match_seed(seed) or draw_count < 0 or draw_signature < 0 or draw_signature > 0xffffffff:
+		return _failure("Invalid snapshot RNG metadata")
 	if buildings_root == null or units_root == null:
 		return _failure("Buildings or Units root is unavailable")
 	var state := {
-		"version": 1,
+		"version": 2,
+		"rng_seed": str(seed),
+		"draw_count": str(draw_count),
+		"draw_signature": "%08x" % draw_signature,
 		"buildings": _capture_entities(buildings_root, Building),
 		"units": _capture_entities(units_root, Unit),
 	}
@@ -44,8 +50,22 @@ func restore(buildings_root: Node3D, units_root: Node3D) -> Dictionary:
 	if parse_error != OK or not json.data is Dictionary:
 		return _failure("Saved startup state is invalid")
 	var state: Dictionary = json.data
-	if int(state.get("version", 0)) != 1:
+	var version: Variant = state.get("version")
+	if not version is float or version != 2.0:
 		return _failure("Saved startup state has an unsupported version")
+	if not state.get("rng_seed") is String or not state.get("draw_count") is String or not state.get("draw_signature") is String:
+		return _failure("Saved startup state has missing RNG metadata")
+	var seed_result: Dictionary = SimRngScript.parse_decimal(state["rng_seed"])
+	var count_result: Dictionary = SimRngScript.parse_decimal(state["draw_count"], true)
+	var signature_text: String = state["draw_signature"]
+	if not bool(seed_result["valid"]) or not bool(count_result["valid"]) or signature_text.length() != 8:
+		return _failure("Saved startup state has invalid RNG metadata")
+	for character_index in signature_text.length():
+		var character := signature_text.unicode_at(character_index)
+		if not ((character >= 48 and character <= 57) or (character >= 97 and character <= 102)):
+			return _failure("Saved startup state has invalid RNG signature")
+	if not state.get("buildings") is Array or not state.get("units") is Array:
+		return _failure("Saved startup state has invalid entities")
 
 	var buildings: Array = state.get("buildings", [])
 	var units: Array = state.get("units", [])
@@ -53,7 +73,13 @@ func restore(buildings_root: Node3D, units_root: Node3D) -> Dictionary:
 	_clear_children(units_root)
 	var restored_buildings := _restore_entities(buildings, buildings_root, Building)
 	var restored_units := _restore_entities(units, units_root, Unit)
-	return {"ok": true, "message": "Restored %d buildings and %d units" % [restored_buildings, restored_units]}
+	return {
+		"ok": true,
+		"message": "Restored %d buildings and %d units" % [restored_buildings, restored_units],
+		"rng_seed": int(seed_result["value"]),
+		"draw_count": int(count_result["value"]),
+		"draw_signature": signature_text.hex_to_int(),
+	}
 
 
 func erase() -> Dictionary:

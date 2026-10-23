@@ -181,6 +181,7 @@ func _initialize() -> void:
 			+ "the node",
 		_test_snapshot_restore_reaches_the_store
 	)
+	await _run_case("startup restore binds seed and audit or faults visibly", _test_startup_rng_restore)
 	await _run_case(
 		"a unit turret measures rules range from the store, not from the interpolated model "
 			+ "root it is bound to -- and a building turret is left exactly as it was",
@@ -220,6 +221,74 @@ func _expect(condition: bool, message: String) -> void:
 		return
 	_failures += 1
 	printerr("FAIL: %s: %s" % [_current_case, message])
+
+
+func _test_startup_rng_restore() -> void:
+	const PATH := "user://entity_state_startup_rng_test.json"
+	var snapshot = MatchSnapshotScript.new(PATH)
+	if FileAccess.file_exists(PATH):
+		snapshot.erase()
+	var source = MatchFixtureScene.instantiate()
+	get_root().add_child(source)
+	source.set_process(false)
+	await process_frame
+	source.set_process(false)
+	_expect(bool(snapshot.save(source.get_node("Buildings"), source.get_node("Units"), 9007199254740993, 4, 0x12345678).get("ok", false)), "setup snapshot must save")
+	source.queue_free()
+	await process_frame
+	var restored = MatchFixtureScene.instantiate()
+	restored.restore_startup_for_test = true
+	restored.snapshot_path_for_test = PATH
+	restored.match_seed_args_for_test = PackedStringArray(["--match-seed=9007199254740993"])
+	get_root().add_child(restored)
+	restored.set_process(false)
+	await process_frame
+	restored.set_process(false)
+	_expect(restored.startup_error().is_empty() and restored.match_seed() == 9007199254740993, "equal override accepts restored high seed")
+	_expect(restored.sim_rng().draw_count == 4 and restored.sim_rng().draw_signature == 0x12345678, "startup restore binds audit state")
+	var checksum: int = restored.match_checksum()
+	restored.sim_rng().seed += 1
+	_expect(restored.match_checksum() != checksum, "restored seed contributes to composite checksum")
+	restored.queue_free()
+	await process_frame
+	var conflict = MatchFixtureScene.instantiate()
+	conflict.restore_startup_for_test = true
+	conflict.snapshot_path_for_test = PATH
+	conflict.match_seed_args_for_test = PackedStringArray(["--match-seed=5"])
+	get_root().add_child(conflict)
+	conflict.set_process(false)
+	await process_frame
+	conflict.set_process(false)
+	_expect(not conflict.startup_error().is_empty() and conflict.advance_ticks(1) == 0, "conflicting local override faults before tick one")
+	conflict.queue_free()
+	await process_frame
+	var old: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(PATH))
+	old["version"] = 1
+	var file := FileAccess.open(PATH, FileAccess.WRITE)
+	file.store_string(JSON.stringify(old))
+	file.close()
+	var invalid = MatchFixtureScene.instantiate()
+	invalid.restore_startup_for_test = true
+	invalid.snapshot_path_for_test = PATH
+	get_root().add_child(invalid)
+	invalid.set_process(false)
+	await process_frame
+	invalid.set_process(false)
+	_expect(invalid.startup_error().contains(PATH) and invalid.startup_error().contains("Shift+F7") and invalid.advance_ticks(1) == 0, "present version-one save names path and remedy and refuses ticks")
+	_expect(invalid.selection_label.text.contains("Shift+F7"), "startup fault remains visible on status line")
+	invalid.queue_free()
+	await process_frame
+	snapshot.erase()
+	var absent = MatchFixtureScene.instantiate()
+	absent.restore_startup_for_test = true
+	absent.snapshot_path_for_test = PATH
+	get_root().add_child(absent)
+	absent.set_process(false)
+	await process_frame
+	absent.set_process(false)
+	_expect(absent.startup_error().is_empty() and absent.advance_ticks(1) == 1, "absent file boots fresh")
+	absent.queue_free()
+	await process_frame
 
 
 ## _place_on_map() (match.gd) snaps every scene-authored unit to the ground
@@ -1142,7 +1211,7 @@ func _test_snapshot_restore_reaches_the_store() -> void:
 	for _warmup in 5:
 		await process_frame
 	var saved_position: Vector3 = (source.get_node("Units/OrdosAPC") as Unit).global_position
-	var save_result: Dictionary = snapshot.save(source.get_node("Buildings"), source.get_node("Units"))
+	var save_result: Dictionary = snapshot.save(source.get_node("Buildings"), source.get_node("Units"), 1, 0, 0)
 	_expect(bool(save_result.get("ok", false)), "the snapshot must be written before it can be restored")
 	source.queue_free()
 	await process_frame

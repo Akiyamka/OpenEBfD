@@ -39,8 +39,9 @@ func _initialize() -> void:
 	var unit_transform := Transform3D(Basis(Vector3.UP, -0.7), Vector3(145.0, 0.0, 72.0))
 	source_building.global_transform = building_transform
 	source_unit.global_transform = unit_transform
-	var save_result: Dictionary = snapshot.save(source.get_node("Buildings"), source.get_node("Units"))
+	var save_result: Dictionary = snapshot.save(source.get_node("Buildings"), source.get_node("Units"), 9007199254740993, 29, 0x89abcdef)
 	_expect(bool(save_result.get("ok", false)), "snapshot should be written")
+	var saved_text := FileAccess.get_file_as_string(TEST_SNAPSHOT_PATH)
 	source.queue_free()
 	await process_frame
 
@@ -50,6 +51,7 @@ func _initialize() -> void:
 	await physics_frame
 	var restore_result: Dictionary = snapshot.restore(restored.get_node("Buildings"), restored.get_node("Units"))
 	_expect(bool(restore_result.get("ok", false)), "snapshot should be restored")
+	_expect(int(restore_result.get("rng_seed", 0)) == 9007199254740993 and int(restore_result.get("draw_count", -1)) == 29 and int(restore_result.get("draw_signature", -1)) == 0x89abcdef, "version-two high seed and audit metadata restore exactly")
 	await physics_frame
 
 	var restored_building := restored.get_node_or_null("Buildings/ATSmWindtrap") as Node3D
@@ -97,6 +99,44 @@ func _initialize() -> void:
 		"owner color refresh should not attach an unknown instance uniform to ordinary unit meshes"
 	)
 
+	var preserved_position: Vector3 = restored_unit.global_position
+	var preserved_buildings := restored.get_node("Buildings").get_child_count()
+	var base: Dictionary = JSON.parse_string(saved_text)
+	for field_case in [
+		{"field": "version", "value": 1},
+		{"field": "version", "value": "2"},
+		{"field": "rng_seed", "value": "0"},
+		{"field": "rng_seed", "value": "-1"},
+		{"field": "rng_seed", "value": "9223372036854775808"},
+		{"field": "draw_count", "value": "9223372036854775808"},
+		{"field": "draw_count", "value": 2},
+		{"field": "draw_signature", "value": "x9abcdef"},
+	]:
+		var invalid: Dictionary = base.duplicate(true)
+		invalid[field_case["field"]] = field_case["value"]
+		_write_text(TEST_SNAPSHOT_PATH, JSON.stringify(invalid))
+		var rejected: Dictionary = snapshot.restore(restored.get_node("Buildings"), restored.get_node("Units"))
+		_expect(not bool(rejected.get("ok", true)), "invalid %s must reject" % field_case["field"])
+		if bool(rejected.get("ok", false)):
+			snapshot.erase()
+			restored.queue_free()
+			quit(1)
+			return
+		_expect(restored_unit.global_position == preserved_position and restored.get_node("Buildings").get_child_count() == preserved_buildings, "invalid metadata must not replace entities")
+	var missing: Dictionary = base.duplicate(true)
+	missing.erase("rng_seed")
+	_write_text(TEST_SNAPSHOT_PATH, JSON.stringify(missing))
+	_expect(not bool(snapshot.restore(restored.get_node("Buildings"), restored.get_node("Units")).get("ok", true)), "missing seed must reject")
+	_write_text(TEST_SNAPSHOT_PATH, "sentinel")
+	var rejected_save: Dictionary = snapshot.save(restored.get_node("Buildings"), restored.get_node("Units"), 0, 0, 0)
+	_expect(not bool(rejected_save.get("ok", true)) and FileAccess.get_file_as_string(TEST_SNAPSHOT_PATH) == "sentinel", "invalid seed must not overwrite snapshot")
+	var perf_root = SnapshotFixtureScene.instantiate()
+	get_root().add_child(perf_root)
+	var perf_snapshot = MatchSnapshotScript.new("res://tests/perf/fixtures/demo_match_perf_snapshot.json")
+	var perf_result: Dictionary = perf_snapshot.restore(perf_root.get_node("Buildings"), perf_root.get_node("Units"))
+	_expect(bool(perf_result.get("ok", false)), "committed perf fixture must restore as version two")
+	_expect(perf_root.get_node("Buildings").get_child_count() == 49 and int(perf_result.get("rng_seed", 0)) == 123456789, "perf fixture retains 49 buildings and valid seed")
+	perf_root.queue_free()
 	snapshot.erase()
 	restored.queue_free()
 	if _failures > 0:
@@ -113,6 +153,12 @@ func _configure_players() -> void:
 	players.create_player(1, "Snapshot Atreides", Color(0.12, 0.44, 1.0), &"Atreides", [], 1)
 	players.create_player(2, "Snapshot Ordos", Color(0.16, 0.75, 0.34), &"Ordos", [], 2)
 	players.local_player_id = 1
+
+
+func _write_text(path: String, value: String) -> void:
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	file.store_string(value)
+	file.close()
 
 
 func _expect(condition: bool, message: String) -> void:

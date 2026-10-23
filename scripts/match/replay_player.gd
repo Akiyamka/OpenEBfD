@@ -119,7 +119,12 @@ func load(path: String, expected_snapshot_digest: String, expected_scene_path: S
 	_records = result.get("records", [])
 	_next_index = 0
 	_loaded = true
-	return {"ok": true, "message": String(result.get("message", ""))}
+	return {
+		"ok": true,
+		"message": String(result.get("message", "")),
+		"rng_seed": int(result["rng_seed"]),
+		"start_state": result["start_state"],
+	}
 
 
 ## Submits every not-yet-submitted record whose recorded tick is at or

@@ -28,6 +28,7 @@ const NavigationGridDebugScript := preload("res://scripts/units/navigation/navig
 const MatchSnapshotScript := preload("res://scripts/match/match_snapshot.gd")
 const ReplayRecorderScript := preload("res://scripts/match/replay_recorder.gd")
 const ReplayPlayerScript := preload("res://scripts/match/replay_player.gd")
+const ReplayFileScript := preload("res://scripts/match/replay_file.gd")
 const PlayerEliminationTrackerScript := preload("res://scripts/match/player_elimination_tracker.gd")
 const MatchVictoryTrackerScript := preload("res://scripts/match/match_victory_tracker.gd")
 const AutoloadLookupScript := preload("res://scripts/players/autoload_lookup.gd")
@@ -37,6 +38,7 @@ const MatchLookupScript := preload("res://scripts/match/match_lookup.gd")
 const EntityNodeIndexScript := preload("res://scripts/match/entity_node_index.gd")
 const SimAdmissionQueueScript := preload("res://scripts/match/sim_admission_queue.gd")
 const SimEntityStateScript := preload("res://scripts/sim/entity_state.gd")
+const SimRngScript := preload("res://scripts/sim/sim_rng.gd")
 const AbilityBarScript := preload("res://scripts/ui/ability_bar.gd")
 const AdvancedCarryallAbilityScript := preload("res://scripts/match/advanced_carryall_ability.gd")
 const PLACEMENT_ARROW_SCENE := preload("res://assets/converted/placement/build_arrow.scn")
@@ -46,6 +48,7 @@ const PLACEMENT_SKIRT_SCENE := preload("res://assets/converted/placement/build_s
 const PLACEMENT_WALL_SCENE := preload("res://assets/converted/placement/build_wall.scn")
 const LOCAL_PLAYER_ID := 1
 const ENEMY_PLAYER_ID := 2
+const PLAIN_ROOM_SEED := 0x4f45424644323032
 ## Decision 7's starting parameters specify this cadence; tune checksum
 ## frequency here without changing MatchClock's single simulation tick rate.
 const CHECKSUM_INTERVAL_TICKS := 8
@@ -87,7 +90,16 @@ static func _is_known_net_argument(arg: String) -> bool:
 		arg.begins_with("--net-room=")
 		or arg.begins_with("--local-player-id=")
 		or arg.begins_with("--net-players=")
+		or arg.begins_with("--match-seed=")
 	)
+
+
+static func _parse_match_seed(args: PackedStringArray) -> Dictionary:
+	for arg in args:
+		if arg.begins_with("--match-seed="):
+			var parsed: Dictionary = SimRngScript.parse_decimal(arg.trim_prefix("--match-seed="))
+			return {"present": true, "valid": bool(parsed["valid"]), "seed": int(parsed["value"])}
+	return {"present": false, "valid": true, "seed": 0}
 
 
 ## Parses the relay URL and owns diagnostics for arguments none of the net parsers
@@ -134,6 +146,11 @@ var _fps_update_time := 0.0
 var _local_player_id := LOCAL_PLAYER_ID
 var _net_room_url := ""
 var _net_player_count := 0
+var _rng
+var _seed_override: Dictionary = {}
+var _restored_seed := 0
+var _startup_error := ""
+var _seed_notice := ""
 var _clock: MatchClock
 var _tick_driver: FrameTickDriver
 ## Owned alongside _entity_index (see that field's comment) for the same
@@ -272,6 +289,21 @@ func _enter_tree() -> void:
 	_local_player_id = _resolve_local_player_id()
 	_net_room_url = _resolve_net_room_url()
 	_net_player_count = _resolve_net_player_count()
+	_seed_override = _parse_match_seed(_match_seed_args())
+	if not bool(_seed_override["valid"]):
+		_set_startup_error("Invalid --match-seed; expected decimal 1..9223372036854775807")
+	var initial_seed := 0
+	if not _uses_start_barrier() or _local_player_id == LOCAL_PLAYER_ID:
+		if bool(_seed_override["present"]) and bool(_seed_override["valid"]):
+			initial_seed = int(_seed_override["seed"])
+		elif not _net_room_url.is_empty() and not _uses_start_barrier():
+			initial_seed = PLAIN_ROOM_SEED
+		else:
+			var entropy := Crypto.new().generate_random_bytes(8)
+			for byte_value in entropy:
+				initial_seed = ((initial_seed << 8) | int(byte_value)) & 0x7fffffffffffffff
+			initial_seed = maxi(initial_seed, 1)
+	_rng = SimRngScript.new(initial_seed)
 	if _net_player_count >= 2 and _net_room_url.is_empty():
 		push_error("--net-players needs --net-room")
 	# Children initialize their owner visuals in _ready(), so the player
@@ -308,6 +340,8 @@ func _ready() -> void:
 	_match_victory_tracker = MatchVictoryTrackerScript.new()
 	_match_snapshot = MatchSnapshotScript.new(_snapshot_storage_path())
 	_restore_saved_startup_state()
+	if _uses_start_barrier() and _local_player_id == LOCAL_PLAYER_ID and _startup_error.is_empty():
+		_turn_scheduler.set_start_proposal(_rng.seed)
 	_building_option_ids = _local_player_building_option_ids()
 	_wall_building_ids = _local_player_wall_building_ids()
 	_upgrade_option_ids = _local_player_upgrade_option_ids()
@@ -346,13 +380,14 @@ func _ready() -> void:
 		_unit_roster_controller,
 		_building_upgrade_controller
 	)
-	_update_selection_label()
+	_update_selection_label(_startup_error)
 	if _uses_start_barrier():
 		print(
 			"Match: waiting for %d players as player %d in %s"
 			% [_net_player_count, _local_player_id, _net_room_url]
 		)
-		_update_selection_label("Waiting for players: %d of %d present" % [_turn_scheduler.present_player_count(), _net_player_count])
+		if _startup_error.is_empty():
+			_update_selection_label("Waiting for players: %d of %d present" % [_turn_scheduler.present_player_count(), _net_player_count])
 	_update_fps_label()
 	_place_on_map()
 
@@ -375,6 +410,54 @@ func _resolve_net_room_url() -> String:
 
 func _resolve_net_player_count() -> int:
 	return _parse_net_player_count(OS.get_cmdline_user_args())
+
+
+func _match_seed_args() -> PackedStringArray:
+	return OS.get_cmdline_user_args()
+
+
+func startup_error() -> String:
+	return _startup_error
+
+
+func seed_notice() -> String:
+	return _seed_notice
+
+
+func match_seed() -> int:
+	return _rng.seed
+
+
+func sim_rng():
+	return _rng
+
+
+func _set_startup_error(message: String) -> void:
+	if not _startup_error.is_empty():
+		return
+	_startup_error = message
+	push_error(message)
+	if _unit_command_controller != null:
+		_update_selection_label(message)
+
+
+func _bind_start_seed() -> void:
+	if not _uses_start_barrier() or _turn_scheduler.is_gathering():
+		return
+	if not _turn_scheduler.protocol_fault().is_empty():
+		_set_startup_error(_turn_scheduler.protocol_fault())
+		return
+	var start_seed := _turn_scheduler.bound_start_seed()
+	if not SimRngScript.valid_match_seed(start_seed):
+		_set_startup_error("Gathered match has no valid START seed")
+		return
+	if _restored_seed != 0 and _restored_seed != start_seed:
+		_set_startup_error("Snapshot seed differs from START seed")
+		return
+	if _local_player_id != LOCAL_PLAYER_ID and bool(_seed_override.get("present", false)) and int(_seed_override["seed"]) != start_seed and _seed_notice.is_empty():
+		_seed_notice = "Local --match-seed ignored; START seed is %d" % start_seed
+		push_warning(_seed_notice)
+	_rng.seed = start_seed
 
 
 func _uses_start_barrier() -> bool:
@@ -626,12 +709,14 @@ func _poll_start_barrier() -> void:
 	if present_player_count != _last_present_player_count:
 		_last_present_player_count = present_player_count
 		print("Match: %d of %d players present" % [present_player_count, _net_player_count])
-		_update_selection_label(
-			"Waiting for players: %d of %d present" % [present_player_count, _net_player_count]
-		)
+		if _startup_error.is_empty():
+			_update_selection_label(
+				"Waiting for players: %d of %d present" % [present_player_count, _net_player_count]
+			)
 	if was_gathering and not _turn_scheduler.is_gathering():
 		print("Match: all %d players present; match started" % _net_player_count)
-		_update_selection_label("All %d players present; match started" % _net_player_count)
+		if _startup_error.is_empty():
+			_update_selection_label("All %d players present; match started" % _net_player_count)
 
 
 ## The single place a system gets attached to the simulation tick as phase 1
@@ -1073,11 +1158,11 @@ func _advance_simulation_tick() -> void:
 	_match_victory_tracker.refresh(_players(), _player_elimination_tracker)
 	_entity_index.apply_pending_releases()
 	if tick % CHECKSUM_INTERVAL_TICKS == 0:
-		var state_hash := _entity_state.state_hash()
+		var state_hash := match_checksum()
 		_checksum_exchange.record_local_hash(tick, state_hash)
 		_turn_scheduler.send_checksum_report(tick, state_hash)
 		if _desync_state_ring != null:
-			_desync_state_ring.capture(tick, _entity_state, _entity_index, _unit_navigation_system)
+			_desync_state_ring.capture(tick, _entity_state, _entity_index, _unit_navigation_system, _rng)
 	if tick % (PING_INTERVAL_CADENCE_CYCLES * CHECKSUM_INTERVAL_TICKS) == 0:
 		_turn_scheduler.send_ping(tick)
 	_turn_scheduler.announce_horizon(tick)
@@ -1110,6 +1195,14 @@ func _halt_if_diverged(tick: int) -> void:
 ## to observe it without reaching into _clock directly.
 func current_tick() -> int:
 	return _clock.current_tick()
+
+
+func match_checksum() -> int:
+	var hash := _entity_state.state_hash()
+	for value in [SimRngScript.ALGORITHM_VERSION, _rng.seed, _rng.draw_count, _rng.draw_signature]:
+		for byte_index in 8:
+			hash = ((hash ^ ((int(value) >> (byte_index * 8)) & 255)) * 16777619) & 0xffffffff
+	return hash
 
 
 func is_waiting_for_players() -> bool:
@@ -1158,9 +1251,28 @@ func stalled_player_ids() -> Array[int]:
 ## scene path with this live match. ReplayPlayer owns the comparisons; Match
 ## supplies the two facts it alone knows about the running scene.
 func load_replay(path: String) -> Dictionary:
+	if current_tick() != 0:
+		return {"ok": false, "message": "Replay load requires tick 0"}
+	if not _net_room_url.is_empty():
+		return {"ok": false, "message": "Replay load requires a local match"}
 	var snapshot_path := _snapshot_storage_path()
 	var expected_snapshot_digest := FileAccess.get_sha256(snapshot_path) if FileAccess.file_exists(snapshot_path) else ""
-	return _replay_player.load(path, expected_snapshot_digest, scene_file_path)
+	var header: Dictionary = ReplayFileScript.read(path)
+	if not bool(header.get("ok", false)):
+		return header
+	var replay_seed := int(header["rng_seed"])
+	if _restored_seed != 0 and _restored_seed != replay_seed:
+		return {"ok": false, "message": "Replay seed differs from restored snapshot seed"}
+	var result: Dictionary = _replay_player.load(path, expected_snapshot_digest, scene_file_path)
+	if not bool(result.get("ok", false)):
+		return result
+	var start_state: PackedByteArray = result["start_state"]
+	var buffer := StreamPeerBuffer.new()
+	buffer.big_endian = true
+	buffer.data_array = start_state
+	_rng.seed = replay_seed
+	_rng.restore_audit(buffer.get_u64(), buffer.get_u32())
+	return result
 
 
 ## Whether a loaded replay has submitted all of its records. This is exposed
@@ -1180,8 +1292,13 @@ func replay_exhausted() -> bool:
 ## clock boundary, which may be less than the old boundary plus count when halted.
 func advance_ticks(count: int) -> int:
 	for _i in count:
+		if _uses_start_barrier():
+			_turn_scheduler.poll_start_frames()
+		_bind_start_seed()
 		if (
 			_halted_at_tick >= 0
+			or not _startup_error.is_empty()
+			or not SimRngScript.valid_match_seed(_rng.seed)
 			or _turn_scheduler.is_gathering()
 			or not _turn_scheduler.peers_cover_tick(_clock.current_tick() + 1)
 		):
@@ -1435,7 +1552,7 @@ func _handle_snapshot_shortcut(event: InputEvent) -> bool:
 		return false
 	if _match_snapshot == null:
 		return false
-	var result: Dictionary = _match_snapshot.erase() if event.shift_pressed else _match_snapshot.save($Buildings, $Units)
+	var result: Dictionary = _match_snapshot.erase() if event.shift_pressed else _match_snapshot.save($Buildings, $Units, _rng.seed, _rng.draw_count, _rng.draw_signature)
 	_update_selection_label(String(result.get("message", "")))
 	return true
 
@@ -1449,9 +1566,20 @@ func _snapshot_storage_path() -> String:
 func _restore_saved_startup_state() -> void:
 	if _match_snapshot == null:
 		return
+	if not FileAccess.file_exists(_match_snapshot.storage_path):
+		return
 	var result: Dictionary = _match_snapshot.restore($Buildings, $Units)
 	if bool(result.get("ok", false)):
+		_restored_seed = int(result["rng_seed"])
+		if bool(_seed_override.get("present", false)) and bool(_seed_override.get("valid", false)) and int(_seed_override["seed"]) != _restored_seed and (not _uses_start_barrier() or _local_player_id == LOCAL_PLAYER_ID):
+			_set_startup_error("--match-seed conflicts with saved snapshot seed")
+		_rng.seed = _restored_seed if not _uses_start_barrier() or _local_player_id == LOCAL_PLAYER_ID else 0
+		_rng.restore_audit(int(result["draw_count"]), int(result["draw_signature"]))
 		print("Match: %s" % String(result.get("message", "")))
+	else:
+		_set_startup_error("Cannot restore %s: %s. Shift+F7 erases the old save." % [
+			_match_snapshot.storage_path, String(result.get("message", "invalid snapshot")),
+		])
 
 
 func _update_selection_label(status := "") -> void:

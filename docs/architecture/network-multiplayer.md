@@ -874,6 +874,17 @@ simulation         25 Hz integer tick, flat hot state + behaviour objects, defer
 view               Node3D, interpolation, cosmetic RNG, instant cosmetic feedback
 ```
 
+AP1 establishes the seeded sampler and format contract; gameplay sites still
+using global random calls are migrated in later slices.
+Previously recorded replays and saved snapshots no longer load. Version-2 files
+require a valid seed and audit metadata. A local snapshot seed takes precedence
+over a matching explicit override; a gathered leader proposes its restored seed
+after restore, and the relay's echoed START binds both peers. A follower's valid
+override is informational only. A one-sided snapshot with the same seed is
+discovered by the ordinary tick-8 entity checksum rather than at START.
+Keyed samples have no shared RNG cursor.
+Shift+F7 erases an old save.
+
 Starting parameters, to be tuned against the loopback transport with induced
 latency and loss:
 
@@ -892,15 +903,12 @@ latency and loss:
   now stands as a standalone bookkeeping limit rather than a multiple of a
   documented maximum — and whether it remains right for a very high round trip
   is a question for its own slice;
-- **state checksum** every 8 ticks (320 ms), intended to cover positions,
-  health, order queues and the RNG cursor. Live since `U1` as
+- **state checksum** every 8 ticks (320 ms), covering entity state and
+  the Match seed, RNG algorithm version, draw count and draw signature. Live since `U1` as
   `Match.CHECKSUM_INTERVAL_TICKS`, which is the only declaration of the
-  cadence. What the digest actually folds today is narrower than this line
-  promises: `SimEntityState.state_hash()` covers entity id, position,
-  health, shields, owner and invulnerability — **not** order queues and
-  **not** the RNG cursor. Both ends hash the identical fields, so a
-  divergence in anything covered is caught; a divergence in an order queue
-  or the RNG cursor is not yet. Widening the digest is its own slice.
+  cadence. `SimEntityState.state_hash()` covers entity id, position,
+  health, shields, owner and invulnerability; Match folds its RNG metadata
+  after that entity hash. Order queues remain outside the digest.
   Bounded since `W1`: the per-tick bookkeeping behind the comparison retains a
   64-tick window rather than the whole match, and counts the peer reports it
   discards as too late to compare (`dropped_stale_report_count()`).
@@ -909,9 +917,10 @@ Latency is hidden the way the genre always hides it: the acknowledgement is
 cosmetic and immediate — click feedback, order marker, unit voice line — while
 the order itself executes on its scheduled tick.
 
-RNG is split in two. The simulation owns a single seeded
-`RandomNumberGenerator`, advanced only from tick code, and its cursor is part of
-the checksum. Everything cosmetic — impact debris, death sounds, turret FX,
+RNG is split in two. The simulation owns keyed integer samples selected by
+the Match seed, purpose, stable entity or cell keys, tick or cycle, and draw
+index. Match checksums and retained desync dumps include the seed, algorithm
+version, cumulative draw count and commutative draw signature. Everything cosmetic — impact debris, death sounds, turret FX,
 which already call global `randi`/`randf` — keeps using unseeded randomness and
 is structurally forbidden from touching sim state.
 
@@ -4452,20 +4461,24 @@ source cites a number you cannot place.
 
   ```
   [desync-state] state after tick <T>: <N> live entities
+  [desync-state] rng seed=<hex64> version=<hex32> count=<hex64> signature=<hex32>
   [desync-state] entity <id> <kind> pos=<V> hp=<F32> sh=<F32> own=<int> inv=<flag>/<ticks> line_r=<F32> line_ymin=<F32> line_ymax=<F32> line_carried=<byte>
   [desync-state] nav <id> agent=… cmd=… mode=… order=… hold=… anchor=… reserved=… turn=… yaw=<F32> dest=<V> steer=<V> path=<i>/<n> blocked=<F64> yield=<F64> ydir=<V> swap=<int> orca=<V> avoid=<V>
   [desync-state] turret <id> weapon=<int> yaw=<F64> pitch=<F64>
   ```
 
-  - **Order.** Entities follow `live_ids()` order. Each unit's `nav` line and
-    each turret line follows its own entity line.
-  - **Encoding.** Every value prints as `str()` followed by the hex of its
+  - **Order.** The RNG line follows the state header. Entities then follow
+    `live_ids()` order. Each unit's `nav` line and each turret line follows its
+    own entity line.
+  - **Encoding.** Entity values print as `str()` followed by the hex of their
     packed bytes in brackets; the brackets are authoritative. For hashed
-    fields they are exactly the bytes `state_hash()` folds. So **whenever two
-    clients' hashes differ, at least one entity line differs**, by
-    construction.
+    entity fields they are exactly the bytes `state_hash()` folds. The RNG
+    line instead prints fixed-width hexadecimal seed, algorithm version,
+    cumulative draw count and commutative signature. `Match.match_checksum()`
+    folds both the entity hash and these RNG values. A different Match checksum
+    therefore has a differing entity line or RNG line in the retained capture.
   - **The header** carries neither the player nor the halt tick, both of which
-    are on `AL1`'s line. Two identical states therefore diff empty.
+    are on `AL1`'s line. Two identical entity and RNG states therefore diff empty.
 
   **As of the earliest mismatched checksum tick, not the halt tick.** Under
   `AM1` two clients can halt up to an effective delay apart, and a dump of
@@ -4571,6 +4584,47 @@ source cites a number you cannot place.
   not dumped.
 
   **`AO1` — post-movement combat grid firing lines.** Normal-unit occupancy uses a post-movement combat grid of stable entity ids and the simulation position, not navigation's ephemeral pre-movement ground/air hashes: it includes an admitted unit with no navigation agent and aircraft, then resolves only nearby candidates. There is no per-shot all-unit RID copy: nearby normal RIDs alone are excluded while distant physics bodies are pierced to the explicit 4096-pierce safety limit. The coder's quieter-host 16/50/200/1000 whole-call scaling passed its flat-within-noise gate (medians 83.022/83.497/82.843/82.812 µs per call, noise 1.830 µs). The reviewer's loaded-host rerun was INCONCLUSIVE because batch noise exceeded the 5.0 µs limit; at land, a noisy first set triggered the allowed repeat, which printed PASS with medians 76.436/77.260/76.254/76.410 µs, 1.006 µs spread and 3.333 µs noise. The yaw-only enclosing cylinder is conservative, so a false-positive circle graze can be old-clear/new-hold; measured radii are Minotaurus 4.58 (a 9.2-unit corridor), Mongoose 1.94, Trike 1.84, APC 1.87 and infantry 0.89. Authored corners cannot lie outside that circle, but pose/scale/body-shape changes require profile repair. The start-inside exact hull branch means away from neighbour fires when clear, while toward neighbour holds when it enters the hull. A carried legacy ray remains frame-dependent, and a no stored position normal unit is skipped; the result remains conditional on same shot endpoints. Some building turrets can reach this check from the render frame: authored handoff is tick-driven but aim/acquisition stay frame-timed. In the refreshed stable alternating six-run set after the bounded grid walk, the HEAD baseline median was 33.765 ticks/s and the tree median was 35.905 ticks/s (spans 0.280 and 0.192); the four-core host load ranged 2.52–3.53. Two earlier loaded sets drifted beyond the stability limit and were inconclusive. After staging the new grid at land, the same six-command helper completed another stable set: HEAD median 38.279 ticks/s (span 0.300), tree median 40.985 (span 0.261), with all 49-building, 16-unit, 28/28 combat-window and 110/110 patrol-interval checks passing. AO2/AO3 remain debt. `line_r=<F32>`, `line_ymin=<F32>`, `line_ymax=<F32>` and `line_carried=<byte>` remain byte-exact AN1 hashed fields.
+
+  **`AP1` — seeded, keyed simulation randomness.** `scripts/sim/sim_rng.gd`
+  samples a versioned 32-bit integer from the Match seed, a purpose, stable
+  keys, tick or cycle, and draw index. The result is independent of unrelated
+  draw order. Each draw increments a count and a commutative signature; Match
+  hashes seed, algorithm version, count and signature after the entity hash,
+  and AN1's retained dump prints those four fields on its new RNG line.
+  Gameplay random sites are still to be converted in AP4–AP7; AP1 gives them
+  the shared contract. Replay and saved-startup formats are now version 2
+  with mandatory seed and audit metadata. Version-1 files are refused. A
+  present invalid F7 save stops ticks and names its path and the Shift+F7
+  remedy instead of silently starting a different state.
+
+  `--match-seed=<decimal>` accepts positive values through the signed 64-bit
+  maximum; zero is reserved for an unbound gathered follower. An invalid
+  argument stops startup. A single-player or plain-room boot uses the valid
+  override, otherwise a random boot seed or, for a plain room, its fixed
+  default. A restored snapshot supplies the seed; an explicit override must
+  agree. In `--net-room` with `--net-players=2`, player 1 chooses the seed
+  after restore and sends it in START once; both clients bind the relay's
+  echo. A follower's valid local override has no authority and produces a
+  notice if it differs. START grew from five to exactly thirteen bytes
+  (kind, sender, signed-64 seed). If player 1 runs a pre-AP1 client, it sends
+  a five-byte START that an AP1 follower rejects. That follower remains in
+  “Waiting for players” because it never receives a valid START; update both
+  clients to the same protocol version. A one-sided snapshot with a matching
+  seed is detected by the tick-8 checksum if entity state differs, not by START.
+
+  **Owed from AP1 review.** `tests/sim/replay_player_run.gd`'s “preserve loaded
+  cursor” case begins with zero records, so resetting `_next_index` before
+  validation in `scripts/match/replay_player.gd` would go unseen; AP10 must
+  advance a nonempty replay before its failed load. A corrupt replay header
+  whose draw count exceeds the nonnegative Godot `int` range can make
+  `scripts/match/match.gd::load_replay()` return `ok=true` after
+  `SimRng.restore_audit()` refused the count, because its result is ignored;
+  AP11 must reject it in `scripts/match/replay_file.gd` before changing the
+  live seed or player. Once a gathered match halts, `Match.advance_ticks()`
+  still calls `scripts/net/turn_scheduler.gd::poll_start_frames()` before its
+  halt check, stashing incoming keepalives that no later tick drains; AP12
+  must stop that unbounded queue growth. These are separate from the AP2–AP9
+  call-site conversions.
 
 - **Phase 6 — polish.** Cosmetic prediction, parameter tuning under induced
   latency and loss, save/load of a networked match.

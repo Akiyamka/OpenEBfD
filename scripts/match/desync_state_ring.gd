@@ -2,6 +2,7 @@ class_name DesyncStateRing
 extends RefCounted
 
 const SimEntityRegistryScript := preload("res://scripts/sim/entity_registry.gd")
+const SimRngScript := preload("res://scripts/sim/sim_rng.gd")
 
 var _capacity: int
 var _captures: Array[Dictionary] = []
@@ -11,7 +12,7 @@ func _init(capacity: int) -> void:
 	_capacity = capacity
 
 
-func capture(tick: int, entity_state, entity_index, navigation) -> void:
+func capture(tick: int, entity_state, entity_index, navigation, rng) -> void:
 	var registry = entity_index.registry()
 	var entities: Array[Dictionary] = []
 	for id in registry.live_ids():
@@ -21,7 +22,14 @@ func capture(tick: int, entity_state, entity_index, navigation) -> void:
 		if node != null:
 			_capture_node_fields(entity, node, navigation)
 		entities.append(entity)
-	_captures.append({"tick": tick, "entities": entities})
+	_captures.append({
+		"tick": tick,
+		"entities": entities,
+		"rng_seed": rng.seed,
+		"rng_version": SimRngScript.ALGORITHM_VERSION,
+		"draw_count": rng.draw_count,
+		"draw_signature": rng.draw_signature,
+	})
 	while _captures.size() > _capacity:
 		_captures.pop_front()
 
@@ -90,6 +98,10 @@ func _lines_for_capture(stored_capture: Dictionary) -> PackedStringArray:
 	var entities: Array = stored_capture["entities"]
 	var lines := PackedStringArray([
 		"[desync-state] state after tick %d: %d live entities" % [stored_capture["tick"], entities.size()],
+		"[desync-state] rng seed=%016x version=%08x count=%016x signature=%08x" % [
+			stored_capture["rng_seed"], stored_capture["rng_version"],
+			stored_capture["draw_count"], stored_capture["draw_signature"],
+		],
 	])
 	for entity: Dictionary in entities:
 		lines.append(_entity_line(entity))

@@ -5,6 +5,17 @@ var net_room_url_for_test := ""
 var net_player_count_for_test := 0
 var transport_override: NetTransport = null
 var net_transport: NetTransport = null
+var restore_startup_for_test := false
+var snapshot_path_for_test := ""
+var match_seed_args_for_test := PackedStringArray()
+
+
+func _match_seed_args() -> PackedStringArray:
+	return match_seed_args_for_test
+
+
+func _snapshot_storage_path() -> String:
+	return snapshot_path_for_test if not snapshot_path_for_test.is_empty() else super._snapshot_storage_path()
 
 
 func _resolve_local_player_id() -> int:
@@ -25,4 +36,5 @@ func _create_net_transport() -> NetTransport:
 
 
 func _restore_saved_startup_state() -> void:
-	pass
+	if restore_startup_for_test:
+		super._restore_saved_startup_state()

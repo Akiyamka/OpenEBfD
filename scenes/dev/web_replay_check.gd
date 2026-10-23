@@ -54,7 +54,7 @@ func _ready() -> void:
 	var exhausted := replay_exhausted()
 	var moved := not scout.simulation_position().is_equal_approx(start_position)
 	var clock_ticks := current_tick()
-	var state_hash := entity_state().state_hash() if exhausted else 0
+	var state_hash := match_checksum() if exhausted else 0
 	print(
 		"WEB_REPLAY_CHECK_RESULT ok=%s message=%s exhausted=%s ticks=%d chunks=%d process_frame_delta=%d moved=%s clock_ticks=%d hash=%d"
 		% [

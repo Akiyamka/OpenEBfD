@@ -63,6 +63,7 @@ func _initialize() -> void:
 	_run_case("commands are held until gathering releases", _test_gathering_holds_commands)
 	_run_case("frames delivered with START wait for the first tick", _test_start_stashes_batch_frames)
 	_run_case("presence frames after release are inert", _test_released_presence_frames_are_inert)
+	_run_case("START requires a valid seed and conflicting duplicates fault", _test_seeded_start_validation)
 	_run_case("short presence frames reject and gathering is opt-in", _test_presence_rejections_and_opt_in)
 	_run_case("hello timing begins when a connected transport sends", _test_hello_timing_starts_on_real_send)
 	_run_case("a late remote command is printed and recorded once", _test_late_remote_command_is_logged)
@@ -813,6 +814,7 @@ func _gathering_pair() -> Dictionary:
 	var leader = TurnSchedulerScript.new(leader_bus, leader_endpoint, 1)
 	follower.begin_gathering(2, 320)
 	leader.begin_gathering(2, 320)
+	leader.set_start_proposal(12345)
 	return {"hub": hub, "follower": follower, "leader": leader, "follower_endpoint": follower_endpoint, "leader_endpoint": leader_endpoint, "follower_bus": follower_bus, "leader_bus": leader_bus}
 
 
@@ -853,6 +855,7 @@ func _test_gathering_resends_hello() -> void:
 	_finish_gathering_sequence(pair)
 	_expect(not pair["leader"].is_gathering(), "the leader must release after the re-sent hello and START echo")
 	_expect(not pair["follower"].is_gathering(), "the follower must release on the same relayed START")
+	_expect(pair["leader"].bound_start_seed() == 12345 and pair["follower"].bound_start_seed() == 12345, "echoed START binds one seed on both peers")
 
 
 func _test_leader_waits_for_start_echo() -> void:
@@ -909,7 +912,7 @@ func _test_start_stashes_batch_frames() -> void:
 	var follower = TurnSchedulerScript.new(bus, endpoints["a"], 2)
 	follower.begin_gathering(2, 320)
 	var sender = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["b"], 1)
-	endpoints["a"].receive(PackedByteArray([5, 0, 0, 0, 1]))
+	endpoints["a"].receive(PackedByteArray([5, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1]))
 	endpoints["a"].receive(sender._encode_frame(3, _make_move_command(1)))
 	follower.poll_gathering(0)
 	_expect(not follower.is_gathering(), "START must release gathering")
@@ -922,10 +925,10 @@ func _test_released_presence_frames_are_inert() -> void:
 	var endpoints: Dictionary = _new_connected_endpoints()
 	var follower = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["a"], 2)
 	follower.begin_gathering(2, 320)
-	endpoints["a"].receive(PackedByteArray([5, 0, 0, 0, 1]))
+	endpoints["a"].receive(PackedByteArray([5, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1]))
 	follower.poll_gathering(0)
 	endpoints["a"].receive(PackedByteArray([4, 0, 0, 0, 1]))
-	endpoints["a"].receive(PackedByteArray([5, 0, 0, 0, 1]))
+	endpoints["a"].receive(PackedByteArray([5, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1]))
 	follower.advance_tick(5)
 	_expect(follower.rejected_frame_count() == 0, "presence frames after release must not be rejected")
 	_expect(follower.last_remote_activity_tick_for(1) == -1, "presence frames must not credit remote activity")
@@ -941,6 +944,36 @@ func _test_presence_rejections_and_opt_in() -> void:
 	scheduler.advance_tick(1)
 	_expect(scheduler.rejected_frame_count() == 2, "a short START must reject once")
 	_expect(not TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["b"], 2).is_gathering(), "gathering must remain opt-in")
+
+
+func _start_frame(seed: int, sender := 1) -> PackedByteArray:
+	var buffer := StreamPeerBuffer.new()
+	buffer.big_endian = true
+	buffer.put_u8(5)
+	buffer.put_32(sender)
+	buffer.put_64(seed)
+	return buffer.data_array
+
+
+func _test_seeded_start_validation() -> void:
+	var endpoints: Dictionary = _new_connected_endpoints()
+	var follower = TurnSchedulerScript.new(SimCommandBusScript.new(), endpoints["a"], 2)
+	follower.begin_gathering(2, 320)
+	for bad_frame in [
+		PackedByteArray([5, 0, 0, 0, 1]),
+		_start_frame(0), _start_frame(-1), _start_frame(11, 2),
+		_start_frame(11) + PackedByteArray([0]),
+	]:
+		endpoints["a"].receive(bad_frame)
+		follower.poll_gathering(1)
+		_expect(follower.is_gathering(), "invalid START must not release gathering")
+	_expect(follower.rejected_frame_count() == 5, "every invalid START rejects at decoder")
+	endpoints["a"].receive(_start_frame(11))
+	follower.poll_gathering(2)
+	_expect(not follower.is_gathering() and follower.bound_start_seed() == 11, "valid START binds before release")
+	endpoints["a"].receive(_start_frame(12))
+	follower.advance_tick(1)
+	_expect(not follower.protocol_fault().is_empty(), "conflicting START after release is terminal")
 
 
 func _test_hello_timing_starts_on_real_send() -> void:

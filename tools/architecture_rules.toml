@@ -522,7 +522,7 @@ zone = "sim"
 pattern = '(?<!\.)\b(?:randi|randf|randi_range|randf_range|randfn|randomize|rand_from_seed)\s*\('
 summary = "unseeded randomness in the simulation"
 why = "global RNG is per-process state, so two clients draw different numbers from the first call onwards"
-instead = "the seeded simulation RNG, whose cursor is part of the state checksum; cosmetic randomness belongs in the view layer"
+instead = "keyed SimRng draws with stable keys; cosmetic randomness belongs in the view layer"
 
 [[rules]]
 id = "sim-no-libm-math"

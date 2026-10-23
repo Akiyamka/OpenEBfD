@@ -70,25 +70,9 @@ extends RefCounted
 ## string against a present digest is what makes that comparison fail
 ## rather than silently pass because both digests happened to be unset.
 ##
-## rng_seed and start_state are reserved and deliberately unused in this
-## slice: write_header() always receives 0 and an empty PackedByteArray from
-## ReplayRecorder. There is no seed anywhere in this codebase yet -- every
-## randi()/randf_range() call is global and unseeded, and making the
-## simulation deterministic (a single seeded RandomNumberGenerator whose
-## cursor is part of the state checksum) is phase 4's job, per "Layering" in
-## docs/architecture/network-multiplayer.md. The fields are reserved now,
-## ahead of that work, so phase 4 can fill them in without bumping
-## format_version and stranding every replay recorded before it. Concretely
-## today: a replay recorded now reproduces the command stream -- the same
-## commands, on the same ticks, in the same order -- and nothing else.
-## Anything downstream of unseeded RNG (impact debris timing, death voice
-## line selection, and every other cosmetic draw) will *not* reproduce, and
-## is not supposed to: the "Layering" section's RNG-split paragraph already
-## draws that line -- the simulation owns one seeded generator whose cursor
-## is part of the state checksum, while the view keeps using global
-## randi()/randf() -- and this format just inherits it. (Decision 3 in the
-## fork table is about the sim owning state, not about randomness; the split
-## lives only in that paragraph until phase 4 implements it.)
+## Version 2 requires a positive signed-64 Match seed and a 12-byte start
+## state: big-endian unsigned-64 draw count followed by unsigned-32 draw
+## signature. These fields pin the keyed sampler's diagnostic state.
 ##
 ## Truncated tails are tolerated, not rejected: a match that crashes mid-tick
 ## leaves the last record half-written, and that half-written replay is
@@ -111,7 +95,8 @@ extends RefCounted
 ## instead of reporting it.
 
 const MAGIC := "OEBR"
-const FORMAT_VERSION := 1
+const FORMAT_VERSION := 2
+const SimRngScript := preload("res://scripts/sim/sim_rng.gd")
 
 
 ## Appends the file header to `file`, which must already be open for
@@ -250,14 +235,18 @@ static func _read_header_block(header_bytes: PackedByteArray) -> Variant:
 	if buffer.get_available_bytes() < 8:
 		return null
 	var rng_seed := buffer.get_64()
+	if not SimRngScript.valid_match_seed(rng_seed):
+		return null
 	if buffer.get_available_bytes() < 4:
 		return null
 	var start_state_length := buffer.get_u32()
+	if start_state_length != 12:
+		return null
 	if buffer.get_available_bytes() < start_state_length:
 		return null
 	var start_state: PackedByteArray = buffer.get_data(start_state_length)[1]
 	if buffer.get_available_bytes() != 0:
-		# format_version 1 defines the header as exactly these four fields;
+		# This format defines the header as exactly these four fields;
 		# leftover bytes here mean corruption, not a future field this
 		# reader does not know about yet -- a reader that understands a
 		# later format_version is the one that gets to treat header_length
