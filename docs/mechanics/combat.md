@@ -72,15 +72,14 @@ Other weapon properties on a unit:
   only after both restrictions have completed. Infantry instead executes its
   full-body Fire clip as a locked action and starts the post-action
   `ReloadCount` when that clip ends. The distinction is rules-backed by the
-  unit's `Infantry` flag rather than a list of unit names. Projectile events
-  inside the clip follow the animated barrel
-  recoils: the Minotaurus emits four sequential shells from its four muzzles
+  unit's `Infantry` flag rather than a list of unit names. The Minotaurus emits four sequential shells from its four muzzles
   during one 31-frame `Fire 0` clip while its reload timer is already advancing.
   A type-10 launch event's `value` payload names which physical `>>N` muzzle
   fires it — the barrel order the animation visibly opens, which is not
   guaranteed to match the muzzles' own ascending numeric names. ATRocketTurret
   is the clearest case: its Fire_0 clip visibly recoils a left pair of barrels,
   then a right pair, while the `>>N` markers are numbered top-then-bottom.
+  Projectile events keep the authored type-10 timing and muzzle index; recoil is presentation and does not move the unit projectile origin.
   `AuthoredFireController` reads `value` and threads the named muzzle through
   `FireRequest.muzzle_index` so `CombatTurret.try_fire`/`try_fire_at` fire (and
   flash) that exact muzzle instead of the plain round-robin
@@ -289,10 +288,10 @@ Summary of how different bullets miss (follows from the verified behavior above)
 
 ## 4. Range, elevation, visibility
 
-- `MinRange`/`MaxRange` are measured from the stable gameplay origin of the
-  firing entity. The animated muzzle is the projectile spawn point, but moving,
-  elevating, or entering a `Fire` pose cannot move the weapon itself into or out
-  of gameplay range (verified);
+- `MinRange`/`MaxRange`: Unit projectiles spawn at the authored combat-rest muzzle (Deploy_Gun_Hold for deploy-only weapons) under logical yaw and pitch; range is measured from the firing entity's stable gameplay origin.
+  Flash position follows the rendered muzzle; separation from the unit projectile includes interpolation and authored clip pose.
+  Kindjal's Deployed_Idle_0 moves its visible muzzle around the Deploy endpoint rest without moving unit shot origins.
+  Building turrets still use live muzzle geometry until AP3.
 - **downhill range bonus**, increasing with height difference `[← 1 §2]`;
 - firing uphill is possible only with indirect fire `[← 1 §2]`;
 - a flat-flying shot also needs an **unobstructed line of fire**: bullets collide

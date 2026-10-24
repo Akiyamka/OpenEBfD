@@ -4,6 +4,8 @@ const LegacyRulesFixture := preload("res://tests/support/legacy_rules_fixture.gd
 const CombatBulletScript := preload("res://scripts/combat/combat_bullet.gd")
 const CombatProjectileScript := preload("res://scripts/combat/combat_projectile.gd")
 const CombatTurretScript := preload("res://scripts/combat/combat_turret.gd")
+const CombatDeployStrategyScript := preload("res://scripts/units/combat_deploy_strategy.gd")
+const FireRequestScript := preload("res://scripts/combat/fire_request.gd")
 const Doubles := preload("res://tests/combat/support/combat_doubles.gd")
 const Bullets := preload("res://tests/combat/support/combat_bullets.gd")
 const UnitScene := preload("res://scenes/units/unit.tscn")
@@ -59,7 +61,100 @@ func _initialize() -> void:
 		"Kobra travel fire clips apply their horizontal barrel pose at both boundaries",
 		_test_kobra_travel_fire_pose_boundaries
 	)
+	_run_case("deploy endpoints and held combat rests", _test_deploy_combat_rests)
 	_finish("Deploy fire tests")
+
+
+func _test_deploy_combat_rests() -> void:
+	for fixture in [
+		{ "id": &"ORKobra", "scene": ORKobraModelScene },
+		{ "id": &"ATKindjal", "scene": ATKindjalModelScene },
+		{ "id": &"ORMortar", "scene": ORMortarModelScene },
+	]:
+		var unit = UnitScene.instantiate()
+		unit.config_id = fixture["id"]
+		root.add_child(unit)
+		unit.replace_visual_scene(fixture["scene"])
+		var strategy = CombatDeployStrategyScript.new()
+		var started: Dictionary = strategy.try_deploy(unit)
+		_expect(bool(started.get("started", false)), "%s must start via strategy" % fixture["id"])
+		var player := unit.visual_root.find_child("AnimationPlayer", true, false) as AnimationPlayer
+		_expect(player != null and player.current_animation == &"Deploy_Gun",
+			"%s must evaluate Deploy_Gun" % fixture["id"])
+		if player == null:
+			unit.free()
+			continue
+		player.advance(player.get_animation(&"Deploy_Gun").length)
+		unit.restore_combat_turret_poses()
+		var turret = unit.combat_turrets[1]
+		var endpoint: Dictionary = turret.visual_peek_emission()
+		var logical: Dictionary = turret.peek_emission()
+		_expect(Vector3(logical["position"]).distance_to(endpoint["position"]) <= 0.02,
+			"%s logical muzzle must match evaluated Deploy endpoint" % fixture["id"])
+		_expect(rad_to_deg(Vector3(logical["direction"]).angle_to(endpoint["direction"])) <= 0.5,
+			"%s logical direction must match evaluated Deploy endpoint" % fixture["id"])
+		for tick in 100:
+			unit.sim_tick()
+			if unit.is_deployed():
+				break
+		_expect(unit.is_deployed(), "%s strategy listener must complete deployment" % fixture["id"])
+		var expected_clip := &"Deployed_Idle_0" if fixture["id"] == &"ATKindjal" \
+			else &"Deploy_Gun_Hold"
+		_expect(player.current_animation == expected_clip,
+			"%s must play its production deployed clip" % fixture["id"])
+		if fixture["id"] == &"ATKindjal":
+			var peak_distance := 0.0
+			var peak_angle := 0.0
+			for sample in 300:
+				player.advance(1.0 / 60.0)
+				unit.restore_combat_turret_poses()
+				var visible: Dictionary = turret.visual_peek_emission()
+				var current: Dictionary = turret.peek_emission()
+				_expect(Vector3(current["position"]).distance_to(logical["position"]) < 0.002,
+					"Kindjal logical rest must survive idle frame %d" % sample)
+				_expect(Vector3(current["direction"]).dot(logical["direction"]) > 0.99999,
+					"Kindjal logical direction must survive idle frame %d" % sample)
+				peak_distance = maxf(peak_distance,
+					Vector3(visible["position"]).distance_to(current["position"]))
+				peak_angle = maxf(peak_angle,
+					rad_to_deg(Vector3(visible["direction"]).angle_to(current["direction"])))
+			_expect(peak_distance > 0.25 and peak_angle > 10.0,
+				"Kindjal cosmetic idle must move its visible muzzle substantially")
+		else:
+			player.advance(0.0)
+			unit.restore_combat_turret_poses()
+			var held: Dictionary = turret.visual_peek_emission()
+			_expect(Vector3(held["position"]).distance_to(logical["position"]) <= 0.02,
+				"%s held muzzle must match combat rest" % fixture["id"])
+		if fixture["id"] == &"ORKobra":
+			_expect(Vector3(turret._ballistic_aim_origin()).distance_to(
+				turret._muzzle_group_origin()) < 0.02,
+				"Kobra neutral ballistic origin must follow held muzzle")
+		if fixture["id"] in [&"ORKobra", &"ATKindjal"]:
+			var firing_forward := Vector3(logical["direction"])
+			firing_forward.y = 0.0
+			var firing_target: Vector3 = unit.global_position + firing_forward.normalized() * 8.0
+			var aligned := false
+			for aim_step in 100:
+				aligned = turret.aim_at(firing_target, 1.0 / 20.0)
+				if aligned:
+					break
+			if fixture["id"] == &"ORKobra":
+				_expect(aligned, "Kobra hold shot must have a valid aligned firing angle")
+			unit.restore_combat_turret_poses()
+			var visible_before: Dictionary = turret.visual_peek_emission()
+			var request := FireRequestScript.authored(firing_target, unit)
+			request.projectile_parent = root
+			var shots: Array = turret.try_fire_at(request)
+			_expect(not shots.is_empty(), "%s must emit a projectile" % fixture["id"])
+			if not shots.is_empty():
+				var expected_origin: Vector3 = endpoint["position"] \
+					if fixture["id"] == &"ATKindjal" else visible_before["position"]
+				_expect(Vector3(shots[0]._launch_position).distance_to(expected_origin) < 0.02,
+					"%s shot must start at its independently sampled combat rest" % fixture["id"])
+			for shot in shots:
+				shot.free()
+		unit.free()
 
 func _test_undeployed_kobra_shell_leaves_the_muzzle() -> void:
 	# Rules.txt leaves Howitzer_B without a Speed, which made the shell resolve
@@ -371,7 +466,12 @@ func _test_kobra_deployed_range_acquisition() -> void:
 	forward = forward.normalized()
 	var target := Doubles.FakeCombatTarget.new(&"Heavy")
 	var failed_distances: Array[float] = []
-	for distance_tenths in range(10, 321):
+	# The full held barrel sits ahead of the hull. At 2.3–2.8 units the
+	# ground target is almost directly below the muzzle, beyond its pitch stop.
+	target.position = kobra.global_position + forward * 2.5
+	_expect(turret._pitch_limit_error(target.position) > 0.01,
+		"a ground point under the held muzzle must exceed Kobra pitch limits")
+	for distance_tenths in range(29, 321):
 		var distance := float(distance_tenths) * 0.1
 		target.position = kobra.global_position + forward * distance
 		turret.reset_aim()
@@ -393,9 +493,15 @@ func _test_kobra_deployed_range_acquisition() -> void:
 	# Exact attack-ground dead zone reported from the live demo: the Kobra's
 	# long shared yaw/pitch pivot used to feed its current muzzle height back
 	# into ballistic arc selection and never complete vertical acquisition.
-	target.position = kobra.global_position + Vector3(
-		6.15308, -0.00272, -5.34003
-	)
+	# The effective hold muzzle moves the high/low branch point inward from
+	# the old travel-rest coordinate. A 0.02-unit step on either side flips
+	# between the two ballistic solutions, then the order must still fire.
+	var radial: Vector3 = Vector3(6.15308, 0.0, -5.34003).normalized()
+	target.position = kobra.global_position + radial * 8.12 + Vector3(0.0, -0.00272, 0.0)
+	var near_pitch: float = turret._desired_firing_pitch(target.position - radial * 0.02)
+	var far_pitch: float = turret._desired_firing_pitch(target.position + radial * 0.02)
+	_expect(near_pitch < -1.0 and far_pitch > 0.3,
+		"Kobra's corrected 8.12-unit dead zone must straddle the high/low arc flip")
 	var fired_projectiles: Array = []
 	kobra.weapon_fired.connect(func(
 			projectiles: Array, _target: Variant, _weapon_index: int

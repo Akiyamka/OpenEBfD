@@ -1228,8 +1228,9 @@ source cites a number you cannot place.
   `unit_shader_fx.gd`, `unit_movement_sounds.gd`, `combat_impact_effect.gd`,
   `UnitLocomotion.advance_gait()` (animation playback speed), and the visual
   slope tilt (`Unit._advance_visual_slope_alignment()`,
-  `UnitTerrainAlignment.advance_slope_alignment()`). None of these are readable
-  by a command or a checksum, and interpolating them is the point of B4.
+  `UnitTerrainAlignment.advance_slope_alignment()`). The slope tilt also changes
+  rendered muzzle poses, but AP2 reads a saved combat rest for unit shots;
+  interpolating the visible pose remains the point of B4.
 
   *Already resolved* — `FrameTickDriver.pending_ticks()` and `Match._process()`
   are the conversion boundary itself; the three controllers' `process(_delta)`
@@ -2001,16 +2002,16 @@ source cites a number you cannot place.
   0.360333. The pull direction is therefore sound and no push from `Match` was
   needed.
 
-  **One exposure this slice widens rather than creates, recorded because
-  slice B1's inventory clears it and should not.** That inventory lists the
+  **One exposure B4 widened rather than created, recorded because
+  B1's original inventory cleared it.** That inventory listed the
   visual slope tilt under "stays on frame `delta`, and should", on the grounds
-  that "none of these are readable by a command or a checksum". That is not
-  true of `visual_root`, and was not true before B4: `CombatTurret.bind_model()`
-  is handed `_owner.visual_root` and collects its muzzles from inside it, so
-  `emission_points()` reads `muzzle.global_transform` — a world position derived
-  from a subtree whose orientation is already advanced on frame `delta`, and
-  which is a simulation input, since it becomes a projectile's
-  `_launch_position`. B4 adds a translation term to that existing rotation term.
+  that "none of these are readable by a command or a checksum". That was not
+  true of `visual_root`, even before B4: `CombatTurret.bind_model()`
+  was handed `_owner.visual_root` and collected its muzzles from inside it, so
+  `emission_points()` read `muzzle.global_transform` — a world position derived
+  from a subtree whose orientation was already advanced on frame `delta`, and
+  which became a simulation input as a projectile's `_launch_position`. B4
+  added a translation term to that existing rotation term.
   The magnitude is bounded by one tick of the shooter's travel — 1.6 world
   units for the fastest unit in the rules — and how much of that bound a tick
   actually sees depends entirely on how frames and ticks happen to interleave.
@@ -2023,10 +2024,10 @@ source cites a number you cannot place.
   number is wrong about its own run and neither is a client measurement:
   headless pacing is not 60 fps pacing, and the fraction distribution is
   whatever the run happened to produce. The durable statement is the bound and
-  the dependence, not either figure. It is not fixed here because the fix is not B4's
-  shape: either the muzzle read subtracts the offset, or the model's
-  presentation transform stops being the thing the simulation measures from.
-  Whichever slice claims it should also correct B1's inventory line.
+  the dependence, not either figure. B4 left this open; AP2 later made the unit
+  shot origin from saved combat rest geometry instead of the presentation
+  transform. The B1 inventory above now distinguishes the visible slope tilt
+  from the unit shot origin.
 
   **Slice B5, decided 2026-08-27: a firing decision stops being measured from
   an interpolated node.** Found while sweeping the combat group for R6, and
@@ -2057,11 +2058,16 @@ source cites a number you cannot place.
   the measurement is the only reason it did not ship: the code read correctly
   and the suites stayed green.
 
-  The muzzle half of the same finding stays open, and its entry above is now
-  corrected rather than merely inherited. It is a harder question than this
-  one: a range origin has an obvious right answer in the entity, while a launch
-  position genuinely belongs at the muzzle, so fixing it means deciding what a
-  muzzle position *is* in the simulation rather than moving a read.
+  AP2 gives uncarried units tick-owned aim and muzzle geometry.
+  VisualRoot combat rest is captured once at first install and survives model swaps.
+  Each installed model contributes descendant local rests and a combat-only selection centre; selection halos remain live presentation.
+  Deploy-only unit shots use the full Deploy_Gun_Hold rest chain, matching Kobra/Mortar hold and Kindjal's Deploy endpoint.
+  Kindjal Deployed_Idle_0 is cosmetic: measured muzzle gap reaches 0.398 units and 18.63 degrees.
+  Flash-to-shell separation includes interpolation and authored clip pose; Stationary alone moves TL_Leech by at least 0.262 units and OR_LaserTank by 0.144 units.
+  Carried cargo target position remains owed to AP13.
+  Building turrets remain frame-timed until AP3.
+  AP2 alternating HEAD/tree benchmark: HEAD 36.658, 36.995, 36.718 ticks/s (median 36.718); tree 45.067, 45.490, 45.561 ticks/s (median 45.490); spans 0.338/0.494, stable PASS at 1200 measured ticks after 200 warmup (host load recorded in coder report).
+  A separate land run also passed with HEAD 37.139, 36.742, 36.961 ticks/s (median 36.961) and tree 45.478, 45.578, 45.537 (median 45.537); spans were 0.397/0.100 ticks/s.
 
   **Slice R1, decided 2026-08-26: buildings get a store-backed position, and
   the read debt becomes a scheduled program instead of a paragraph.** C2's debt
@@ -2725,9 +2731,10 @@ source cites a number you cannot place.
   visible body". **The aim point has been animation-driven since long before B4
   added a term to it.** Making it deterministic means deciding what an aim
   point *is* in the simulation rather than moving a read, which is the same
-  question the muzzle finding above asks and belongs with it in phase 4. The
-  attempt is recorded rather than the fix, because the code read perfectly
-  sensibly and only the number said otherwise.
+  question the muzzle finding above asks. AP2 answered it for uncarried units
+  with a saved combat selection centre; selection halos still follow the live
+  model. The R6 attempt remains recorded because its code read sensibly and
+  only the measurement exposed the leak.
 
   After R6 the read rule matches 80 lines in 37 files: 22 permanent files
   holding 44 reads, and a queue of 14 files holding 34 — units 16, buildings

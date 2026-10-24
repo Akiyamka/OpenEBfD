@@ -530,7 +530,8 @@ func _test_turret_holds_angle_with_no_tick_this_frame() -> void:
 		absf(aimed_yaw) > 0.01,
 		"test setup must actually turn the turret, or the regression below proves nothing"
 	)
-	var aimed_direction: Vector3 = turret.peek_emission()["direction"]
+	var aimed_direction: Vector3 = turret.visual_peek_emission()["direction"]
+	var logical_direction: Vector3 = turret.peek_emission()["direction"]
 
 	var player := unit.get_node("VisualRoot").find_child(
 		"AnimationPlayer", true, false
@@ -544,11 +545,13 @@ func _test_turret_holds_angle_with_no_tick_this_frame() -> void:
 		# turret pivot back to its own rest pose, exactly as it does every
 		# rendered frame it plays.
 		player.advance(1.0 / 60.0)
-		var stomped_direction: Vector3 = turret.peek_emission()["direction"]
+		var stomped_direction: Vector3 = turret.visual_peek_emission()["direction"]
 		_expect(
 			rad_to_deg(Assertions.horizontal_angle_between(stomped_direction, aimed_direction)) > 1.0,
 			"the animation must actually overwrite the pivot, or this regression proves nothing"
 		)
+		_expect(Vector3(turret.peek_emission()["direction"]).dot(logical_direction) > 0.99999,
+			"a rendered animation frame must not change the logical muzzle heading")
 	# No sim_tick_combat() this frame -- exactly a rendered frame with no due
 	# tick, which is the case a green suite driving both together every step
 	# would never exercise.
@@ -557,7 +560,7 @@ func _test_turret_holds_angle_with_no_tick_this_frame() -> void:
 		is_equal_approx(turret.current_yaw_degrees(), aimed_yaw),
 		"the stored aim angle is simulation state and must not change on a tick-less frame"
 	)
-	var held_direction: Vector3 = turret.peek_emission()["direction"]
+	var held_direction: Vector3 = turret.visual_peek_emission()["direction"]
 	_expect(
 		rad_to_deg(Assertions.horizontal_angle_between(held_direction, aimed_direction)) < 0.1,
 		"a rendered frame with no tick must reapply the last simulated aim, not leave the "

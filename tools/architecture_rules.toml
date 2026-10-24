@@ -347,8 +347,10 @@ exempt = [
 	"scripts/combat/combat_ground_decal.gd",
 	"scripts/combat/combat_projectile.gd",
 	# Both arrived from the queued group in slice R6, and neither holds a
-	# simulation read of an entity. combat_turret.gd's eight are muzzle and
-	# pivot transforms, the launch-smoke marker, the model root, a projectile
+	# simulation read of an entity. combat_turret.gd still reads live muzzle and
+	# pivot transforms for building/bare-model fallback and unit FX; unit shot
+	# values now come from captured rest plus tick pose. Its remaining reads
+	# also cover the launch-smoke marker, the model root, a projectile
 	# (which by R1's decision has no entity id at all) and one dead fallback;
 	# combat_target.gd's one is the twin of that fallback. Both fallbacks reach
 	# a Node3D only when the object offers neither combat_aim_position_from()

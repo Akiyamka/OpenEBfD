@@ -23,6 +23,7 @@ const UnitMovementSoundsScript := preload("res://scripts/units/unit_movement_sou
 const HarvesterControllerScript := preload("res://scripts/units/harvester_controller.gd")
 const UnitDeployStateScript := preload("res://scripts/units/unit_deploy_state.gd")
 const UnitCombatScript := preload("res://scripts/units/unit_combat.gd")
+const UnitCombatGeometryScript := preload("res://scripts/units/unit_combat_geometry.gd")
 const UnitAuthoredCollisionScript := preload("res://scripts/units/unit_authored_collision.gd")
 const UnitAnimationDirectorScript := preload("res://scripts/units/unit_animation_director.gd")
 const AdvancedCarryallTransportScript := preload(
@@ -342,6 +343,7 @@ var _deploy := UnitDeployStateScript.new()
 ## Unit's combat engine (attack orders, turret engagement, fire sequences).
 ## See scripts/units/unit_combat.gd; modeled on Building/BuildingCombat.
 var _combat := UnitCombatScript.new()
+var _combat_geometry := UnitCombatGeometryScript.new()
 ## Physics shapes, navigation extents and selection bounds read off the
 ## converted model's authored collision volumes.
 var _authored_collision := UnitAuthoredCollisionScript.new()
@@ -366,6 +368,7 @@ var entity_id: int:
 ## they also work on a unit whose _ready() is stubbed out (see the harvester
 ## suite's TestHarvester) and before the node enters the tree.
 func _init() -> void:
+	_combat_geometry.configure(self)
 	_terrain_alignment.configure(self)
 	_death_sequence.configure(self)
 	_shader_fx.configure(self)
@@ -401,8 +404,10 @@ func _ready() -> void:
 	_register_entity_id()
 	# The authored rest pose only exists once visual_root has resolved.
 	_terrain_alignment.capture_rest_pose()
+	_combat_geometry.capture_root(self, visual_root)
 	if visual_root != null:
 		_visual_root_rest_position = visual_root.position
+		_combat_geometry.capture_model()
 	_apply_unit_definition()
 	target_position = global_position
 	_previous_global_position = global_position
@@ -1340,6 +1345,7 @@ func replace_visual_scene(model_scene: PackedScene) -> void:
 		visual_root.remove_child(child)
 		child.free()
 	visual_root.add_child(model_scene.instantiate())
+	_combat_geometry.capture_model()
 	_combat.bind_combat_turrets()
 	_shader_fx.attach_model()
 	var players := _animation_director.refresh(visual_root)
@@ -1951,26 +1957,15 @@ func _sever_connections_into(subtree_root: Node) -> void:
 
 
 func combat_aim_position() -> Vector3:
-	# The gameplay root sits on the terrain. A projectile aimed there forces
-	# horizontal-only weapons to compare their muzzle direction with a point
-	# below the target, so they can turn in yaw forever without ever satisfying
-	# the pitch tolerance. The converted selection volume follows the visible
-	# body and gives combat a stable centre point after runtime model swaps.
-	#
-	# The origin is the store's since slice R6, not the node's: this is the
-	# point every shooter aims at, so it belongs on the simulation's side of
-	# the mirror. The *centre* is deliberately left alone. R6 tried to hold it
-	# still against slice B4's interpolation offset and measured the attempt
-	# instead of trusting it: subtracting that offset cut the centre's spread
-	# on a moving NIABTank from 0.210 world units to 0.136 rather than to
-	# zero, because most of what remains is the model's own animation --
-	# tracks and turret idle move the meshes the bounds are taken from, and
-	# the sentence above says that is the intent. This point has been
-	# animation-driven since long before B4 added a term to it, and making it
-	# deterministic means deciding what an aim point *is* in the simulation
-	# rather than moving a read. Recorded for phase 4 beside the muzzle
-	# finding, which is the same question.
-	return simulation_position() + global_basis * _selection_bounds().get_center()
+	return _combat_geometry.aim_position()
+
+
+func combat_geometry():
+	return _combat_geometry
+
+
+func combat_model_transform() -> Transform3D:
+	return _combat_geometry.model_transform()
 
 
 ## Where this unit's weapons measure rules ranges from, asked by
@@ -2545,6 +2540,8 @@ func _on_animation_finished(animation_name: StringName, player: AnimationPlayer)
 
 
 func _refresh_owner_visuals() -> void:
+	if visual_root == null:
+		return
 	TeamColorScript.apply(visual_root, _owner_team_color())
 
 

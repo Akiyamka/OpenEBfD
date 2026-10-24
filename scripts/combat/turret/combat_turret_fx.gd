@@ -348,7 +348,7 @@ func _emit_model_stream_particle(
 	stream.size = particle_size
 
 	var direction := Vector3(
-		_turret.peek_emission().get("direction", marker.global_basis * AUTHORED_MUZZLE_FORWARD)
+		_turret.visual_peek_emission().get("direction", marker.global_basis * AUTHORED_MUZZLE_FORWARD)
 	).normalized()
 	if direction.is_zero_approx():
 		direction = Vector3.FORWARD
@@ -674,7 +674,7 @@ func _emit_casing_particle(
 			* AIM_UPDATES_PER_SECOND * AIM_UPDATES_PER_SECOND
 	))
 	var acceleration := Vector3.DOWN * world_gravity
-	var current_emission: Dictionary = _turret.peek_emission()
+	var current_emission: Dictionary = _turret.visual_peek_emission()
 	var firing_direction := Vector3(
 		current_emission.get("direction", Vector3.FORWARD)
 	).normalized()

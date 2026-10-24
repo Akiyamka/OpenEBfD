@@ -9,6 +9,7 @@ const CombatDefinitionCatalogScript := preload("res://scripts/combat/combat_defi
 const CombatLineOfFireScript := preload("res://scripts/combat/combat_line_of_fire.gd")
 const CombatTargetScript := preload("res://scripts/combat/combat_target.gd")
 const CombatTurretFxScript := preload("res://scripts/combat/turret/combat_turret_fx.gd")
+const CombatTurretGeometryScript := preload("res://scripts/combat/turret/combat_turret_geometry.gd")
 const ShotPayloadScript := preload("res://scripts/combat/shot_payload.gd")
 const DeathSoundPlayerScript := preload("res://scripts/audio/death_sound_player.gd")
 
@@ -100,6 +101,7 @@ var _idle_scan_seconds_until_target := 0.0
 var _idle_scan_target_yaw := 0.0
 
 var _model_root: Node3D
+var _unit_geometry: RefCounted
 ## The entity whose own combat_range_origin() this turret measures rules
 ## ranges from, resolved in bind_model() by walking up from the model root.
 ## Null for anything that does not offer that method, which is every building
@@ -114,7 +116,8 @@ var _reference_pivot: Node3D
 var _pivot_rest_transforms: Dictionary = {}
 var _muzzles: Array[Node3D] = []
 ## Model-local neutral muzzle-group position used only for aim/arc selection.
-## The actual projectile still launches from the animated world-space muzzle.
+## Unit projectiles launch from captured combat rest under logical aim angles;
+## building and bare-model turrets still use the rendered muzzle.
 ## Keeping this origin independent from current_pitch prevents a long shared
 ## yaw/pitch barrel (the deployed Kobra) from feeding its previous pose back
 ## into the next ballistic solution.
@@ -243,7 +246,16 @@ func bind_model(model_root: Node3D, model_weapon_index: int) -> bool:
 
 	var deploy_only := is_active_while_deployed(true) \
 		and not is_active_while_deployed(false)
+	if _range_entity != null and _range_entity.has_method("combat_geometry"):
+		_unit_geometry = CombatTurretGeometryScript.new()
+		_unit_geometry.configure(
+			_range_entity.call("combat_geometry"), model_root, deploy_only,
+			_yaw_pivot, _pitch_pivot
+		)
 	for pivot in [_root_pivot, _yaw_pivot, _pitch_pivot, _reference_pivot]:
+		if _unit_geometry != null and pivot != null:
+			_pivot_rest_transforms[pivot] = _unit_geometry.rest_for(pivot)
+			continue
 		if deploy_only:
 			var authored_rest: Variant = _authored_hold_transform(model_root, pivot)
 			if authored_rest != null:
@@ -256,7 +268,7 @@ func bind_model(model_root: Node3D, model_weapon_index: int) -> bool:
 	_next_muzzle_index = 0
 	_apply_aim_transforms()
 	var neutral_muzzle_origin := _muzzle_group_origin()
-	_trajectory_aim_origin_local = _model_root.to_local(neutral_muzzle_origin) \
+	_trajectory_aim_origin_local = _combat_model_transform().affine_inverse() * neutral_muzzle_origin \
 		if neutral_muzzle_origin.is_finite() else Vector3.INF
 	return _reference_pivot != null or not _muzzles.is_empty()
 
@@ -266,6 +278,7 @@ func unbind_model() -> void:
 	cancel_authored_fire_fx()
 	_restore_pivot_transforms()
 	_model_root = null
+	_unit_geometry = null
 	_fx_model_root = null
 	_root_pivot = null
 	_yaw_pivot = null
@@ -703,7 +716,7 @@ func is_group_yaw_aimed_at(world_position: Vector3) -> bool:
 			or errors.y <= _acceptable_pitch())
 
 
-func emission_points() -> Array[Dictionary]:
+func visual_emission_points() -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
 	for muzzle_index in _muzzles.size():
 		var muzzle := _muzzles[muzzle_index]
@@ -748,6 +761,38 @@ func emission_points() -> Array[Dictionary]:
 				"direction": direction.normalized(),
 			})
 	return result
+
+
+func emission_points() -> Array[Dictionary]:
+	if _unit_geometry == null:
+		return visual_emission_points()
+	var points: Array[Dictionary] = []
+	var nodes: Array[Node3D] = _muzzles.duplicate()
+	if nodes.is_empty() and _reference_pivot != null:
+		nodes.append(_reference_pivot)
+	for muzzle_index in nodes.size():
+		var node := nodes[muzzle_index]
+		if node == null or not is_instance_valid(node):
+			continue
+		var transform: Transform3D = _unit_geometry.world_transform(
+			node, current_yaw, current_pitch
+		)
+		var direction := transform.basis * AUTHORED_MUZZLE_FORWARD
+		if direction.length_squared() <= 0.000001:
+			continue
+		points.append({
+			"index": muzzle_index,
+			"node": node,
+			"transform": transform,
+			"position": transform.origin,
+			"direction": direction.normalized(),
+		})
+	return points
+
+
+func visual_peek_emission() -> Dictionary:
+	var points := visual_emission_points()
+	return points[_next_muzzle_index % points.size()] if not points.is_empty() else {}
 
 
 func peek_emission() -> Dictionary:
@@ -1104,8 +1149,8 @@ func try_fire_at(request: FireRequest) -> Array:
 	# would then hit that squadmate rather than the target, because
 	# CombatLineOfFire.is_clear deliberately pierces units. Answering it again
 	# here covers every firing path (authored sequences, direct fire, buildings)
-	# from the muzzle that is about to be used, along the heading that muzzle is
-	# actually posed at right now (see friendly_blocks_fire).
+	# from the muzzle that is about to be used, along its gameplay heading
+	# (see friendly_blocks_fire).
 	if _friendly_blocks_flight_path(
 		preview_emission, target_or_position, target_position + aim_offset,
 		request.source
@@ -1172,13 +1217,17 @@ func try_fire_at(request: FireRequest) -> Array:
 		# resolved raycast impact. Ltmuzzle remains a short authored muzzle accent,
 		# but must follow that resolved 3D segment rather than a yaw-only marker
 		# direction or it floats horizontally when the target is downhill.
+		var visual_points := visual_emission_points()
 		var effect_emission := emission
+		var emission_index := int(emission.get("index", -1))
+		if emission_index >= 0 and emission_index < visual_points.size():
+			effect_emission = visual_points[emission_index]
 		if preview_bullet.is_laser():
-			var laser_direction := Vector3(emission["position"]).direction_to(
+			var laser_direction := Vector3(effect_emission["position"]).direction_to(
 				projectile.global_position
 			)
 			if not laser_direction.is_zero_approx():
-				effect_emission = emission.duplicate()
+				effect_emission = effect_emission.duplicate()
 				effect_emission["direction"] = laser_direction
 		if muzzle_flash_scene != null and not _uses_embedded_muzzle_flash:
 			_fx.spawn_muzzle_flash(parent, effect_emission)
@@ -1746,6 +1795,8 @@ func _resolve_range_entity(model_root: Node3D) -> Node3D:
 func _aim_origin() -> Vector3:
 	for pivot in [_yaw_pivot, _root_pivot, _reference_pivot]:
 		if pivot != null and is_instance_valid(pivot):
+			if _unit_geometry != null:
+				return _unit_geometry.world_transform(pivot, current_yaw, current_pitch).origin
 			return (pivot as Node3D).global_position
 	return _range_origin()
 
@@ -1767,7 +1818,12 @@ func _trajectory_aim_origin() -> Vector3:
 		or not _trajectory_aim_origin_local.is_finite()
 	):
 		return Vector3.INF
-	return _model_root.to_global(_trajectory_aim_origin_local)
+	return _combat_model_transform() * _trajectory_aim_origin_local
+
+
+func _combat_model_transform() -> Transform3D:
+	return _unit_geometry.model_transform() if _unit_geometry != null \
+		else _model_root.global_transform
 
 
 func _ballistic_aim_origin() -> Vector3:
