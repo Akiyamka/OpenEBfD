@@ -40,39 +40,20 @@ func configure(owner: Node3D, fire_controller) -> void:
 	_target_acquisition.configure(owner)
 
 
-## This module's view half: turret aim and target acquisition, both of which
-## visibly ride toward a moving target rather than advancing on a countdown --
-## see Building.sim_tick()'s doc comment for the split this leaves in place.
-## _advance_engagement() below can still commit a shot directly
-## (turret.try_fire_at()) for a turret with no authored fire animation at all
-## (has_fire_animation() false): every DEFENSIVE_TURRET_IDS entry configured
-## today has one, so that fallback is not reachable by any current building,
-## and it is left on this clock rather than the tick pending whatever slice
-## next gives combat_turret.gd's aim/target-acquisition a tick half to join --
-## see network-multiplayer.md's B3 inventory.
-func advance(delta: float) -> void:
-	if _owner == null:
+## StatePlayer and model players key pivots before Building._process(). Repair
+## only the visible pose; the last simulation tick owns every logical angle.
+func repaint_view() -> void:
+	restore_popup_hold_pose()
+	if not _is_operational():
 		return
-	_target_acquisition.advance(delta)
-	# The engagement and the authored fire animation may both drive the active
-	# model. Restore the hold pose on each side of them -- here so aiming sees
-	# it, and again in after_authored_advance() so the rendered frame keeps it
-	# once the authored controller has advanced on the facade. See
-	# restore_popup_hold_pose()'s own doc comment for why this ordering
-	# survives the fire controller's advance() moving onto the tick.
-	restore_popup_hold_pose()
-	_advance_engagement(delta)
+	if _uses_popup_turret() and _popup_state != PopupState.DEPLOYED:
+		return
+	for turret in _owner.combat_turrets:
+		turret.restore_aim_pose()
 
 
-func after_authored_advance() -> void:
-	restore_popup_hold_pose()
-
-
-## This module's simulation half: advances the popup deploy/undeploy
-## transition's own countdown by exactly one combat tick. Called once per
-## simulation tick from Building.sim_tick() -- never call this from
-## BuildingCombat's own advance() above, which is why _advance_popup_transition
-## no longer lives in that function's body.
+## Popup completion, acquisition cooldowns and engagement decisions share one
+## fixed simulation tick. Existing fire sequences advance first in Building.
 ##
 ## _popup_state gates whether _advance_engagement() lets a popup turret fire
 ## (see the DEPLOYING/UNDEPLOYING/DEPLOYED checks there), so which clock
@@ -92,7 +73,10 @@ func after_authored_advance() -> void:
 ## tick on which the simulation considers the transition finished (and
 ## _popup_state flips) now lands on the 25 Hz grid instead of the frame grid.
 func sim_tick() -> void:
-	_advance_popup_transition(MatchClockScript.SECONDS_PER_TICK)
+	var fixed: float = MatchClockScript.SECONDS_PER_TICK
+	_advance_popup_transition(fixed)
+	_target_acquisition.advance(fixed)
+	_advance_engagement(fixed)
 
 
 ## Lifecycle protocol, required of every module that caches a reference into the
@@ -225,7 +209,7 @@ func bind_model(model_root: Node3D) -> void:
 ## Repairs a *rendered* pose the fire controller's authored clip may just have
 ## overwritten -- it never changes _popup_state, reload, or anything else a
 ## replay or checksum can see, so it belongs on the frame's clock and stays in
-## _process() (via advance() and after_authored_advance() above) rather than
+## _process() (via repaint_view()) rather than
 ## joining sim_tick(). It used to sit immediately after
 ## AuthoredFireController.advance() specifically because that call, back when
 ## it also ran from _process(), could finish a sequence mid-frame and leave the
@@ -234,10 +218,7 @@ func bind_model(model_root: Node3D) -> void:
 ## Building's own _process() this same frame (see that function's doc
 ## comment), so this call -- wherever it sits within _process() -- always
 ## observes whatever the most recent tick left. The adjacency is therefore no
-## longer load-bearing, but two calls remain (see advance()'s and
-## Building._process()'s doc comments) because splitting them costs nothing:
-## the function is idempotent, and removing either call is a behavior change
-## this slice was not asked to make.
+## longer load-bearing.
 func restore_popup_hold_pose() -> void:
 	if not _uses_popup_turret() or _popup_state != PopupState.DEPLOYED \
 		or _fire_controller == null or _fire_controller.is_active():

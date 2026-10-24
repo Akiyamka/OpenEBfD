@@ -795,11 +795,15 @@ func _poll_start_barrier() -> void:
 ## flight and resolving whatever that tick's travel hits (see
 ## combat_projectile.gd -- B3a moved this off _physics_process(), which
 ## advanced on engine frame time rather than the tick a replay or checksum can
-## see); for buildings (B3b) it is CombatTurret.advance_tick() for
-## reload/burst plus BuildingCombat's popup transition countdown, the
-## authored fire controller's shot committal, and the refinery dock departure
-## cooldown (see Building.sim_tick()) -- the middle of those can itself add a
-## new member to the "sim_projectiles" group walked just above, which is why
+## see); for buildings (B3b), Building.sim_tick() checks for a halt, consumes
+## authored completion and checks for a halt again, then advances turret
+## reload/burst countdowns, already-active authored fire sequences and their
+## scheduled shots, BuildingCombat's popup
+## transition followed by building target acquisition, idle scan, aim and engagement start,
+## and finally the refinery dock departure cooldown. The authored sequence's
+## shot committal (the second advance step) can itself add a new member to the
+## "sim_projectiles" group walked just above; BuildingCombat's direct-fire
+## fallback can do so too. This is why
 ## this loop moved here (see the "Firing" paragraphs below); for units' combat
 ## pass (B3c) it is Unit.sim_tick_combat() -- target acquisition, attack order
 ## progression, turret aim and authored fire-sequence committal, i.e.

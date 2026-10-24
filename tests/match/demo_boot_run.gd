@@ -1279,7 +1279,7 @@ func _test_match_loop_drives_building_fire() -> void:
 	building.position = target.global_position + Vector3(0.0, 0.0, -8.0)
 	match_instance.add_child(building)
 	await process_frame
-
+	building.set_process(false)
 	var fired_projectiles: Array = []
 	var fired_ticks: Array[int] = []
 	building.weapon_fired.connect(func(projectiles: Array, _fired_target: Variant, _weapon_index: int) -> void:

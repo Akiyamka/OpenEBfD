@@ -75,7 +75,7 @@ func advance(delta: float) -> void:
 
 ## The cached target while it stays usable, otherwise a fresh scan — but only
 ## once the per-weapon cooldown has expired, so a shooter with nothing to
-## shoot at does not walk both entity groups every frame.
+## shoot at does not walk both entity groups every simulation tick.
 func target_for(turret, hull_aim: HullAim = HullAim.NONE) -> Variant:
 	if turret == null or _shooter == null:
 		return null
@@ -96,11 +96,8 @@ func target_for(turret, hull_aim: HullAim = HullAim.NONE) -> Variant:
 	var candidates: Array[Node] = []
 	# "sim_units"/"sim_buildings", not "units"/"buildings": choosing what to
 	# shoot is a simulation decision -- the shot it leads to changes health,
-	# which no view/UI reader does -- even though this call currently still
-	# reaches here from UnitCombat.advance()/BuildingCombat.advance() on frame
-	# delta rather than the tick (a separate, already-recorded gap; see
-	# docs/architecture/network-multiplayer.md's "turret aim and target
-	# acquisition ... unmoved" notes). Reading "units"/"buildings" here would
+	# which no view/UI reader does. Both UnitCombat and BuildingCombat now call
+	# this from fixed simulation ticks. Reading "units"/"buildings" here would
 	# let a shooter target-acquire an entity C6b's admission queue has not yet
 	# let the tick simulate.
 	candidates.append_array(tree.get_nodes_in_group(&"sim_units"))

@@ -6,11 +6,9 @@ extends RefCounted
 ## Since phase 1, Unit._process()/Building._process() no longer advance turret
 ## reload and burst countdowns themselves: Match._advance_simulation_tick()
 ## does, centrally, through each entity's sim_tick() (see its doc comment).
-## A suite that calls entity._process() directly therefore advances animation
-## and aim but never a countdown, and any assertion that waits for a weapon to
-## come off reload waits forever -- silently, as a timeout rather than an
-## error. That has already caught three suites; this exists so the fourth does
-## not have to rediscover it.
+## A suite that calls entity._process() directly only repairs its view. Building
+## acquisition and aim now run in its tick before that frame, as unit combat
+## already does. Use this pump when a no-Match fixture needs gameplay progress.
 ##
 ## One pump per entity. It carries a FrameTickDriver, so its sub-tick
 ## remainder stays independent of whatever other entities the same test drives,

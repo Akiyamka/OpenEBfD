@@ -9,11 +9,29 @@ const Assertions := preload("res://tests/combat/support/combat_assertions.gd")
 const HKGunTurretScene := preload("res://assets/converted/buildings/HKGunTurret/HKGunTurret.scn")
 const HKFlameTurretScene := preload("res://assets/converted/buildings/HKFlameTurret/HKFlameTurret.scn")
 const ATWallScene := preload("res://assets/converted/buildings/ATWall/ATWall.scn")
+const PopupScene := preload("res://assets/converted/buildings/ORPopUpTurret/ORPopUpTurret.scn")
+
+class NullCallLogger extends Logger:
+	var errors: Array[String] = []
+	func _log_error(_function, _file, _line, code, rationale, _editor_notify, _error_type, _script_backtraces) -> void:
+		if "null value" in str(code) or "null value" in str(rationale) \
+			or "Nil" in str(code) or "Nil" in str(rationale):
+			errors.append(str(code) + " " + str(rationale))
 
 func _initialize() -> void:
 	LegacyRulesFixture.install(root)
 	await process_frame
 	await physics_frame
+	_run_case("frame-only building combat leaves simulation state unchanged", _test_frame_isolation)
+	_run_case("building combat advances without rendered frames", _test_frameless_engagement)
+	_run_case("building acquisition observes its seventh-tick boundary", _test_acquisition_cadence)
+	_run_case("authored fire starts at zero age", _test_sequence_start_age)
+	_run_case("popup starts and completes on fixed tick boundaries", _test_popup_tick_boundary)
+	_run_case("disposed building combat tick has no null call", _test_disposed_tick)
+	_run_case("disposed building combat view has no null call", _test_disposed_view)
+	await _run_async_case("non-popup aim holds across a real frame", _test_real_frame_repaint)
+	await _run_async_case("popup animation owns transition pivot", _test_popup_frame_ownership)
+	await _run_async_case("active Fire clip preserves yaw and animates descendants", _test_fire_frame_repaint)
 	_run_case(
 		"building state replacement rebinds its turret without losing its aim",
 		_test_building_turret_rebind
@@ -164,12 +182,16 @@ func _test_idle_building_turret_scan() -> void:
 	var turret = building.combat_turrets[0]
 	turret._idle_scan_rng.seed = 2
 	turret._idle_scan_active = false
-	building._process(2.0)
+	for _tick in 50:
+		building.sim_tick()
 	_expect(
 		is_zero_approx(turret.current_yaw_degrees()),
 		"an idle building turret must wait at least three seconds before its first scan turn"
 	)
-	building._process(4.0)
+	for _tick in 100:
+		building.sim_tick()
+		if absf(turret.current_yaw_degrees()) > 0.01:
+			break
 	var yaw: float = turret.current_yaw_degrees()
 	_expect(
 		absf(yaw) > 0.01 and absf(yaw) <= 70.01,
@@ -263,10 +285,12 @@ func _test_defensive_building_visible_aim() -> void:
 		building.command_attack(target_position),
 		"ATRocketTurret must accept a lateral ground target"
 	)
-	for frame in 60:
-		await process_frame
+	for tick in 60:
+		building.sim_tick()
 		if absf(turret.current_yaw_degrees()) >= 35.0:
 			break
+	await process_frame
+	await process_frame
 	var visible_direction: Vector3 = turret.peek_emission()["direction"]
 	_expect(
 		absf(turret.current_yaw_degrees()) >= 35.0,
@@ -433,8 +457,8 @@ func _test_defensive_turret_stop_clears_muzzle_flash() -> void:
 		# happens to be at cancellation up to the headless frame rate.
 		var controller = building._authored_fire_controller
 		var flash_grew := false
-		for frame in 900:
-			building._process(1.0 / 60.0)
+		for tick in 900:
+			building.sim_tick()
 			if not controller.is_active():
 				continue
 			for weapon_index: Variant in controller._sequences:
@@ -746,3 +770,301 @@ func _test_building_damage_visual_states() -> void:
 	wall.free()
 
 
+
+func _lateral_point(turret, distance := 8.0) -> Vector3:
+	var emission: Dictionary = turret.peek_emission()
+	var direction: Vector3 = emission["direction"]
+	return Vector3(emission["position"]) + direction.rotated(Vector3.UP, PI * 0.5).normalized() * distance
+
+
+func _test_frame_isolation() -> void:
+	var building := HKGunTurretScene.instantiate() as Building
+	root.add_child(building)
+	var turret = building.combat_turrets[0]
+	turret._idle_scan_rng.seed = 2
+	_expect(building.command_attack(_lateral_point(turret)), "lateral frame-only order must be accepted")
+	var yaw: float = turret.current_yaw
+	var state: int = building._popup_turret_state
+	var sequence_count: int = building._authored_fire_controller._sequences.size()
+	var fired: Array = []
+	building.weapon_fired.connect(func(projectiles: Array, _target: Variant, _index: int) -> void:
+		fired.append_array(projectiles))
+	for delta in [2.0, 4.0, 2.0]:
+		building._process(delta)
+	_expect(is_equal_approx(turret.current_yaw, yaw), "frames alone must not turn logical yaw")
+	_expect(building._popup_turret_state == state, "frames alone must not change popup state")
+	_expect(building._authored_fire_controller._sequences.size() == sequence_count,
+		"frames alone must not start authored fire")
+	_expect(fired.is_empty(), "frames alone must not fire a shot")
+	building.free()
+
+	building = HKGunTurretScene.instantiate() as Building
+	building.owner_player_id = 1
+	root.add_child(building)
+	turret = building.combat_turrets[0]
+	building.sim_tick()
+	var acquisition = building._building_combat._target_acquisition
+	var cooldown: float = acquisition._cooldowns.get(turret.weapon_index(), -1.0)
+	_expect(is_equal_approx(cooldown, 0.25), "idle fixture must prime acquisition cooldown")
+	var enemy := Doubles.PhysicsCombatTarget.new(_lateral_point(turret))
+	enemy.owner_player_id = 2
+	enemy.add_to_group(&"sim_units")
+	root.add_child(enemy)
+	for delta in [2.0, 4.0]:
+		building._process(delta)
+	_expect(is_equal_approx(float(acquisition._cooldowns.get(turret.weapon_index(), -1.0)), cooldown),
+		"frames alone must not drain acquisition cooldown")
+	_expect(acquisition._targets.is_empty(), "frames alone must not acquire a new enemy")
+	enemy.free()
+	building.free()
+
+
+func _test_frameless_engagement() -> void:
+	var building := HKGunTurretScene.instantiate() as Building
+	root.add_child(building)
+	var turret = building.combat_turrets[0]
+	var fired: Array = []
+	building.weapon_fired.connect(func(projectiles: Array, _target: Variant, _index: int) -> void:
+		fired.append_array(projectiles))
+	_expect(building.command_attack(_lateral_point(turret)), "frameless lateral order must be accepted")
+	for tick in 180:
+		building.sim_tick()
+		if not fired.is_empty():
+			break
+	_expect(absf(turret.current_yaw_degrees()) > 20.0, "ticks alone must turn the turret")
+	_expect(not fired.is_empty(), "ticks alone must start and commit authored fire")
+	for projectile in fired:
+		if is_instance_valid(projectile):
+			projectile.free()
+	building.free()
+
+
+func _test_acquisition_cadence() -> void:
+	var building := HKGunTurretScene.instantiate() as Building
+	building.owner_player_id = 1
+	root.add_child(building)
+	var turret = building.combat_turrets[0]
+	building.sim_tick()
+	var acquisition = building._building_combat._target_acquisition
+	_expect(is_equal_approx(float(acquisition._cooldowns.get(turret.weapon_index(), -1.0)), 0.25),
+		"first no-target tick must set a quarter-second cooldown")
+	var enemy := Doubles.PhysicsCombatTarget.new(_lateral_point(turret))
+	enemy.owner_player_id = 2
+	enemy.add_to_group(&"sim_units")
+	root.add_child(enemy)
+	for tick in 6:
+		building.sim_tick()
+		_expect(acquisition._targets.is_empty(), "six further ticks must not acquire")
+	building.sim_tick()
+	_expect(not acquisition._targets.is_empty(), "seventh further tick must acquire enemy")
+	enemy.free()
+	building.free()
+
+
+func _test_sequence_start_age() -> void:
+	var building := HKGunTurretScene.instantiate() as Building
+	root.add_child(building)
+	var turret = building.combat_turrets[0]
+	_expect(building.command_attack(_lateral_point(turret)), "sequence fixture needs a lateral order")
+	for tick in 100:
+		building.sim_tick()
+		if not building._authored_fire_controller._sequences.is_empty():
+			break
+	var sequences: Dictionary = building._authored_fire_controller._sequences
+	_expect(not sequences.is_empty(), "engagement must start authored sequence")
+	if not sequences.is_empty():
+		var state: Dictionary = sequences.values()[0]
+		_expect(is_zero_approx(float(state["elapsed"])), "new authored sequence must have zero age")
+		building.sim_tick()
+		_expect(float(state["elapsed"]) > 0.0, "next tick must advance sequence age")
+	building.free()
+
+
+func _test_popup_tick_boundary() -> void:
+	var building := PopupScene.instantiate() as Building
+	root.add_child(building)
+	var turret = building.combat_turrets[0]
+	_expect(building.command_attack(_lateral_point(turret)), "popup fixture needs an order")
+	for frame in 4:
+		building._process(2.0)
+	_expect(building._popup_turret_state == 0, "frames alone cannot start popup deployment")
+	building.sim_tick()
+	var combat = building._building_combat
+	_expect(building._popup_turret_state == 1, "first engagement tick starts deployment")
+	_expect(is_zero_approx(combat._transition_elapsed), "deployment starts at zero elapsed")
+	var ticks: int = ceili(combat._transition_duration / 0.04)
+	for tick in ticks - 1:
+		building.sim_tick()
+		_expect(building._popup_turret_state == 1, "popup must wait for completion tick")
+	building.sim_tick()
+	_expect(building._popup_turret_state == 2, "popup completes on fixed tick boundary")
+	building.free()
+
+
+func _disposed_call(view: bool) -> void:
+	var building := HKGunTurretScene.instantiate() as Building
+	root.add_child(building)
+	var combat = building._building_combat
+	combat.dispose()
+	var logger := NullCallLogger.new()
+	OS.add_logger(logger)
+	var reached := {"value": false}
+	if view:
+		_disposed_view_callback(combat, reached)
+	else:
+		_disposed_tick_callback(combat, reached)
+	OS.remove_logger(logger)
+	_expect(reached["value"], "disposed entry must be reached")
+	_expect(logger.errors.is_empty(), "disposed entry must not produce a null-call script error")
+	building.free()
+
+
+func _disposed_tick_callback(combat, reached: Dictionary) -> void:
+	reached["value"] = true
+	combat.sim_tick()
+
+
+func _disposed_view_callback(combat, reached: Dictionary) -> void:
+	reached["value"] = true
+	combat.repaint_view()
+
+
+func _test_disposed_tick() -> void:
+	_disposed_call(false)
+
+
+func _test_disposed_view() -> void:
+	_disposed_call(true)
+
+
+func _test_real_frame_repaint() -> void:
+	var building := HKGunTurretScene.instantiate() as Building
+	root.add_child(building)
+	await process_frame
+	var state_player := building.get_node("StatePlayer") as AnimationPlayer
+	_expect(state_player != null and state_player.is_playing(),
+		"real-frame fixture needs a playing StatePlayer")
+	var turret = building.combat_turrets[0]
+	_expect(building.command_attack(_lateral_point(turret)), "real-frame case needs lateral order")
+	for tick in 40:
+		building.sim_tick()
+		if absf(turret.current_yaw_degrees()) > 20.0:
+			break
+	var yaw: float = turret.current_yaw
+	var tick_emission: Dictionary = turret.peek_emission()
+	_expect(absf(rad_to_deg(yaw)) > 20.0, "real-frame fixture needs substantial yaw")
+	await process_frame
+	await process_frame
+	_expect(is_equal_approx(turret.current_yaw, yaw), "render frames cannot advance logical yaw")
+	var pivot: Node3D = turret._yaw_pivot
+	var rest: Transform3D = turret._pivot_rest_transforms[pivot]
+	var expected := Transform3D(rest.basis * Basis(Vector3.UP, yaw), rest.origin)
+	_expect(pivot.transform.is_equal_approx(expected), "view repaint must hold tick-painted pivot")
+	var frame_emission: Dictionary = turret.peek_emission()
+	_expect(Vector3(frame_emission["direction"]).is_equal_approx(tick_emission["direction"]),
+		"visible emission must retain the last tick's direction")
+	building.free()
+
+
+func _popup_track_transform(player: AnimationPlayer, pivot: Node3D) -> Transform3D:
+	var animation := player.get_animation(player.current_animation)
+	for track in animation.get_track_count():
+		if str(animation.track_get_path(track)).ends_with("%s:transform" % pivot.name):
+			return animation.value_track_interpolate(track, player.current_animation_position)
+	return Transform3D.IDENTITY
+
+
+func _test_popup_frame_ownership() -> void:
+	var building := PopupScene.instantiate() as Building
+	root.add_child(building)
+	await process_frame
+	var turret = building.combat_turrets[0]
+	var pivot: Node3D = turret._yaw_pivot
+	var player := building._active_model_animation_player(&"Deploy_Gun")
+	_expect(building.command_attack(_lateral_point(turret)), "popup pose case needs lateral order")
+	building.sim_tick()
+	_expect(building._popup_turret_state == 1 and player.current_animation == &"Deploy_Gun",
+		"popup must be deploying with its clip playing")
+	await process_frame
+	await process_frame
+	var expected := _popup_track_transform(player, pivot)
+	_expect(expected.origin.distance_to(turret._pivot_rest_transforms[pivot].origin) > 0.1,
+		"deploy track must have non-rest position")
+	_expect(pivot.transform.is_equal_approx(expected), "deploy pivot must match complete keyed transform")
+	for tick in 20:
+		building.sim_tick()
+		if building._popup_turret_state == 2:
+			break
+	_expect(building._popup_turret_state == 2, "popup must reach deployed state")
+	for tick in 20:
+		building.sim_tick()
+		if absf(turret.current_yaw_degrees()) > 10.0:
+			break
+	var deployed_yaw: float = turret.current_yaw
+	_expect(absf(rad_to_deg(deployed_yaw)) > 10.0, "deployed case needs nonzero yaw")
+	await process_frame
+	await process_frame
+	var deployed_rest: Transform3D = turret._pivot_rest_transforms[pivot]
+	var deployed_pose := Transform3D(deployed_rest.basis * Basis(Vector3.UP, deployed_yaw),
+		deployed_rest.origin)
+	_expect(pivot.transform.is_equal_approx(deployed_pose), "deployed popup must hold tick yaw")
+	building.cancel_attack_order()
+	for tick in 80:
+		building.sim_tick()
+		if building._popup_turret_state == 3:
+			break
+	_expect(building._popup_turret_state == 3 and player.current_animation == &"Undeploy_Gun",
+		"popup must begin undeploy clip")
+	await process_frame
+	await process_frame
+	player.advance(0.55)
+	await process_frame
+	await process_frame
+	expected = _popup_track_transform(player, pivot)
+	_expect(expected.origin.distance_to(deployed_rest.origin) > 0.1,
+		"undeploy track must be at a non-rest position")
+	_expect(pivot.transform.is_equal_approx(expected), "undeploy pivot must match complete keyed transform")
+	for tick in 25:
+		building.sim_tick()
+		if building._popup_turret_state == 0:
+			break
+	_expect(building._popup_turret_state == 0, "popup must reach retracted state")
+	turret.current_yaw = 0.7
+	await process_frame
+	await process_frame
+	var retracted_rest: Transform3D = turret._pivot_rest_transforms[pivot]
+	_expect(pivot.transform.is_equal_approx(retracted_rest),
+		"retracted popup must not paint hidden logical yaw")
+	building.free()
+
+
+func _test_fire_frame_repaint() -> void:
+	var building := HKGunTurretScene.instantiate() as Building
+	root.add_child(building)
+	await process_frame
+	var turret = building.combat_turrets[0]
+	_expect(building.command_attack(_lateral_point(turret)), "Fire pose case needs lateral order")
+	for tick in 100:
+		building.sim_tick()
+		if building._authored_fire_controller.is_active():
+			break
+	_expect(building._authored_fire_controller.is_active(), "Fire clip must be active")
+	var yaw: float = turret.current_yaw
+	var pivot: Node3D = turret._yaw_pivot
+	var rest: Transform3D = turret._pivot_rest_transforms[pivot]
+	_expect(absf(yaw) > 0.3, "Fire case needs substantial yaw")
+	var descendant := building.state_root(building.current_state).find_child("*barrelR1*", true, false) as Node3D
+	_expect(descendant != null, "Fire case needs an authored barrel descendant")
+	var descendant_before: Transform3D = descendant.transform if descendant != null else Transform3D.IDENTITY
+	await process_frame
+	await process_frame
+	var expected := Transform3D(rest.basis * Basis(Vector3.UP, yaw), rest.origin)
+	_expect(pivot.transform.is_equal_approx(expected), "active Fire clip must preserve tick yaw")
+	_expect(is_equal_approx(turret.current_yaw, yaw), "Fire frame cannot change logical yaw")
+	var state: Dictionary = building._authored_fire_controller._sequences.values()[0]
+	var player := state["player"] as AnimationPlayer
+	_expect(player.is_playing(), "authored Fire clip must still be playing")
+	if descendant != null:
+		_expect(not descendant.transform.is_equal_approx(descendant_before),
+			"authored Fire clip must still animate a descendant barrel")
+	building.free()

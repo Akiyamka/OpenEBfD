@@ -291,7 +291,8 @@ Summary of how different bullets miss (follows from the verified behavior above)
 - `MinRange`/`MaxRange`: Unit projectiles spawn at the authored combat-rest muzzle (Deploy_Gun_Hold for deploy-only weapons) under logical yaw and pitch; range is measured from the firing entity's stable gameplay origin.
   Flash position follows the rendered muzzle; separation from the unit projectile includes interpolation and authored clip pose.
   Kindjal's Deployed_Idle_0 moves its visible muzzle around the Deploy endpoint rest without moving unit shot origins.
-  Building turrets still use live muzzle geometry until AP3.
+  Building turrets still use live muzzle geometry until AP15.
+  Building turret engagement runs on simulation ticks: acquisition, servo aim, popup gating and authored sequence startup follow the 25 Hz clock. Their aim visibly steps at 25 Hz; each rendered frame repaints the last tick angle after model animation without interpolating it.
 - **downhill range bonus**, increasing with height difference `[← 1 §2]`;
 - firing uphill is possible only with indirect fire `[← 1 §2]`;
 - a flat-flying shot also needs an **unobstructed line of fire**: bullets collide

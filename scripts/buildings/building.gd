@@ -485,21 +485,18 @@ func simulation_position() -> Vector3:
 ## the buildings loop that calls this now runs after the "sim_projectiles"
 ## loop rather than before it. Never call this from Building itself.
 ##
-## Four pieces, each a countdown or a committal decision rather than anything
-## that visibly rides a moving target (see network-multiplayer.md's
-## "Continuous is not discrete" -- that split is why _building_combat.advance()
-## below, which is turret aim and target acquisition, stays in _process()
-## instead of joining this function):
+## Building combat decisions run once per simulation tick; _process() repairs
+## the visible pose after authored animation without advancing those decisions.
 ## - every turret's reload/burst countdown (CombatTurret.advance_tick());
+## - already-active authored fire sequences advance and commit scheduled shots
+##   before engagement can start a fresh sequence. A new sequence ends this
+##   tick with elapsed 0.0 and cannot commit until a later tick;
 ## - the popup deploy/undeploy transition's own countdown
 ##   (BuildingCombat.sim_tick() -> _advance_popup_transition()), which decides
-##   whether a popup turret is allowed to fire this tick, not merely how it
-##   looks;
-## - the authored fire sequence's shot committal (AuthoredFireController's
-##   "elapsed" accumulator, compared against precomputed shot_times -- see its
-##   own doc comment: it never reads the AnimationPlayer's playback position,
-##   so this is a change of delta source and nothing more). A shot fired here
-##   calls turret.try_fire_at(), which parents a new CombatProjectile
+##   whether a popup turret is allowed to fire this tick, followed by target
+##   acquisition, idle scan, aim and engagement startup;
+##   A shot committed by an authored fire sequence calls turret.try_fire_at(),
+##   which parents a new CombatProjectile
 ##   synchronously (see combat_turret.gd's try_fire_at()), and that shot must
 ##   not also be flown by the tick that fired it. Until slice C6b the
 ##   projectile joined "sim_projectiles" in its own _ready() before this call
@@ -521,8 +518,8 @@ func sim_tick() -> void:
 		return
 	for turret in combat_turrets:
 		turret.advance_tick()
-	_building_combat.sim_tick()
 	_authored_fire_controller.advance(MatchClockScript.SECONDS_PER_TICK)
+	_building_combat.sim_tick()
 	_refinery_docks.advance(MatchClockScript.SECONDS_PER_TICK)
 
 
@@ -621,26 +618,10 @@ func request_despawn() -> void:
 		queue_free()
 
 
-## This entity's view half. _building_combat.advance() also decides *whether*
-## to fire (aim converging, popup deployed, reload ready) but the actual shot
-## committal happens on sim_tick() above, through the same fire controller --
-## see BuildingCombat.advance()'s own doc comment for why aim and target
-## acquisition stay here rather than joining the tick.
-##
-## after_authored_advance() is called every frame, right after advance(),
-## purely to keep restore_popup_hold_pose() -- a rendered-pose repair, not a
-## simulation decision -- adjacent to the engagement call it originally
-## bracketed. That adjacency stopped being load-bearing the moment
-## AuthoredFireController's own advance() moved onto sim_tick() above: Match
-## already runs every due tick before any Building's _process() this same
-## frame (the ordering B3a's own doc comment relies on), so this function
-## always observes whatever a tick just wrote before it renders. Kept as two
-## calls anyway rather than folded into one, both for the smallest diff and
-## because it is a harmless, idempotent pose assertion either way -- see
-## restore_popup_hold_pose()'s own doc comment.
+## This entity's view half runs after StatePlayer and bound model players. It
+## holds the latest tick's aim pose between ticks and advances scroll FX.
 func _process(delta: float) -> void:
-	_building_combat.advance(delta)
-	_building_combat.after_authored_advance()
+	_building_combat.repaint_view()
 	if _scroll_fx_meshes.is_empty():
 		return
 	# Scrolling textures (e.g. the windtrap's spinning blades/spotlights) need
@@ -1027,9 +1008,8 @@ func _begin_death_sequence() -> void:
 ##   docs/architecture/network-multiplayer.md's "Slice C5" paragraph for the
 ##   fix). What set_process(false)/set_physics_process(false) actually still
 ##   stop here is the *view* half: _process()'s scroll-fx phase update and
-##   turret-aim/target-acquisition advance() (BuildingCombat.advance()), which
-##   would otherwise run once more this frame against a node about to be
-##   freed -- the same class of "dead node still running this frame's logic"
+##   turret pose repaint, which would otherwise run once more this frame
+##   against a node about to be freed -- the same class of dead-node logic
 ##   bug Unit.prepare_model_for_corpse()'s doc comment calls out
 ##   (cdc79b6/2b745b2). The simulation half is _simulation_halted's job now --
 ##   deliberately not set here the way Unit's own prepare_model_for_corpse()

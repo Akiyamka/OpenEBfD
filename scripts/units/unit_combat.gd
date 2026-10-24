@@ -65,7 +65,7 @@ const FIRE_EVENT_EPSILON := 0.0001
 ## rename (see converters/model_bake_builder.gd CLIP_NAME_OVERRIDES).
 const DEPLOYED_FIRE_ANIMATION := &"Deployed_Fire"
 
-## What decides whether a turret is on target this frame. A turret normally
+## What decides whether a turret is on target this tick. A turret normally
 ## aims itself; one that has no yaw of its own is aimed by turning the whole
 ## unit, so the hull turn already performed is the answer and asking the
 ## turret again would only report its unchanged local pose.
@@ -114,9 +114,8 @@ func configure(owner: CharacterBody3D) -> void:
 ## between ticks instead of letting the animation stomp it. Called once per
 ## simulation tick, with a fixed MatchClock.SECONDS_PER_TICK delta, by
 ## Unit.sim_tick_combat() (B3c) -- never from Unit._process().
-## BuildingCombat.advance() is the same idea for a static shooter and still
-## runs on the frame; the two stay separate functions on separate clocks
-## rather than merging, exactly as they were before this slice.
+## BuildingCombat.sim_tick() now makes the same decisions for a static shooter;
+## its view repaint, like the unit's, runs after authored animation each frame.
 func advance(delta: float) -> void:
 	if _owner == null:
 		return
