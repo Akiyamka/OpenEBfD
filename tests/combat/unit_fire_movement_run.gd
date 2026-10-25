@@ -1,6 +1,7 @@
 extends "res://tests/support/suite.gd"
 
 const LegacyRulesFixture := preload("res://tests/support/legacy_rules_fixture.gd")
+const SimRngScript := preload("res://scripts/sim/sim_rng.gd")
 const Doubles := preload("res://tests/combat/support/combat_doubles.gd")
 const Assertions := preload("res://tests/combat/support/combat_assertions.gd")
 const SimTickPumpScript := preload("res://tests/combat/support/sim_tick_pump.gd")
@@ -575,7 +576,7 @@ func _test_idle_unit_turret_scan() -> void:
 	root.add_child(unit)
 	unit.replace_visual_scene(ATMinotaurusModelScene)
 	var turret = unit.combat_turrets[0]
-	turret._idle_scan_rng.seed = 1
+	turret.set_idle_scan_source(SimRngScript.new(1), 0)
 	turret._idle_scan_active = false
 	# Idle-scan timing is tested with deliberately large, exact deltas (three
 	# then five-ish seconds) that have nothing to do with the tick rate --

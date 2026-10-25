@@ -2065,7 +2065,7 @@ source cites a number you cannot place.
   Kindjal Deployed_Idle_0 is cosmetic: measured muzzle gap reaches 0.398 units and 18.63 degrees.
   Flash-to-shell separation includes interpolation and authored clip pose; Stationary alone moves TL_Leech by at least 0.262 units and OR_LaserTank by 0.144 units.
   Carried cargo target position remains owed to AP13.
-  AP3 moves building target acquisition, idle scan, servo aim, popup gating and authored sequence startup onto simulation ticks. Building turret aim is visibly stepped at 25 Hz; the frame repaint holds each tick angle between ticks without interpolating it. Popup deploy and undeploy clips own their keyed pivots until their tick transition completes; deployed and ordinary turrets repaint after StatePlayer and model players, including during Fire clips. AP4 still owes seeded idle-scan choices, AP15 still owes building combat pose and live muzzle geometry capture, AP16 still owes stable equal-distance target ties, and AO2/AO3 still owe projectile and splash queries against unit physics colliders. These debts prevent a full building-fire determinism claim.
+  AP3 moves building target acquisition, idle scan, servo aim, popup gating and authored sequence startup onto simulation ticks. Building turret aim is visibly stepped at 25 Hz; the frame repaint holds each tick angle between ticks without interpolating it. Popup deploy and undeploy clips own their keyed pivots until their tick transition completes; deployed and ordinary turrets repaint after StatePlayer and model players, including during Fire clips. AP15 still owes building combat pose and live muzzle geometry capture, AP16 still owes stable equal-distance target ties, and AO2/AO3 still owe projectile and splash queries against unit physics colliders. These debts prevent a full building-fire determinism claim.
   AP3 headless perf compares added tick work against HEAD, which runs no building engagement during measured ticks. The fixture settles two view frames, then measures frameless ticks: HEAD's six defensive turrets do no engagement work while the tree ticks their scans and aim. This is an added tick-cost comparison, not equal whole-frame gameplay work.
   AP3 alternating HEAD/tree benchmark: INCONCLUSIVE in four sets of three pairs at 1200 measured ticks after 200 warmup. Coder set 1: HEAD median 45.187, tree median 43.462 ticks/s; spans 0.352/0.810. Coder set 2: HEAD median 45.467, tree median 43.998; spans 6.971/0.936. Coder set 3 against the final tree: HEAD median 44.966, tree median 43.886; spans 5.595/0.609. Reviewer set 4: HEAD 43.855/43.244/44.102 (median 43.855), tree 42.236/41.989/43.794 (median 42.236); spans 0.858/1.805. Every set exceeds the 0.6 ticks/s stability limit, so none proves a throughput pass or a stable regression. The coder's three start-load readings were 2.56/2.39/2.18, 3.20/2.93/2.46 and 3.00/3.56/3.41.
   AP3 cost attribution measured building combat at 36 us/tick on HEAD versus 405 us/tick on the tree, and building view work at 345-364 us/frame on HEAD versus 115-119 us/frame on the tree. At 25 ticks/s and 60 frames/s, the measured whole-building work is 21.6-22.8 ms/s on HEAD versus 17.0-17.3 ms/s on the tree; below roughly 38 frames/s the tree costs more. The added tick work scales by about 55 us per idle defensive turret, so 50 such turrets would spend about 2.8 ms of a 40 ms tick in this path; AP17 tracks that cost. Human decision on 2026-10-24: accept the added tick cost and waive AP3's A8/A9 performance PASS gate. No stable benchmark PASS was observed.
@@ -4566,11 +4566,11 @@ source cites a number you cannot place.
     (`unit.gd:714`). Its completion starts the undeploy transition, so when the
     unit can move again depends on frame rate.
 
-  At the AN1 audit, turret idle scans looked like the strongest untested
+  At the historical AN1 audit, turret idle scans looked like the strongest untested
   candidate for a no-input divergence. The fourth two-process dump instead
   located the first difference in a combat-originated firing-position order;
   AO1 addresses its frame-dependent friendly-line decision below. The other
-  sources remain separate debt.
+  sources remained separate debt at that time; AP4 resolves the idle-scan source.
 
   **How it is proven.** Seven `Match` cases and one exchange case cover:
 
@@ -4601,7 +4601,7 @@ source cites a number you cannot place.
   draw order. Each draw increments a count and a commutative signature; Match
   hashes seed, algorithm version, count and signature after the entity hash,
   and AN1's retained dump prints those four fields on its new RNG line.
-  Gameplay random sites are still to be converted in AP4–AP7; AP1 gives them
+  At AP1 landing, gameplay random sites were queued for AP4–AP7; AP1 gave them
   the shared contract. Replay and saved-startup formats are now version 2
   with mandatory seed and audit metadata. Version-1 files are refused. A
   present invalid F7 save stops ticks and names its path and the Shift+F7
@@ -4635,6 +4635,16 @@ source cites a number you cannot place.
   halt check, stashing incoming keepalives that no later tick drains; AP12
   must stop that unbounded queue growth. These are separate from the AP2–AP9
   call-site conversions.
+
+  **`AP4` — deterministic turret idle scans.** AP4 keys turret idle-scan intervals and yaw by Match seed, entity id, weapon index and scan cycle.
+  The purpose is `SimRng.PURPOSE_TURRET_SCAN`; `key_a` is the positive registry id or zero only without one, and `key_b` is the authored weapon index. The first interval uses `(cycle 0, draw 0)`, its expiry yaw uses `(cycle 0, draw 1)`, then the next interval uses `(cycle 1, draw 0)`. Waits remain in `[3, 5)` seconds and yaw targets in the forward ±70-degree sector before authored clamping. AP4 scan cycles advance only when a tick-owned idle_scan starts an interval; render-frame recenter calls do not advance them. Aim and recenter interrupts clear only the active interval, and a model rebind preserves the next cycle; explicit turret configuration starts again at zero.
+
+  Unit and building creators keep the owning Match's RNG object after model binding, so a follower turret built before START observes the echoed seed on its first admitted tick. Replay and snapshot seed restoration also bind the same object before ticks resume; F7 startup restore starts the turret's interval cycle at zero on every peer. AP4 partial-Match fallback uses seed 1 and the positive registry entity id when sim_rng is unavailable. Standalone turrets use the same deterministic seed with key zero. AP4 idle-scan draws use the Match RNG audit and appear in the Match checksum and AN1 rng dump.
+
+  AP4 performance uses at most three alternating HEAD/tree sets; a stable FAIL or three INCONCLUSIVE sets requires human review with idle-scan per-call costs.
+  AP4 throughput: three alternating HEAD/tree sets at 1200 measured ticks after 200 warmup were INCONCLUSIVE because every set exceeded the 0.6 ticks/s host-stability limit. Set 1: HEAD 43.591/41.607/43.650 (median 43.591, span 2.043), tree 43.797/42.580/43.561 (median 43.561, span 1.217), tolerance 2.043 ticks/s; starting load 2.58/2.26/2.14. Set 2: HEAD 42.440/43.786/43.175 (median 43.175, span 1.345), tree 42.887/43.203/43.658 (median 43.203, span 0.771), tolerance 1.345; starting load 3.39/3.22/2.67. Set 3: HEAD 42.400/43.712/43.582 (median 43.582, span 1.312), tree 42.812/43.168/43.737 (median 43.168, span 0.925), tolerance 1.312; starting load 3.42/3.31/2.84. No stable throughput PASS or FAIL was measured. The host was a power-limited Intel N200; the first run of each arm was usually low, and the absolute 0.6 ticks/s stability rule was stricter than this host's normal spread. AP4 A5 human waiver on 2026-10-25 accepts three INCONCLUSIVE sets without a throughput PASS. The benchmark harness is not being fixed in AP4; the human will verify live play.
+  AP4 measured idle-scan cost: the coder measured HEAD waiting 6.074 µs/call (spread 0.235) and expiry 8.207 (0.322), versus tree waiting 6.897 (0.726) and expiry 22.267 (1.147), each from three repeats of 10,000 calls. The reviewer's rerun measured HEAD waiting 6.184 (spread 0.035) and expiry 8.533 (0.171), versus tree waiting 6.353 (0.104) and expiry 20.448 (0.031). The waiting difference is within run-to-run noise; the expiry difference is about 11.9–14.1 µs per interval. Two AP1 keyed samples dominate that cost: one `SimRng.unit_fraction()` draw measured about 4.9 µs against 0.04 µs for native `randf_range()`. AP17 tracks the optional sampler optimization alongside turret-count scaling.
+  AP5 fire-clip randomness, AP6 survivors, AP7 spice maturity, AP8 frame-time undeploy alignment, AP9 portable angle work, AP15 live building muzzle geometry, AP16 equal-distance target ties, and AP17 turret-count scaling remain separate debt. The AN1 no-input-divergence observations above are historical.
 
 - **Phase 6 — polish.** Cosmetic prediction, parameter tuning under induced
   latency and loss, save/load of a networked match.

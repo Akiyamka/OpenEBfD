@@ -12,6 +12,7 @@ const CombatTurretFxScript := preload("res://scripts/combat/turret/combat_turret
 const CombatTurretGeometryScript := preload("res://scripts/combat/turret/combat_turret_geometry.gd")
 const ShotPayloadScript := preload("res://scripts/combat/shot_payload.gd")
 const DeathSoundPlayerScript := preload("res://scripts/audio/death_sound_player.gd")
+const SimRngScript := preload("res://scripts/sim/sim_rng.gd")
 
 ## Test-visible presentation constants retained as compatibility aliases.
 const LASER_MUZZLE_VISUAL_SCALE := CombatTurretFxScript.LASER_MUZZLE_VISUAL_SCALE
@@ -95,7 +96,10 @@ var current_pitch := 0.0
 ## TurretYRotationAngle as relative to the chassis preserves that combined
 ## world-space aiming rate without making a 360-degree mount rotate its hull.
 var _yaw_speed_bonus := 0.0
-var _idle_scan_rng := RandomNumberGenerator.new()
+var _idle_scan_rng = SimRngScript.new(1)
+var _idle_scan_entity_id := 0
+var _idle_scan_active_cycle := -1
+var _idle_scan_next_cycle := 0
 var _idle_scan_active := false
 var _idle_scan_seconds_until_target := 0.0
 var _idle_scan_target_yaw := 0.0
@@ -138,7 +142,9 @@ static var _definition_catalog := CombatDefinitionCatalogScript.new()
 func configure(turret_id: StringName) -> bool:
 	unbind_model()
 	_yaw_speed_bonus = 0.0
-	_idle_scan_rng.randomize()
+	_idle_scan_rng = SimRngScript.new(1)
+	_idle_scan_entity_id = 0
+	_idle_scan_next_cycle = 0
 	_reset_idle_scan()
 	_definition_bullet = null
 	_fx.configure(self)
@@ -324,6 +330,11 @@ func is_fixed() -> bool:
 
 func weapon_index() -> int:
 	return _weapon_index
+
+
+func set_idle_scan_source(match_rng: Variant, entity_id: int) -> void:
+	_idle_scan_rng = match_rng if match_rng != null else SimRngScript.new(1)
+	_idle_scan_entity_id = maxi(entity_id, 0)
 
 
 ## Whether this turret is live given the unit's current deploy state (Unit's
@@ -639,16 +650,23 @@ func idle_scan(delta: float) -> void:
 		return
 	if not _idle_scan_active:
 		_idle_scan_active = true
+		_idle_scan_active_cycle = _idle_scan_next_cycle
+		_idle_scan_next_cycle += 1
 		_idle_scan_target_yaw = 0.0
-		_idle_scan_seconds_until_target = _next_idle_scan_interval()
+		_idle_scan_seconds_until_target = _next_idle_scan_interval(_idle_scan_active_cycle)
 	_idle_scan_seconds_until_target -= maxf(delta, 0.0)
 	if _idle_scan_seconds_until_target <= 0.0:
 		var yaw_config := _yaw_config()
 		_idle_scan_target_yaw = _clamp_rule_angle(
-			_idle_scan_rng.randf_range(-IDLE_SCAN_MAX_YAW, IDLE_SCAN_MAX_YAW),
+			-IDLE_SCAN_MAX_YAW + 2.0 * IDLE_SCAN_MAX_YAW * _idle_scan_rng.unit_fraction(
+				SimRngScript.PURPOSE_TURRET_SCAN, _idle_scan_entity_id,
+				_weapon_index, _idle_scan_active_cycle, 1
+			),
 			yaw_config, &"minimum_yaw", &"maximum_yaw"
 		)
-		_idle_scan_seconds_until_target = _next_idle_scan_interval()
+		_idle_scan_active_cycle = _idle_scan_next_cycle
+		_idle_scan_next_cycle += 1
+		_idle_scan_seconds_until_target = _next_idle_scan_interval(_idle_scan_active_cycle)
 	current_yaw = _turn_axis(
 		current_yaw, _idle_scan_target_yaw,
 		_yaw_turn_speed(_yaw_config()), delta
@@ -658,12 +676,15 @@ func idle_scan(delta: float) -> void:
 
 func _reset_idle_scan() -> void:
 	_idle_scan_active = false
+	_idle_scan_active_cycle = -1
 	_idle_scan_seconds_until_target = 0.0
 	_idle_scan_target_yaw = 0.0
 
 
-func _next_idle_scan_interval() -> float:
-	return _idle_scan_rng.randf_range(IDLE_SCAN_MIN_SECONDS, IDLE_SCAN_MAX_SECONDS)
+func _next_idle_scan_interval(cycle: int) -> float:
+	return IDLE_SCAN_MIN_SECONDS + (IDLE_SCAN_MAX_SECONDS - IDLE_SCAN_MIN_SECONDS) * _idle_scan_rng.unit_fraction(
+		SimRngScript.PURPOSE_TURRET_SCAN, _idle_scan_entity_id, _weapon_index, cycle, 0
+	)
 
 
 ## Zeroes the servo bookkeeping without touching the pivot transform. Used

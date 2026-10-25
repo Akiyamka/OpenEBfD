@@ -9,6 +9,8 @@ const MatchScript := preload("res://scripts/match/match.gd")
 const MatchSnapshotScript := preload("res://scripts/match/match_snapshot.gd")
 const SimCommandBusScript := preload("res://scripts/sim/command_bus.gd")
 const TurnSchedulerScript := preload("res://scripts/net/turn_scheduler.gd")
+const SimRngScript := preload("res://scripts/sim/sim_rng.gd")
+const HKGunTurretScene := preload("res://assets/converted/buildings/HKGunTurret/HKGunTurret.scn")
 
 const SIM_GROUPS: Array[StringName] = [
 	&"sim_units", &"sim_linger_effects", &"sim_projectiles", &"sim_buildings", &"sim_spice_mounds",
@@ -25,6 +27,7 @@ func _initialize() -> void:
 	await _run_async_case("one player with a room behaves as no flag", _test_one_player_is_no_barrier)
 	await _run_async_case("invalid raw seed faults and stays visible", _test_invalid_seed_status)
 	await _run_async_case("a follower binds START despite a different local override", _test_follower_seed_notice)
+	await _run_async_case("a pre-START turret draws only the echoed seed", _test_follower_turret_seed)
 	await _run_async_case("a frame-driven follower binds START before tick one", _test_process_follower_binding)
 	await _run_async_case("sequential restored peers bind one START seed and detect one-sided state", _test_gathered_snapshots)
 	_finish("Match start barrier tests")
@@ -101,6 +104,38 @@ func _test_follower_seed_notice() -> void:
 	arm["hub"].step()
 	_expect(match_instance.advance_ticks(1) == 1 and match_instance.startup_error().contains("Conflicting START"), "conflicting duplicate refuses later ticks")
 	_expect(match_instance.selection_label.text.contains("Conflicting START"), "protocol fault remains visible")
+	await _teardown_arm(match_instance)
+
+
+func _test_follower_turret_seed() -> void:
+	var arm := await _boot_arm(2, "ws://test/room", true, 2, PackedStringArray(["--match-seed=999"]))
+	var match_instance = arm["match"]
+	var building = HKGunTurretScene.instantiate()
+	building.owner_player_id = 2
+	building.position = Vector3(-500.0, 0.0, -500.0)
+	match_instance.get_node("Buildings").add_child(building)
+	_expect(building.combat_turrets.size() == 1 and building.entity_id > 0, "follower fixture has a registered defensive turret")
+	if building.combat_turrets.size() != 1 or building.entity_id <= 0:
+		await _teardown_arm(match_instance)
+		return
+	var turret = building.combat_turrets[0]
+	var before: int = match_instance.sim_rng().draw_count
+	_expect(before == 0 and not turret._idle_scan_active, "pre-START construction makes no shared draw or active interval")
+	_expect(match_instance.advance_ticks(1) == 0 and not turret._idle_scan_active and match_instance.sim_rng().draw_count == before, "tick-zero gate leaves interval and audit untouched")
+	var peer_data := _new_peer(arm["hub"], 1)
+	_release_directly(match_instance, arm["hub"], peer_data["peer"])
+	_cover_ticks(arm, peer_data["peer"], 2)
+	_expect(match_instance.advance_ticks(1) == 1 and match_instance.match_seed() == 456, "START echoes the leader seed before tick one")
+	for _tick in 3:
+		if turret._idle_scan_active:
+			break
+		match_instance.advance_ticks(1)
+	var sample: int = SimRngScript._sample(456, SimRngScript.PURPOSE_TURRET_SCAN, building.entity_id, 0, 0, 0)
+	var expected := 3.0 + 2.0 * float(sample & 0xffffff) / 16777216.0
+	_expect(turret._idle_scan_active and is_equal_approx(turret._idle_scan_seconds_until_target, expected - 0.04), "first scan wait comes from echoed seed")
+	for wrong_seed in [0, 1, 999]:
+		var wrong: int = SimRngScript._sample(wrong_seed, SimRngScript.PURPOSE_TURRET_SCAN, building.entity_id, 0, 0, 0)
+		_expect(sample != wrong, "leader sample differs from seed %d" % wrong_seed)
 	await _teardown_arm(match_instance)
 
 

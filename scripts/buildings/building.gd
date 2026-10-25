@@ -1240,6 +1240,7 @@ func _configure_combat_turret() -> void:
 	var turret = CombatTurretScript.new()
 	if turret.configure(turret_id):
 		turret.bind_model(state_root(current_state), 0)
+		turret.set_idle_scan_source(MatchLookupScript.sim_rng(self), entity_id)
 		combat_turrets.append(turret)
 
 

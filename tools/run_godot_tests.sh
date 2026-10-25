@@ -76,6 +76,7 @@ readonly SUITES=(
 	tests/sim/sim_rng_run.gd
 	tests/match/match_desync_halt_run.gd
 	tests/match/match_desync_state_run.gd
+	tests/match/turret_idle_rng_run.gd
 	tests/match/match_stall_detection_run.gd
 	tests/match/match_rtt_wiring_run.gd
 	tests/match/match_input_delay_run.gd

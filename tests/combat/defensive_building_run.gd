@@ -1,6 +1,7 @@
 extends "res://tests/support/suite.gd"
 
 const LegacyRulesFixture := preload("res://tests/support/legacy_rules_fixture.gd")
+const SimRngScript := preload("res://scripts/sim/sim_rng.gd")
 const CombatTurretScript := preload("res://scripts/combat/combat_turret.gd")
 const SimTickPumpScript := preload("res://tests/combat/support/sim_tick_pump.gd")
 const FrameTickDriverScript := preload("res://scripts/match/frame_tick_driver.gd")
@@ -180,7 +181,7 @@ func _test_idle_building_turret_scan() -> void:
 	var building = HKGunTurretScene.instantiate()
 	root.add_child(building)
 	var turret = building.combat_turrets[0]
-	turret._idle_scan_rng.seed = 2
+	turret.set_idle_scan_source(SimRngScript.new(2), 0)
 	turret._idle_scan_active = false
 	for _tick in 50:
 		building.sim_tick()
@@ -781,7 +782,7 @@ func _test_frame_isolation() -> void:
 	var building := HKGunTurretScene.instantiate() as Building
 	root.add_child(building)
 	var turret = building.combat_turrets[0]
-	turret._idle_scan_rng.seed = 2
+	turret.set_idle_scan_source(SimRngScript.new(2), 0)
 	_expect(building.command_attack(_lateral_point(turret)), "lateral frame-only order must be accepted")
 	var yaw: float = turret.current_yaw
 	var state: int = building._popup_turret_state

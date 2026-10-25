@@ -204,7 +204,8 @@ func _test_rng_checksum_and_retention() -> void:
 	var recorded: int = int(match_instance.checksum_exchange()._local_hash_by_tick.get(8, -1))
 	_expect(recorded == match_instance.match_checksum(), "tick-eight record uses Match composite accessor")
 	var signature: int = match_instance.sim_rng().draw_signature
-	var expected := "[desync-state] rng seed=%016x version=%08x count=%016x signature=%08x" % [seed, 1, 1, signature]
+	var count: int = match_instance.sim_rng().draw_count
+	var expected := "[desync-state] rng seed=%016x version=%08x count=%016x signature=%08x" % [seed, 1, count, signature]
 	match_instance.sim_rng().draw(1, 2, 3, 4, 1)
 	var retained: PackedStringArray = match_instance._desync_state_ring.lines_for(8)
 	_expect(expected in retained, "retained tick keeps exact seed, version, count and signature before later draws")

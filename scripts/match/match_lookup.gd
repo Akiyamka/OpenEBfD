@@ -131,6 +131,16 @@ static func entity_index(node: Node) -> Variant:
 	return match_owner.call("entity_index")
 
 
+## Use the ID-owning candidate, including partial Match stubs without an RNG.
+static func sim_rng(node: Node) -> Variant:
+	if node == null or not node.is_inside_tree():
+		return null
+	var match_owner := _live_match(node, &"entity_index")
+	if match_owner == null or not match_owner.has_method(&"sim_rng"):
+		return null
+	return match_owner.call("sim_rng")
+
+
 ## The SimEntityState the running Match owns (scripts/sim/entity_state.gd), or
 ## null under the identical conditions entity_index() returns null -- same
 ## lookup, same null-tolerance, so a Unit written with no live Match in the

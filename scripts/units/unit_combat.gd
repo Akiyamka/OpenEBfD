@@ -33,6 +33,7 @@ const AuthoredReloadSoundScript := preload(
 )
 const UnitAttackOrderScript := preload("res://scripts/units/unit_attack_order.gd")
 const UnitFireOverlayScript := preload("res://scripts/units/unit_fire_overlay.gd")
+const MatchLookupScript := preload("res://scripts/match/match_lookup.gd")
 const UnitTerrainAlignmentScript := preload(
 	"res://scripts/units/unit_terrain_alignment.gd"
 )
@@ -1032,6 +1033,7 @@ func configure_combat_turrets() -> void:
 		if turret.configure(StringName(String(turret_value))):
 			turret.set_yaw_speed_bonus(maxf(float(_owner.turn_rate), 0.0))
 			turret.bind_model(_owner.visual_root, weapon_index)
+			turret.set_idle_scan_source(MatchLookupScript.sim_rng(_owner), _owner.entity_id)
 			_owner.combat_turrets.append(turret)
 
 
