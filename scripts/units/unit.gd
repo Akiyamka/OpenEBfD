@@ -2073,10 +2073,10 @@ func _emit_weapon_fired(projectiles: Array, target: Variant, weapon_index: int) 
 	weapon_fired.emit(projectiles, target, weapon_index)
 
 
-## Deployed state always resolves the single canonical Deployed_Fire clip;
-## the ordinary Fire_<index> chain is travel-mode only. See
-## unit_combat.gd:fire_animation_binding() for the full lookup this wraps.
-## Public because UnitFireOverlay calls it by name.
+## Public read-only query for a weapon's canonical eligible Fire clip;
+## deploy state is read when called. See UnitCombat for eligibility.
+## Combat and external callers use the same live-state binding rules.
+## This facade never samples a fire variant.
 func fire_animation_binding(weapon_index: int) -> Dictionary:
 	return _combat.fire_animation_binding(weapon_index)
 
@@ -2407,9 +2407,9 @@ func _apply_unit_definition() -> void:
 		_harvester.apply_definition(unit_definition)
 
 
-## Public because UnitFireOverlay/fire_animation_binding() and
-## _travel_fire_variant_bindings() (both in unit_combat.gd) need every player,
-## not just the ones _locomotion attaches to.
+## Public for UnitCombat's live binding enumeration and external model
+## inspection; includes every player, not just those locomotion attaches.
+## Returned players belong to the current visual model subtree.
 func animation_players() -> Array[AnimationPlayer]:
 	return _animation_director.players()
 

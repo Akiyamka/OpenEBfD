@@ -121,6 +121,7 @@ Other weapon properties on a unit:
   followed by a multi-second silent gap. The infantry Flamer's single `Fire_0`
   clip already contains enough authored burst frames to look continuous on
   its own and is unaffected by this change.
+  Kobra Fire_0 and Fire_2 have equal 0.55-second durations and fire at 0.05 clip seconds; AP5 keys their visible choice by match seed and sequence ordinal.
   `TurretBulletCount` remains a
   separate rule for several projectiles emitted by one event. Once the firing
   clip has started, its authored salvo events are committed; the next barrel

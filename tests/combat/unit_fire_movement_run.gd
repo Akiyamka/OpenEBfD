@@ -6,6 +6,7 @@ const Doubles := preload("res://tests/combat/support/combat_doubles.gd")
 const Assertions := preload("res://tests/combat/support/combat_assertions.gd")
 const SimTickPumpScript := preload("res://tests/combat/support/sim_tick_pump.gd")
 const UnitScene := preload("res://scenes/units/unit.tscn")
+const UnitFireOverlayScript := preload("res://scripts/units/unit_fire_overlay.gd")
 const ATAPCModelScene := preload("res://assets/converted/models/AT_APC_H0/AT_APC_H0.scn")
 const ATInfantryModelScene := preload("res://assets/converted/models/AT_inf_H0/AT_inf_H0.scn")
 const ATMongooseModelScene := preload(
@@ -29,6 +30,8 @@ func _initialize() -> void:
 		"Fire track topology determines firing while moving",
 		_test_fire_while_moving_capability
 	)
+	_run_case("two compatible overlay clips both play", _test_two_clip_overlay)
+	_run_case("incompatible second overlay clip braces weapon", _test_incompatible_overlay)
 	_run_case(
 		"moving after an infantry shot cancels Fire without committing reload",
 		_test_blocking_fire_move_cancel
@@ -45,6 +48,69 @@ func _initialize() -> void:
 	_run_case("idle unit turrets scan their forward sector", _test_idle_unit_turret_scan)
 	_run_case("unit model replacement rebinds its turret", _test_unit_turret_rebind)
 	_finish("Unit fire movement tests")
+
+
+func _mongoose_overlay_fixture(incompatible: bool) -> Dictionary:
+	var mongoose = UnitScene.instantiate()
+	mongoose.config_id = &"ATMongoose"
+	root.add_child(mongoose)
+	mongoose.replace_visual_scene(ATMongooseModelScene)
+	var turret = mongoose.combat_turrets[0]
+	var source: Dictionary = mongoose.fire_animation_binding(0)
+	var player := source.get("player") as AnimationPlayer
+	if player == null:
+		return {"unit": mongoose}
+	var original_library := player.get_animation_library(&"")
+	var private_library := original_library.duplicate(true) as AnimationLibrary
+	player.remove_animation_library(&"")
+	player.add_animation_library(&"", private_library)
+	var second := private_library.get_animation(&"Fire_0").duplicate(true) as Animation
+	if incompatible:
+		var sibling := Node3D.new()
+		sibling.name = "TestOutsideTurret"
+		player.get_node(player.root_node).add_child(sibling)
+		var track := second.add_track(Animation.TYPE_VALUE)
+		second.track_set_path(track, NodePath("TestOutsideTurret:transform"))
+		second.track_insert_key(track, 0.0, Transform3D.IDENTITY)
+		second.track_insert_key(track, 0.2, Transform3D(Basis.IDENTITY, Vector3(1, 0, 0)))
+		_expect(not turret.owns_aim_branch(sibling), "fixture second clip moves outside turret")
+	private_library.add_animation(&"Fire_2", second)
+	var overlay := UnitFireOverlayScript.new()
+	overlay.configure(mongoose)
+	var provider := func(_weapon_index: int) -> Array[Dictionary]:
+		return [
+			{"player": player, "name": &"Fire_0"},
+			{"player": player, "name": &"Fire_2"},
+		]
+	overlay.rebuild([turret], provider)
+	return {"unit": mongoose, "overlay": overlay}
+
+
+func _test_two_clip_overlay() -> void:
+	var fixture := _mongoose_overlay_fixture(false)
+	var overlay = fixture.get("overlay")
+	_expect(overlay != null, "O-compatible: model player exists")
+	if overlay != null:
+		_expect(overlay.can_fire_while_moving(0), "O-compatible: both clips are turret local")
+		var player: AnimationPlayer = overlay.player_for(0)
+		_expect(player != null and player.has_animation(&"Fire_0") and player.has_animation(&"Fire_2"),
+			"O-compatible: player installs both clips")
+		if player != null:
+			player.play(&"Fire_2")
+			_expect(player.current_animation == "Fire_2", "O-compatible: second clip plays")
+		overlay.dispose()
+	fixture["unit"].free()
+
+
+func _test_incompatible_overlay() -> void:
+	var fixture := _mongoose_overlay_fixture(true)
+	var overlay = fixture.get("overlay")
+	_expect(overlay != null, "O-incompatible: model player exists")
+	if overlay != null:
+		_expect(not overlay.can_fire_while_moving(0), "O-incompatible: outside branch braces all variants")
+		_expect(overlay.player_for(0) == null, "O-incompatible: no usable overlay remains")
+		overlay.dispose()
+	fixture["unit"].free()
 
 func _test_fire_while_moving_capability() -> void:
 	var mongoose = UnitScene.instantiate()

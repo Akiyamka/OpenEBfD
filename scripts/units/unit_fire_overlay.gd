@@ -59,7 +59,7 @@ func adopt_overlay(weapon_index: int, player: AnimationPlayer) -> void:
 ## a combat-deploy unit's deployed turret is inactive here and immobile
 ## whenever it later becomes active, so it never needs an overlay bound to the
 ## wrong (travel-mode) clip.
-func rebuild(turrets: Array) -> void:
+func rebuild(turrets: Array, list_provider: Callable) -> void:
 	# Deferred here, unlike detach_model(): a rebuild can run while the model
 	# is mid-frame, and the outgoing players may still be playing.
 	_release_overlays(false)
@@ -67,17 +67,32 @@ func rebuild(turrets: Array) -> void:
 	var definition: Resource = _unit.unit_definition
 	for turret in turrets:
 		var weapon_index: int = turret.weapon_index()
-		var binding: Dictionary = _unit.fire_animation_binding(weapon_index)
-		var can_layer := false
-		if turret.has_independent_yaw() and not binding.is_empty():
-			can_layer = (definition != null and definition.can_fly) \
-				or _fire_animation_is_turret_local(binding, turret)
-		_can_fire_while_moving[weapon_index] = can_layer
-		if not can_layer:
+		var bindings: Array[Dictionary] = list_provider.call(weapon_index)
+		var compatible: bool = turret.has_independent_yaw() and not bindings.is_empty()
+		var first_player: AnimationPlayer = null
+		var names := {}
+		for binding in bindings:
+			var player := binding.get("player") as AnimationPlayer
+			var name := StringName(binding.get("name", &""))
+			if player == null or names.has(name) or (
+				first_player != null and (
+					player != first_player or player.root_node != first_player.root_node
+				)
+			):
+				compatible = false
+			if first_player == null:
+				first_player = player
+			names[name] = true
+			if compatible and not ((definition != null and definition.can_fly) \
+				or _fire_animation_is_turret_local(binding, turret)):
+				compatible = false
+		_can_fire_while_moving[weapon_index] = false
+		if not compatible:
 			continue
-		var overlay := _create_overlay(binding, turret)
+		var overlay := _create_overlay(bindings, turret)
 		if overlay != null:
 			adopt_overlay(weapon_index, overlay)
+			_can_fire_while_moving[weapon_index] = true
 
 
 func _release_overlays(immediate: bool) -> void:
@@ -112,27 +127,11 @@ func _fire_animation_is_turret_local(binding: Dictionary, turret) -> bool:
 	return true
 
 
-func _create_overlay(binding: Dictionary, turret) -> AnimationPlayer:
-	var source_player := binding.get("player") as AnimationPlayer
-	var animation_name := StringName(binding.get("name", &""))
+func _create_overlay(bindings: Array[Dictionary], turret) -> AnimationPlayer:
+	var source_player := bindings[0].get("player") as AnimationPlayer
 	if source_player == null or source_player.get_parent() == null:
 		return null
-	var source_animation := source_player.get_animation(animation_name)
-	if source_animation == null:
-		return null
 	var definition: Resource = _unit.unit_definition
-	var animation := source_animation.duplicate(true) as Animation
-	for track in range(animation.get_track_count() - 1, -1, -1):
-		var track_path := String(animation.track_get_path(track))
-		var target_node := AuthoredModelScript.track_node(source_player, track_path)
-		var keep: bool = AuthoredModelScript.track_changes(animation, track) \
-			and (
-				(definition != null and definition.can_fly)
-				or target_node == null
-				or turret.owns_aim_branch(target_node)
-			)
-		if not keep:
-			animation.remove_track(track)
 	var overlay := AnimationPlayer.new()
 	overlay.name = "WeaponFireOverlay_%d" % turret.weapon_index()
 	overlay.root_node = source_player.root_node
@@ -140,6 +139,24 @@ func _create_overlay(binding: Dictionary, turret) -> AnimationPlayer:
 	overlay.set_meta("combat_weapon_fire_overlay", true)
 	source_player.get_parent().add_child(overlay)
 	var library := AnimationLibrary.new()
-	library.add_animation(animation_name, animation)
+	for binding in bindings:
+		var animation_name := StringName(binding["name"])
+		var source_animation := source_player.get_animation(animation_name)
+		if source_animation == null:
+			overlay.free()
+			return null
+		var animation := source_animation.duplicate(true) as Animation
+		for track in range(animation.get_track_count() - 1, -1, -1):
+			var track_path := String(animation.track_get_path(track))
+			var target_node := AuthoredModelScript.track_node(source_player, track_path)
+			var keep: bool = AuthoredModelScript.track_changes(animation, track) \
+				and (
+					(definition != null and definition.can_fly)
+					or target_node == null
+					or turret.owns_aim_branch(target_node)
+				)
+			if not keep:
+				animation.remove_track(track)
+		library.add_animation(animation_name, animation)
 	overlay.add_animation_library(&"", library)
 	return overlay

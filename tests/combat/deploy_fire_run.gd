@@ -21,6 +21,12 @@ const ORKobraModelScene := preload(
 
 var _bullets := Bullets.new()
 
+class NullCallLogger extends Logger:
+	var errors: Array[String] = []
+	func _log_error(_function, _file, _line, code, rationale, _editor_notify, _error_type, _script_backtraces) -> void:
+		if "null value" in str(code) or "Nil" in str(code) or "freed" in str(code) or "Nonexistent function" in str(code) or "null value" in str(rationale):
+			errors.append(str(code) + " " + str(rationale))
+
 
 func _initialize() -> void:
 	LegacyRulesFixture.install(root)
@@ -53,10 +59,14 @@ func _initialize() -> void:
 		"IMADVSardaukar is not combat-deployable and both of its turrets are always active",
 		_test_sardaukar_not_combat_deployable
 	)
+	var kobra_logger := NullCallLogger.new()
+	OS.add_logger(kobra_logger)
 	_run_case(
 		"a travel-mode Kobra only ever selects Fire_0 or Fire_2, never Deployed_Fire",
 		_test_kobra_travel_fire_variants
 	)
+	OS.remove_logger(kobra_logger)
+	_expect(kobra_logger.errors.is_empty(), "K-start: no null-call or freed-player script errors")
 	_run_case(
 		"Kobra travel fire clips apply their horizontal barrel pose at both boundaries",
 		_test_kobra_travel_fire_pose_boundaries
@@ -560,22 +570,39 @@ func _test_kobra_travel_fire_variants() -> void:
 		"travel mode must expose only the travel turret"
 	)
 
-	var seen_names := {}
-	for _sample in 60:
-		var binding: Dictionary = kobra.fire_animation_binding(travel_turret.weapon_index())
-		_expect(not binding.is_empty(), "a travel-mode Kobra must resolve a fire clip")
-		if binding.is_empty():
-			continue
-		seen_names[String(binding.get("name", ""))] = true
-	for clip_name in seen_names.keys():
+	var bindings: Array[Dictionary] = kobra.combat()._eligible_fire_bindings(0)
+	_expect(bindings.size() == 2, "Kobra has exactly two travel bindings")
+	if bindings.size() == 2:
 		_expect(
-			clip_name in ["Fire_0", "Fire_2"],
-			"a travel-mode Kobra must only ever select Fire_0 or Fire_2, got %s" % clip_name
+			String(bindings[0]["name"]) == "Fire_0" and String(bindings[1]["name"]) == "Fire_2",
+			"K-query: travel bindings are canonically Fire_0, Fire_2 without Deployed_Fire"
 		)
-	_expect(
-		not seen_names.has("Deployed_Fire"),
-		"a travel-mode Kobra must never select Deployed_Fire"
-	)
+		for binding in bindings:
+			var animation: Animation = binding["player"].get_animation(binding["name"])
+			_expect(is_equal_approx(animation.length, 0.55), "shipped Kobra clip lasts 0.55 seconds")
+			var shots: Array[Dictionary] = kobra.combat()._authored_fire_shot_times(
+				binding["player"], animation, travel_turret, binding["name"]
+			)
+			_expect(shots.size() == 1 and is_equal_approx(float(shots[0]["time"]), 0.05),
+				"shipped Kobra variant shoots at 0.05 clip seconds")
+	seed(17)
+	var expected_global := randi()
+	seed(17)
+	for _query in 60:
+		_expect(String(kobra.fire_animation_binding(0).get("name", "")) == "Fire_0",
+			"K-query: repeated public lookup stays canonical")
+	_expect(randi() == expected_global, "K-query: public lookup consumes no global RNG")
+	_expect(not kobra.weapon_can_fire_while_moving(0), "Kobra travel overlay stays braced")
+	for ordinal in 2:
+		seed(1 if ordinal == 0 else 2)
+		var started: bool = kobra.combat()._start_authored_fire_sequence(travel_turret, Vector3(20, 0, 20))
+		_expect(started, "K-start: real authored Kobra sequence starts")
+		var state: Dictionary = kobra.combat()._weapon_fire_sequences.get(0, {})
+		_expect(String(state.get("animation", "")) == ("Fire_0" if ordinal == 0 else "Fire_2"),
+			"K-start: local SimRng(1) selects the exact ordinal stream")
+		_expect(int(kobra.combat()._fire_sequence_ordinals.get(0, -1)) == ordinal + 1,
+			"K-start: successful sequence advances ordinal once")
+		kobra.combat()._cancel_all_fire_sequences()
 	kobra.free()
 
 

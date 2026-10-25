@@ -34,6 +34,7 @@ const AuthoredReloadSoundScript := preload(
 const UnitAttackOrderScript := preload("res://scripts/units/unit_attack_order.gd")
 const UnitFireOverlayScript := preload("res://scripts/units/unit_fire_overlay.gd")
 const MatchLookupScript := preload("res://scripts/match/match_lookup.gd")
+const SimRngScript := preload("res://scripts/sim/sim_rng.gd")
 const UnitTerrainAlignmentScript := preload(
 	"res://scripts/units/unit_terrain_alignment.gd"
 )
@@ -87,6 +88,7 @@ var _fire_overlay := UnitFireOverlayScript.new()
 var _attack_order := UnitAttackOrderScript.new()
 var _issuing_attack_move := false
 var _weapon_fire_sequences: Dictionary = {}
+var _fire_sequence_ordinals: Dictionary = {}
 var _authored_fire_controller := AuthoredFireControllerScript.new()
 
 
@@ -166,6 +168,7 @@ func detach_model() -> void:
 ## terminal -- every entry point below tolerates a null _owner.
 func dispose() -> void:
 	detach_model()
+	_fire_sequence_ordinals.clear()
 	_weapon_targets.clear()
 	_moving_fire_weapons.clear()
 	_deployment_retargeting_weapons.clear()
@@ -676,24 +679,35 @@ func _start_authored_fire_sequence(turret, attack_target: Variant = null) -> boo
 		return false
 	if attack_target == null:
 		attack_target = attack_order_target()
-	var binding := fire_animation_binding(turret.weapon_index())
-	if binding.is_empty():
+	if not (attack_target is Vector3 or (
+		attack_target is Object and is_instance_valid(attack_target)
+	)):
 		return false
-	var player := binding["player"] as AnimationPlayer
-	var animation_name := StringName(binding["name"])
-	var animation := player.get_animation(animation_name)
-	if animation == null or animation.length <= 0.0:
-		return false
-
 	var can_fire_moving := weapon_can_fire_while_moving(weapon_index)
-	var playback_player: AnimationPlayer = _fire_overlay.player_for(weapon_index) \
-		if can_fire_moving else player
 	if not can_fire_moving:
 		for state_value: Variant in _weapon_fire_sequences.values():
 			if bool((state_value as Dictionary).get("blocking", false)):
 				return false
+	var bindings := _eligible_fire_bindings(weapon_index)
+	if bindings.is_empty():
+		return false
+	# Reject every malformed candidate before sampling a variant.
+	for candidate in bindings:
+		var candidate_player := candidate.get("player") as AnimationPlayer
+		if candidate_player == null:
+			return false
+		var candidate_animation := candidate_player.get_animation(StringName(candidate["name"]))
+		if candidate_animation == null or candidate_animation.length <= 0.0:
+			return false
+	var binding := _select_fire_binding(weapon_index, bindings)
+	var player := binding["player"] as AnimationPlayer
+	var animation_name := StringName(binding["name"])
+	var animation := player.get_animation(animation_name)
+	var playback_player: AnimationPlayer = _fire_overlay.player_for(weapon_index) \
+		if can_fire_moving else player
+	if not can_fire_moving:
 		_owner.stop_at_current_position()
-	return _authored_fire_controller.start_sequence(
+	var started := _authored_fire_controller.start_sequence(
 		_weapon_fire_sequences,
 		turret,
 		attack_target,
@@ -710,6 +724,9 @@ func _start_authored_fire_sequence(turret, attack_target: Variant = null) -> boo
 		# either way, and the sounds are driven by the sequence's own clock.
 		AuthoredReloadSoundScript.schedule(_owner.visual_root, animation_name)
 	)
+	if started:
+		_fire_sequence_ordinals[weapon_index] = int(_fire_sequence_ordinals.get(weapon_index, 0)) + 1
+	return started
 
 
 func _advance_fire_sequences(delta: float) -> void:
@@ -765,27 +782,74 @@ func cancel_blocking_fire_sequences() -> void:
 	)
 
 
-## Deployed state always resolves the single canonical Deployed_Fire clip
-## (see converters/model_bake_builder.gd CLIP_NAME_OVERRIDES); the ordinary
-## Fire_<index> chain below is travel-mode only and must never be reached
-## while deployed, since Fire_0 is the travel-mode animation.
+## Read-only canonical binding query for the unit's current deploy state.
 func fire_animation_binding(weapon_index: int) -> Dictionary:
+	var bindings := _eligible_fire_bindings(weapon_index)
+	return bindings[0] if not bindings.is_empty() else {}
+
+
+func _eligible_fire_bindings(weapon_index: int) -> Array[Dictionary]:
 	if _owner.is_deployed():
+		var deployed: Array[Dictionary] = []
 		for player in _owner.animation_players():
 			if player.has_animation(DEPLOYED_FIRE_ANIMATION):
-				return {"player": player, "name": DEPLOYED_FIRE_ANIMATION}
-		return {}
+				deployed.append({"player": player, "name": DEPLOYED_FIRE_ANIMATION})
+		var canonical := _canonical_fire_bindings(deployed)
+		var selected: Array[Dictionary] = []
+		if not canonical.is_empty():
+			selected.append(canonical[0])
+		return selected
 	var variants := _travel_fire_variant_bindings(weapon_index)
 	if not variants.is_empty():
-		return variants[randi() % variants.size()]
+		return _canonical_fire_bindings(variants)
 	var fallback_candidates: Array[StringName] = [&"Fire"]
 	if weapon_index != 0:
 		fallback_candidates.append(&"Fire_0")
+	var fallbacks: Array[Dictionary] = []
 	for player in _owner.animation_players():
 		for animation_name in fallback_candidates:
 			if player.has_animation(animation_name):
-				return {"player": player, "name": animation_name}
-	return {}
+				fallbacks.append({"player": player, "name": animation_name})
+	var canonical_fallbacks := _canonical_fire_bindings(fallbacks)
+	var selected_fallback: Array[Dictionary] = []
+	if not canonical_fallbacks.is_empty():
+		selected_fallback.append(canonical_fallbacks[0])
+	return selected_fallback
+
+
+func _select_fire_binding(weapon_index: int, eligible: Array[Dictionary]) -> Dictionary:
+	var bindings := _canonical_fire_bindings(eligible)
+	if bindings.is_empty():
+		return {}
+	if bindings.size() == 1:
+		return bindings[0]
+	var rng: Variant = MatchLookupScript.sim_rng(_owner)
+	if rng == null:
+		rng = SimRngScript.new(1)
+	var unit_id: int = maxi(int(_owner.entity_id), 0)
+	var ordinal := int(_fire_sequence_ordinals.get(weapon_index, 0))
+	var result: Dictionary = rng.bounded(
+		SimRngScript.PURPOSE_FIRE_VARIANT, unit_id, weapon_index,
+		ordinal, 0, bindings.size()
+	)
+	return bindings[int(result["value"])] if bool(result["ok"]) else {}
+
+
+func _canonical_fire_bindings(eligible: Array[Dictionary]) -> Array[Dictionary]:
+	var keyed := {}
+	for binding in eligible:
+		var player := binding.get("player") as AnimationPlayer
+		if player == null:
+			continue
+		var clip := String(binding.get("name", &""))
+		var path := String(_owner.visual_root.get_path_to(player))
+		keyed[clip + "|" + path] = binding
+	var keys: Array = keyed.keys()
+	keys.sort()
+	var sorted: Array[Dictionary] = []
+	for key in keys:
+		sorted.append(keyed[key])
+	return sorted
 
 
 ## Every Fire_<N> clip belonging to this weapon: its own authored
@@ -794,8 +858,7 @@ func fire_animation_binding(weapon_index: int) -> Dictionary:
 ## claimed by any configured turret (an orphan travel-mode variant, e.g.
 ## Kobra's Fire_2 once Fire_1 is renamed to Deployed_Fire). These orphan
 ## clips are equivalent shot variants for the same weapon, not per-weapon-
-## index clips, and are chosen at random per shot, mirroring the idle-variant
-## selection in _idle_animations/_play_random_idle. An ordinary multi-turret
+## index clips, and are keyed once per successful sequence. An ordinary multi-turret
 ## unit (e.g. ATMinotaurus, which authors an unrelated, unused Fire_1
 ## alongside its single real turret's Fire_0) is never a combat-deployable
 ## eligibility match, so it always resolves exactly one binding here — its
@@ -821,12 +884,12 @@ func _travel_fire_variant_bindings(weapon_index: int) -> Array[Dictionary]:
 			if suffix_index != weapon_index \
 			and (not include_orphans or configured_indices.has(suffix_index)):
 				continue
-			var key := "%d:%s" % [player.get_instance_id(), name_text]
+			var key := "%s:%s" % [String(_owner.visual_root.get_path_to(player)), name_text]
 			if seen.has(key):
 				continue
 			seen[key] = true
 			bindings.append({"player": player, "name": animation_name})
-	return bindings
+	return _canonical_fire_bindings(bindings)
 
 
 ## Data-driven combat-deploy eligibility (mirrors combat_deploy_strategy.gd):
@@ -1013,7 +1076,7 @@ func refresh_weapon_runtime() -> void:
 	_target_acquisition.clear()
 	_moving_fire_weapons.clear()
 	_deployment_retargeting_weapons.clear()
-	_fire_overlay.rebuild(_active_turrets())
+	_fire_overlay.rebuild(_active_turrets(), _eligible_fire_bindings)
 
 
 func restore_combat_turret_poses() -> void:
