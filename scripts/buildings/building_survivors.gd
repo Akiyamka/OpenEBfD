@@ -8,6 +8,8 @@ extends RefCounted
 const UnitScene := preload("res://scenes/units/unit.tscn")
 const UnitSceneCatalogScript := preload("res://scripts/units/unit_scene_catalog.gd")
 const BuildingDefinitionCatalogScript := preload("res://scripts/buildings/building_definition_catalog.gd")
+const MatchLookupScript := preload("res://scripts/match/match_lookup.gd")
+const SimRngScript := preload("res://scripts/sim/sim_rng.gd")
 static var _unit_scene_catalog := UnitSceneCatalogScript.shared()
 static var _building_definition_catalog := BuildingDefinitionCatalogScript.shared()
 
@@ -51,8 +53,17 @@ static func spawn_for_destroyed_building(building: Building) -> void:
 
 	var half_extents := _footprint_half_extents(building)
 	var origin: Vector3 = building.simulation_position()
+	var death_tick := 0
+	if building.entity_id > 0:
+		var match_owner := MatchLookupScript.match_node(building)
+		if match_owner != null and match_owner.has_method(&"current_tick"):
+			death_tick = int(match_owner.call(&"current_tick"))
+	var rng = MatchLookupScript.sim_rng(building)
+	if rng == null:
+		rng = SimRngScript.new(1)
 	for i in _survivor_count(building):
-		_spawn_survivor(parent, unit_id, building.owner_player_id, origin, half_extents)
+		_spawn_survivor(parent, unit_id, building.owner_player_id, origin, half_extents,
+			rng, building.entity_id, i, death_tick)
 
 
 static func _survivor_count(building: Building) -> int:
@@ -63,12 +74,14 @@ static func _survivor_count(building: Building) -> int:
 
 
 static func _spawn_survivor(
-		parent: Node, unit_id: StringName, owner_player_id: int, origin: Vector3, half_extents: Vector3
+		parent: Node, unit_id: StringName, owner_player_id: int, origin: Vector3,
+		half_extents: Vector3, rng, building_id: int, ordinal: int, death_tick: int
 	) -> void:
 	var survivor := _unit_scene_catalog.instantiate(unit_id, UnitScene)
 	if survivor == null:
 		return
 
+	var offset := _scatter_offset(rng, half_extents, building_id, ordinal, death_tick)
 	parent.add_child(survivor)
 	survivor.call("setup", unit_id)
 	survivor.call("set_owner_player_id", owner_player_id)
@@ -77,17 +90,23 @@ static func _spawn_survivor(
 	# this routes through set_simulation_position() (its own doc comment,
 	# scripts/units/unit.gd) rather than writing global_position directly,
 	# keeping this spawn's position in the running match's SimEntityState.
-	survivor.call("set_simulation_position", origin + Vector3(
-		randf_range(-half_extents.x, half_extents.x),
-		0.7,
-		randf_range(-half_extents.z, half_extents.z)
-	))
+	survivor.call("set_simulation_position", origin + offset)
 	if survivor.has_method("stop_at_current_position"):
 		survivor.call("stop_at_current_position")
 	if "max_health" in survivor:
 		survivor.health = survivor.max_health * SURVIVOR_HEALTH_FRACTION
 	if survivor.has_method("grant_temporary_invulnerability"):
 		survivor.call("grant_temporary_invulnerability", SURVIVOR_INVULNERABILITY_SECONDS)
+
+
+static func _scatter_offset(rng, half_extents: Vector3, building_id: int,
+		ordinal: int, death_tick: int) -> Vector3:
+	var x_fraction: float = rng.unit_fraction(SimRngScript.PURPOSE_SURVIVOR_SCATTER,
+		building_id, ordinal, death_tick, 0)
+	var z_fraction: float = rng.unit_fraction(SimRngScript.PURPOSE_SURVIVOR_SCATTER,
+		building_id, ordinal, death_tick, 1)
+	return Vector3((x_fraction * 2.0 - 1.0) * half_extents.x, 0.7,
+		(z_fraction * 2.0 - 1.0) * half_extents.z)
 
 
 static func _basic_infantry_id(building: Building) -> StringName:

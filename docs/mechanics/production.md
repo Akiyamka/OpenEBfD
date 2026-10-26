@@ -142,6 +142,7 @@ Rules for placing a ready building on the map:
   per-building `NumInfantryWhenGone` field in `Rules.txt` (e.g. `ATConYard`/
   `ATBarracks` = 3, `ATSmWindtrap` = 1);
 - survivors spawn with **70% HP** (verified);
+- Survivor scatter uses the match seed, destroyed building ID, death tick, survivor ordinal and separate X/Z draws. The offsets stay within the building footprint rectangle;
 - no debris or ruins remain; footprint cells are freed immediately (verified).
 
 ---
