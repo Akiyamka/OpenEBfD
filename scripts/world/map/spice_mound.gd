@@ -1,7 +1,7 @@
 class_name SpiceMound
 extends Area3D
 ## Runtime spice-bloom trigger. The visual is converted from the original
-## Spicemound.xbf mesh; this Area3D owns contact activation and the Rules.txt
+## Spicemound.xbf mesh; sim_tick owns contact activation and the Rules.txt
 ## maturation cycle.
 ##
 ## The maturation cycle used to run on a child Timer node (MaturityTimer,
@@ -18,9 +18,13 @@ signal activated(mound: SpiceMound, early_activation: bool, maturity_fraction: f
 
 const RuleTicksScript := preload("res://scripts/rules/rule_ticks.gd")
 const MatchLookupScript := preload("res://scripts/match/match_lookup.gd")
+const SimRngScript := preload("res://scripts/sim/sim_rng.gd")
+const UnitScript := preload("res://scripts/units/unit.gd")
+const EntityNodeIndexScript := preload("res://scripts/match/entity_node_index.gd")
+const SimEntityStateScript := preload("res://scripts/sim/entity_state.gd")
 
 ## Match._advance_simulation_tick() drives every live mound's sim_tick() by
-## walking this group, the same way it walks "units", "buildings" and
+## walking this group, the same way it walks "sim_units", "sim_buildings" and
 ## "sim_linger_effects" -- see _ready() below for why the mound requests it
 ## itself.
 const SIM_SPICE_MOUND_GROUP := "sim_spice_mounds"
@@ -45,8 +49,8 @@ static var _definition_catalog := SpiceDefinitionCatalogScript.new()
 @export var source_cell := Vector2i(-1, -1)
 
 var config: Resource
-## The maturity countdown, in simulation ticks (MatchClock.TICKS_PER_SECOND,
-## 25 Hz). Public like CombatLingerEffect.remaining_ticks, for the same
+## The maturity countdown, in simulation ticks (25 Hz). Public like
+## CombatLingerEffect.remaining_ticks, for the same
 ## reason: tests drive and observe it directly instead of reaching for a
 ## private field by name.
 var maturity_ticks_remaining := 0
@@ -56,6 +60,10 @@ var _maturity_cycle_ticks := 0
 var _maturity_progress := 0.0
 var _activation_in_progress := false
 var _has_activated := false
+var _cycle_ordinal := -1
+var _cycle_pending := false
+var _local_rng := SimRngScript.new(1)
+var _overlapping_ids := {}
 
 
 func configure(
@@ -69,6 +77,8 @@ func configure(
 	config = rules_config if rules_config != null else _definition_catalog.mound()
 	_lifespan_random_fraction = lifespan_random_fraction
 	_has_activated = false
+	_cycle_ordinal = -1
+	_overlapping_ids.clear()
 	_apply_footprint()
 	restart_maturity_cycle()
 
@@ -82,7 +92,6 @@ func _ready() -> void:
 	if config == null:
 		config = _definition_catalog.mound()
 	_apply_footprint()
-	body_entered.connect(_on_body_entered)
 	# The mound finds Match's central loop, not the other way around: it
 	# requests the sim group itself, right here, the same point CombatLingerEffect
 	# requests SIM_LINGER_GROUP in its own configure(). No matching registration
@@ -91,9 +100,8 @@ func _ready() -> void:
 	# teardown, unlike CombatLingerEffect: this mound never frees itself --
 	# only map_spice_layer.gd's _remove_spice_mound() does, the same as
 	# Building.gd never removes itself from "buildings" -- so
-	# is_instance_valid() in the central loop is what guards a freed mound
-	# still listed this frame, exactly as it already does for units and
-	# buildings.
+	# is_instance_valid() in the central loop guards a freed mound still
+	# listed this frame. sim_tick() separately rejects a queued mound.
 	#
 	# The shared "spice_mounds" group above stays an immediate add_to_group()
 	# call -- untouched by C6b, on purpose: it is the view-facing group
@@ -106,11 +114,13 @@ func _ready() -> void:
 	# queues it, and the running Match's SimAdmissionQueue admits it on the
 	# *next* tick's drain, never this same call.
 	MatchLookupScript.request_sim_entry(self, SIM_SPICE_MOUND_GROUP)
-	restart_maturity_cycle()
+	if _cycle_ordinal < 0:
+		restart_maturity_cycle()
 
 
-## This mound's simulation half: advances the maturity countdown by exactly
-## one simulation tick and fires _on_maturity_timeout() when it reaches zero
+## This mound's simulation half: arms a pending random cycle, scans tick-owned
+## unit contact, advances the countdown by exactly one simulation tick, and
+## fires _on_maturity_timeout() when it reaches zero
 ## -- the same event the old MaturityTimer.timeout signal used to fire.
 ## Called once per simulation tick by Match._advance_simulation_tick() via the
 ## SIM_SPICE_MOUND_GROUP membership joined in _ready() above.
@@ -122,12 +132,27 @@ func _ready() -> void:
 ## _process() removes the last reason this node needed a frame callback
 ## purely to read simulation state -- the coupling phase 1 exists to remove.
 func sim_tick() -> void:
+	if is_queued_for_deletion():
+		return
+	if _cycle_pending:
+		_arm_pending_cycle()
+		if _cycle_pending:
+			return
+	var entries := _contact_entries()
+	var prior := _overlapping_ids
+	_overlapping_ids = {}
+	for id in entries:
+		_overlapping_ids[id] = true
 	if maturity_ticks_remaining <= 0:
 		return
 	maturity_ticks_remaining -= 1
 	_set_maturity_progress(maturity_progress())
 	if maturity_ticks_remaining <= 0:
 		_on_maturity_timeout()
+		return
+	for id in entries:
+		if not prior.has(id) and activate(true):
+			break
 
 
 ## Converts this mound's authored maturity duration into whole simulation
@@ -147,10 +172,10 @@ func sim_tick() -> void:
 ## roundi(1562.5) = 1563 sim ticks = 62.52s -- against the pre-conversion
 ## value of (1250 / 60) * 3 = 62.5s, a 20 ms difference from the one rounding
 ## step above.
-func maturity_duration_ticks(random_fraction := -1.0) -> int:
+func maturity_duration_ticks(random_fraction: float) -> int:
 	if config == null:
 		return 0
-	var fraction := randf() if random_fraction < 0.0 else clampf(random_fraction, 0.0, 1.0)
+	var fraction := clampf(random_fraction, 0.0, 1.0)
 	var minimum_ticks := maxf(config.maturity_minimum_ticks, 0.0)
 	var random_ticks := maxf(config.maturity_random_ticks, 0.0)
 	var rule_ticks := (minimum_ticks + random_ticks * fraction) * MATURITY_DURATION_MULTIPLIER
@@ -158,7 +183,7 @@ func maturity_duration_ticks(random_fraction := -1.0) -> int:
 
 
 func activate(early_activation := false) -> bool:
-	if _activation_in_progress:
+	if _activation_in_progress or _cycle_pending:
 		return false
 	var maturity_fraction := maturity_progress() if early_activation else 1.0
 	if early_activation and _has_activated \
@@ -177,18 +202,104 @@ func activate(early_activation := false) -> bool:
 	return true
 
 
-## (Re)arms the maturity countdown from this mound's config: (re)computes the
-## tick-domain duration (maturity_duration_ticks()) and resets both the
-## countdown and the visible growth progress to zero. Doubles as the pre-tree
-## setup configure() needs -- unlike the old timer.start(), a plain integer
-## assignment has no tree-membership precondition, so configure() (called
-## before this node is ever added to the tree; see map_spice_layer.gd's
-## _spawn_spice_mound()) can call this directly instead of going through a
-## separate "_prepare" helper.
+## Starts the next ordinal and resets growth. Explicit fractions arm now;
+## random cycles wait for the next eligible simulation tick and its keyed draw.
 func restart_maturity_cycle() -> void:
+	_cycle_ordinal += 1
 	_set_maturity_progress(0.0)
-	_maturity_cycle_ticks = maturity_duration_ticks(_lifespan_random_fraction)
+	if _lifespan_random_fraction < 0.0:
+		_cycle_pending = true
+		_maturity_cycle_ticks = 0
+		maturity_ticks_remaining = 0
+	else:
+		_cycle_pending = false
+		_maturity_cycle_ticks = maturity_duration_ticks(_lifespan_random_fraction)
+		maturity_ticks_remaining = _maturity_cycle_ticks
+
+
+func _arm_pending_cycle() -> void:
+	var match_owner := MatchLookupScript.match_node(self)
+	var rng = MatchLookupScript.sim_rng(self) if match_owner != null else null
+	if rng != null and not SimRngScript.valid_match_seed(rng.seed):
+		return
+	if rng == null:
+		rng = _local_rng
+	var fraction: float = rng.unit_fraction(
+		SimRngScript.PURPOSE_SPICE_MATURITY,
+		source_cell.x, source_cell.y, _cycle_ordinal, 0
+	)
+	_maturity_cycle_ticks = maturity_duration_ticks(fraction)
 	maturity_ticks_remaining = _maturity_cycle_ticks
+	_cycle_pending = false
+
+
+func _contact_entries() -> Array[int]:
+	var entries: Array[int] = []
+	if not is_inside_tree():
+		return entries
+	var match_owner := MatchLookupScript.match_node(self)
+	var index: EntityNodeIndexScript = match_owner.call("entity_index") if match_owner != null else null
+	var state: SimEntityStateScript = match_owner.call("entity_state") if match_owner != null and match_owner.has_method("entity_state") else null
+	var centre := global_position
+	var half_x := _footprint.x * 0.5
+	var half_z := _footprint.y * 0.5
+	var top := centre.y + maxf(minf(_footprint.x, _footprint.y), 0.5)
+	for candidate in get_tree().get_nodes_in_group(&"sim_units"):
+		if not is_instance_valid(candidate):
+			continue
+		var id := 0
+		var position := Vector3.ZERO
+		var radius := 0.0
+		var min_y := 0.0
+		var max_y := 0.0
+		if match_owner != null:
+			if index == null or state == null:
+				continue
+			id = index.id_for(candidate)
+			if id <= 0 or not state.has_position(id) or not state.has_combat_line_bounds(id):
+				continue
+			position = state.position(id)
+			radius = state.combat_line_radius(id)
+		else:
+			if not candidate is UnitScript:
+				continue
+			if not candidate.has_method("simulation_position") or not candidate.has_method("combat_line_bounds"):
+				continue
+			var bounds: Dictionary = candidate.combat_line_bounds()
+			if bounds.is_empty():
+				continue
+			id = candidate.get_instance_id()
+			position = candidate.simulation_position()
+			radius = float(bounds["radius"])
+			min_y = float(bounds["min_y"])
+			max_y = float(bounds["max_y"])
+		var offset_x := absf(position.x - centre.x)
+		if offset_x > half_x + radius:
+			continue
+		var offset_z := absf(position.z - centre.z)
+		if offset_z > half_z + radius:
+			continue
+		var dx := maxf(offset_x - half_x, 0.0)
+		var dz := maxf(offset_z - half_z, 0.0)
+		if dx * dx + dz * dz > radius * radius:
+			continue
+		if not candidate is UnitScript or candidate.is_queued_for_deletion():
+			continue
+		if match_owner != null:
+			min_y = state.combat_line_min_y(id)
+			max_y = state.combat_line_max_y(id)
+		if position.y + max_y < centre.y or position.y + min_y > top:
+			continue
+		if match_owner != null:
+			if not state.has_health(id) or state.health(id) <= 0.0:
+				continue
+			if state.has_combat_line_carried(id) and state.combat_line_carried(id):
+				continue
+		elif candidate.health <= 0.0 or candidate.is_carried():
+			continue
+		entries.append(id)
+	entries.sort()
+	return entries
 
 
 func growth_scale() -> float:
@@ -317,11 +428,6 @@ func _set_maturity_progress(progress: float) -> void:
 	var authored_transform: Variant = animation.value_track_interpolate(track, growth_time)
 	if authored_transform is Transform3D:
 		animated_node.transform = authored_transform
-
-
-func _on_body_entered(body: Node3D) -> void:
-	if body.is_in_group(&"units"):
-		activate(true)
 
 
 func _on_maturity_timeout() -> void:

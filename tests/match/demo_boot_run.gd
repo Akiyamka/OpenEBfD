@@ -1487,17 +1487,12 @@ func _test_match_loop_drives_spice_mound_maturity() -> void:
 	for _warmup in 5:
 		await process_frame
 
-	# The fixture scene (tests/fixtures/match_fixture.tscn) carries no spice
-	# mound of its own -- nothing else in this suite needs one -- so this is
-	# the one place a real mound has to be wired into a real match, and this
-	# case adds it directly rather than skip the only coverage of that wiring.
+	# The map spawns two mounds. This additional fixed-fraction mound isolates
+	# the countdown wiring from their natural and contact cycles.
 	var mound := SpiceMoundScene.instantiate()
-	mound.configure(Vector2i(0, 0), Vector2(4.0, 4.0))
+	mound.configure(Vector2i(0, 0), Vector2(4.0, 4.0), null, 0.5)
 	match_instance.add_child(mound)
-	# _ready() (just run by add_child above) already armed the countdown from
-	# the default rules catalog, drawing an unseeded randf() in the process
-	# (see spice_mound.gd's maturity_duration_ticks() -- left alone
-	# deliberately, that's phase 4's determinism gate, not this slice's).
+	# The explicit fraction arms immediately during configure().
 	# Overwrite it with a fixed, generous countdown, the same way the
 	# linger-effect case above overwrites remaining_ticks: this case is only
 	# about whether the match loop drains the countdown at all, not about the

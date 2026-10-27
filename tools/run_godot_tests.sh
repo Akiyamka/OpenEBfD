@@ -77,6 +77,7 @@ readonly SUITES=(
 	tests/match/match_desync_halt_run.gd
 	tests/match/match_desync_state_run.gd
 	tests/match/building_survivor_rng_run.gd
+	tests/match/spice_mound_rng_run.gd
 	tests/match/turret_idle_rng_run.gd
 	tests/match/unit_fire_variant_rng_run.gd
 	tests/match/match_stall_detection_run.gd

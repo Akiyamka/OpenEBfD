@@ -811,7 +811,7 @@ func _poll_start_barrier() -> void:
 ## "sim_projectiles" member the buildings pass can add, which is why this
 ## second units pass sits down here rather than inside the first one (see the
 ## "Firing" paragraphs below); for spice mounds it is SpiceMound.sim_tick()
-## decrementing the maturity countdown that replaced its old MaturityTimer
+## decrementing the maturity countdown and checking post-movement contact
 ## (see spice_mound.gd). What is centrally maintained here
 ## is the list of *systems*, not of entities: group membership maintains
 ## itself (Unit.gd calls add_to_group(SIM_UNITS_GROUP) and Building.gd calls
@@ -976,8 +976,8 @@ func _poll_start_barrier() -> void:
 ## move even though its sibling pass is not. Placed after "buildings" rather
 ## than between "sim_projectiles" and "buildings": the two loops share no
 ## state (neither reads nor writes anything the other touches), so their
-## relative order is exactly as arbitrary as spice mounds' own position
-## below, and appending is again the smallest diff -- it leaves "buildings"
+## relative order is arbitrary between those two passes,
+## and appending is again the smallest diff -- it leaves "buildings"
 ## directly following "sim_projectiles", which the paragraphs above already
 ## justify, untouched.
 ##
@@ -1018,17 +1018,9 @@ func _poll_start_barrier() -> void:
 ## countdowns begin on the next tick with their full interval, instead of
 ## being docked one tick for having been created late in the same one.
 ##
-## Spice mounds go last, and unlike the loops above this really is "fixed and
-## arbitrary": a mound's maturity countdown reads and writes nothing any other
-## system in this function touches -- not a unit, not a building, not a
-## linger effect's damage, not a projectile's flight, not a controller's
-## credits -- so this loop could sit anywhere among the eight steps above it
-## without changing a single outcome. Appending it is simply the smallest
-## diff, the one that leaves the already-justified
-## controller/unit/linger/projectile/building/units-combat order untouched.
-## Recording that explicitly is the point: the next system to join this loop
-## should not have to guess whether "spice mounds are last" was load-bearing
-## or just where the diff happened to land.
+## SpiceMound.sim_tick() checks contact against stored unit positions after both unit passes
+## and after the spice layer. This order is load-bearing: movement on this tick
+## can bloom a mound now, while a new spread job begins on the following tick.
 ##
 ## is_instance_valid() guards all six group loops because queue_free() does
 ## not remove a node from its groups until the frame ends: a unit that gave
@@ -1042,7 +1034,8 @@ func _poll_start_barrier() -> void:
 ## braces, since the group walk below cannot tell "freed" from "finished but
 ## not yet freed" on its own), or a mound freed this same frame by
 ## map_spice_layer.gd's _remove_spice_mound() can still be listed here as a
-## freed instance and must not be ticked.
+## freed instance and must not be ticked. A queued node can still pass
+## is_instance_valid(), so SpiceMound.sim_tick() has its own queued-for-deletion guard.
 ##
 ## apply_pending_releases() runs last, draining whatever this same tick's
 ## eight steps above queued through Unit.request_despawn() /

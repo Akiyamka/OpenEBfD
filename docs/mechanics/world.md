@@ -99,8 +99,13 @@ The game's only resource. The world (rather than economic) part of its logic:
   regeneration mechanic**: it matures and **explodes**, scattering a new spice field around
   itself. Therefore spice regenerates specifically around blooms, while a field harvested
   “to nothing” without a bloom source does not return;
-- **early activation**: a bloom triggers even when a unit touches the geyser location
-  (it is not necessary to wait for it to mature or shoot it);
+- **early activation**: a bloom triggers when an admitted unit enters the geyser's
+  footprint (it is not necessary to wait for it to mature or shoot it). Contact
+  is checked on the 25 Hz simulation tick from stored, post-movement unit positions,
+  so a unit arriving on a tick can bloom it on that tick. The horizontal test uses
+  each unit's authored enclosing circle, which may include empty hull corners;
+  carried units and aircraft above the mound are excluded. An entry rejected
+  before the 30% repeat threshold is used up until exit and re-entry;
 - **explosion damage** is differentiated: nearly lethal to infantry, small damage to vehicles,
   and **none** to a harvester `[Rules]`;
 - **freshly scattered spice is toxic**: for some time after a bloom triggers, the area deals

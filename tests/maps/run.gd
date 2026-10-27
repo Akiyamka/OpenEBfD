@@ -296,9 +296,7 @@ func _test_spice_mound_maturity_tick_conversion(token: int) -> int:
 	var mound = SpiceMoundScene.instantiate()
 	# maturity_random_ticks is 0, so the random fraction below can never
 	# affect the result -- passing 0.0 explicitly keeps this case independent
-	# of randf() (see spice_mound.gd's maturity_duration_ticks(), which
-	# deliberately still calls randf() when no fraction is given; phase 4's
-	# concern, not this slice's).
+	# of the mound's keyed random cycle.
 	mound.configure(Vector2i(0, 0), Vector2.ONE, config, 0.0)
 	# 100 rule ticks * MATURITY_DURATION_MULTIPLIER(3) = 300 rule ticks at
 	# RuleTicks.RULE_TICKS_PER_SECOND (60 Hz) -> to_sim_ticks(300) =
