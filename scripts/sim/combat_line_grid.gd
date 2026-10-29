@@ -61,6 +61,33 @@ func query_segment(from: Vector3, to: Vector3) -> PackedInt32Array:
 	return _query_ids
 
 
+## The closed rectangle includes the cell below an exact lower grid line.
+## This also covers a scalar minimum rounded up by Vector2's float32 storage.
+func query_rect(min_xz: Vector2, max_xz: Vector2) -> PackedInt32Array:
+	_query_ids.clear()
+	var min_x := floori(min_xz.x / CELL_WIDTH)
+	var min_z := floori(min_xz.y / CELL_WIDTH)
+	if min_xz.x == float(min_x) * CELL_WIDTH:
+		min_x -= 1
+	if min_xz.y == float(min_z) * CELL_WIDTH:
+		min_z -= 1
+	var max_x := floori(max_xz.x / CELL_WIDTH)
+	var max_z := floori(max_xz.y / CELL_WIDTH)
+	for cell_x in range(min_x, max_x + 1):
+		for cell_z in range(min_z, max_z + 1):
+			_visit(cell_x, cell_z)
+	if _query_ids.size() > 1:
+		_query_ids.sort()
+		var unique_size := 1
+		for read_index in range(1, _query_ids.size()):
+			if _query_ids[read_index] == _query_ids[unique_size - 1]:
+				continue
+			_query_ids[unique_size] = _query_ids[read_index]
+			unique_size += 1
+		_query_ids.resize(unique_size)
+	return _query_ids
+
+
 func bucket_writes() -> int:
 	return _bucket_writes
 

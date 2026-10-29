@@ -42,6 +42,7 @@ class _PendingEntry extends RefCounted:
 ## projectile in a multi-shot volley resolves first... is not guaranteed to
 ## match across clients yet") for phase 4 to close.
 var _pending: Array[_PendingEntry] = []
+var _sim_unit_join_revision := 0
 
 
 ## Queues `node` to join `group` on the next apply_pending_entries() drain.
@@ -77,6 +78,8 @@ func apply_pending_entries() -> int:
 	var joined := 0
 	for entry in entries:
 		if is_instance_valid(entry.node) and entry.node.is_inside_tree():
+			if entry.group == &"sim_units" and not entry.node.is_in_group(&"sim_units"):
+				_sim_unit_join_revision += 1
 			entry.node.add_to_group(entry.group)
 			joined += 1
 	return joined
@@ -84,3 +87,7 @@ func apply_pending_entries() -> int:
 
 func pending_entry_count() -> int:
 	return _pending.size()
+
+
+func sim_unit_join_revision() -> int:
+	return _sim_unit_join_revision

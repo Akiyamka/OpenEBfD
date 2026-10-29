@@ -22,6 +22,7 @@ const SimRngScript := preload("res://scripts/sim/sim_rng.gd")
 const UnitScript := preload("res://scripts/units/unit.gd")
 const EntityNodeIndexScript := preload("res://scripts/match/entity_node_index.gd")
 const SimEntityStateScript := preload("res://scripts/sim/entity_state.gd")
+const CombatLineOfFireScript := preload("res://scripts/combat/combat_line_of_fire.gd")
 
 ## Match._advance_simulation_tick() drives every live mound's sim_tick() by
 ## walking this group, the same way it walks "sim_units", "sim_buildings" and
@@ -238,8 +239,11 @@ func _contact_entries() -> Array[int]:
 	if not is_inside_tree():
 		return entries
 	var match_owner := MatchLookupScript.match_node(self)
-	var index: EntityNodeIndexScript = match_owner.call("entity_index") if match_owner != null else null
+	var index: EntityNodeIndexScript = match_owner.call("entity_index") if match_owner != null and match_owner.has_method("entity_index") else null
 	var state: SimEntityStateScript = match_owner.call("entity_state") if match_owner != null and match_owner.has_method("entity_state") else null
+	if match_owner != null and index != null and state != null \
+	and CombatLineOfFireScript.has_warm_match_snapshot(match_owner, get_tree()):
+		return _warm_contact_entries(match_owner, index, state)
 	var centre := global_position
 	var half_x := _footprint.x * 0.5
 	var half_z := _footprint.y * 0.5
@@ -301,6 +305,47 @@ func _contact_entries() -> Array[int]:
 	entries.sort()
 	return entries
 
+
+
+func _warm_contact_entries(match_owner: Node, index: EntityNodeIndexScript, state: SimEntityStateScript) -> Array[int]:
+	var entries: Array[int] = []
+	var centre := global_position
+	var half_x := _footprint.x * 0.5
+	var half_z := _footprint.y * 0.5
+	var top := centre.y + maxf(minf(_footprint.x, _footprint.y), 0.5)
+	var ids := CombatLineOfFireScript.rectangle_candidates(
+		match_owner, get_tree(), Vector2(centre.x - half_x, centre.z - half_z),
+		Vector2(centre.x + half_x, centre.z + half_z)
+	)
+	for id in ids:
+		var candidate = index.node_for(id)
+		if not is_instance_valid(candidate) or not candidate.is_in_group(&"sim_units") \
+		or not candidate is UnitScript or candidate.is_queued_for_deletion():
+			continue
+		if not state.has_position(id) or not state.has_combat_line_bounds(id):
+			continue
+		var position := state.position(id)
+		var radius := state.combat_line_radius(id)
+		var offset_x := absf(position.x - centre.x)
+		if offset_x > half_x + radius:
+			continue
+		var offset_z := absf(position.z - centre.z)
+		if offset_z > half_z + radius:
+			continue
+		var dx := maxf(offset_x - half_x, 0.0)
+		var dz := maxf(offset_z - half_z, 0.0)
+		if dx * dx + dz * dz > radius * radius:
+			continue
+		if position.y + state.combat_line_max_y(id) < centre.y \
+		or position.y + state.combat_line_min_y(id) > top:
+			continue
+		if not state.has_health(id) or state.health(id) <= 0.0:
+			continue
+		if state.has_combat_line_carried(id) and state.combat_line_carried(id):
+			continue
+		entries.append(id)
+	entries.sort()
+	return entries
 
 func growth_scale() -> float:
 	var animated_node := get_node_or_null("Visual/_0Spicemound") as Node3D

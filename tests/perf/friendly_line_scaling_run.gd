@@ -33,6 +33,9 @@ class MatchStub extends Node:
 
 
 func _initialize() -> void:
+	if "--combat-cost" in OS.get_cmdline_user_args():
+		await _measure_combat_cost()
+		return
 	var measurement := await _measure_set()
 	if not bool(measurement["ok"]):
 		quit(1)
@@ -69,6 +72,48 @@ func _initialize() -> void:
 		return
 	print("AO1 friendly-line scaling: PASS slope=%.3f spread=%.3f noise=%.3f tolerance=%.3f" % [slope_cost, spread, noise, tolerance])
 	quit()
+
+
+func _measure_combat_cost() -> void:
+	for size in [16, 200]:
+		var fixture := await _build_fixture(size)
+		if not bool(fixture["ok"]):
+			_dispose_fixture(fixture)
+			quit(1)
+			return
+		var key_samples: Array[float] = []
+		var call_samples: Array[float] = []
+		var world_root: Node3D = fixture["world_root"]
+		var shooter: Node3D = fixture["shooter"]
+		var endpoint: Vector3 = fixture["endpoint"]
+		var match_node: Node = world_root.get_child(0)
+		for _batch in 9:
+			CombatLineOfFireScript._ensure_match_snapshot(self, match_node)
+			var started := Time.get_ticks_usec()
+			for _call in 5000:
+				CombatLineOfFireScript._ensure_match_snapshot(self, match_node)
+			key_samples.append(float(Time.get_ticks_usec() - started) / 5000.0)
+			started = Time.get_ticks_usec()
+			for _call in 5000:
+				if not CombatLineOfFireScript.friendly_on_line(
+					world_root.get_world_3d(), shooter.global_position, endpoint, shooter, [shooter]
+				):
+					push_error("combat cost %d: warm AO1 verdict changed" % size)
+					_dispose_fixture(fixture)
+					quit(1)
+					return
+			call_samples.append(float(Time.get_ticks_usec() - started) / 5000.0)
+		key_samples.sort()
+		call_samples.sort()
+		print("combat_cost_json: %s" % JSON.stringify({
+			"size": size,
+			"key_us": key_samples[4], "key_range_us": [key_samples[0], key_samples[8]],
+			"call_us": call_samples[4], "call_range_us": [call_samples[0], call_samples[8]],
+			"local_ids": fixture["local_ids"],
+		}))
+		_dispose_fixture(fixture)
+		await process_frame
+	quit(0)
 
 
 func _measure_set() -> Dictionary:

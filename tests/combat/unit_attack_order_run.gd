@@ -174,6 +174,7 @@ func _initialize() -> void:
 		_test_flickering_block_still_repositions
 	)
 	_run_case("combat line grid returns stable local ids across cells", _test_combat_line_grid)
+	_run_case("combat line grid closed rectangles cover rounded lower edges", _test_combat_line_rect)
 	_run_case("combat line grid walk terminates and covers boundary strips", _test_combat_line_grid_boundaries)
 	_finish("Unit attack order tests")
 
@@ -213,6 +214,26 @@ func _test_combat_line_grid() -> void:
 		)),
 		"a vertical segment outside a finite cylinder must remain clear"
 	)
+
+
+func _test_combat_line_rect() -> void:
+	var grid = CombatLineGridScript.new()
+	grid.insert(30, Vector3(4.0, 0.0, 4.0), 5.0)
+	grid.insert(7, Vector3(-0.1, 0.0, -0.1), 0.1)
+	grid.insert(19, Vector3(8.1, 0.0, 8.1), 0.1)
+	_expect(grid.query_rect(Vector2.ZERO, Vector2(8.0, 8.0)) == PackedInt32Array([7, 19, 30]), "closed upper and lower edges, negative cells, dedup and ascending ids")
+	var rounded_x = CombatLineGridScript.new()
+	var true_min := 4.0 - 1e-7
+	var packed_x := Vector2(true_min, 0.0)
+	rounded_x.insert(5, Vector3(3.99999976, 0.0, 1.0), 1.8e-7)
+	_expect(packed_x.x == 4.0 and rounded_x.query_rect(packed_x, Vector2(6.0, 2.0)).has(5), "rounded X lower bound visits cell below grid line")
+	var rounded_z = CombatLineGridScript.new()
+	var packed_z := Vector2(0.0, true_min)
+	rounded_z.insert(6, Vector3(1.0, 0.0, 3.99999976), 1.8e-7)
+	_expect(packed_z.y == 4.0 and rounded_z.query_rect(packed_z, Vector2(2.0, 6.0)).has(6), "rounded Z lower bound visits cell below grid line")
+	var false_positive = CombatLineGridScript.new()
+	false_positive.insert(9, Vector3(3.9, 0.0, 3.9), 0.0)
+	_expect(false_positive.query_rect(Vector2.ZERO, Vector2(2.0, 2.0)).has(9), "same-cell broadphase retains a precise-geometry false positive")
 
 
 func _test_combat_line_grid_boundaries() -> void:

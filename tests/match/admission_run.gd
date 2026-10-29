@@ -123,6 +123,7 @@ func _initialize() -> void:
 		"apply_pending_entries() joins every queued entry and clears the pending queue",
 		_test_drains_every_queued_entry
 	)
+	await _run_case("only new sim_units membership advances the join revision", _test_sim_unit_join_revision)
 	await _run_case(
 		"a second apply_pending_entries() with nothing requested since the last call returns 0",
 		_test_second_drain_returns_zero
@@ -396,6 +397,22 @@ func _test_drains_every_queued_entry() -> void:
 
 	for node in [node_a, node_b, node_c]:
 		node.queue_free()
+	await process_frame
+
+
+func _test_sim_unit_join_revision() -> void:
+	var queue := SimAdmissionQueueScript.new()
+	var unit := Node.new()
+	var other := Node.new()
+	root.add_child(unit)
+	root.add_child(other)
+	queue.request_entry(other, &"sim_buildings")
+	queue.request_entry(unit, &"sim_units")
+	_expect(queue.apply_pending_entries() == 2 and queue.sim_unit_join_revision() == 1, "a new sim unit advances once while other groups retain the joined count")
+	queue.request_entry(unit, &"sim_units")
+	_expect(queue.apply_pending_entries() == 1 and queue.sim_unit_join_revision() == 1, "a duplicate entry retains the old drain count without revising membership")
+	unit.queue_free()
+	other.queue_free()
 	await process_frame
 
 

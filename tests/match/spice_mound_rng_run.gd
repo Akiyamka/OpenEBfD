@@ -9,10 +9,16 @@ const MoundScene := preload("res://scenes/world/spice_mound.tscn")
 const DefinitionScript := preload("res://scripts/world/map/spice_mound_definition.gd")
 const ATAPCScene := preload("res://scenes/units/atapc.tscn")
 const CarryallScene := preload("res://scenes/units/atadv_carryall.tscn")
+const MinotaurusScene := preload("res://scenes/units/at_minotaurus.tscn")
 const ChecksumExchangeScript := preload("res://scripts/net/checksum_exchange.gd")
 const LoopbackHubScript := preload("res://scripts/net/loopback_hub.gd")
 const SimCommandBusScript := preload("res://scripts/sim/command_bus.gd")
 const TurnSchedulerScript := preload("res://scripts/net/turn_scheduler.gd")
+const CombatLineOfFireScript := preload("res://scripts/combat/combat_line_of_fire.gd")
+const UnitScript := preload("res://scripts/units/unit.gd")
+const SimEntityStateScript := preload("res://scripts/sim/entity_state.gd")
+const SimAdmissionQueueScript := preload("res://scripts/match/sim_admission_queue.gd")
+const Doubles := preload("res://tests/combat/support/combat_doubles.gd")
 
 class NullCallLogger extends Logger:
 	var errors: Array[String] = []
@@ -35,6 +41,37 @@ class SeedMatch extends PartialMatch:
 	func sim_rng():
 		return rng
 
+class ContactMatch extends Node3D:
+	var index := EntityNodeIndexScript.new()
+	var state := SimEntityStateScript.new(index.registry())
+	func _enter_tree() -> void:
+		add_to_group(&"match_root")
+	func current_tick() -> int:
+		return 1
+	func entity_index():
+		return index
+	func entity_state():
+		return state
+
+class CountingIndex extends EntityNodeIndexScript:
+	var visits := 0
+	func id_for(node: Node) -> int:
+		visits += 1
+		return super.id_for(node)
+
+class CountingMatch extends ContactMatch:
+	func _init() -> void:
+		index = CountingIndex.new()
+		state = SimEntityStateScript.new(index.registry())
+
+class KeyMatch extends ContactMatch:
+	var tick := 1
+	var queue := SimAdmissionQueueScript.new()
+	func current_tick() -> int:
+		return tick
+	func admission_queue():
+		return queue
+
 func _initialize() -> void:
 	LegacyRulesFixture.install(root)
 	await process_frame
@@ -50,6 +87,13 @@ func _initialize() -> void:
 	await _run_async_case("S3: dead, missing profile and unadmitted", _test_exclusions)
 	await _run_async_case("S4: Match wiring/spice", _test_wiring)
 	await _run_async_case("S5: movement arrival tick", _test_movement)
+	await _run_async_case("S6: mixed contacts and membership", _test_mixed_contacts)
+	await _run_async_case("S7: same-tick store revision", _test_same_tick_revision)
+	await _run_async_case("S8: partial and standalone services", _test_partial_and_standalone)
+	await _run_async_case("S9: two Match snapshots", _test_two_matches)
+	await _run_async_case("S10: bounded warmed visits", _test_bounded_visits)
+	await _run_async_case("S11: first admitted tick", _test_first_admitted_tick)
+	await _run_async_case("S12: warm key matrix", _test_warm_key_matrix)
 	_finish("Spice mound RNG/contact tests")
 
 func _expected(seed_value: int, cell: Vector2i, ordinal: int, config: Resource) -> int:
@@ -322,7 +366,11 @@ func _test_movement() -> void:
 			break
 		was_outside = not post_inside
 	var managed_at_arrival: bool = unit.is_navigation_managed()
+	if arrival > 0:
+		_assert_paired(match_instance, mound, "S5 first arrival tick")
 	match_instance.advance_ticks(1)
+	if arrival > 0:
+		_assert_parity(match_instance, mound, "S5 following tick")
 	_expect(not managed_at_arrival and not unit.is_navigation_managed() and unit.is_in_group(&"sim_units"), "mover remains unmanaged and admitted through arrival and following tick")
 	_expect(arrival > 0 and blooms.size() == 1 and blooms[0] == arrival, "post-movement first overlap blooms on arrival tick: arrival=%d blooms=%s position=%s" % [arrival, blooms, unit.simulation_position()])
 	match_instance.queue_free()
@@ -462,5 +510,367 @@ func _test_exclusions() -> void:
 	OS.remove_logger(logger)
 	_expect(dead_count == 0 and store_dead_count == 0 and live_mirror and missing_count == 0 and unadmitted_count == 0 and blooms[0] == 1, "only a store-live admitted unit with an authored profile may enter")
 	_expect(logger.errors.is_empty(), "exclusion paths make no null call")
+	match_instance.queue_free()
+	await process_frame
+
+
+func _oracle(match_instance: Node, mound: Node3D) -> Array[int]:
+	var result: Array[int] = []
+	var index = match_instance.entity_index()
+	var state = match_instance.entity_state()
+	var centre: Vector3 = mound.global_position
+	var half_x: float = mound._footprint.x * 0.5
+	var half_z: float = mound._footprint.y * 0.5
+	var top: float = centre.y + maxf(minf(mound._footprint.x, mound._footprint.y), 0.5)
+	for body in get_nodes_in_group(&"sim_units"):
+		if not match_instance.is_ancestor_of(body) or not body is UnitScript or body.is_queued_for_deletion():
+			continue
+		var id: int = index.id_for(body)
+		if id <= 0 or not state.has_position(id) or not state.has_combat_line_bounds(id):
+			continue
+		if not state.has_health(id) or state.health(id) <= 0.0:
+			continue
+		if state.has_combat_line_carried(id) and state.combat_line_carried(id):
+			continue
+		var position: Vector3 = state.position(id)
+		var radius: float = state.combat_line_radius(id)
+		var dx := maxf(absf(position.x - centre.x) - half_x, 0.0)
+		var dz := maxf(absf(position.z - centre.z) - half_z, 0.0)
+		if dx * dx + dz * dz <= radius * radius and position.y + state.combat_line_max_y(id) >= centre.y and position.y + state.combat_line_min_y(id) <= top:
+			result.append(id)
+	result.sort()
+	return result
+
+
+func _assert_parity(match_instance: Node, mound: Node3D, label: String) -> void:
+	var expected := _oracle(match_instance, mound)
+	var centre: Vector3 = mound.global_position
+	var raw := CombatLineOfFireScript.rectangle_candidates(match_instance, self, Vector2(centre.x - 2.0, centre.z - 2.0), Vector2(centre.x + 2.0, centre.z + 2.0))
+	for id in expected:
+		_expect(raw.has(id), "%s: raw grid must contain oracle id %d" % [label, id])
+	_expect(mound._contact_entries() == expected, "%s: final entries must equal independent oracle" % label)
+
+
+func _assert_paired(match_instance: Node, mound: Node3D, label: String) -> void:
+	var state = match_instance.entity_state()
+	var index = match_instance.entity_index()
+	for body in get_nodes_in_group(&"sim_units"):
+		if match_instance.is_ancestor_of(body):
+			var id: int = index.id_for(body)
+			if id > 0 and state.has_position(id):
+				state.set_position(id, state.position(id))
+				break
+	var rng = match_instance.sim_rng() if match_instance.has_method("sim_rng") else null
+	var audit: Dictionary = rng.capture_audit() if rng != null else {}
+	var expected := _oracle(match_instance, mound)
+	_expect(not CombatLineOfFireScript.has_warm_match_snapshot(match_instance, self), "%s: stored write makes contact cold" % label)
+	var cold: Array[int] = mound._contact_entries()
+	var centre: Vector3 = mound.global_position
+	var half_x: float = mound._footprint.x * 0.5
+	var half_z: float = mound._footprint.y * 0.5
+	var raw := CombatLineOfFireScript.rectangle_candidates(match_instance, self, Vector2(centre.x - half_x, centre.z - half_z), Vector2(centre.x + half_x, centre.z + half_z))
+	for id in expected:
+		_expect(raw.has(id), "%s: warm raw grid contains oracle id %d" % [label, id])
+	_expect(CombatLineOfFireScript.has_warm_match_snapshot(match_instance, self), "%s: explicit prewarm accepted" % label)
+	var warm: Array[int] = mound._contact_entries()
+	_expect(cold == expected and warm == expected and cold == warm, "%s: cold/warm entries equal independent oracle" % label)
+	_expect(rng == null or rng.capture_audit() == audit, "%s: contact paths consume no RNG draw" % label)
+
+
+func _test_mixed_contacts() -> void:
+	var match_instance = _boot()
+	var mound = _fixed_mound(match_instance, Vector3(200.0, 8.0, 200.0))
+	var units = match_instance.get_node("Units")
+	var a = match_instance.get_node("Units/ScoutA")
+	var b = ATAPCScene.instantiate()
+	b.owner_player_id = 1
+	units.add_child(b)
+	var aircraft = CarryallScene.instantiate()
+	aircraft.owner_player_id = 1
+	units.add_child(aircraft)
+	var cargo = ATAPCScene.instantiate()
+	cargo.owner_player_id = 1
+	units.add_child(cargo)
+	var minotaurus = MinotaurusScene.instantiate()
+	minotaurus.owner_player_id = 1
+	units.add_child(minotaurus)
+	var queued = ATAPCScene.instantiate()
+	queued.owner_player_id = 1
+	units.add_child(queued)
+	match_instance.advance_ticks(1)
+	a.set_simulation_position(mound.global_position)
+	var store = match_instance.entity_state()
+	a.global_position = Vector3(240.0, 8.0, 240.0)
+	_assert_paired(match_instance, mound, "stored inside node outside")
+	a.global_position = mound.global_position
+	store.set_position(a.entity_id, Vector3(240.0, 8.0, 240.0))
+	_assert_paired(match_instance, mound, "stored outside node inside")
+	store.set_position(a.entity_id, mound.global_position)
+	var radius: float = 2.0
+	store.set_combat_line_bounds(b.entity_id, radius, -1.0, 1.0)
+	b.set_simulation_position(mound.global_position + Vector3(2.0 + radius, 0.0, 0.0))
+	aircraft.set_simulation_position(mound.global_position + Vector3.UP * 40.0)
+	cargo.set_simulation_position(mound.global_position)
+	cargo._set_transport_carrier(aircraft)
+	queued.set_simulation_position(mound.global_position)
+	queued.queue_free()
+	var large_radius: float = minotaurus.combat_line_bounds()["radius"]
+	minotaurus.set_simulation_position(mound.global_position + Vector3(2.0 + large_radius - 0.01, 0.0, 0.0))
+	_assert_paired(match_instance, mound, "tangent and high aircraft")
+	var raw_cargo := CombatLineOfFireScript.rectangle_candidates(match_instance, self, Vector2(198.0, 198.0), Vector2(202.0, 202.0))
+	var minotaurus_hits := 0
+	for id in raw_cargo:
+		if id == minotaurus.entity_id:
+			minotaurus_hits += 1
+	_expect(not raw_cargo.has(cargo.entity_id) and cargo.is_carried() and match_instance.entity_state().position(cargo.entity_id) == mound.global_position, "stored overlapping cargo stays out of raw grid")
+	_expect(minotaurus_hits == 1 and mound._contact_entries().has(minotaurus.entity_id), "large-radius multi-cell unit appears once and contacts")
+	_expect(not mound._contact_entries().has(queued.entity_id), "queued Unit is excluded before frame teardown")
+	minotaurus.set_simulation_position(Vector3(240.0, 8.0, 240.0))
+	var tangent: bool = mound._contact_entries().has(b.entity_id)
+	b.set_simulation_position(mound.global_position + Vector3(2.0 + radius + 0.001, 0.0, 0.0))
+	_assert_paired(match_instance, mound, "epsilon outside")
+	_expect(not mound._contact_entries().has(b.entity_id), "epsilon outside is excluded")
+	store.set_combat_line_bounds(b.entity_id, 0.1, -1.0, 1.0)
+	b.set_simulation_position(mound.global_position + Vector3(3.9, 0.0, 3.9))
+	var raw_false_positive := CombatLineOfFireScript.rectangle_candidates(match_instance, self, Vector2(198.0, 198.0), Vector2(202.0, 202.0))
+	_expect(raw_false_positive.has(b.entity_id) and not _oracle(match_instance, mound).has(b.entity_id), "same-cell padded AABB can be a precise circle false positive")
+	_assert_paired(match_instance, mound, "same-cell false positive")
+	store.set_combat_line_bounds(b.entity_id, radius, -1.0, 1.0)
+	b.set_simulation_position(mound.global_position)
+	store.set_health(b.entity_id, 0.0)
+	_assert_paired(match_instance, mound, "stored dead")
+	store.set_health(b.entity_id, b.max_health)
+	var body := Doubles.PhysicsCombatTarget.new(mound.global_position, 0.2)
+	match_instance.add_child(body)
+	body.add_to_group(&"sim_units")
+	var body_id: int = match_instance.entity_index().register(body, 1)
+	store.set_position(body_id, mound.global_position)
+	store.set_combat_line_bounds(body_id, 0.2, -0.2, 0.2)
+	store.set_combat_line_carried(body_id, false)
+	store.set_health(body_id, 1.0)
+	var raw := CombatLineOfFireScript.rectangle_candidates(match_instance, self, Vector2(198.0, 198.0), Vector2(202.0, 202.0))
+	_expect(raw.has(body_id) and not _oracle(match_instance, mound).has(body_id), "profiled live non-Unit reaches raw grid but not oracle")
+	_assert_paired(match_instance, mound, "profiled non-Unit")
+	var negative_mound = _fixed_mound(match_instance, Vector3(-2.0, 8.0, -2.0), Vector2i(8, 9))
+	a.set_simulation_position(Vector3(-4.0, 8.0, -4.0))
+	_assert_paired(match_instance, negative_mound, "negative and zero grid cells")
+	a.set_simulation_position(mound.global_position)
+	var queue = match_instance.admission_queue()
+	b.set_simulation_position(mound.global_position)
+	b.remove_from_group(&"sim_units")
+	var before_count := get_node_count_in_group(&"sim_units")
+	var before_revision: int = queue.sim_unit_join_revision()
+	var before_store: int = store.combat_line_revision()
+	var before_tick: int = match_instance.current_tick()
+	_assert_parity(match_instance, mound, "before positive swap")
+	a.remove_from_group(&"sim_units")
+	queue.request_entry(b, &"sim_units")
+	queue.apply_pending_entries()
+	_expect(get_node_count_in_group(&"sim_units") == before_count and queue.sim_unit_join_revision() == before_revision + 1 and store.combat_line_revision() == before_store and match_instance.current_tick() == before_tick, "positive swap changes only queue join revision")
+	_assert_parity(match_instance, mound, "positive queue swap before store write")
+	_assert_paired(match_instance, mound, "positive queue swap")
+	b.remove_from_group(&"sim_units")
+	a.add_to_group(&"sim_units")
+	a.set_simulation_position(mound.global_position)
+	b.set_simulation_position(Vector3(240.0, 8.0, 240.0))
+	_assert_paired(match_instance, mound, "before negative swap")
+	a.remove_from_group(&"sim_units")
+	b.add_to_group(&"sim_units")
+	_assert_parity(match_instance, mound, "negative direct swap")
+	a.set_simulation_position(mound.global_position)
+	a.remove_from_group(&"sim_units")
+	CombatLineOfFireScript.rectangle_candidates(match_instance, self, Vector2(198.0, 198.0), Vector2(202.0, 202.0))
+	var count_revision: int = store.combat_line_revision()
+	a.add_to_group(&"sim_units")
+	_expect(store.combat_line_revision() == count_revision and not CombatLineOfFireScript.has_warm_match_snapshot(match_instance, self), "group count alone invalidates warm snapshot")
+	_expect(mound._contact_entries().has(a.entity_id), "group count re-add contacts without store write")
+	_expect(tangent, "literal tangent remains a contact")
+	body.free()
+	match_instance.queue_free()
+	await process_frame
+
+
+func _test_same_tick_revision() -> void:
+	var match_instance = _boot()
+	var mound = _fixed_mound(match_instance, Vector3(200.0, 8.0, 200.0))
+	var unit = match_instance.get_node("Units/ScoutA")
+	match_instance.advance_ticks(1)
+	unit.set_simulation_position(Vector3(220.0, 8.0, 200.0))
+	_assert_paired(match_instance, mound, "same-tick outside")
+	unit.set_simulation_position(mound.global_position)
+	_assert_paired(match_instance, mound, "same-tick inside")
+	match_instance.queue_free()
+	await process_frame
+
+
+func _test_partial_and_standalone() -> void:
+	var logger := NullCallLogger.new()
+	OS.add_logger(logger)
+	var partial := PartialMatch.new()
+	root.add_child(partial)
+	var mound = _fixed_mound(partial, Vector3(200.0, 8.0, 200.0))
+	var ids := CombatLineOfFireScript.rectangle_candidates(partial, self, Vector2(198.0, 198.0), Vector2(202.0, 202.0))
+	var entries: Array[int] = mound._contact_entries()
+	_expect(ids.is_empty() and entries.is_empty() and logger.errors.is_empty(), "partial Match returns empty without a null call")
+	partial.free()
+	var standalone := Node3D.new()
+	root.add_child(standalone)
+	var free_mound = _fixed_mound(standalone, Vector3(200.0, 8.0, 200.0))
+	var unit = ATAPCScene.instantiate()
+	standalone.add_child(unit)
+	unit.set_simulation_position(free_mound.global_position)
+	unit.add_to_group(&"sim_units")
+	var blooms := [0]
+	free_mound.activated.connect(func(_m, _early, _fraction): blooms[0] += 1)
+	free_mound.sim_tick()
+	_expect(blooms[0] == 1 and logger.errors.is_empty(), "standalone unit blooms on entry")
+	OS.remove_logger(logger)
+	standalone.queue_free()
+	await process_frame
+
+
+func _test_two_matches() -> void:
+	var a := ContactMatch.new()
+	var b := ContactMatch.new()
+	root.add_child(a)
+	root.add_child(b)
+	var ma = _fixed_mound(a, Vector3(200.0, 8.0, 200.0))
+	var mb = _fixed_mound(b, Vector3(200.0, 8.0, 200.0))
+	var ua = ATAPCScene.instantiate()
+	var ub = ATAPCScene.instantiate()
+	a.add_child(ua)
+	b.add_child(ub)
+	ua.set_simulation_position(Vector3(240.0, 8.0, 240.0))
+	ub.set_simulation_position(mb.global_position)
+	ua.add_to_group(&"sim_units")
+	ub.add_to_group(&"sim_units")
+	_assert_paired(a, ma, "match A")
+	_assert_paired(b, mb, "match B")
+	_assert_paired(a, ma, "match A again")
+	_expect(ua.entity_id == ub.entity_id and ma._contact_entries().is_empty() and mb._contact_entries().size() == 1, "overlapping local ids keep distinct contacts")
+	a.queue_free()
+	b.queue_free()
+	await process_frame
+
+
+func _test_bounded_visits() -> void:
+	var match_instance := CountingMatch.new()
+	root.add_child(match_instance)
+	var mound = _fixed_mound(match_instance, Vector3(200.0, 8.0, 200.0))
+	var index: CountingIndex = match_instance.index
+	for n in 1000:
+		var body := Doubles.PhysicsCombatTarget.new(Vector3(500.0 + n, 8.0, 500.0), 0.2)
+		match_instance.add_child(body)
+		body.add_to_group(&"sim_units")
+		var id: int = index.register(body, 1)
+		match_instance.state.set_position(id, body.global_position)
+		match_instance.state.set_combat_line_bounds(id, 0.2, -0.2, 0.2)
+	index.visits = 0
+	var grid = CombatLineOfFireScript.debug_grid_for_test()
+	var writes: int = grid.bucket_writes()
+	var probes: int = grid.query_cell_probes()
+	var cold: Array[int] = mound._contact_entries()
+	_expect(cold.is_empty() and index.visits >= 1000 and grid.bucket_writes() == writes and grid.query_cell_probes() == probes, "cold contact scans admitted bodies without touching grid")
+	CombatLineOfFireScript.rectangle_candidates(match_instance, self, Vector2(198.0, 198.0), Vector2(202.0, 202.0))
+	index.visits = 0
+	probes = grid.query_cell_probes()
+	var warm: Array[int] = mound._contact_entries()
+	_expect(warm == cold and index.visits == 0 and grid.query_cell_probes() > probes, "warmed whole contact visits no distant id_for entries and probes grid")
+	match_instance.queue_free()
+	await process_frame
+
+
+func _test_warm_key_matrix() -> void:
+	var logger := NullCallLogger.new()
+	OS.add_logger(logger)
+	var partial := PartialMatch.new()
+	root.add_child(partial)
+	var partial_ready := CombatLineOfFireScript.has_warm_match_snapshot(partial, self)
+	_expect(not partial_ready and logger.errors.is_empty(), "partial Match warm probe returns false without null call")
+	partial.free()
+	var match_instance := KeyMatch.new()
+	root.add_child(match_instance)
+	var mound = _fixed_mound(match_instance, Vector3(200.0, 8.0, 200.0))
+	var body := Doubles.PhysicsCombatTarget.new(Vector3(500.0, 8.0, 500.0), 0.2)
+	match_instance.add_child(body)
+	body.add_to_group(&"sim_units")
+	var id: int = match_instance.index.register(body, 1)
+	match_instance.state.set_position(id, body.global_position)
+	match_instance.state.set_combat_line_bounds(id, 0.2, -0.2, 0.2)
+	var rng_audit: Dictionary = mound._local_rng.capture_audit()
+	var bounds_min := Vector2(198.0, 198.0)
+	var bounds_max := Vector2(202.0, 202.0)
+	CombatLineOfFireScript.rectangle_candidates(match_instance, self, bounds_min, bounds_max)
+	_expect(CombatLineOfFireScript.has_warm_match_snapshot(match_instance, self), "key matrix initial snapshot warm")
+	match_instance.queue = SimAdmissionQueueScript.new()
+	_assert_stale_key(match_instance, "admission queue identity")
+	CombatLineOfFireScript.rectangle_candidates(match_instance, self, bounds_min, bounds_max)
+	_expect(CombatLineOfFireScript.has_warm_match_snapshot(match_instance, self), "replacement admission queue can be warmed")
+	match_instance.tick += 1
+	_assert_stale_key(match_instance, "tick")
+	CombatLineOfFireScript.rectangle_candidates(match_instance, self, bounds_min, bounds_max)
+	match_instance.state.set_position(id, match_instance.state.position(id))
+	_assert_stale_key(match_instance, "store revision")
+	CombatLineOfFireScript.rectangle_candidates(match_instance, self, bounds_min, bounds_max)
+	body.remove_from_group(&"sim_units")
+	_assert_stale_key(match_instance, "group count")
+	CombatLineOfFireScript.rectangle_candidates(match_instance, self, bounds_min, bounds_max)
+	var other := Doubles.PhysicsCombatTarget.new(Vector3(500.0, 8.0, 500.0), 0.2)
+	match_instance.add_child(other)
+	other.add_to_group(&"sim_units")
+	CombatLineOfFireScript.rectangle_candidates(match_instance, self, bounds_min, bounds_max)
+	other.remove_from_group(&"sim_units")
+	match_instance.queue.request_entry(body, &"sim_units")
+	match_instance.queue.apply_pending_entries()
+	_assert_stale_key(match_instance, "same-count admission join")
+	CombatLineOfFireScript.rectangle_candidates(match_instance, self, bounds_min, bounds_max)
+	var another := KeyMatch.new()
+	root.add_child(another)
+	_assert_stale_key(another, "Match identity")
+	CombatLineOfFireScript.rectangle_candidates(another, self, bounds_min, bounds_max)
+	_expect(CombatLineOfFireScript.has_warm_match_snapshot(another, self), "different Match can be warmed")
+	CombatLineOfFireScript.rectangle_candidates(match_instance, self, bounds_min, bounds_max)
+	var other_tree := SceneTree.new()
+	_assert_stale_key(match_instance, "tree identity", other_tree)
+	CombatLineOfFireScript.rectangle_candidates(match_instance, other_tree, bounds_min, bounds_max)
+	_expect(CombatLineOfFireScript.has_warm_match_snapshot(match_instance, other_tree), "different tree can be warmed")
+	other_tree.free()
+	CombatLineOfFireScript.rectangle_candidates(match_instance, self, bounds_min, bounds_max)
+	match_instance.index = EntityNodeIndexScript.new()
+	_assert_stale_key(match_instance, "index identity")
+	CombatLineOfFireScript.rectangle_candidates(match_instance, self, bounds_min, bounds_max)
+	_expect(CombatLineOfFireScript.has_warm_match_snapshot(match_instance, self), "replacement index can be warmed")
+	match_instance.state = SimEntityStateScript.new(match_instance.index.registry())
+	_assert_stale_key(match_instance, "store identity")
+	CombatLineOfFireScript.rectangle_candidates(match_instance, self, bounds_min, bounds_max)
+	_expect(CombatLineOfFireScript.has_warm_match_snapshot(match_instance, self) and mound._local_rng.capture_audit() == rng_audit and logger.errors.is_empty(), "key matrix rewarm and no RNG or script error")
+	OS.remove_logger(logger)
+	match_instance.queue_free()
+	another.queue_free()
+	await process_frame
+
+
+func _assert_stale_key(match_instance: Node, label: String, tree: SceneTree = null) -> void:
+	var grid = CombatLineOfFireScript.debug_grid_for_test()
+	var writes: int = grid.bucket_writes()
+	var probes: int = grid.query_cell_probes()
+	var observed := CombatLineOfFireScript.has_warm_match_snapshot(match_instance, tree if tree != null else self)
+	_expect(not observed and writes == grid.bucket_writes() and probes == grid.query_cell_probes(), "%s key is cold without grid mutation" % label)
+
+
+func _test_first_admitted_tick() -> void:
+	var match_instance = _boot()
+	match_instance.advance_ticks(1)
+	var mound = _fixed_mound(match_instance, Vector3(200.0, 8.0, 200.0))
+	var unit = ATAPCScene.instantiate()
+	unit.owner_player_id = 1
+	match_instance.get_node("Units").add_child(unit)
+	unit.set_simulation_position(mound.global_position)
+	var blooms := [0]
+	mound.activated.connect(func(_m, _early, _fraction): blooms[0] += 1)
+	mound.sim_tick()
+	_expect(blooms[0] == 0 and not unit.is_in_group(&"sim_units"), "new unit has no contact before admission")
+	match_instance.advance_ticks(1)
+	_expect(blooms[0] == 1 and unit.is_in_group(&"sim_units"), "new unit blooms on first admitted tick")
 	match_instance.queue_free()
 	await process_frame

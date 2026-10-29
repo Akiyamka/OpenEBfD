@@ -29,9 +29,12 @@ static var _snapshot_tree_id := 0
 static var _snapshot_match_id := 0
 static var _snapshot_tick := -1
 static var _snapshot_revision := -1
+static var _snapshot_group_count := -1
+static var _snapshot_join_revision := -1
 static var _snapshot_grid := CombatLineGridScript.new()
 static var _snapshot_index
 static var _snapshot_state
+static var _snapshot_queue: Object
 static var _snapshot_has_carried := false
 static var _snapshot_build_ids := PackedInt32Array()
 static var _shooter_matches: Dictionary = {}
@@ -48,6 +51,57 @@ static var _scratch_carried_excludes: Array[RID] = []
 ## the returned grid as read-only: it is reused by every combat query.
 static func debug_grid_for_test() -> CombatLineGridScript:
 	return _snapshot_grid
+
+
+## Stable ids whose stored padded footprints touch a closed world XZ box.
+static func rectangle_candidates(
+		match_node: Node, tree: SceneTree, min_xz: Vector2, max_xz: Vector2
+	) -> PackedInt32Array:
+	if match_node == null or tree == null or not match_node.has_method("current_tick") \
+	or not match_node.has_method("entity_index") \
+	or not match_node.has_method("entity_state"):
+		return PackedInt32Array()
+	var index = match_node.call("entity_index")
+	var state = match_node.call("entity_state")
+	if index == null or state == null or not state.has_method("combat_line_revision"):
+		return PackedInt32Array()
+	var queue: Object = null
+	if match_node.has_method("admission_queue"):
+		queue = match_node.call("admission_queue")
+		if queue != null and not queue.has_method("sim_unit_join_revision"):
+			return PackedInt32Array()
+	if _snapshot_index != index or _snapshot_state != state or _snapshot_queue != queue:
+		_snapshot_match_id = 0
+	_ensure_match_snapshot(tree, match_node)
+	return _snapshot_grid.query_rect(min_xz, max_xz)
+
+
+## Reports readiness without rebuilding or visiting any grid bucket or unit.
+static func has_warm_match_snapshot(match_node: Node, tree: SceneTree) -> bool:
+	if match_node == null or tree == null or not match_node.has_method("current_tick") \
+	or not match_node.has_method("entity_index") or not match_node.has_method("entity_state"):
+		return false
+	var index = match_node.call("entity_index")
+	var state = match_node.call("entity_state")
+	if index == null or state == null or not state.has_method("combat_line_revision"):
+		return false
+	var queue: Object = null
+	if match_node.has_method("admission_queue"):
+		queue = match_node.call("admission_queue")
+		if queue != null and not queue.has_method("sim_unit_join_revision"):
+			return false
+	return _snapshot_index == index and _snapshot_state == state and _snapshot_queue == queue \
+		and _snapshot_matches(tree, match_node)
+
+
+static func _snapshot_matches(tree: SceneTree, match_node: Node) -> bool:
+	if _snapshot_tree_id != tree.get_instance_id() or _snapshot_match_id != match_node.get_instance_id():
+		return false
+	var join_revision := int(_snapshot_queue.call("sim_unit_join_revision")) if _snapshot_queue != null else 0
+	return _snapshot_tick == int(match_node.call("current_tick")) \
+		and _snapshot_revision == int(_snapshot_state.combat_line_revision()) \
+		and _snapshot_group_count == tree.get_node_count_in_group(&"sim_units") \
+		and _snapshot_join_revision == join_revision
 
 
 static func is_clear(
@@ -188,21 +242,20 @@ static func _match_for_shooter(shooter_node: Node) -> Node:
 
 
 static func _ensure_match_snapshot(tree: SceneTree, match_node: Node) -> void:
-	var tick := int(match_node.call("current_tick"))
-	var tree_id := tree.get_instance_id()
-	var match_id := match_node.get_instance_id()
-	if _snapshot_tree_id != tree_id or _snapshot_match_id != match_id:
-		_snapshot_tree_id = tree_id
-		_snapshot_match_id = match_id
+	if _snapshot_matches(tree, match_node):
+		return
+	if _snapshot_tree_id != tree.get_instance_id() or _snapshot_match_id != match_node.get_instance_id():
 		_snapshot_index = match_node.call("entity_index")
 		_snapshot_state = match_node.call("entity_state")
-		_snapshot_tick = -1
-		_snapshot_revision = -1
-	var revision := int(_snapshot_state.combat_line_revision())
-	if _snapshot_tick == tick and _snapshot_revision == revision:
-		return
-	_snapshot_tick = tick
-	_snapshot_revision = revision
+		_snapshot_queue = match_node.call("admission_queue") if match_node.has_method("admission_queue") else null
+	_snapshot_tree_id = tree.get_instance_id()
+	_snapshot_match_id = match_node.get_instance_id()
+	_snapshot_tick = int(match_node.call("current_tick"))
+	_snapshot_revision = int(_snapshot_state.combat_line_revision())
+	var group_count := tree.get_node_count_in_group(&"sim_units")
+	var join_revision := int(_snapshot_queue.call("sim_unit_join_revision")) if _snapshot_queue != null else 0
+	_snapshot_group_count = group_count
+	_snapshot_join_revision = join_revision
 	_snapshot_grid.clear()
 	_snapshot_has_carried = false
 	_snapshot_build_ids.clear()
