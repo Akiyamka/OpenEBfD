@@ -613,6 +613,7 @@ func sim_tick() -> void:
 	if _simulation_halted:
 		return
 	_consume_pending_deployment_animation_completion()
+	_deploy.advance_undeploy_tick()
 	_advance_invulnerability_tick()
 	for turret in combat_turrets:
 		turret.advance_tick()
@@ -725,15 +726,9 @@ func _process(delta: float) -> void:
 	# in whole 25 Hz steps, so this is what places the *rendered* model
 	# between two of those steps on every frame that has no tick of its own.
 	_advance_visual_interpolation()
-	# Same ordering requirement as restore_combat_turret_poses() above: the
-	# looping Deploy_Gun_Hold clip keys the turret pivot every frame, so
-	# recentering it must also run after the AnimationPlayers apply this
-	# frame's pose -- which only _process() is guaranteed to run after; the
-	# simulation tick has no defined relationship to animation playback at
-	# all -- or the animation's authored pose instantly overwrites each
-	# gradual step, making the turret look like it never turns at all.
-	if _deploy.advance_undeploy_alignment(delta):
-		_deploy.start_undeploy_animation()
+	# The hold clip keys the recentering turret pivot each frame. Repaint its
+	# tick-owned angle after animation playback without changing the gate.
+	_deploy.restore_undeploy_alignment_pose()
 	_advance_visual_slope_alignment(delta)
 	# Same _process (not the simulation tick) requirement as the two calls
 	# above: the movement clip's playback position is only this frame's value

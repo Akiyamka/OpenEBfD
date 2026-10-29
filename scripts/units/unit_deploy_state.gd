@@ -134,7 +134,7 @@ func begin_deploy(desired_facing: Vector3) -> bool:
 ## each about-to-deactivate turret's aim before sync_active_turret_weapons()
 ## zeroes its servo bookkeeping via reset_aim() (which deliberately never
 ## touches the pivot transform, so the pivot is still at the true angle),
-## restore it right after, and let advance_undeploy_alignment() walk it back
+## restore it right after, and let advance_undeploy_tick() walk it back
 ## to hull-aligned at the turret's own turn rate before the clip starts.
 func begin_undeploy() -> bool:
 	if _state != State.DEPLOYED:
@@ -163,7 +163,7 @@ func begin_undeploy() -> bool:
 
 
 ## Turns toward the requested facing while the unit is locked in place.
-## Returns true on the frame the heading is reached, so the caller can settle
+## Returns true on the tick the heading is reached, so the caller can settle
 ## the visual slope before the transition clip starts.
 func advance_alignment(delta: float) -> bool:
 	if not _aligning:
@@ -178,22 +178,26 @@ func start_deploy_animation() -> void:
 	start_transition(DEPLOY_ANIMATION_CANDIDATES)
 
 
-## Turns whichever turret(s) were active going into undeploy gradually back
-## toward hull-aligned, respecting each turret's own yaw/pitch speed. False
-## while nothing to do or still turning; true exactly once, on the frame
-## every recentering turret reports centered -- mirrors advance_alignment()'s
-## contract for the hull-turn phase of begin_deploy().
-func advance_undeploy_alignment(delta: float) -> bool:
+## Advances the recenter gate once per admitted simulation tick. The clip starts
+## on the tick when every selected axis reaches zero.
+func advance_undeploy_tick() -> void:
 	if _recentering_turrets.is_empty():
-		return false
+		return
 	var all_centered := true
 	for turret in _recentering_turrets:
-		if not turret.recenter(delta):
+		if not turret.recenter(MatchClockScript.SECONDS_PER_TICK):
 			all_centered = false
 	if not all_centered:
-		return false
+		return
 	_recentering_turrets.clear()
-	return true
+	start_undeploy_animation()
+
+
+## AnimationPlayer can key the pivot again on every rendered frame. Repaint
+## only turrets still in the recenter gate, without advancing their angles.
+func restore_undeploy_alignment_pose() -> void:
+	for turret in _recentering_turrets:
+		turret.restore_aim_pose()
 
 
 func start_undeploy_animation() -> void:

@@ -62,6 +62,7 @@ readonly SUITES=(
 	tests/match/entity_state_run.gd
 	tests/match/despawn_run.gd
 	tests/match/admission_run.gd
+	tests/match/undeploy_recenter_run.gd
 	tests/match/interpolation_run.gd
 	tests/match/combat_pose_match_run.gd
 	tests/match/frameless_parity_run.gd

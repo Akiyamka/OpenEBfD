@@ -598,8 +598,8 @@ func _test_clipless_deployment_completions() -> void:
 		_expect(bool(deploy_result.get("started", false)), "CombatDeployStrategy.try_deploy() must start clipless deployment")
 		match_instance.advance_ticks(1)
 		_expect(kindjal.is_deployed(), "the next tick must complete clipless combat deployment")
-		# A normally modelled Kindjal recenters its live turret in _process(), a
-		# view-domain gate deliberately outside this frameless regression. Remove
+		# A normally modelled Kindjal recenters its live turret on ticks, an
+		# independent gate deliberately outside this clipless regression. Remove
 		# that independent gate so the test reaches the clipless undeploy handoff.
 		kindjal.combat_turrets.clear()
 		var undeploy_result: Dictionary = match_instance._unit_deployment_controller.try_deploy(kindjal)
