@@ -343,6 +343,25 @@ var _combat_line_bounds_has_value := PackedByteArray()
 var _combat_line_carried := PackedByteArray()
 var _combat_line_carried_has_value := PackedByteArray()
 var _combat_line_revision := 0
+var _spatial_dirty: Dictionary = {}
+var _spatial_reset_generation := 0
+
+
+func take_spatial_dirty_ids() -> PackedInt32Array:
+	var ids := PackedInt32Array()
+	for id in _spatial_dirty:
+		ids.append(id)
+	ids.sort()
+	_spatial_dirty.clear()
+	return ids
+
+
+func spatial_dirty_count() -> int:
+	return _spatial_dirty.size()
+
+
+func spatial_reset_generation() -> int:
+	return _spatial_reset_generation
 
 
 func _init(registry: SimEntityRegistry) -> void:
@@ -379,6 +398,8 @@ func set_position(id: int, value: Vector3) -> void:
 		)
 		return
 	_ensure_position_capacity(id)
+	var was_present := _has_value[id] == 1
+	var old_position := _position[id]
 	if _has_value[id] == 0:
 		# First write for this id ever: previous == current, so an
 		# interpolating reader never blends from a spawn-time Vector3.ZERO
@@ -393,6 +414,8 @@ func set_position(id: int, value: Vector3) -> void:
 		_position_previous[id] = _position[id]
 		_position_tick_sequence[id] = _tick_sequence
 	_position[id] = value
+	if not was_present or _position[id] != old_position:
+		_spatial_dirty[id] = true
 	_combat_line_revision += 1
 
 
@@ -451,10 +474,17 @@ func set_combat_line_bounds(id: int, radius: float, min_y: float, max_y: float) 
 		push_error("SimEntityState.set_combat_line_bounds(): invalid body profile")
 		return
 	_ensure_combat_line_bounds_capacity(id)
+	var changed := _combat_line_bounds_has_value[id] == 0
+	var old_radius := _combat_line_radius[id]
+	var old_min_y := _combat_line_min_y[id]
+	var old_max_y := _combat_line_max_y[id]
 	_combat_line_radius[id] = radius
 	_combat_line_min_y[id] = min_y
 	_combat_line_max_y[id] = max_y
 	_combat_line_bounds_has_value[id] = 1
+	if changed or old_radius != _combat_line_radius[id] \
+	or old_min_y != _combat_line_min_y[id] or old_max_y != _combat_line_max_y[id]:
+		_spatial_dirty[id] = true
 	_combat_line_revision += 1
 
 
@@ -480,8 +510,12 @@ func set_combat_line_carried(id: int, carried: bool) -> void:
 		push_error("SimEntityState.set_combat_line_carried(): id is not alive")
 		return
 	_ensure_combat_line_carried_capacity(id)
+	var changed := _combat_line_carried_has_value[id] == 0
+	var old_carried := _combat_line_carried[id]
 	_combat_line_carried[id] = 1 if carried else 0
 	_combat_line_carried_has_value[id] = 1
+	if changed or old_carried != _combat_line_carried[id]:
+		_spatial_dirty[id] = true
 	_combat_line_revision += 1
 
 
@@ -1003,6 +1037,8 @@ func restore(data: Dictionary) -> bool:
 		_combat_line_carried[carried_id] = 1 if bool(carried_values[i]) else 0
 		_combat_line_carried_has_value[carried_id] = 1
 	_combat_line_revision += 1
+	_spatial_dirty.clear()
+	_spatial_reset_generation += 1
 	return true
 
 

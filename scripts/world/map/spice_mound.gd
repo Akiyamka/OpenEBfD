@@ -241,6 +241,9 @@ func _contact_entries() -> Array[int]:
 	var match_owner := MatchLookupScript.match_node(self)
 	var index: EntityNodeIndexScript = match_owner.call("entity_index") if match_owner != null and match_owner.has_method("entity_index") else null
 	var state: SimEntityStateScript = match_owner.call("entity_state") if match_owner != null and match_owner.has_method("entity_state") else null
+	var spatial = match_owner.call("unit_spatial_index") if match_owner != null and match_owner.has_method("unit_spatial_index") else null
+	if spatial != null and index != null and state != null:
+		return _warm_contact_entries(match_owner, index, state, spatial)
 	if match_owner != null and index != null and state != null \
 	and CombatLineOfFireScript.has_warm_match_snapshot(match_owner, get_tree()):
 		return _warm_contact_entries(match_owner, index, state)
@@ -307,16 +310,19 @@ func _contact_entries() -> Array[int]:
 
 
 
-func _warm_contact_entries(match_owner: Node, index: EntityNodeIndexScript, state: SimEntityStateScript) -> Array[int]:
+func _warm_contact_entries(match_owner: Node, index: EntityNodeIndexScript, state: SimEntityStateScript, spatial = null) -> Array[int]:
 	var entries: Array[int] = []
 	var centre := global_position
 	var half_x := _footprint.x * 0.5
 	var half_z := _footprint.y * 0.5
 	var top := centre.y + maxf(minf(_footprint.x, _footprint.y), 0.5)
-	var ids := CombatLineOfFireScript.rectangle_candidates(
-		match_owner, get_tree(), Vector2(centre.x - half_x, centre.z - half_z),
-		Vector2(centre.x + half_x, centre.z + half_z)
-	)
+	var min_xz := Vector2(centre.x - half_x, centre.z - half_z)
+	var max_xz := Vector2(centre.x + half_x, centre.z + half_z)
+	var ids: PackedInt32Array
+	if spatial != null:
+		ids = spatial.rectangle_candidates(min_xz, max_xz)
+	else:
+		ids = CombatLineOfFireScript.rectangle_candidates(match_owner, get_tree(), min_xz, max_xz)
 	for id in ids:
 		var candidate = index.node_for(id)
 		if not is_instance_valid(candidate) or not candidate.is_in_group(&"sim_units") \

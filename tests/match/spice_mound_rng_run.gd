@@ -18,6 +18,7 @@ const CombatLineOfFireScript := preload("res://scripts/combat/combat_line_of_fir
 const UnitScript := preload("res://scripts/units/unit.gd")
 const SimEntityStateScript := preload("res://scripts/sim/entity_state.gd")
 const SimAdmissionQueueScript := preload("res://scripts/match/sim_admission_queue.gd")
+const MatchUnitSpatialIndexScript := preload("res://scripts/match/match_unit_spatial_index.gd")
 const Doubles := preload("res://tests/combat/support/combat_doubles.gd")
 
 class NullCallLogger extends Logger:
@@ -35,6 +36,8 @@ class PartialMatch extends Node3D:
 		return 1
 	func entity_index():
 		return index
+	func unit_spatial_index():
+		return null
 
 class SeedMatch extends PartialMatch:
 	var rng = SimRngScript.new(456)
@@ -60,9 +63,14 @@ class CountingIndex extends EntityNodeIndexScript:
 		return super.id_for(node)
 
 class CountingMatch extends ContactMatch:
+	var queue := SimAdmissionQueueScript.new()
+	var spatial
 	func _init() -> void:
 		index = CountingIndex.new()
 		state = SimEntityStateScript.new(index.registry())
+		spatial = MatchUnitSpatialIndexScript.new(self, index, state, queue)
+	func unit_spatial_index():
+		return spatial
 
 class KeyMatch extends ContactMatch:
 	var tick := 1
@@ -765,17 +773,20 @@ func _test_bounded_visits() -> void:
 		var id: int = index.register(body, 1)
 		match_instance.state.set_position(id, body.global_position)
 		match_instance.state.set_combat_line_bounds(id, 0.2, -0.2, 0.2)
+	match_instance.spatial.sync()
+	var first_id: int = index.registry().live_ids()[0]
+	match_instance.state.set_position(first_id, match_instance.state.position(first_id))
 	index.visits = 0
 	var grid = CombatLineOfFireScript.debug_grid_for_test()
 	var writes: int = grid.bucket_writes()
 	var probes: int = grid.query_cell_probes()
 	var cold: Array[int] = mound._contact_entries()
-	_expect(cold.is_empty() and index.visits >= 1000 and grid.bucket_writes() == writes and grid.query_cell_probes() == probes, "cold contact scans admitted bodies without touching grid")
+	_expect(cold.is_empty() and index.visits == 0 and grid.bucket_writes() == writes and grid.query_cell_probes() == probes, "cold AO1 snapshot uses persistent contact index without distant id_for visits")
 	CombatLineOfFireScript.rectangle_candidates(match_instance, self, Vector2(198.0, 198.0), Vector2(202.0, 202.0))
 	index.visits = 0
 	probes = grid.query_cell_probes()
 	var warm: Array[int] = mound._contact_entries()
-	_expect(warm == cold and index.visits == 0 and grid.query_cell_probes() > probes, "warmed whole contact visits no distant id_for entries and probes grid")
+	_expect(warm == cold and index.visits == 0 and grid.query_cell_probes() == probes, "warmed whole contact remains on persistent index")
 	match_instance.queue_free()
 	await process_frame
 
@@ -866,10 +877,19 @@ func _test_first_admitted_tick() -> void:
 	unit.owner_player_id = 1
 	match_instance.get_node("Units").add_child(unit)
 	unit.set_simulation_position(mound.global_position)
+	match_instance.unit_spatial_index().sync()
+	_expect(not match_instance.unit_spatial_index().has_raw_id(unit.entity_id), "pre-admission dirty is drained while excluded")
+	unit._simulation_halted = true
 	var blooms := [0]
 	mound.activated.connect(func(_m, _early, _fraction): blooms[0] += 1)
 	mound.sim_tick()
 	_expect(blooms[0] == 0 and not unit.is_in_group(&"sim_units"), "new unit has no contact before admission")
+	match_instance.admission_queue().apply_pending_entries()
+	_expect(unit.is_in_group(&"sim_units"), "queued unit was admitted")
+	_expect(match_instance.unit_spatial_index().rectangle_candidates(
+		Vector2(mound.global_position.x - 1.0, mound.global_position.z - 1.0),
+		Vector2(mound.global_position.x + 1.0, mound.global_position.z + 1.0)
+	).has(unit.entity_id), "admission re-offers drained pre-admission state without another position write")
 	match_instance.advance_ticks(1)
 	_expect(blooms[0] == 1 and unit.is_in_group(&"sim_units"), "new unit blooms on first admitted tick")
 	match_instance.queue_free()

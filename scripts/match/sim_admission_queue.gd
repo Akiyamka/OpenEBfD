@@ -43,6 +43,19 @@ class _PendingEntry extends RefCounted:
 ## match across clients yet") for phase 4 to close.
 var _pending: Array[_PendingEntry] = []
 var _sim_unit_join_revision := 0
+var _spatial_admissions: Dictionary = {}
+
+
+func take_spatial_admissions() -> Array[Node]:
+	var nodes: Array[Node] = []
+	for node in _spatial_admissions:
+		nodes.append(node)
+	_spatial_admissions.clear()
+	return nodes
+
+
+func spatial_admission_count() -> int:
+	return _spatial_admissions.size()
 
 
 ## Queues `node` to join `group` on the next apply_pending_entries() drain.
@@ -80,6 +93,7 @@ func apply_pending_entries() -> int:
 		if is_instance_valid(entry.node) and entry.node.is_inside_tree():
 			if entry.group == &"sim_units" and not entry.node.is_in_group(&"sim_units"):
 				_sim_unit_join_revision += 1
+				_spatial_admissions[entry.node] = true
 			entry.node.add_to_group(entry.group)
 			joined += 1
 	return joined

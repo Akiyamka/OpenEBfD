@@ -64,6 +64,20 @@ var _next_id := 1
 ## Match._advance_simulation_tick(); see that function's own doc comment for
 ## why the drain sits there and not at the start of the next tick.
 var _pending_release := PackedInt32Array()
+var _spatial_releases: Dictionary = {}
+
+
+func take_spatial_releases() -> PackedInt32Array:
+	var ids := PackedInt32Array()
+	for id in _spatial_releases:
+		ids.append(id)
+	ids.sort()
+	_spatial_releases.clear()
+	return ids
+
+
+func spatial_release_count() -> int:
+	return _spatial_releases.size()
 
 
 ## Returns the next sequential id for an entity of the given Kind. Ids start
@@ -97,6 +111,8 @@ func allocate(kind: int) -> int:
 ## PackedInt32Array bookkeeping that exists only to serve the drain, for a
 ## case the drain already handles for free.
 func release(id: int) -> void:
+	if _alive.has(id):
+		_spatial_releases[id] = true
 	_alive.erase(id)
 
 
@@ -125,6 +141,7 @@ func request_release(id: int) -> void:
 	if not is_alive(id):
 		return
 	_alive.erase(id)
+	_spatial_releases[id] = true
 	_pending_release.append(id)
 
 

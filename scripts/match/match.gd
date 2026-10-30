@@ -37,6 +37,7 @@ const EntityQueryScript := preload("res://scripts/world/entity_query.gd")
 const MatchLookupScript := preload("res://scripts/match/match_lookup.gd")
 const EntityNodeIndexScript := preload("res://scripts/match/entity_node_index.gd")
 const SimAdmissionQueueScript := preload("res://scripts/match/sim_admission_queue.gd")
+const MatchUnitSpatialIndexScript := preload("res://scripts/match/match_unit_spatial_index.gd")
 const SimEntityStateScript := preload("res://scripts/sim/entity_state.gd")
 const SimRngScript := preload("res://scripts/sim/sim_rng.gd")
 const AbilityBarScript := preload("res://scripts/ui/ability_bar.gd")
@@ -261,6 +262,7 @@ var _entity_state: SimEntityState
 ## docs/architecture/network-multiplayer.md for why entry into the
 ## simulation is deferred here rather than node creation itself.
 var _admission_queue: SimAdmissionQueue
+var _unit_spatial_index: RefCounted
 ## Shared between _command_executor and _unit_command_controller (see both
 ## setup call sites below) so a target ability id resolves to the same
 ## handler on both sides of the command bus -- SelectionTargetAbilityController.
@@ -286,6 +288,7 @@ func _enter_tree() -> void:
 	_entity_index = EntityNodeIndexScript.new()
 	_entity_state = SimEntityStateScript.new(_entity_index.registry())
 	_admission_queue = SimAdmissionQueueScript.new()
+	_unit_spatial_index = MatchUnitSpatialIndexScript.new(self, _entity_index, _entity_state, _admission_queue)
 	_local_player_id = _resolve_local_player_id()
 	_net_room_url = _resolve_net_room_url()
 	_net_player_count = _resolve_net_player_count()
@@ -1050,6 +1053,12 @@ func _poll_start_barrier() -> void:
 ## EntityNodeIndex.node_for() as absent but not yet freed, for a whole extra
 ## frame before the drain that was supposed to belong to the tick that killed
 ## it finally ran.
+## The persistent unit index syncs after this release drain, before checksum
+## and desync capture, so admission, release and position journals drain even
+## on maps with no mound queries. Query-time sync separately sees movement
+## before projectile or mound checks. The end sync costs about 0.50 ms for
+## 100 movers with no consumer in the local A6 arm; this derived index is
+## absent from the hash.
 func _advance_simulation_tick() -> void:
 	var tick := _clock.advance()
 	# The tick boundary SimEntityState.previous_position() is measured from,
@@ -1154,6 +1163,10 @@ func _advance_simulation_tick() -> void:
 	_player_elimination_tracker.refresh(get_tree(), _players(), _entity_index.registry())
 	_match_victory_tracker.refresh(_players(), _player_elimination_tracker)
 	_entity_index.apply_pending_releases()
+	# Drain changed positions and lifecycle journals even when no mound queried
+	# this tick. This keeps the derived index bounded for maps without mounds;
+	# the normal 100-mover no-consumer cost is measured with the AP26 cost arm.
+	_unit_spatial_index.sync()
 	if tick % CHECKSUM_INTERVAL_TICKS == 0:
 		var state_hash := match_checksum()
 		_checksum_exchange.record_local_hash(tick, state_hash)
@@ -1394,6 +1407,10 @@ func next_orderable_tick() -> int:
 ## building.gd) can reach it without a hardcoded path.
 func entity_index() -> EntityNodeIndex:
 	return _entity_index
+
+
+func unit_spatial_index() -> RefCounted:
+	return _unit_spatial_index
 
 
 ## The id-indexed position store every Unit's own write path
