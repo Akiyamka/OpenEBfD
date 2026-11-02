@@ -45,6 +45,10 @@ const MissileTrailScript := preload("res://scripts/combat/fx/missile_trail.gd")
 const LaserBeamScript := preload("res://scripts/combat/fx/laser_beam.gd")
 const MatchClockScript := preload("res://scripts/sim/match_clock.gd")
 const MatchLookupScript := preload("res://scripts/match/match_lookup.gd")
+const ProjectileUnitCollisionScript := preload("res://scripts/combat/projectile_unit_collision.gd")
+const EntityNodeIndexScript := preload("res://scripts/match/entity_node_index.gd")
+const SimEntityStateScript := preload("res://scripts/sim/entity_state.gd")
+const MatchUnitSpatialIndexScript := preload("res://scripts/match/match_unit_spatial_index.gd")
 
 ## Match._advance_simulation_tick() drives every live projectile's sim_tick()
 ## by walking this group, the same way it walks "units", "buildings" and
@@ -71,6 +75,12 @@ var _tracks_live_target := false
 var _targets_ground_position := false
 var _source_ref: WeakRef
 var _excluded_rids: Array[RID] = []
+var _collision_excludes: Array[RID] = []
+var _collision_query_adapter: Object
+var _match_owner: Node
+var _collision_index: Variant
+var _collision_store: Variant
+var _collision_spatial: Variant
 var _gravity_world := 0.0
 var _trajectory_duration := 0.0
 var _trajectory_initial_velocity := Vector3.ZERO
@@ -141,6 +151,20 @@ func launch(
 		return false
 	if not emission.has("position"):
 		return false
+	_match_owner = MatchLookupScript.match_node(self)
+	if _match_owner != null:
+		_collision_index = _match_owner.call("entity_index") \
+			if _match_owner.has_method("entity_index") else null
+		_collision_store = _match_owner.call("entity_state") \
+			if _match_owner.has_method("entity_state") else null
+		_collision_spatial = _match_owner.call("unit_spatial_index") \
+			if _match_owner.has_method("unit_spatial_index") else null
+		if _collision_index != null and not _collision_index is EntityNodeIndexScript:
+			_collision_index = null
+		if _collision_store != null and not _collision_store is SimEntityStateScript:
+			_collision_store = null
+		if _collision_spatial != null and not _collision_spatial is MatchUnitSpatialIndexScript:
+			_collision_spatial = null
 
 	var resolved_target := _resolve_target_position(
 		target_or_position, Vector3(emission["position"])
@@ -426,6 +450,8 @@ func target() -> Object:
 
 func _resolve_hitscan() -> void:
 	var collisions := _collisions_between(_launch_position, _aim_position)
+	if is_finished():
+		return
 	if _handle_collisions(collisions):
 		return
 	global_position = _aim_position
@@ -538,7 +564,8 @@ func _advance_direct(delta: float, previous_elapsed: float) -> void:
 ## nothing actually moves the node. A non-zero `facing` also becomes the new
 ## heading.
 func _step_to(from: Vector3, to: Vector3, facing: Vector3) -> bool:
-	if _handle_collisions(_collisions_between(from, to)):
+	var collisions := _collisions_between(from, to)
+	if is_finished() or _handle_collisions(collisions):
 		return true
 	if _fallback_target_collision(from, to):
 		return true
@@ -778,6 +805,28 @@ func _queue_free_finished() -> void:
 
 
 func _collisions_between(from: Vector3, to: Vector3) -> Array[Dictionary]:
+	if _match_owner != null and not from.is_equal_approx(to) and is_inside_tree() \
+	and get_world_3d() != null:
+		if _collision_index == null or _collision_store == null or _collision_spatial == null:
+			push_error("CombatProjectile: incomplete Match collision context")
+			global_position = from
+			_expire(&"incomplete_collision")
+			return []
+		var radius := PIERCING_SWEEP_RADIUS if bullet != null and bullet.is_piercing() else 0.0
+		var collected: Array[Dictionary] = []
+		_collision_excludes.clear()
+		_collision_excludes.append_array(_excluded_rids)
+		var complete: bool = ProjectileUnitCollisionScript.collect(
+			self, _match_owner, _collision_index, _collision_store, _collision_spatial, from, to, radius,
+			bullet, _source(), _collision_excludes, COMBAT_COLLISION_MASK, collected,
+			_collision_query_adapter
+		)
+		if not complete:
+			push_error("CombatProjectile: incomplete physical collision query")
+			global_position = from
+			_expire(&"incomplete_collision")
+			return []
+		return collected
 	if bullet != null and bullet.is_piercing():
 		return _swept_collisions_between(from, to, PIERCING_SWEEP_RADIUS)
 	var result: Array[Dictionary] = []

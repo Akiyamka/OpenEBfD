@@ -151,6 +151,8 @@ trajectory parameters `[← 1 §1: collisions]` `[Rules]`. Trajectory behavior
   **self-destructs** (missiles do not overdamage “a corpse” or hit bystanders
   beyond the target).
 
+**Projectile hit authority (AO2).** A projectile is rendered as a physical object, but in a Match its collision with an admitted, uncarried Unit is decided from stored tick position and exact convex authored-hull geometry; direct hits enter at the hull surface, while Sonic uses the capsule around each tick's travel step. Godot's old convex query can report an edge or vertex hit that exact geometry rejects, a tested old-hit/new-miss difference. On a normal 0.8-unit Sonic step the sweep is only a radius-0.4 midpoint sphere: consecutive steps can leave a tangent endpoint gap, so it is not a uniform-width corridor. Sonic ranks eligible targets by centre-distance and stable entity ID, then delivers the first 64 eligible hits. Sonic damages walls, and walls count toward 64 while the wave continues. Direct fire uses a direct 64 merged-hit cap, with static cover first at equal entry and a direct Unit ID tie decided by the smaller ID. Same-Match carried cargo keeps legacy physics collision and a pickup-based centre for Sonic ordering until its flying position becomes tick-owned. A foreign Match Unit cannot block another Match's shot; after a same-tick kill, later shots pass the dead Unit's remaining body. An unadmitted Unit is passed through by the collision query, although the existing intended-target fallback can still deliver a specifically targeted hit.
+
 Additional bullet properties (verified):
 
 - a **bullet can spawn warheads as it travels** — rather than only one at the

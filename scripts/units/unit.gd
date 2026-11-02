@@ -545,6 +545,12 @@ func combat_line_bounds() -> Dictionary:
 func combat_line_entry_distance(from: Vector3, to: Vector3, stored_position: Vector3) -> float:
 	return _authored_collision.combat_line_entry_distance(from, to, stored_position)
 
+func projectile_hull_contact(from: Vector3, to: Vector3, stored_position: Vector3, radius: float) -> Dictionary:
+	return _authored_collision.projectile_contact(from, to, stored_position, radius)
+
+func projectile_hull_diagnostics() -> Dictionary:
+	return {"copies": _authored_collision.hull_copy_count(), "probes": _authored_collision.contact_probe_count()}
+
 
 ## The read counterpart of set_simulation_position(), added by slice R2: the
 ## one way simulation code is meant to ask where this unit is. Answers from

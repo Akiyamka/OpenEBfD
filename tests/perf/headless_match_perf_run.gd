@@ -78,6 +78,8 @@ func _initialize() -> void:
 		return
 	var population := _population_counts(match_instance)
 	var entity_state = match_instance.entity_state()
+	var spatial = match_instance.unit_spatial_index()
+	var query_before := int(spatial.call("padded_query_count")) if spatial.has_method("padded_query_count") else -1
 
 	var measure_result := _measure_ticks(
 		match_instance, units_root, navigation_units, combat_units,
@@ -86,6 +88,10 @@ func _initialize() -> void:
 	if not bool(measure_result["ok"]):
 		return
 	var combat_hp_lost: float = measure_result["combat_hp_lost"]
+	var projectile_queries := int(spatial.call("padded_query_count")) - query_before if query_before >= 0 else -1
+	if query_before >= 0 and projectile_queries <= 0:
+		_fail("AO2 collision workload did not query the Match-owned spatial index")
+		return
 	var combat_checks: Dictionary = measure_result["combat_checks"]
 	var patrol_checks := _check_patrol_activity(measure_result["positions"])
 	if combat_hp_lost < COMBAT_MIN_HP_LOST:
@@ -118,6 +124,7 @@ func _initialize() -> void:
 		"buildings": population["buildings"],
 		"units": population["units"],
 		"combat_hp_lost": combat_hp_lost,
+		"ao2_padded_queries": projectile_queries,
 		"combat_windows_confirmed": combat_checks["confirmed"],
 		"combat_windows_checked": combat_checks["checked"],
 		"patrol_intervals_confirmed": patrol_checks["confirmed"],

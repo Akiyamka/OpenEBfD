@@ -13,6 +13,8 @@ var _queue: SimAdmissionQueueScript
 var _grid := PersistentUnitGridScript.new()
 var _generation := -1
 var _last_dirty_count := 0
+var _padded_query_count := 0
+var _full_seed_count := 0
 
 
 func _init(owner: Node, index: EntityNodeIndexScript, state: SimEntityStateScript, queue: SimAdmissionQueueScript) -> void:
@@ -31,6 +33,7 @@ func sync() -> void:
 		return
 	var ids: Dictionary = {}
 	if _generation != _state.spatial_reset_generation():
+		_full_seed_count += 1
 		_grid.clear()
 		_generation = _state.spatial_reset_generation()
 		for node in _owner.get_tree().get_nodes_in_group(&"sim_units"):
@@ -77,8 +80,17 @@ func rectangle_candidates(min_xz: Vector2, max_xz: Vector2) -> PackedInt32Array:
 
 
 func padded_segment_candidates(from: Vector3, to: Vector3, padding: float) -> PackedInt32Array:
+	_padded_query_count += 1
 	sync()
 	return _grid.padded_segment_candidates(from, to, padding)
+
+
+func padded_query_count() -> int:
+	return _padded_query_count
+
+
+func full_seed_count() -> int:
+	return _full_seed_count
 
 
 func bucket_writes() -> int:
