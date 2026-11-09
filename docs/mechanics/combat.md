@@ -363,6 +363,8 @@ buildings; does Harkonnen flame weaponry create an ignition area by itself.
 
 ## 9. Splash and friendly fire
 
+**Splash hit authority (AO3).** In a Match, an admitted normal Unit enters a blast from its stored tick position and an exact sphere versus authored convex hull check. The damage-distance gate controls inclusion and surface-distance falloff; FriendlyDamageAmount is a separate multiplier for incidental allied hits. Eligible incidental targets follow stable entity ID order after the direct target, and the 256 damage-eligible splash cap counts entities after the gate and overlap. Buildings and other non-unit bodies use static physics; carried cargo remains on its current physics collider with pickup-based aim until AP13. A missing Match keeps standalone physics behavior.
+
 - AoE damage from explosions affects everyone in the radius, including allies `[?]` —
   which weapons have friendly fire (Sonic Tank is confirmed `[← 5]`);
 - the splash from the shot that finishes a building does not kill survivors

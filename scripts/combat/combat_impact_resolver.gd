@@ -8,8 +8,12 @@ extends RefCounted
 const CombatTargetScript := preload("res://scripts/combat/combat_target.gd")
 const CombatRulesScript := preload("res://scripts/combat/combat_rules.gd")
 const EntityQueryScript := preload("res://scripts/world/entity_query.gd")
+const MatchLookupScript := preload("res://scripts/match/match_lookup.gd")
+const SplashUnitCollisionScript := preload("res://scripts/combat/splash_unit_collision.gd")
 const COMBAT_COLLISION_MASK := CombatRulesScript.COLLISION_MASK
 const MAX_SPLASH_COLLIDERS := 256
+
+var _collision_query_adapter: Object = null
 
 
 func resolve(
@@ -35,8 +39,45 @@ func resolve(
 		candidates.append(direct_target)
 		direct_instance_id = direct_target.get_instance_id()
 
-	if bullet.blast_radius_world() > 0.0:
-		for candidate in _splash_targets(world_context, world_position, bullet.blast_radius_world()):
+	var radius: float = bullet.blast_radius_world()
+	if radius <= 0.0:
+		for target in candidates:
+			if not _can_resolve_target(bullet, target):
+				continue
+			var result := _resolve_target(
+				bullet, target, source, world_position, true, deliberate, damage_scale)
+			if not result.is_empty():
+				results.append(result)
+		return results
+	var splash_entries: Array[Dictionary] = []
+	var match_node: Node = MatchLookupScript.match_node(world_context)
+	if match_node != null:
+		if not match_node.has_method("entity_index") \
+		or not match_node.has_method("entity_state") \
+		or not match_node.has_method("unit_spatial_index"):
+			push_error("CombatImpactResolver: splash Match needs entity_index(), entity_state(), and unit_spatial_index()")
+			return []
+		var index: Variant = match_node.entity_index()
+		var state: Variant = match_node.entity_state()
+		var spatial: Variant = match_node.unit_spatial_index()
+		if index == null or state == null or spatial == null:
+			push_error("CombatImpactResolver: splash Match returned a missing entity index, state, or unit spatial index")
+			return []
+		var collected: Dictionary = SplashUnitCollisionScript.collect(
+			world_context, match_node, index, state, spatial, world_position, radius, bullet,
+			source, direct_target if _can_resolve_target(bullet, direct_target) else null,
+			Callable(self, "_surface_distance"), COMBAT_COLLISION_MASK, _collision_query_adapter)
+		if not collected["ok"]:
+			return []
+		for entry in collected["entries"]:
+			var target: Object = entry["target"]
+			if target == direct_target or not _can_resolve_target(bullet, target):
+				continue
+			splash_entries.append(entry)
+			if splash_entries.size() >= MAX_SPLASH_COLLIDERS:
+				break
+	else:
+		for candidate in _splash_targets(world_context, world_position, radius):
 			# A shooter standing point-blank against an obstacle (wall, target)
 			# must never catch its own weapon's splash, no matter how large its
 			# blast radius or how the friendly-fire percentage would otherwise
@@ -56,6 +97,15 @@ func resolve(
 		)
 		if not result.is_empty():
 			results.append(result)
+	for entry in splash_entries:
+		var target: Object = entry["target"]
+		if not _can_resolve_target(bullet, target):
+			continue
+		var result := _resolve_target(
+			bullet, target, source, world_position, false, deliberate, damage_scale,
+			float(entry["distance"]))
+		if not result.is_empty():
+			results.append(result)
 	return results
 
 
@@ -66,11 +116,13 @@ func _resolve_target(
 		world_position: Vector3,
 		direct: bool,
 		deliberate: bool,
-		damage_scale: float
+		damage_scale: float,
+		precomputed_distance: float = -1.0
 	) -> Dictionary:
 	var armour_type := StringName(String(target.call("combat_armour_type")))
 	var radius: float = float(bullet.blast_radius_world())
-	var distance := 0.0 if direct else _surface_distance(target, world_position)
+	var distance := 0.0 if direct else (precomputed_distance if precomputed_distance >= 0.0 \
+		else _surface_distance(target, world_position))
 	if not direct and (radius <= 0.0 or distance > radius + 0.0001):
 		return {}
 
