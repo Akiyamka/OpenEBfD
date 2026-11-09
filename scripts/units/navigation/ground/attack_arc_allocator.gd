@@ -1,5 +1,7 @@
 class_name AttackArcAllocator
 extends RefCounted
+const SimMathScript := preload("res://scripts/sim/sim_math.gd")
+const MatchLookupScript := preload("res://scripts/match/match_lookup.gd")
 ## Angular firing slots around one attack target.
 ##
 ## An attack order reaches each unit individually (UnitCommandController loops
@@ -69,8 +71,8 @@ func assign_arcs(
 	base.y = 0.0
 	# A group standing exactly on its target has no approach side to preserve;
 	# any bearing is as good as any other, so pick a stable one.
-	base = base.normalized() if base.length_squared() > 0.0001 else Vector3.BACK
-	var base_angle := atan2(base.z, base.x)
+	base = base if base.length_squared() > 0.0001 else Vector3.BACK
+	var base_angle := SimMathScript.bearing_units(base.x, base.z)
 
 	# Slots are handed out in the order the units already stand in around the
 	# target, not by agent id: anything else makes the two flanks trade places
@@ -83,19 +85,27 @@ func assign_arcs(
 		widest_radius = maxf(widest_radius, float(agent.get("radius", DEFAULT_BODY_RADIUS)))
 		var offset := positions[index] - world_target
 		offset.y = 0.0
-		var bearing := atan2(offset.z, offset.x) if offset.length_squared() > 0.0001 \
+		var bearing := SimMathScript.bearing_units(offset.x, offset.z) if offset.length_squared() > 0.0001 \
 			else base_angle
+		var stable_id := int(agent.get("id", 0))
+		if stable_id <= 0:
+			var entity_index = MatchLookupScript.entity_index(unit)
+			if entity_index != null:
+				stable_id = int(entity_index.id_for(unit))
 		entries.append({
 			"unit": unit,
 			# Signed offset from the approach bearing, so sorting runs flank to
 			# flank across the group's own front rather than wrapping at +/-PI.
-			"offset": angle_difference(base_angle, bearing),
-			"id": int(agent.get("id", unit.get_instance_id())),
+			"offset": SimMathScript.signed_delta_units(base_angle, bearing),
+			"id": stable_id,
+			"ordinal": index,
 		})
 	entries.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
-		if is_equal_approx(float(a["offset"]), float(b["offset"])):
+		if int(a["offset"]) != int(b["offset"]):
+			return int(a["offset"]) < int(b["offset"])
+		if int(a["id"]) != int(b["id"]):
 			return int(a["id"]) < int(b["id"])
-		return float(a["offset"]) < float(b["offset"])
+		return int(a["ordinal"]) < int(b["ordinal"])
 	)
 
 	var count := entries.size()
@@ -110,8 +120,10 @@ func assign_arcs(
 		# already occupied by a firing neighbour, so the overflow settles onto
 		# its own outer arc by itself instead of being planned into one here.
 		step = minf(step, MAXIMUM_ARC_SPAN / float(count - 1))
+	var step_units := int(round(step * float(SimMathScript.TURN) / TAU))
 	for index in count:
-		var angle := base_angle + (float(index) - float(count - 1) * 0.5) * step
+		var angle := base_angle + int(round((float(index) - float(count - 1) * 0.5) * step_units))
 		var unit: Node3D = entries[index]["unit"]
-		result[unit.get_instance_id()] = Vector3(cos(angle), 0.0, sin(angle))
+		var pair := SimMathScript.sin_cos_units(angle)
+		result[unit.get_instance_id()] = Vector3(pair.x, 0.0, pair.y)
 	return result

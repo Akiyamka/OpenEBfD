@@ -1,5 +1,6 @@
 class_name OrcaAvoidance
 extends RefCounted
+const SimMathScript := preload("res://scripts/sim/sim_math.gd")
 ## Optimal Reciprocal Collision Avoidance (RVO2-style) neighbour/terrain
 ## avoidance backend for `resolve_velocity`.
 ##
@@ -19,11 +20,9 @@ const TAU := 0.75
 const TAU_OBST := 0.4
 const MAX_NEIGHBORS := 8
 const MAX_OBST_LINES := 10
-const OBSTACLE_SECTOR_ANGLE := PI / 3.0
 const RESPONSIBILITY_MUTUAL := 0.5
 const RESPONSIBILITY_AGAINST_IDLE := 0.25
 const RESPONSIBILITY_HARD := 1.0
-const COURSE_DAMPING_SHARE := 0.35
 const SQUEEZE_RESULT_FACTOR := 1.0
 ## 0.32 s of wall-clock, rounded up from 0.3 s (6 ticks at the old 20 Hz
 ## navigation tick) so this squeeze anti-oscillation cooldown is never
@@ -94,7 +93,23 @@ func resolve_velocity(
 			var obstacle_pos := _flat(value as Vector3)
 			var relative := obstacle_pos - own_pos
 			var dist_sq := relative.length_squared()
-			var sector := int(floor(relative.angle() / OBSTACLE_SECTOR_ANGLE))
+			var sector := 0
+			var x := float(relative.x)
+			var y := float(relative.y)
+			var three_x_sq := 3.0 * x * x
+			var y_sq := y * y
+			if x >= 0.0:
+				if y > 0.0:
+					sector = 1 if y_sq > three_x_sq else 0
+				elif y < 0.0:
+					sector = -2 if y_sq > three_x_sq else -1
+			else:
+				if y > 0.0:
+					sector = 1 if y_sq > three_x_sq else 2
+				elif y < 0.0:
+					sector = -2 if y_sq > three_x_sq else -3
+				else:
+					sector = 3
 			if not nearest_per_sector.has(sector) or dist_sq < float(nearest_per_sector[sector]["dist_sq"]):
 				nearest_per_sector[sector] = {"position": relative, "dist_sq": dist_sq}
 		var obstacle_candidates: Array = nearest_per_sector.values()
@@ -292,10 +307,9 @@ func resolve_velocity(
 		if not previous_direction.is_zero_approx() \
 		and _flat(previous_direction).normalized().dot(route_direction) > 0.0:
 			var target_direction := Vector3(result.x, 0.0, result.y).normalized()
-			var course_gap := previous_direction.normalized().signed_angle_to(target_direction, Vector3.UP)
-			if absf(course_gap) > 0.005:
-				var damped_direction := (previous_direction.normalized() as Vector3) \
-					.rotated(Vector3.UP, course_gap * COURSE_DAMPING_SHARE)
+			var previous_unit := previous_direction.normalized()
+			var damped_direction := SimMathScript.damped_horizontal(previous_unit, target_direction)
+			if not damped_direction.is_equal_approx(previous_unit):
 				var damped := Vector2(damped_direction.x, damped_direction.z) * result.length()
 				var blocked := damped.dot(route_direction) < 0.0
 				if not blocked:

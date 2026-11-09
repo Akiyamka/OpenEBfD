@@ -1,0 +1,3 @@
+extends RefCounted
+func turn(a, b):
+	return a.signed_angle_to(b)

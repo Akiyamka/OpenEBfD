@@ -331,6 +331,36 @@ CASES: tuple[Case, ...] = (
         expect_rules=("sim-no-vector-angle-math",),
     ),
     Case(
+        "signed angle in sim",
+        sim("sim_signed_angle"),
+        EXIT_FINDINGS,
+        expect_rules=("sim-no-vector-angle-math",),
+    ),
+    Case(
+        "libm in ground navigation",
+        {"scripts/units/navigation/ground/attack_arc_allocator.gd": "navigation_tick_libm"},
+        EXIT_FINDINGS,
+        expect_rules=("navigation-no-libm-math",),
+    ),
+    Case(
+        "vector angle in ground navigation",
+        {"scripts/units/navigation/ground/orca_avoidance.gd": "navigation_tick_vector_angle"},
+        EXIT_FINDINGS,
+        expect_rules=("navigation-no-vector-angle-math",),
+    ),
+    Case(
+        "signed angle in ground navigation",
+        {"scripts/units/navigation/ground/orca_avoidance.gd": "navigation_tick_signed_angle"},
+        EXIT_FINDINGS,
+        expect_rules=("navigation-no-vector-angle-math",),
+    ),
+    Case(
+        "ground navigation math rule stays in its zone",
+        {"scripts/units/navigation/ground/other.gd": "navigation_tick_signed_angle"},
+        EXIT_CLEAN,
+        forbid_rules=("navigation-no-vector-angle-math",),
+    ),
+    Case(
         "engine clock in sim",
         sim("sim_engine_clock"),
         EXIT_FINDINGS,
@@ -595,6 +625,13 @@ def run_case(case: Case) -> list[str]:
             destination.startswith("scripts/production/") for destination in files
         ):
             files["scripts/production/_zone_filler.gd"] = "clean"
+        if case.manifest is None and not any(
+            destination in (
+                "scripts/units/navigation/ground/attack_arc_allocator.gd",
+                "scripts/units/navigation/ground/orca_avoidance.gd",
+            ) for destination in files
+        ):
+            files["scripts/units/navigation/ground/attack_arc_allocator.gd"] = "clean"
         # Tests are scanned alongside scripts now, but the tests zone has exactly
         # one rule. Every fixture tree still needs a test file so the zone cannot
         # quietly become empty and turn its protection into a no-op.

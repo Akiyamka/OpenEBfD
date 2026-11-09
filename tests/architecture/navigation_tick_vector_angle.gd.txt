@@ -1,0 +1,3 @@
+extends RefCounted
+func turn(v):
+	return v.rotated(1.0)

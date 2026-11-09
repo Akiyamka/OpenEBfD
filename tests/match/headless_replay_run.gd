@@ -53,7 +53,12 @@ func _test_headless_replay() -> void:
 	var load_result: Dictionary = match_instance.load_replay(REPLAY_PATH)
 	_expect(bool(load_result.get("ok", false)), "the fixture replay must load: %s" % load_result.get("message", ""))
 	_expect(match_instance.match_seed() == 123456789 and match_instance.sim_rng().draw_count == 3 and match_instance.sim_rng().draw_signature == 0x12345678, "recorded seed and audit install before commands")
-	var ticks := 0
+	match_instance.advance_ticks(2)
+	_expect(match_instance._recent_command_log.count_for(1) == 0, "tick-3 replay command has not drained on tick 2")
+	match_instance.advance_ticks(1)
+	_expect(match_instance.current_tick() == 3 and match_instance._recent_command_log.count_for(1) == 1,
+		"tick-3 replay command drains exactly on tick 3")
+	var ticks := 3
 	while not match_instance.replay_exhausted() and ticks < MAX_TICKS:
 		match_instance.advance_ticks(1)
 		ticks += 1

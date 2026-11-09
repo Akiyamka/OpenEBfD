@@ -63,6 +63,13 @@ non-portable math. See docs/architecture/network-multiplayer.md.
 """
 include = ["scripts/sim/**/*.gd"]
 
+[zones.navigation_tick_math]
+description = "Ground navigation tick paths using portable angle arithmetic."
+include = [
+	"scripts/units/navigation/ground/attack_arc_allocator.gd",
+	"scripts/units/navigation/ground/orca_avoidance.gd",
+]
+
 [zones.production]
 description = "Per-player simulation modules, including production, repairs and sales."
 include = ["scripts/production/**/*.gd"]
@@ -541,10 +548,26 @@ instead = "SimMath, whose trigonometry runs off a generated table over integer a
 [[rules]]
 id = "sim-no-vector-angle-math"
 zone = "sim"
-pattern = '\.(?:rotated|rotated_local|angle|angle_to|angle_to_point|slerp|bezier_interpolate|cubic_interpolate)\s*\('
+pattern = '\.(?:rotated|rotated_local|angle|angle_to|signed_angle_to|angle_to_point|slerp|bezier_interpolate|cubic_interpolate)\s*\('
 summary = "Vector method built on non-portable math"
 why = "these are libm trigonometry behind a Vector2/Vector3 method call, so they carry the same cross-platform divergence"
 instead = "SimMath.rotate_units and friends; plain +, -, *, dot, length, normalized and distance_to stay portable and are fine"
+
+[[rules]]
+id = "navigation-no-libm-math"
+zone = "navigation_tick_math"
+pattern = '(?<!\.)\b(?:sin|cos|tan|asin|acos|atan|atan2|sinh|cosh|tanh|pow|exp|log|fmod|fposmod)\s*\('
+summary = "non-portable math function in ground navigation tick"
+why = "platform libm results can change navigation decisions across lockstep clients"
+instead = "use the generated integer-angle SimMath helper"
+
+[[rules]]
+id = "navigation-no-vector-angle-math"
+zone = "navigation_tick_math"
+pattern = '\.(?:rotated|rotated_local|angle|angle_to|signed_angle_to|angle_to_point|slerp|bezier_interpolate|cubic_interpolate)\s*\('
+summary = "Vector method built on non-portable math in ground navigation tick"
+why = "Vector angle methods call platform libm and can change navigation decisions"
+instead = "use SimMath angle units or the inlined exact sector classifier"
 
 [[rules]]
 id = "sim-no-engine-clock"

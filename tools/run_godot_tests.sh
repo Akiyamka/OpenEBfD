@@ -76,7 +76,7 @@ readonly SUITES=(
 	tests/match/match_victory_tracker_run.gd
 	tests/match/match_victory_wiring_run.gd
 	tests/match/match_net_args_run.gd
-	tests/sim/sim_rng_run.gd
+	tests/sim/sim_rng_run.gd tests/sim/sim_math_run.gd
 	tests/match/match_desync_halt_run.gd
 	tests/match/match_desync_state_run.gd
 	tests/match/building_survivor_rng_run.gd
@@ -89,7 +89,7 @@ readonly SUITES=(
 	tests/match/match_input_delay_run.gd
 	tests/match/match_start_barrier_run.gd
 	tests/match/match_turn_barrier_run.gd
-	tests/navigation/run.gd
+	tests/navigation/run.gd tests/navigation/portable_math_run.gd
 	tests/navigation/store_reads_run.gd
 	tests/navigation/no_stop_relocation_run.gd
 	tests/net/loopback_run.gd
