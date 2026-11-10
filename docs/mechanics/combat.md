@@ -328,6 +328,8 @@ Summary of how different bullets miss (follows from the verified behavior above)
   how far — leash from the guard point `[?]`);
 - guard order: reaction radius and return to post `[?]`.
 
+Current OpenEBfD implementation breaks equal-distance acquisition ties by stable entity ID; registry-less fixtures use stored position and decline an indistinguishable duplicate.
+
 ## 6. Damage states
 
 - **Vehicles — “burning” threshold** `[← 5 §7.0.1]`: below an HP threshold, a

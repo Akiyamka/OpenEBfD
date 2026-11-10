@@ -15,6 +15,7 @@ extends RefCounted
 const CombatTargetScript := preload("res://scripts/combat/combat_target.gd")
 const CombatTurretScript := preload("res://scripts/combat/combat_turret.gd")
 const SpatialOrientationScript := preload("res://scripts/world/spatial_orientation.gd")
+const MatchLookupScript := preload("res://scripts/match/match_lookup.gd")
 
 const AUTO_TARGET_REFRESH_SECONDS := 0.25
 ## How far off the hull's own heading a target may sit and still count as
@@ -43,6 +44,7 @@ enum HullAim {
 var _shooter: Node3D
 var _targets: Dictionary = {}
 var _cooldowns: Dictionary = {}
+var _ambiguity_warned: Dictionary = {}
 
 
 func configure(shooter: Node3D) -> void:
@@ -93,6 +95,9 @@ func target_for(turret, hull_aim: HullAim = HullAim.NONE) -> Variant:
 
 	var best_target: Node3D = null
 	var best_distance := INF
+	var ambiguous := false
+	var index_resolved := false
+	var entity_index: Variant = null
 	var candidates: Array[Node] = []
 	# "sim_units"/"sim_buildings", not "units"/"buildings": choosing what to
 	# shoot is a simulation decision -- the shot it leads to changes health,
@@ -113,21 +118,63 @@ func target_for(turret, hull_aim: HullAim = HullAim.NONE) -> Variant:
 		# is picked by have to come from the store rather than from the node
 		# the view mirrors.
 		var distance: float = _shooter.simulation_position().distance_squared_to(candidate.simulation_position())
-		# Instance id breaks ties so two equidistant candidates resolve the
-		# same way on every shooter, instead of by group iteration order.
-		if distance < best_distance \
-		or (
-			is_equal_approx(distance, best_distance)
-			and best_target != null
-			and candidate.get_instance_id() < best_target.get_instance_id()
-		):
+		if distance < best_distance:
 			best_distance = distance
 			best_target = candidate
+			ambiguous = false
+			continue
+		if best_target == null or not is_equal_approx(distance, best_distance):
+			continue
+		if not index_resolved:
+			index_resolved = true
+			entity_index = MatchLookupScript.entity_index(_shooter)
+		var order := _tie_order(entity_index, candidate, best_target)
+		if order < 0:
+			best_distance = distance
+			best_target = candidate
+			ambiguous = false
+		elif order == 0:
+			ambiguous = true
+	if best_target != null and ambiguous:
+		_targets.erase(weapon_index)
+		_warn_ambiguous(weapon_index)
+		return null
 	if best_target == null:
 		_targets.erase(weapon_index)
 		return null
 	_targets[weapon_index] = weakref(best_target)
 	return best_target
+
+
+## Negative means the contender wins; zero means indistinguishable positions.
+func _tie_order(entity_index: Variant, candidate: Node3D, best: Node3D) -> int:
+	var candidate_id := 0
+	var best_id := 0
+	if entity_index != null:
+		candidate_id = int(entity_index.id_for(candidate))
+		best_id = int(entity_index.id_for(best))
+	if candidate_id > 0 and best_id > 0:
+		return -1 if candidate_id < best_id else 1
+	if candidate_id > 0:
+		return -1
+	if best_id > 0:
+		return 1
+	var a: Vector3 = candidate.simulation_position()
+	var b: Vector3 = best.simulation_position()
+	if a.x != b.x:
+		return -1 if a.x < b.x else 1
+	if a.y != b.y:
+		return -1 if a.y < b.y else 1
+	if a.z != b.z:
+		return -1 if a.z < b.z else 1
+	return 0
+
+
+func _warn_ambiguous(weapon_index: int) -> void:
+	if _ambiguity_warned.has(weapon_index):
+		return
+	_ambiguity_warned[weapon_index] = true
+	push_warning("AP16_AMBIGUOUS weapon %d: equal-distance registry-less targets share a position" % weapon_index)
 
 
 func is_usable(turret, target: Variant, hull_aim: HullAim = HullAim.NONE) -> bool:

@@ -49,6 +49,7 @@ readonly SUITES=(
 	tests/combat/building_geometry_run.gd
 	tests/combat/unit_fire_movement_run.gd
 	tests/combat/unit_attack_order_run.gd
+	tests/combat/target_acquisition_tie_run.gd
 	tests/combat/defensive_building_run.gd
 	tests/combat/death_category_run.gd
 	tests/combat/multi_turret_run.gd
@@ -67,6 +68,7 @@ readonly SUITES=(
 	tests/match/undeploy_recenter_run.gd
 	tests/match/interpolation_run.gd
 	tests/match/combat_pose_match_run.gd
+	tests/match/target_acquisition_tie_wiring_run.gd
 	tests/match/frameless_parity_run.gd
 	tests/match/headless_replay_run.gd
 	tests/match/command_bus_wiring_run.gd tests/maps/run.gd
