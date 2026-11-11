@@ -1,5 +1,6 @@
 extends "res://tests/support/suite.gd"
 
+const ReleasedOracle := preload("res://tests/combat/support/released_cargo_oracle.gd")
 const MatchFixtureScene := preload("res://tests/fixtures/match_fixture.tscn")
 const ATAPCScene := preload("res://scenes/units/atapc.tscn")
 const ATBarracksScene := preload("res://scenes/buildings/at_barracks.tscn")
@@ -47,6 +48,18 @@ class ErrorLogger extends Logger:
 	var errors: Array[String] = []
 	func _log_error(_function, _file, _line, code, rationale, _editor_notify, _error_type, _script_backtraces) -> void:
 		errors.append(str(code) + str(rationale))
+
+class OneCargoPage extends RefCounted:
+	var cargo: CollisionObject3D
+	var calls := 0
+	func _init(value: CollisionObject3D) -> void:
+		cargo = value
+	func shape_hits(_query: PhysicsShapeQueryParameters3D, _limit: int) -> Array[Dictionary]:
+		calls += 1
+		var result: Array[Dictionary] = []
+		if calls == 1:
+			result.append({"rid": cargo.get_rid(), "collider": cargo})
+		return result
 
 class InvalidPage extends RefCounted:
 	var collider: Object
@@ -150,6 +163,7 @@ var _bullets := BulletsScript.new()
 func _initialize() -> void:
 	LegacyRulesFixture.install(root)
 	await process_frame
+	await _run_async_case("released cargo uses own basis", _test_released_cargo_basis)
 	await _run_async_case("settled old oracle and stored splash", _test_stored_splash)
 	await _run_async_case("authored Building stays on static physics", _test_real_building)
 	await _run_async_case("foreign Match Unit is excluded", _test_foreign_match)
@@ -165,9 +179,55 @@ func _initialize() -> void:
 	await _run_async_case("splash results follow stable entity IDs", _test_stable_order)
 	await _run_async_case("Match splash damage rules and deduplication", _test_damage_rules)
 	await _run_async_case("splash cap counts only damage-eligible entities", _test_cap)
-	await _run_async_case("carried flag disagreement stays physical", _test_carried_union)
-	await _run_async_case("canonical carried cargo stays physical", _test_canonical_carried)
+	await _run_async_case("carried flag disagreement fails closed", _test_carried_union)
+	await _run_async_case("canonical cargo uses stored splash hull", _test_canonical_carried)
 	_finish("Splash unit collision")
+
+
+func _test_released_cargo_basis() -> void:
+	var match_instance = MatchFixtureScene.instantiate()
+	root.add_child(match_instance)
+	match_instance.set_process(false)
+	for mound in get_nodes_in_group(&"spice_mounds"):
+		if match_instance.is_ancestor_of(mound):
+			mound.free()
+	match_instance.terrain.spice_layer = null
+	var carrier = ATAPCScene.instantiate()
+	var cargo = ATAPCScene.instantiate()
+	carrier.owner_player_id = 1
+	cargo.owner_player_id = 2
+	match_instance.get_node("Units").add_child(carrier)
+	match_instance.get_node("Units").add_child(cargo)
+	carrier.set_process(false)
+	cargo.set_process(false)
+	carrier.set("_simulation_halted", true)
+	cargo.set("_simulation_halted", true)
+	carrier.set_simulation_position(Vector3(500.0, 40.0, 500.0))
+	cargo.set_simulation_position(Vector3(510.0, 40.0, 500.0))
+	match_instance.advance_ticks(1)
+	carrier.transport_attach_cargo(cargo, Vector3.ZERO)
+	_expect(cargo.is_carried(), "release fixture begins with attached cargo")
+	cargo.transport_mark_released(Vector3(510.0, 40.0, 500.0), Vector3.FORWARD)
+	var dropped: Dictionary = ReleasedOracle.measure(cargo, carrier)
+	_expect(dropped["separated"] and dropped["public_agrees"] and dropped["basis_own"]
+		and dropped["aim_own"] and not dropped["basis_stale"],
+		"dropped cargo aim and hull follow own basis after former carrier rotates")
+	carrier.transport_attach_cargo(cargo, Vector3.ZERO)
+	_expect(cargo.is_carried(), "destroyed-release fixture reattaches cargo")
+	cargo.transport_mark_destroyed_release()
+	var destroyed: Dictionary = ReleasedOracle.measure(cargo, carrier)
+	_expect(destroyed["separated"] and destroyed["public_agrees"] and destroyed["basis_own"]
+		and destroyed["aim_own"] and not destroyed["basis_stale"],
+		"destroyed-carrier release returns aim and hull to cargo basis")
+	carrier.transport_attach_cargo(cargo, Vector3.ZERO)
+	_expect(cargo.is_carried(), "own-death fixture reattaches live cargo")
+	cargo.force_transport_death()
+	var dead: Dictionary = ReleasedOracle.measure(cargo, carrier)
+	_expect(cargo.health <= 0.0 and not cargo.is_carried() and not cargo.is_in_group(&"sim_carried_units")
+		and dead["separated"] and dead["public_agrees"] and dead["basis_own"]
+		and dead["aim_own"] and not dead["basis_stale"],
+		"cargo own death restores own basis for aim and hull")
+	match_instance.free()
 
 
 func _test_stored_splash() -> void:
@@ -1082,25 +1142,42 @@ func _test_carried_union() -> void:
 	unit.health = 1000000.0
 	match_instance.entity_state().set_combat_line_carried(unit.entity_id, true)
 	var probes_before: int = unit.projectile_hull_diagnostics()["probes"]
+	var mismatch_logger := ErrorLogger.new()
+	OS.add_logger(mismatch_logger)
 	var store_carried: Array[Dictionary] = resolver.resolve(bullet, match_instance, centre)
-	_expect(not unit.is_carried() and store_carried.size() == 1 and unit.health < 1000000.0,
-		"store-carried node-normal mismatch damages through physics")
+	OS.remove_logger(mismatch_logger)
+	_expect(not unit.is_carried() and store_carried.is_empty() and unit.health == 1000000.0
+		and mismatch_logger.errors.size() == 1, "store-carried mismatch logs and delivers no hit")
 	_expect(unit.projectile_hull_diagnostics()["probes"] == probes_before,
 		"store-carried mismatch avoids exact normal hull")
-	var carrier := Node3D.new()
-	match_instance.add_child(carrier)
-	carrier.global_position = unit.global_position
-	unit.transport_mark_carried(carrier)
+	var carrier = ATAPCScene.instantiate()
+	carrier.owner_player_id = 1
+	match_instance.get_node("Units").add_child(carrier)
+	carrier.set("_simulation_halted", true)
+	carrier.set_process(false)
+	carrier.set_meta("combat_ignore", true)
+	carrier.set_simulation_position(Vector3(498.5, 0.0, 500.0))
+	carrier.transport_attach_cargo(unit, Vector3.ZERO)
+	_expect(unit.simulation_position().distance_to(carrier.simulation_position()) < 0.001,
+		"canonical cargo stores real carrier root at attach")
+	carrier.set_simulation_position(Vector3(500.0, 0.0, 500.0))
+	match_instance.advance_ticks(1)
+	_expect(unit.simulation_position().distance_to(carrier.simulation_position()) < 0.001,
+		"canonical cargo follows real carrier movement tick")
 	match_instance.entity_state().set_combat_line_carried(unit.entity_id, false)
 	unit.health = 1000000.0
 	await physics_frame
 	await physics_frame
 	probes_before = unit.projectile_hull_diagnostics()["probes"]
+	mismatch_logger = ErrorLogger.new()
+	OS.add_logger(mismatch_logger)
 	var node_carried: Array[Dictionary] = resolver.resolve(bullet, match_instance, centre)
-	_expect(unit.is_carried() and node_carried.size() == 1 and unit.health < 1000000.0,
-		"node-carried store-normal mismatch damages through physics")
+	OS.remove_logger(mismatch_logger)
+	_expect(unit.is_carried() and node_carried.is_empty() and unit.health == 1000000.0
+		and mismatch_logger.errors.size() == 1, "node-carried mismatch logs and delivers no hit")
 	_expect(unit.projectile_hull_diagnostics()["probes"] == probes_before,
 		"node-carried mismatch avoids exact normal hull")
+	match_instance.entity_state().set_combat_line_carried(unit.entity_id, true)
 	unit.global_position = Vector3(530.0, 0.0, 500.0)
 	await physics_frame
 	await physics_frame
@@ -1108,8 +1185,8 @@ func _test_carried_union() -> void:
 		"old physics misses carried collider outside blast")
 	unit.health = 1000000.0
 	var pickup_inside: Array[Dictionary] = resolver.resolve(bullet, match_instance, centre)
-	_expect(pickup_inside.is_empty() and unit.health == 1000000.0,
-		"carried collider out with pickup in takes no damage")
+	_expect(pickup_inside.size() == 1 and unit.health < 1000000.0,
+		"stored hull inside damages with rendered collider outside")
 	unit.global_position = Vector3(500.0, 0.0, 500.0)
 	match_instance.entity_state().set_position(unit.entity_id, Vector3(530.0, 0.0, 500.0))
 	await physics_frame
@@ -1170,10 +1247,10 @@ func _test_canonical_carried() -> void:
 	unit.health = 1000000.0
 	var probes_before: int = unit.projectile_hull_diagnostics()["probes"]
 	var collider_out: Array[Dictionary] = resolver.resolve(bullet, match_instance, centre)
-	_expect(collider_out.is_empty() and unit.health == 1000000.0,
-		"canonical carried collider out and pickup in takes no damage")
-	_expect(unit.projectile_hull_diagnostics()["probes"] == probes_before,
-		"canonical collider-out cargo takes no normal hull probe")
+	_expect(collider_out.size() == 1 and unit.health < 1000000.0,
+		"carried tick hull inside damages with rendered collider outside")
+	_expect(unit.projectile_hull_diagnostics()["probes"] > probes_before,
+		"carried tick hull receives an exact probe")
 	unit.global_position = Vector3(500.0, 0.0, 500.0)
 	state.set_position(unit.entity_id, Vector3(530.0, 0.0, 500.0))
 	await physics_frame
@@ -1200,6 +1277,14 @@ func _test_canonical_carried() -> void:
 	_expect(both_in.size() == 1 and both_in[0]["target"] == unit
 		and unit.health < 1000000.0,
 		"canonical carried collider and pickup both in take physics damage")
-	_expect(unit.projectile_hull_diagnostics()["probes"] == probes_before,
-		"canonical both-in cargo takes no normal hull probe")
+	_expect(unit.projectile_hull_diagnostics()["probes"] > probes_before,
+		"canonical both-in cargo uses exact hull probe")
+	state.set_position(unit.entity_id, Vector3(530.0, 0.0, 500.0))
+	var adapter := OneCargoPage.new(unit)
+	var render_only: Dictionary = SplashScript.collect(match_instance, match_instance,
+		match_instance.entity_index(), state, match_instance.unit_spatial_index(), centre, 4.0,
+		bullet, null, null, func(_entity, _centre): return 0.0,
+		CombatRulesScript.COLLISION_MASK, adapter)
+	_expect(adapter.calls == 2 and render_only["ok"] and render_only["entries"].is_empty(),
+		"physical carried RID cannot admit a rendered-only splash even with an eligible distance")
 	match_instance.free()

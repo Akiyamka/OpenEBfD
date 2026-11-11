@@ -115,7 +115,8 @@ func _capture_entity(entity: Node3D) -> Dictionary:
 	var record := {
 		"name": entity.name,
 		"scene_path": entity.scene_file_path,
-		"transform": _encode_transform(entity.global_transform),
+		"transform": _encode_transform(Transform3D(entity.combat_geometry().combat_basis(), entity.simulation_position())
+			if entity is Unit and entity.is_carried() else entity.global_transform),
 		"config_id": String(entity.get("config_id")),
 		"owner_player_id": EntityQueryScript.owner_id_of(entity),
 	}

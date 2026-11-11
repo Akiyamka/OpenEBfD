@@ -62,8 +62,7 @@ func sync() -> void:
 func _update_id(id: int) -> void:
 	var registry := _index.registry()
 	if not registry.is_alive(id) or registry.kind_of(id) != SimEntityRegistryScript.Kind.UNIT \
-	or not _state.has_position(id) or not _state.has_combat_line_bounds(id) \
-	or (_state.has_combat_line_carried(id) and _state.combat_line_carried(id)):
+	or not _state.has_position(id) or not _state.has_combat_line_bounds(id):
 		_grid.remove(id)
 		return
 	if not _grid.has_id(id):

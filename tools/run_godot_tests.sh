@@ -84,6 +84,7 @@ readonly SUITES=(
 	tests/match/building_survivor_rng_run.gd
 	tests/match/spice_mound_rng_run.gd
 	tests/match/unit_spatial_index_run.gd
+	tests/match/carried_target_authority_run.gd
 	tests/match/turret_idle_rng_run.gd
 	tests/match/unit_fire_variant_rng_run.gd
 	tests/match/match_stall_detection_run.gd

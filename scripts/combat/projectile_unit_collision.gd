@@ -31,11 +31,14 @@ static func collect(
 		if unit == null or not _is_unit(unit):
 			continue
 		var carried: bool = unit.is_carried()
-		if not carried and unit is CollisionObject3D:
+		if unit is CollisionObject3D:
 			physics_excludes.append((unit as CollisionObject3D).get_rid())
+		var stored_carried: bool = state.has_combat_line_carried(id) and state.combat_line_carried(id)
+		if carried != stored_carried:
+			push_error("ProjectileUnitCollision: carried flag disagreement for unit %d" % id)
+			continue
 		if not unit.is_in_group(&"sim_units") \
 		or not (unit == match_node or match_node.is_ancestor_of(unit)) \
-		or carried \
 		or unit.get_meta("combat_ignore", false) or unit == source \
 		or not bullet.can_hit(unit):
 			continue
@@ -75,7 +78,7 @@ static func collect(
 
 
 static func _physical_hits(
-		projectile: Node3D, match_node: Node, index: EntityNodeIndexScript, from: Vector3,
+		projectile: Node3D, _match_node: Node, index: EntityNodeIndexScript, from: Vector3,
 		to: Vector3, radius: float, bullet: Variant, source: Object,
 		excludes: Array[RID], mask: int, hits: Array[Dictionary], query_adapter: Object
 	) -> bool:
@@ -122,11 +125,7 @@ static func _physical_hits(
 			if entity != null and entity == source:
 				continue
 			if entity != null and _is_unit(entity):
-				var unit := entity as Node
-				var id: int = index.id_for(unit)
-				if not unit.is_carried() or id == 0 or not index.registry().is_alive(id) \
-				or not (unit == match_node or match_node.is_ancestor_of(unit)):
-					continue
+				continue
 			if entity != null and not bullet.can_hit(entity):
 				continue
 			if radius > 0.0 and entity == null:
@@ -151,3 +150,12 @@ static func _physical_hits(
 static func _is_unit(entity: Object) -> bool:
 	return entity is CharacterBody3D and entity.has_method("projectile_hull_contact") \
 		and entity.has_method("is_carried")
+
+
+static func _under_match(node: Node) -> bool:
+	var parent := node.get_parent()
+	while parent != null:
+		if parent.is_in_group(&"match_root"):
+			return true
+		parent = parent.get_parent()
+	return false

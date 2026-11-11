@@ -96,11 +96,12 @@ func contact_probe_count() -> int:
 ## Returns the first direct entry and exact distance from a capsule core to
 ## the installed convex triangles. All coordinates are transformed using the
 ## root yaw and the tick-owned origin supplied by the caller.
-func projectile_contact(from: Vector3, to: Vector3, position: Vector3, radius: float) -> Dictionary:
+func projectile_contact(from: Vector3, to: Vector3, position: Vector3, radius: float,
+		basis: Variant = null, carried := false) -> Dictionary:
 	if _unit == null or _combat_line_hulls.is_empty():
 		return {}
 	_contact_probe_count += 1
-	var transform := Transform3D(_unit.global_basis, position)
+	var transform := Transform3D(_unit.global_basis if basis == null else basis, position)
 	var inverse := transform.affine_inverse()
 	var local_from := inverse * from
 	var local_to := inverse * to
@@ -112,6 +113,8 @@ func projectile_contact(from: Vector3, to: Vector3, position: Vector3, radius: f
 		var nearest := INF
 		for hull: Dictionary in _combat_line_hulls:
 			var planes: Array = hull["planes"]
+			if carried and _separated_by_plane(local_from, local_to, planes, 0.0):
+				continue
 			if _inside_convex(local_from, planes):
 				nearest = 0.0
 				break
@@ -130,6 +133,8 @@ func projectile_contact(from: Vector3, to: Vector3, position: Vector3, radius: f
 	var radius_squared := effective_radius * effective_radius
 	for hull: Dictionary in _combat_line_hulls:
 		var planes: Array = hull["planes"]
+		if carried and _separated_by_plane(core_from, core_to, planes, effective_radius):
+			continue
 		if _inside_convex(core_from, planes) or _inside_convex(core_to, planes):
 			return {"hit": true, "distance_squared": 0.0}
 		var crossing: Variant = Geometry3D.segment_intersects_convex(core_from, core_to, planes)
@@ -152,6 +157,13 @@ func projectile_contact(from: Vector3, to: Vector3, position: Vector3, radius: f
 			if best_squared <= radius_squared + 0.000001:
 				return {"hit": true, "distance_squared": best_squared}
 	return {}
+
+
+func _separated_by_plane(a: Vector3, b: Vector3, planes: Array, radius: float) -> bool:
+	for plane: Plane in planes:
+		if plane.distance_to(a) > radius + 0.002 and plane.distance_to(b) > radius + 0.002:
+			return true
+	return false
 
 
 func _segment_triangle_distance_squared(a: Vector3, b: Vector3, p: Vector3, q: Vector3, r: Vector3) -> float:

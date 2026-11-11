@@ -1139,6 +1139,10 @@ func _advance_simulation_tick() -> void:
 	for unit in get_tree().get_nodes_in_group("sim_units"):
 		if is_instance_valid(unit):
 			unit.sim_tick()
+	# Carrier motion is settled; cargo stores must advance before combat consumers.
+	for cargo in get_tree().get_nodes_in_group("sim_carried_units"):
+		if is_instance_valid(cargo) and is_ancestor_of(cargo) and cargo.is_in_group("sim_units"):
+			cargo.combat_geometry().sync_carried()
 	for linger_effect in get_tree().get_nodes_in_group("sim_linger_effects"):
 		if is_instance_valid(linger_effect):
 			linger_effect.sim_tick()

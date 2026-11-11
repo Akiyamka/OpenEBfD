@@ -546,7 +546,7 @@ func combat_line_entry_distance(from: Vector3, to: Vector3, stored_position: Vec
 	return _authored_collision.combat_line_entry_distance(from, to, stored_position)
 
 func projectile_hull_contact(from: Vector3, to: Vector3, stored_position: Vector3, radius: float) -> Dictionary:
-	return _authored_collision.projectile_contact(from, to, stored_position, radius)
+	return _authored_collision.projectile_contact(from, to, stored_position, radius, _combat_geometry.combat_basis(), is_carried())
 
 func projectile_hull_diagnostics() -> Dictionary:
 	return {"copies": _authored_collision.hull_copy_count(), "probes": _authored_collision.contact_probe_count()}
@@ -768,7 +768,7 @@ func _process(delta: float) -> void:
 ## such a unit has no previous tick to blend from in the first place, so it
 ## must behave exactly as it did before this method existed.
 func _advance_visual_interpolation() -> void:
-	if visual_root == null or _entity_id == 0:
+	if visual_root == null or _entity_id == 0 or is_carried():
 		return
 	var fraction := MatchLookupScript.interpolation_fraction(self)
 	if not is_finite(fraction):
@@ -1585,7 +1585,7 @@ func transport_attach_cargo(cargo: Node3D, anchor_offset: Vector3) -> void:
 	_transport_docking_gap = docking_gap
 	_set_transport_anchor_offset(anchor, anchor_offset)
 	if cargo.has_method("transport_mark_carried"):
-		cargo.call("transport_mark_carried", self)
+		cargo.call("transport_mark_carried", self, anchor_offset)
 	cargo.call("transport_reparent_to", anchor, false)
 	cargo.transform = Transform3D.IDENTITY
 	anchor.force_update_transform()
@@ -1664,8 +1664,9 @@ func transport_abort_docking_recover() -> void:
 		_flight_controller.flight_complete_pickup_sequence()
 
 
-func transport_mark_carried(carrier: Node3D) -> void:
+func transport_mark_carried(carrier: Node3D, anchor_offset := Vector3.ZERO) -> void:
 	_set_transport_carrier(carrier)
+	_combat_geometry.attach_carried(carrier, anchor_offset)
 	_transport_carried_vertical_bounds = transport_vertical_bounds()
 	_transport_has_carried_vertical_bounds = true
 	_transport_reservation_ref = null
@@ -1675,7 +1676,6 @@ func transport_mark_carried(carrier: Node3D) -> void:
 	_navigation_suspended_for_transport = true
 	if _navigation_system != null and _navigation_system.has_method("suspend_unit"):
 		_navigation_system.call("suspend_unit", self)
-
 
 func transport_mark_released(world_position: Vector3, carrier_facing: Vector3) -> void:
 	_set_transport_carrier(null)
@@ -1744,6 +1744,8 @@ func _transport_carrier() -> Node3D:
 
 
 func _set_transport_carrier(carrier: Node3D) -> void:
+	if carrier == null:
+		_combat_geometry.clear_carried()
 	_transport_carrier_ref = weakref(carrier) if carrier != null else null
 	if _entity_id != 0:
 		var store = MatchLookupScript.entity_state(self)

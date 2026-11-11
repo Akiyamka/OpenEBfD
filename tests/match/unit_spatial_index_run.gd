@@ -95,9 +95,11 @@ func _test_profile() -> void:
 	m.state.set_combat_line_bounds(id, 0.2, -0.2, 0.2)
 	_expect(not _has(m.spatial.rectangle_candidates(Vector2(5, 1), Vector2(5, 1)), id), "radius shrink is indexed")
 	m.state.set_combat_line_carried(id, true)
-	_expect(not m.spatial.has_raw_id(id) or not _has(m.spatial.rectangle_candidates(Vector2(1, 1), Vector2(1, 1)), id), "carried unit leaves raw grid")
+	m.state.set_position(id, Vector3(10, 0, 10))
+	_expect(_has(m.spatial.rectangle_candidates(Vector2(10, 10), Vector2(10, 10)), id), "carried unit uses stored tick position")
+	_expect(not _has(m.spatial.rectangle_candidates(Vector2(1, 1), Vector2(1, 1)), id), "carried unit leaves pickup cell")
 	m.state.set_combat_line_carried(id, false)
-	_expect(_has(m.spatial.rectangle_candidates(Vector2(1, 1), Vector2(1, 1)), id), "uncarried unit returns")
+	_expect(_has(m.spatial.rectangle_candidates(Vector2(10, 10), Vector2(10, 10)), id), "uncarried unit stays indexed")
 	m.free()
 
 

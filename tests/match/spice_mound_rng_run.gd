@@ -631,6 +631,10 @@ func _test_mixed_contacts() -> void:
 		if id == minotaurus.entity_id:
 			minotaurus_hits += 1
 	_expect(not raw_cargo.has(cargo.entity_id) and cargo.is_carried() and match_instance.entity_state().position(cargo.entity_id) == mound.global_position, "stored overlapping cargo stays out of raw grid")
+	var indexed_cargo: PackedInt32Array = match_instance.unit_spatial_index().rectangle_candidates(
+		Vector2(198.0, 198.0), Vector2(202.0, 202.0))
+	_expect(indexed_cargo.has(cargo.entity_id) and not mound._contact_entries().has(cargo.entity_id),
+		"AP26 indexes carried cargo at stored tick position while AP7 exact contact rejects it")
 	_expect(minotaurus_hits == 1 and mound._contact_entries().has(minotaurus.entity_id), "large-radius multi-cell unit appears once and contacts")
 	_expect(not mound._contact_entries().has(queued.entity_id), "queued Unit is excluded before frame teardown")
 	minotaurus.set_simulation_position(Vector3(240.0, 8.0, 240.0))

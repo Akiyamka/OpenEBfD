@@ -30,12 +30,12 @@ static func collect(
 		var unit: Node = index.node_for(id)
 		if unit == null or not _owned_unit(unit, match_node):
 			continue
-		var carried: bool = (state.has_combat_line_carried(id) and state.combat_line_carried(id)) \
-			or unit.is_carried()
-		if carried:
-			continue
 		if unit is CollisionObject3D:
 			excludes.append((unit as CollisionObject3D).get_rid())
+		var stored_carried: bool = state.has_combat_line_carried(id) and state.combat_line_carried(id)
+		if stored_carried != unit.is_carried():
+			push_error("SplashUnitCollision: carried flag disagreement for unit %d" % id)
+			continue
 		if seen_entity_id.has(id) or unit == source or unit.get_meta("combat_ignore", false) \
 		or not bullet.can_hit(unit) \
 		or not CombatTargetScript.is_alive(unit):
@@ -93,10 +93,9 @@ static func collect(
 				var unit_id: int = index.id_for(node)
 				if unit_id <= 0 or not registry.is_alive(unit_id) \
 				or registry.kind_of(unit_id) != SimEntityRegistryScript.Kind.UNIT \
-				or not _owned_unit(node, match_node) \
-				or not ((state.has_combat_line_carried(unit_id) \
-				and state.combat_line_carried(unit_id)) or node.is_carried()):
+				or not _owned_unit(node, match_node):
 					continue
+				continue
 			if not bullet.can_hit(entity) or not CombatTargetScript.is_alive(entity):
 				continue
 			var distance: float = distance_fn.call(entity, centre)

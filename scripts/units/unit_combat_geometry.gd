@@ -1,5 +1,9 @@
 extends RefCounted
 
+const MatchLookupScript := preload("res://scripts/match/match_lookup.gd")
+
+const CARRIED_GROUP := &"sim_carried_units"
+
 ## Authored local pose, captured once per installed model. The root belongs to
 ## the unit scene and survives model replacement; only its descendants refresh.
 var _unit: Node3D
@@ -7,6 +11,8 @@ var _visual_root: Node3D
 var _root_rest := Transform3D.IDENTITY
 var _rests: Dictionary = {}
 var _aim_centre := Vector3(0.5, 0.5, 0.5)
+var _carrier: Node3D
+var _carried_offset := Vector3.ZERO
 
 
 func configure(unit: Node3D) -> void:
@@ -75,7 +81,7 @@ func unit_transform(node: Node3D) -> Transform3D:
 
 
 func model_transform() -> Transform3D:
-	return Transform3D(_unit.global_basis, _unit.call("simulation_position")) * _root_rest
+	return Transform3D(combat_basis(), _unit.call("simulation_position")) * _root_rest
 
 
 func world_transform(node: Node3D) -> Transform3D:
@@ -83,4 +89,55 @@ func world_transform(node: Node3D) -> Transform3D:
 
 
 func aim_position() -> Vector3:
-	return _unit.call("simulation_position") + _unit.global_basis * _aim_centre
+	return _unit.call("simulation_position") + combat_basis() * _aim_centre
+
+
+func combat_basis() -> Basis:
+	return _carrier.global_basis if is_instance_valid(_carrier) else _unit.global_basis
+
+
+func attach_carried(carrier: Node3D, offset: Vector3) -> void:
+	clear_carried()
+	if _visual_root != null:
+		_visual_root.position = _root_rest.origin
+	if carrier == null or not carrier.has_method("simulation_position"):
+		return
+	var owner := MatchLookupScript.match_node(_unit)
+	if owner == null or not owner.is_ancestor_of(_unit) or not owner.is_ancestor_of(carrier):
+		return
+	var id: int = _unit.get("entity_id")
+	var store = MatchLookupScript.entity_state(_unit)
+	var index = MatchLookupScript.entity_index(_unit)
+	if id <= 0 or store == null or index == null or not index.registry().is_alive(id) \
+	or not index.registry().is_alive(index.id_for(carrier)):
+		return
+	_carrier = carrier
+	_carried_offset = offset
+	_unit.add_to_group(CARRIED_GROUP)
+	_write_carried_root()
+
+
+func clear_carried() -> void:
+	_carrier = null
+	_carried_offset = Vector3.ZERO
+	if _unit != null:
+		_unit.remove_from_group(CARRIED_GROUP)
+
+
+func sync_carried() -> void:
+	_write_carried_root()
+
+
+func _write_carried_root() -> void:
+	if not is_instance_valid(_carrier):
+		return
+	var owner := MatchLookupScript.match_node(_unit)
+	if owner == null or not owner.is_ancestor_of(_unit) or not owner.is_ancestor_of(_carrier):
+		return
+	var id: int = _unit.get("entity_id")
+	var store = MatchLookupScript.entity_state(_unit)
+	var index = MatchLookupScript.entity_index(_unit)
+	if id <= 0 or store == null or index == null or not index.registry().is_alive(id) \
+	or not index.registry().is_alive(index.id_for(_carrier)):
+		return
+	store.set_position(id, _carrier.call("simulation_position") + _carrier.global_basis * _carried_offset)

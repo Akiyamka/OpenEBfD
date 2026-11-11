@@ -1,5 +1,6 @@
 extends "res://tests/support/suite.gd"
 
+const ReleasedOracle := preload("res://tests/combat/support/released_cargo_oracle.gd")
 const MatchFixtureScene := preload("res://tests/fixtures/match_fixture.tscn")
 const ATAPCScene := preload("res://scenes/units/atapc.tscn")
 const ATRocketTurretScene := preload("res://assets/converted/buildings/ATRocketTurret/ATRocketTurret.scn")
@@ -116,16 +117,64 @@ func _initialize() -> void:
 	await _run_async_case("Sonic centre order beats physical entry", _test_sonic_centre_entry)
 	await _run_async_case("64 eligible hits are capped after filtering", _test_eligible_cap)
 	await _run_async_case("Sonic wall takes slot 64 and damage", _test_sonic_wall_slot)
-	await _run_async_case("carried cargo uses current collider and pickup centre", _test_carried_cargo)
+	await _run_async_case("carried cargo uses stored hull and aim", _test_carried_cargo)
+	await _run_async_case("released cargo uses own basis", _test_released_cargo_basis)
 	await _run_async_case("foreign Match Units are pierced", _test_foreign_match_units)
 	await _run_async_case("same-tick dead Unit is pierced", _test_same_tick_dead_unit)
 	await _run_async_case("multiple physical RIDs deliver one entity hit", _test_multi_rid_entity)
 	await _run_async_case("unadmitted Unit collider is pierced", _test_unadmitted_unit)
+	await _run_async_case("standalone carried Unit collider is pierced", _test_standalone_carried_unit)
 	await _run_async_case("missing authored hull invents no circle", _test_missing_hull)
 	await _run_async_case("exact in-tree convex edge and endpoint gap", _test_exact_cube)
 	await _run_async_case("partial Match expires without fallback", _test_partial_match)
 	await _run_async_case("freed Match owner resumes standalone physics", _test_freed_match_owner)
 	_finish("Projectile unit collision")
+
+
+func _test_released_cargo_basis() -> void:
+	var match_instance = MatchFixtureScene.instantiate()
+	root.add_child(match_instance)
+	match_instance.set_process(false)
+	for mound in get_nodes_in_group(&"spice_mounds"):
+		if match_instance.is_ancestor_of(mound):
+			mound.free()
+	match_instance.terrain.spice_layer = null
+	var carrier = ATAPCScene.instantiate()
+	var cargo = ATAPCScene.instantiate()
+	carrier.owner_player_id = 1
+	cargo.owner_player_id = 2
+	match_instance.get_node("Units").add_child(carrier)
+	match_instance.get_node("Units").add_child(cargo)
+	carrier.set_process(false)
+	cargo.set_process(false)
+	carrier.set("_simulation_halted", true)
+	cargo.set("_simulation_halted", true)
+	carrier.set_simulation_position(Vector3(500.0, 40.0, 500.0))
+	cargo.set_simulation_position(Vector3(510.0, 40.0, 500.0))
+	match_instance.advance_ticks(1)
+	carrier.transport_attach_cargo(cargo, Vector3.ZERO)
+	_expect(cargo.is_carried(), "release fixture begins with attached cargo")
+	cargo.transport_mark_released(Vector3(510.0, 40.0, 500.0), Vector3.FORWARD)
+	var dropped: Dictionary = ReleasedOracle.measure(cargo, carrier)
+	_expect(dropped["separated"] and dropped["public_agrees"] and dropped["basis_own"]
+		and dropped["aim_own"] and not dropped["basis_stale"],
+		"dropped cargo aim and hull follow own basis after former carrier rotates")
+	carrier.transport_attach_cargo(cargo, Vector3.ZERO)
+	_expect(cargo.is_carried(), "destroyed-release fixture reattaches cargo")
+	cargo.transport_mark_destroyed_release()
+	var destroyed: Dictionary = ReleasedOracle.measure(cargo, carrier)
+	_expect(destroyed["separated"] and destroyed["public_agrees"] and destroyed["basis_own"]
+		and destroyed["aim_own"] and not destroyed["basis_stale"],
+		"destroyed-carrier release returns aim and hull to cargo basis")
+	carrier.transport_attach_cargo(cargo, Vector3.ZERO)
+	_expect(cargo.is_carried(), "own-death fixture reattaches live cargo")
+	cargo.force_transport_death()
+	var dead: Dictionary = ReleasedOracle.measure(cargo, carrier)
+	_expect(cargo.health <= 0.0 and not cargo.is_carried() and not cargo.is_in_group(&"sim_carried_units")
+		and dead["separated"] and dead["public_agrees"] and dead["basis_own"]
+		and dead["aim_own"] and not dead["basis_stale"],
+		"cargo own death restores own basis for aim and hull")
+	match_instance.free()
 
 
 func _test_stale_direct() -> void:
@@ -750,18 +799,33 @@ func _test_carried_cargo() -> void:
 	match_instance.get_node("Units").add_child(cargo)
 	cargo.set_simulation_position(Vector3(510.0, 40.0, 500.4))
 	match_instance.advance_ticks(1)
-	var carrier := Node3D.new()
-	match_instance.add_child(carrier)
-	cargo.transport_mark_carried(carrier)
+	var carrier = ATAPCScene.instantiate()
+	carrier.owner_player_id = 1
+	match_instance.get_node("Units").add_child(carrier)
+	carrier.set("_simulation_halted", true)
+	carrier.set_process(false)
+	carrier.set_meta("combat_ignore", true)
+	carrier.set_simulation_position(Vector3(508.5, 40.0, 500.4))
+	carrier.transport_attach_cargo(cargo, Vector3.ZERO)
+	_expect(cargo.simulation_position().distance_to(carrier.simulation_position()) < 0.001,
+		"carried direct fixture writes the carrier root at attach")
+	carrier.set_simulation_position(Vector3(510.0, 40.0, 500.4))
+	match_instance.advance_ticks(1)
+	_expect(cargo.simulation_position().distance_to(carrier.simulation_position()) < 0.001,
+		"carried direct fixture moves cargo on a real Match tick")
 	cargo.global_position = Vector3(500.0, 40.0, 500.4)
 	cargo.set("_simulation_halted", true)
 	await physics_frame
 	_expect(cargo.is_carried() and cargo.simulation_position().x > 509.0 and cargo.global_position.x < 501.0, "carried fixture separates pickup store from current collider")
-	var direct_from := Vector3(500.0, 40.8, 495.0)
-	var direct_to := Vector3(500.0, 40.8, 505.0)
-	var ray := PhysicsRayQueryParameters3D.create(direct_from, direct_to, 3)
+	var direct_from := Vector3(510.0, 40.8, 495.0)
+	var direct_to := Vector3(510.0, 40.8, 505.0)
+	var ray := PhysicsRayQueryParameters3D.create(Vector3(500.0, 40.8, 495.0), Vector3(500.0, 40.8, 505.0), 3)
 	var physics_hit: Dictionary = match_instance.get_world_3d().direct_space_state.intersect_ray(ray)
-	_expect(physics_hit.get("collider") == cargo, "settled current cargo collider crosses direct shot")
+	_expect(physics_hit.get("collider") == cargo, "rendered collider is positively visible to old ray")
+	var tick_ray := PhysicsRayQueryParameters3D.create(direct_from, direct_to, 3, [carrier.get_rid()])
+	_expect(match_instance.get_world_3d().direct_space_state.intersect_ray(tick_ray).get("collider") != cargo,
+		"old physics misses the displaced cargo at its tick root")
+	_expect(match_instance.unit_spatial_index().padded_segment_candidates(direct_from, direct_to, 0.0).has(cargo.entity_id), "stored carried cargo is indexed")
 	var direct = CombatProjectileScript.new()
 	match_instance.add_child(direct)
 	var direct_config: Resource = _bullets.bullet_config(&"StraightBomb").duplicate(true)
@@ -773,25 +837,121 @@ func _test_carried_cargo() -> void:
 	_expect(direct_bullet.can_hit(cargo), "carried direct bullet admits airborne cargo")
 	_expect(direct.launch(direct_bullet, Bullets.emission(direct_from, Vector3.BACK), direct_to), "carried direct shot launches")
 	direct.advance(0.5)
-	_expect(not direct_impacts.is_empty() and direct_impacts[0].distance_to(physics_hit["position"]) < 0.02, "carried direct impact uses current physics entry")
-	var sonic_from := Vector3(500.0, 40.8, 500.0)
-	var sonic_to := Vector3(500.0, 40.8, 500.8)
-	var expected_pickup: Vector3 = CombatTargetScript.position_of(cargo, sonic_from)
-	_expect(expected_pickup.distance_to(cargo.simulation_position()) > 0.2, "pickup aim differs from stored origin")
-	var wave = CombatProjectileScript.new()
-	match_instance.add_child(wave)
+	_expect(not direct_impacts.is_empty() and direct_impacts[0].x > 509.0, "carried direct impact uses stored hull")
+	var air_config: Resource = direct_config.duplicate(true)
+	air_config.anti_ground = false
+	var air_bullet = CombatBulletScript.new(air_config, _bullets.warhead_config(air_config.warhead_id))
+	var ground_config: Resource = direct_config.duplicate(true)
+	ground_config.anti_aircraft = false
+	var ground_bullet = CombatBulletScript.new(ground_config, _bullets.warhead_config(ground_config.warhead_id))
+	var eligibility_probe = CombatProjectileScript.new()
+	match_instance.add_child(eligibility_probe)
+	_expect(air_bullet.can_hit(cargo) and not ground_bullet.can_hit(cargo),
+		"carried cargo remains airborne for weapon eligibility")
+	_expect(eligibility_probe.launch(air_bullet, Bullets.emission(direct_from, Vector3.BACK), direct_to),
+		"air-only carried probe launches")
+	var air_hits: Array[Dictionary] = eligibility_probe._collisions_between(direct_from, direct_to)
+	eligibility_probe.free()
+	eligibility_probe = CombatProjectileScript.new()
+	match_instance.add_child(eligibility_probe)
+	_expect(eligibility_probe.launch(ground_bullet, Bullets.emission(direct_from, Vector3.BACK), direct_to),
+		"ground-only carried probe launches")
+	var ground_hits: Array[Dictionary] = eligibility_probe._collisions_between(direct_from, direct_to)
+	_expect(air_hits.any(func(hit: Dictionary) -> bool: return CombatTargetScript.entity_of(hit.get("collider")) == cargo)
+		and not ground_hits.any(func(hit: Dictionary) -> bool: return CombatTargetScript.entity_of(hit.get("collider")) == cargo),
+		"air-only shot reaches cargo tick hull and ground-only shot misses")
+	eligibility_probe.free()
+	var render_only = CombatProjectileScript.new()
+	match_instance.add_child(render_only)
+	var render_from := Vector3(500.0, 40.8, 495.0)
+	var render_to := Vector3(500.0, 40.8, 505.0)
+	_expect(render_only.launch(direct_bullet, Bullets.emission(render_from, Vector3.BACK), render_to),
+		"render-only control shot launches")
+	_expect(render_only._collisions_between(render_from, render_to).is_empty(),
+		"rendered-only collider does not deliver a carried Unit hit")
+	render_only.free()
+	var graze_from: Vector3 = cargo.simulation_position() + Vector3(1.54, 0.8, -0.4)
+	var graze_to: Vector3 = cargo.simulation_position() + Vector3(1.54, 0.8, 0.4)
+	var graze_candidates: PackedInt32Array = match_instance.unit_spatial_index().padded_segment_candidates(
+		graze_from, graze_to, 1.4)
+	_expect(graze_candidates.has(cargo.entity_id), "carried Sonic graze is indexed")
+	var graze_plane_gap := false
+	var local_a: Vector3 = graze_from - cargo.simulation_position()
+	var local_b: Vector3 = graze_to - cargo.simulation_position()
+	for hull: Dictionary in cargo.get("_authored_collision").get("_combat_line_hulls"):
+		for plane: Plane in hull["planes"]:
+			var gap_a: float = plane.distance_to(local_a)
+			var gap_b: float = plane.distance_to(local_b)
+			if gap_a > 0.002 and gap_b > 0.002 and gap_a <= 0.4 and gap_b <= 0.4:
+				graze_plane_gap = true
+	_expect(graze_plane_gap, "Sonic graze has a separating plane beyond 0.002 within capsule radius")
+	_expect(cargo.projectile_hull_contact(graze_from, graze_to, cargo.simulation_position(), 0.0).is_empty()
+		and not cargo.projectile_hull_contact(graze_from, graze_to, cargo.simulation_position(), 0.4).is_empty(),
+		"carried Sonic graze misses centreline and hits capsule")
+	var near_from: Vector3 = cargo.simulation_position() + Vector3(1.56, 0.8, -0.4)
+	var near_to: Vector3 = cargo.simulation_position() + Vector3(1.56, 0.8, 0.4)
+	_expect(match_instance.unit_spatial_index().padded_segment_candidates(near_from, near_to, 1.4).has(cargo.entity_id)
+		and cargo.projectile_hull_contact(near_from, near_to, cargo.simulation_position(), 0.4).is_empty(),
+		"carried Sonic near miss stays indexed but misses exact hull")
 	var sonic_config: Resource = _bullets.bullet_config(&"Sound_B").duplicate(true)
 	sonic_config.anti_aircraft = true
 	sonic_config.anti_ground = true
 	var sonic_bullet = CombatBulletScript.new(sonic_config, _bullets.warhead_config(sonic_config.warhead_id))
+	var graze_wave = CombatProjectileScript.new()
+	match_instance.add_child(graze_wave)
+	_expect(graze_wave.launch(sonic_bullet, Bullets.emission(graze_from, Vector3.BACK), graze_to + Vector3(0.0, 0.0, 5.0)),
+		"carried Sonic graze probe launches")
+	var graze_hits: Array[Dictionary] = graze_wave._collisions_between(graze_from, graze_to)
+	var near_hits: Array[Dictionary] = graze_wave._collisions_between(near_from, near_to)
+	_expect(graze_hits.any(func(hit: Dictionary) -> bool: return CombatTargetScript.entity_of(hit.get("collider")) == cargo)
+		and not near_hits.any(func(hit: Dictionary) -> bool: return CombatTargetScript.entity_of(hit.get("collider")) == cargo),
+		"public Sonic capsule graze hits and indexed near miss stays empty")
+	graze_wave.free()
+	var second = ATAPCScene.instantiate()
+	second.owner_player_id = 2
+	match_instance.get_node("Units").add_child(second)
+	second.set("_simulation_halted", true)
+	second.set_process(false)
+	second.set_simulation_position(Vector3(510.7, 40.0, 500.4))
+	match_instance.advance_ticks(1)
+	var sonic_from := Vector3(510.0, 40.8, 500.0)
+	var sonic_to := Vector3(510.0, 40.8, 500.8)
+	var expected_tick: Vector3 = CombatTargetScript.position_of(cargo, sonic_from)
+	_expect(expected_tick.distance_to(cargo.global_position) > 5.0, "stored aim differs from rendered collider")
+	_expect(sonic_from.distance_squared_to(expected_tick)
+		< sonic_from.distance_squared_to(CombatTargetScript.position_of(second, sonic_from))
+		and sonic_from.distance_squared_to(cargo.global_position)
+		> sonic_from.distance_squared_to(CombatTargetScript.position_of(second, sonic_from)),
+		"stored cargo aim ranks before second target while rendered cargo ranks after")
+	var wave = CombatProjectileScript.new()
+	match_instance.add_child(wave)
 	var sonic_impacts: Array[Vector3] = []
 	wave.impacted.connect(func(_entity: Object, _damage: float, at: Vector3) -> void: sonic_impacts.append(at))
 	_expect(sonic_bullet.can_hit(cargo), "carried Sonic bullet admits airborne cargo")
-	_expect(wave.launch(sonic_bullet, Bullets.emission(sonic_from, Vector3.BACK), Vector3(500.0, 40.8, 508.0)), "carried Sonic shot launches")
+	_expect(wave.launch(sonic_bullet, Bullets.emission(sonic_from, Vector3.BACK), Vector3(510.0, 40.8, 508.0)), "carried Sonic shot launches")
 	var collisions: Array[Dictionary] = wave._collisions_between(sonic_from, sonic_to)
-	_expect(not collisions.is_empty() and CombatTargetScript.entity_of(collisions[0].get("collider")) == cargo, "carried Sonic retrieves current physics collider")
+	_expect(collisions.size() >= 2 and CombatTargetScript.entity_of(collisions[0].get("collider")) == cargo
+		and CombatTargetScript.entity_of(collisions[1].get("collider")) == second,
+		"carried Sonic retrieves stored hull and ranks cargo before second target")
 	wave.advance(0.04)
-	_expect(not sonic_impacts.is_empty() and sonic_impacts[0].distance_to(expected_pickup) < 0.02, "carried Sonic impact uses pickup aim centre")
+	_expect(not sonic_impacts.is_empty() and sonic_impacts[0].distance_to(expected_tick) < 0.02, "carried Sonic impact uses stored aim centre")
+	var mismatch_logger := ErrorLogger.new()
+	match_instance.entity_state().set_combat_line_carried(cargo.entity_id, false)
+	OS.add_logger(mismatch_logger)
+	var node_only: Array[Dictionary] = wave._collisions_between(sonic_from, sonic_to)
+	OS.remove_logger(mismatch_logger)
+	_expect(not node_only.any(func(hit: Dictionary) -> bool: return CombatTargetScript.entity_of(hit.get("collider")) == cargo)
+		and mismatch_logger.errors.size() == 1,
+		"node-carried store-normal disagreement logs and gives no hit")
+	cargo._set_transport_carrier(null)
+	match_instance.entity_state().set_combat_line_carried(cargo.entity_id, true)
+	mismatch_logger = ErrorLogger.new()
+	OS.add_logger(mismatch_logger)
+	var store_only: Array[Dictionary] = wave._collisions_between(sonic_from, sonic_to)
+	OS.remove_logger(mismatch_logger)
+	_expect(not store_only.any(func(hit: Dictionary) -> bool: return CombatTargetScript.entity_of(hit.get("collider")) == cargo)
+		and mismatch_logger.errors.size() == 1,
+		"store-carried node-normal disagreement logs and gives no hit")
 	match_instance.free()
 
 
@@ -830,7 +990,12 @@ func _test_foreign_match_units() -> void:
 	var bullet = CombatBulletScript.new(config, _bullets.warhead_config(config.warhead_id))
 	for carried in [false, true]:
 		if carried:
+			var attach_logger := ErrorLogger.new()
+			OS.add_logger(attach_logger)
 			foreign.transport_mark_carried(carrier)
+			OS.remove_logger(attach_logger)
+			_expect(attach_logger.errors.is_empty(),
+				"foreign plain Node3D carrier accepts the default offset without a null call")
 		_expect(bullet.can_hit(foreign) and bullet.can_hit(building), "dual bullet admits both foreign and B building")
 		var shot = CombatProjectileScript.new()
 		match_b.add_child(shot)
@@ -922,6 +1087,48 @@ func _test_multi_rid_entity() -> void:
 	_expect(shot.launch(_bullets.runtime_bullet(&"Sound_B"), Bullets.emission(from, Vector3.BACK), to), "multi-RID Sonic launches")
 	shot.advance(0.04)
 	_expect(delivered == [target], "multi-RID target receives exactly one Sonic hit")
+	match_instance.free()
+
+
+func _test_standalone_carried_unit() -> void:
+	var match_instance = MatchFixtureScene.instantiate()
+	root.add_child(match_instance)
+	match_instance.set_process(false)
+	for mound in get_nodes_in_group(&"spice_mounds"):
+		if match_instance.is_ancestor_of(mound):
+			mound.free()
+	match_instance.terrain.spice_layer = null
+	var carrier := Node3D.new()
+	root.add_child(carrier)
+	var cargo = ATAPCScene.instantiate()
+	cargo.owner_player_id = 2
+	root.add_child(cargo)
+	cargo.set_process(false)
+	cargo.set("_simulation_halted", true)
+	cargo.global_position = Vector3(500.0, 40.0, 499.0)
+	carrier.global_position = cargo.global_position
+	cargo.transport_mark_carried(carrier)
+	var building := Doubles.PhysicsCombatTarget.new(Vector3(500.0, 40.8, 503.0), 0.5)
+	match_instance.add_child(building)
+	await physics_frame
+	var from := Vector3(500.0, 40.8, 495.0)
+	var to := Vector3(500.0, 40.8, 505.0)
+	var ray := PhysicsRayQueryParameters3D.create(from, to, 3)
+	_expect(cargo.is_carried() and match_instance.get_world_3d().direct_space_state.intersect_ray(ray).get("collider") == cargo,
+		"old physics positively sees standalone carried collider before building")
+	var config: Resource = _bullets.bullet_config(&"StraightBomb").duplicate(true)
+	config.anti_aircraft = true
+	config.anti_ground = true
+	var bullet = CombatBulletScript.new(config, _bullets.warhead_config(config.warhead_id))
+	var shot = CombatProjectileScript.new()
+	match_instance.add_child(shot)
+	var delivered: Array[Object] = []
+	shot.impacted.connect(func(entity: Object, _damage: float, _at: Vector3) -> void: delivered.append(entity))
+	_expect(shot.launch(bullet, Bullets.emission(from, Vector3.BACK), to), "standalone carried control shot launches")
+	shot.advance(0.5)
+	_expect(delivered == [building], "Match projectile pierces outside-Match carried collider")
+	cargo.free()
+	carrier.free()
 	match_instance.free()
 
 
